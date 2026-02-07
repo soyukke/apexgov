@@ -7,6 +7,8 @@
 - `force-app/`: SFDX形式のApexサンプル
   - `BulkSafeService.cls`: バルク化済みのOK例
   - `GovernorRiskService.cls`: SOQL/DML in loop などのNG例
+  - `GuardedLoopService.cls`: `if (n > 120) return;` で上限を与える例
+  - `ExceededGuardService.cls`: `if (n > 200) return;` でもSOQL上限を超える例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
 - `baseline/profile-baseline.json`: 回帰比較用ベースライン
@@ -22,6 +24,8 @@ zig build run -- check examples/apex-validation/force-app --format text
 
 期待結果:
 - `GovernorRiskService.cls` に対して `AG002/AG003` を含むfindingが出る
+- `GuardedLoopService.cls` では `Loop upper bound <= 120` の警告が出る
+- `ExceededGuardService.cls` では `Loop upper bound <= 200` の超過エラーが出る
 - exit code は `1`（デフォルト閾値 `warning`）
 
 ## 2) プロファイル予算チェック (`profile`)

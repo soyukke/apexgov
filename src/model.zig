@@ -76,6 +76,8 @@ pub const ProfileResult = struct {
 
 pub fn deinitFindings(gpa: std.mem.Allocator, findings: *std.ArrayList(Finding)) void {
     for (findings.items) |finding| {
+        gpa.free(finding.title);
+        gpa.free(finding.message);
         gpa.free(finding.file);
     }
     findings.deinit(gpa);
