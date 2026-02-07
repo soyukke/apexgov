@@ -856,3 +856,99 @@ test "cpu estimate helpers" {
     try std.testing.expectEqual(@as(u64, 271), computeCpuLimitN(500, 35));
     try std.testing.expectEqual(@as(?u64, 4700), estimateCpuTotalMs(500, 120, 35));
 }
+
+test "guarded loop yields bounded DML warning and cpu estimate" {
+    const source =
+        \\public with sharing class GuardedLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 120) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(dml.severity == .warning);
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+
+    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, cpu.message, "500 + 120*25") != null);
+}
+
+test "soql with bound 200 becomes governor error" {
+    const source =
+        \\public with sharing class ExceededGuardService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 200) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            List<Account> one = [SELECT Id FROM Account WHERE Id = :records[i].Id LIMIT 1];
+        \\            if (!one.isEmpty()) {
+        \\                records[i].Name = one[0].Name;
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(soql.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 200") != null);
+}
+
+test "cpu model config changes AG009 slope" {
+    const source =
+        \\public with sharing class TunedModelService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 120) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var cfg = config.Config.defaults();
+    cfg.cpu_model.base_ms = 450;
+    cfg.cpu_model.dml_ms = 10;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, cfg);
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, cpu.message, "450 + 120*10") != null);
+}
+
+fn runCheckOnTempSource(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    cfg: config.Config,
+) !std.ArrayList(model.Finding) {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "Case.cls", .data = source });
+
+    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "Case.cls" });
+    defer gpa.free(path);
+
+    const roots = [_][]const u8{path};
+    return runWithConfig(gpa, &roots, cfg);
+}
+
+fn findFindingByRule(findings: []const model.Finding, rule_id: []const u8) ?model.Finding {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.rule_id, rule_id)) return finding;
+    }
+    return null;
+}

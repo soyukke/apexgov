@@ -264,3 +264,83 @@ test "exceedsPercent compares with threshold" {
     try std.testing.expect(exceedsPercent(1, 0, 15));
     try std.testing.expect(!exceedsPercent(0, 0, 15));
 }
+
+test "compareWithBaseline reports regression by label and mode" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const baseline_json =
+        \\{
+        \\  "profiles": [
+        \\    {
+        \\      "source": "old-sync.log",
+        \\      "label": "MyService.run",
+        \\      "mode": "sync",
+        \\      "cpu_ms": 1000,
+        \\      "heap_bytes": 2000
+        \\    },
+        \\    {
+        \\      "source": "old-async.log",
+        \\      "label": "MyQueue.execute",
+        \\      "mode": "async",
+        \\      "cpu_ms": 5000,
+        \\      "heap_bytes": 7000
+        \\    }
+        \\  ]
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+
+    const baseline_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "baseline.json" },
+    );
+    defer std.testing.allocator.free(baseline_path);
+
+    const current = [_]model.ProfileResult{
+        .{
+            .source = "sync.log",
+            .label = "MyService.run",
+            .is_async = false,
+            .cpu_ms = 1300,
+            .heap_bytes = 2600,
+            .cpu_budget = 8000,
+            .heap_budget = 5000000,
+        },
+        .{
+            .source = "async.log",
+            .label = "MyQueue.execute",
+            .is_async = true,
+            .cpu_ms = 5200,
+            .heap_bytes = 7100,
+            .cpu_budget = 50000,
+            .heap_budget = 10000000,
+        },
+    };
+
+    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    defer deinitRegressions(std.testing.allocator, &regressions);
+
+    try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
+    try std.testing.expect(std.mem.eql(u8, regressions.items[0].label, "MyService.run"));
+    try std.testing.expect(regressions.items[0].cpu_regressed);
+    try std.testing.expect(regressions.items[0].heap_regressed);
+}
+
+test "compareWithBaseline returns empty when baseline path is null" {
+    const current = [_]model.ProfileResult{
+        .{
+            .source = "sync.log",
+            .label = "Example.run",
+            .is_async = false,
+            .cpu_ms = 1300,
+            .heap_bytes = 2600,
+            .cpu_budget = 8000,
+            .heap_budget = 5000000,
+        },
+    };
+
+    var regressions = try compareWithBaseline(std.testing.allocator, &current, null, 15);
+    defer deinitRegressions(std.testing.allocator, &regressions);
+    try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
+}
