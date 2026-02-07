@@ -5,6 +5,14 @@ pub const Budget = struct {
     heap_bytes: u64,
 };
 
+pub const CpuModel = struct {
+    base_ms: u64,
+    soql_ms: u64,
+    dml_ms: u64,
+    json_ms: u64,
+    clone_ms: u64,
+};
+
 pub const Ci = struct {
     fail_on_regression: bool,
     regression_percent: u8,
@@ -13,6 +21,7 @@ pub const Ci = struct {
 pub const Config = struct {
     budget_sync: Budget,
     budget_async: Budget,
+    cpu_model: CpuModel,
     ci: Ci,
 
     pub fn defaults() Config {
@@ -24,6 +33,13 @@ pub const Config = struct {
             .budget_async = .{
                 .cpu_ms = 50_000,
                 .heap_bytes = 10_000_000,
+            },
+            .cpu_model = .{
+                .base_ms = 500,
+                .soql_ms = 35,
+                .dml_ms = 25,
+                .json_ms = 8,
+                .clone_ms = 4,
             },
             .ci = .{
                 .fail_on_regression = true,
@@ -37,6 +53,7 @@ const Section = enum {
     none,
     budget_sync,
     budget_async,
+    cpu_model,
     ci,
 };
 
@@ -65,6 +82,8 @@ pub fn parse(raw: []const u8) !Config {
                 section = .budget_sync;
             } else if (std.ascii.eqlIgnoreCase(name, "budget.async")) {
                 section = .budget_async;
+            } else if (std.ascii.eqlIgnoreCase(name, "cpu.model")) {
+                section = .cpu_model;
             } else if (std.ascii.eqlIgnoreCase(name, "ci")) {
                 section = .ci;
             } else {
@@ -93,6 +112,19 @@ pub fn parse(raw: []const u8) !Config {
                     cfg.budget_async.cpu_ms = try parseUnsigned(u32, value);
                 } else if (std.ascii.eqlIgnoreCase(key, "heap_bytes")) {
                     cfg.budget_async.heap_bytes = try parseUnsigned(u64, value);
+                }
+            },
+            .cpu_model => {
+                if (std.ascii.eqlIgnoreCase(key, "base_ms")) {
+                    cfg.cpu_model.base_ms = try parseUnsigned(u64, value);
+                } else if (std.ascii.eqlIgnoreCase(key, "soql_ms")) {
+                    cfg.cpu_model.soql_ms = try parseUnsigned(u64, value);
+                } else if (std.ascii.eqlIgnoreCase(key, "dml_ms")) {
+                    cfg.cpu_model.dml_ms = try parseUnsigned(u64, value);
+                } else if (std.ascii.eqlIgnoreCase(key, "json_ms")) {
+                    cfg.cpu_model.json_ms = try parseUnsigned(u64, value);
+                } else if (std.ascii.eqlIgnoreCase(key, "clone_ms")) {
+                    cfg.cpu_model.clone_ms = try parseUnsigned(u64, value);
                 }
             },
             .ci => {
@@ -134,6 +166,13 @@ test "parse config subset" {
         \\cpu_ms = 45000
         \\heap_bytes = 12000000
         \\
+        \\[cpu.model]
+        \\base_ms = 600
+        \\soql_ms = 40
+        \\dml_ms = 30
+        \\json_ms = 10
+        \\clone_ms = 5
+        \\
         \\[ci]
         \\fail_on_regression = false
         \\regression_percent = 25
@@ -145,6 +184,11 @@ test "parse config subset" {
     try std.testing.expectEqual(@as(u64, 6000000), cfg.budget_sync.heap_bytes);
     try std.testing.expectEqual(@as(u32, 45000), cfg.budget_async.cpu_ms);
     try std.testing.expectEqual(@as(u64, 12000000), cfg.budget_async.heap_bytes);
+    try std.testing.expectEqual(@as(u64, 600), cfg.cpu_model.base_ms);
+    try std.testing.expectEqual(@as(u64, 40), cfg.cpu_model.soql_ms);
+    try std.testing.expectEqual(@as(u64, 30), cfg.cpu_model.dml_ms);
+    try std.testing.expectEqual(@as(u64, 10), cfg.cpu_model.json_ms);
+    try std.testing.expectEqual(@as(u64, 5), cfg.cpu_model.clone_ms);
     try std.testing.expect(!cfg.ci.fail_on_regression);
     try std.testing.expectEqual(@as(u8, 25), cfg.ci.regression_percent);
 }

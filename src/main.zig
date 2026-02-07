@@ -69,9 +69,9 @@ fn runCheck(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var opts = try parseCheckOptions(gpa, args);
     defer opts.deinit(gpa);
 
-    _ = try apexgov.config.load(gpa, opts.config_path);
+    const cfg = try apexgov.config.load(gpa, opts.config_path);
 
-    var findings = try apexgov.check.run(gpa, opts.paths.items);
+    var findings = try apexgov.check.runWithConfig(gpa, opts.paths.items, cfg);
     defer apexgov.model.deinitFindings(gpa, &findings);
 
     try emitCheckOutput(opts.out_path, opts.format, findings.items);

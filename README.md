@@ -46,6 +46,13 @@ heap_bytes = 5000000
 cpu_ms = 50000
 heap_bytes = 10000000
 
+[cpu.model]
+base_ms = 500
+soql_ms = 35
+dml_ms = 25
+json_ms = 8
+clone_ms = 4
+
 [ci]
 fail_on_regression = true
 regression_percent = 15
@@ -62,3 +69,14 @@ zig build test
 
 `/Users/soyukke/dev/zig/apexgov/examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
 手順は `/Users/soyukke/dev/zig/apexgov/examples/apex-validation/README.md` を参照してください。
+
+## Java Calibration
+
+`/Users/soyukke/dev/zig/apexgov/tools/java-calibration` に、CPU係数の相対生成ツールがあります。
+
+```bash
+nix develop
+./tools/java-calibration/run.sh
+```
+
+生成された `cpu_model.toml` の `[cpu.model]` を `apexgov.toml` にマージすると、`AG009` のCPU見積もりで利用されます。

@@ -6,6 +6,13 @@ heap_bytes = 5000000
 cpu_ms = 50000
 heap_bytes = 10000000
 
+[cpu.model]
+base_ms = 500
+soql_ms = 35
+dml_ms = 25
+json_ms = 8
+clone_ms = 4
+
 [ci]
 fail_on_regression = true
 regression_percent = 15

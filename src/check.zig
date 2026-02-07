@@ -1,9 +1,11 @@
 const std = @import("std");
 const model = @import("model.zig");
+const config = @import("config.zig");
 
 const soql_limit: u64 = 100;
 const dml_limit: u64 = 150;
 const trigger_batch_limit: u64 = 200;
+const sync_cpu_budget_ms: u64 = 10_000;
 
 const BoundOrigin = enum {
     unknown,
@@ -35,28 +37,32 @@ const BoundUpdate = struct {
 };
 
 pub fn run(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(model.Finding) {
+    return runWithConfig(gpa, roots, config.Config.defaults());
+}
+
+pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: config.Config) !std.ArrayList(model.Finding) {
     var findings: std.ArrayList(model.Finding) = .empty;
     errdefer model.deinitFindings(gpa, &findings);
 
     for (roots) |root| {
-        try scanPath(gpa, root, &findings);
+        try scanPath(gpa, root, cfg, &findings);
     }
 
     return findings;
 }
 
-fn scanPath(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(model.Finding)) !void {
-    scanDirectory(gpa, path, findings) catch |err| switch (err) {
+fn scanPath(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
+    scanDirectory(gpa, path, cfg, findings) catch |err| switch (err) {
         error.NotDir => {
             if (isApexSource(path)) {
-                try scanFile(gpa, path, findings);
+                try scanFile(gpa, path, cfg, findings);
             }
         },
         else => return err,
     };
 }
 
-fn scanDirectory(gpa: std.mem.Allocator, root: []const u8, findings: *std.ArrayList(model.Finding)) !void {
+fn scanDirectory(gpa: std.mem.Allocator, root: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
@@ -70,11 +76,11 @@ fn scanDirectory(gpa: std.mem.Allocator, root: []const u8, findings: *std.ArrayL
         const joined = try std.fs.path.join(gpa, &.{ root, entry.path });
         defer gpa.free(joined);
 
-        try scanFile(gpa, joined, findings);
+        try scanFile(gpa, joined, cfg, findings);
     }
 }
 
-fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(model.Finding)) !void {
+fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
     const content = try std.fs.cwd().readFileAlloc(gpa, path, 16 * 1024 * 1024);
     defer gpa.free(content);
 
@@ -135,6 +141,16 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(m
                 .soql,
                 loop_upper_bound,
             );
+            try appendCpuEstimateFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                "SOQL",
+                cfg.cpu_model.soql_ms,
+                loop_upper_bound,
+                cfg.cpu_model.base_ms,
+            );
         }
 
         if (in_loop and containsDml(trimmed)) {
@@ -145,6 +161,16 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(m
                 line_no,
                 .dml,
                 loop_upper_bound,
+            );
+            try appendCpuEstimateFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                "DML",
+                cfg.cpu_model.dml_ms,
+                loop_upper_bound,
+                cfg.cpu_model.base_ms,
             );
         }
 
@@ -160,6 +186,16 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(m
                 .warning,
                 "cpu",
             );
+            try appendCpuEstimateFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                "JSON",
+                cfg.cpu_model.json_ms,
+                loop_upper_bound,
+                cfg.cpu_model.base_ms,
+            );
         }
 
         if (in_loop and containsCloneWork(trimmed)) {
@@ -173,6 +209,16 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(m
                 "Repeated cloning can increase heap and CPU cost.",
                 .warning,
                 "heap",
+            );
+            try appendCpuEstimateFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                "clone/deepClone",
+                cfg.cpu_model.clone_ms,
+                loop_upper_bound,
+                cfg.cpu_model.base_ms,
             );
         }
 
@@ -214,6 +260,79 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, findings: *std.ArrayList(m
         brace_depth = updateBraceDepth(brace_depth, code_line);
         popClosedScopes(&loop_scopes, brace_depth);
     }
+}
+
+fn appendCpuEstimateFinding(
+    gpa: std.mem.Allocator,
+    findings: *std.ArrayList(model.Finding),
+    path: []const u8,
+    line_no: usize,
+    operation_label: []const u8,
+    per_iter_ms: u64,
+    loop_upper_bound: ?u64,
+    base_cost_ms: u64,
+) !void {
+    const n_limit = computeCpuLimitN(base_cost_ms, per_iter_ms);
+
+    var message_buffer: [420]u8 = undefined;
+    var severity: model.Severity = .info;
+    const message = if (loop_upper_bound) |upper| blk: {
+        const total = estimateCpuTotalMs(base_cost_ms, upper, per_iter_ms) orelse std.math.maxInt(u64);
+        if (total > sync_cpu_budget_ms) {
+            severity = .err;
+            break :blk try std.fmt.bufPrint(
+                &message_buffer,
+                "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. This likely exceeds sync CPU limit ({d}ms).",
+                .{ base_cost_ms, upper, per_iter_ms, total, sync_cpu_budget_ms },
+            );
+        }
+        const warn_threshold = (sync_cpu_budget_ms * 8) / 10;
+        if (total >= warn_threshold) {
+            severity = .warning;
+        }
+        break :blk try std.fmt.bufPrint(
+            &message_buffer,
+            "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. Limit risk starts around N>{d} (sync {d}ms).",
+            .{ base_cost_ms, upper, per_iter_ms, total, n_limit, sync_cpu_budget_ms },
+        );
+    } else blk: {
+        break :blk try std.fmt.bufPrint(
+            &message_buffer,
+            "CPU estimate (heuristic): {d} + N*{d}. Without loop bound N, safety is unknown. Limit risk starts around N>{d} (sync {d}ms).",
+            .{ base_cost_ms, per_iter_ms, n_limit, sync_cpu_budget_ms },
+        );
+    };
+
+    var title_buffer: [120]u8 = undefined;
+    const title = try std.fmt.bufPrint(
+        &title_buffer,
+        "Estimated CPU for {s} in loop",
+        .{operation_label},
+    );
+
+    try appendFinding(
+        gpa,
+        findings,
+        path,
+        line_no,
+        "AG009",
+        title,
+        message,
+        severity,
+        "cpu",
+    );
+}
+
+fn computeCpuLimitN(base_cost_ms: u64, per_iter_ms: u64) u64 {
+    if (per_iter_ms == 0) return std.math.maxInt(u64);
+    if (sync_cpu_budget_ms <= base_cost_ms) return 0;
+    return (sync_cpu_budget_ms - base_cost_ms) / per_iter_ms;
+}
+
+fn estimateCpuTotalMs(base_cost_ms: u64, n: u64, per_iter_ms: u64) ?u64 {
+    if (per_iter_ms == 0) return base_cost_ms;
+    const mul = std.math.mul(u64, n, per_iter_ms) catch return null;
+    return std.math.add(u64, base_cost_ms, mul) catch return null;
 }
 
 const GovernorKind = enum {
@@ -731,4 +850,9 @@ test "for condition uses inferred variable bound" {
 
     const loop = inferLoopInfo("for (Integer i = 0; i < n; i++) {", &bounds) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(?u64, 120), loop.max_iterations);
+}
+
+test "cpu estimate helpers" {
+    try std.testing.expectEqual(@as(u64, 271), computeCpuLimitN(500, 35));
+    try std.testing.expectEqual(@as(?u64, 4700), estimateCpuTotalMs(500, 120, 35));
 }
