@@ -1,0 +1,6 @@
+10:02:00.0 (1)|CODE_UNIT_STARTED|[EXTERNAL]|01p00000000002|GovernorRiskService.run
+10:02:00.1 (2)|LIMIT_USAGE_FOR_NS|(default)|
+  Number of SOQL queries: 20 out of 100
+  Number of DML statements: 20 out of 150
+  Maximum CPU time: 5400 out of 10000
+  Maximum heap size: 4100000 out of 6000000

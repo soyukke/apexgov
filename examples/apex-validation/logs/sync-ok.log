@@ -1,0 +1,6 @@
+10:00:00.0 (1)|CODE_UNIT_STARTED|[EXTERNAL]|01p00000000001|BulkSafeService.process
+10:00:00.1 (2)|LIMIT_USAGE_FOR_NS|(default)|
+  Number of SOQL queries: 2 out of 100
+  Number of DML statements: 1 out of 150
+  Maximum CPU time: 3200 out of 10000
+  Maximum heap size: 2400000 out of 6000000

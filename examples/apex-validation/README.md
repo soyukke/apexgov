@@ -1,0 +1,61 @@
+# Apex Validation Fixtures
+
+`apexgov` のローカル検証用サンプルです。
+
+## 構成
+
+- `force-app/`: SFDX形式のApexサンプル
+  - `BulkSafeService.cls`: バルク化済みのOK例
+  - `GovernorRiskService.cls`: SOQL/DML in loop などのNG例
+  - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
+- `logs/`: `profile` 検証用のDebug Log
+- `baseline/profile-baseline.json`: 回帰比較用ベースライン
+- `apexgov.toml`: 予算と回帰設定（厳しめ）
+- `apexgov-regression.toml`: 予算は緩め、回帰でfail
+- `apexgov-soft.toml`: 予算は緩め、回帰は警告のみ
+
+## 1) 静的チェック (`check`)
+
+```bash
+zig build run -- check examples/apex-validation/force-app --format text
+```
+
+期待結果:
+- `GovernorRiskService.cls` に対して `AG002/AG003` を含むfindingが出る
+- exit code は `1`（デフォルト閾値 `warning`）
+
+## 2) プロファイル予算チェック (`profile`)
+
+```bash
+zig build run -- profile examples/apex-validation/logs --config examples/apex-validation/apexgov.toml --format text
+```
+
+期待結果:
+- `async-over-budget.log` のCPUが予算超過で `OVER_BUDGET`
+- exit code は `1`
+
+## 3) ベースライン回帰チェック（回帰でfail）
+
+```bash
+zig build run -- profile examples/apex-validation/logs \
+  --config examples/apex-validation/apexgov-regression.toml \
+  --baseline examples/apex-validation/baseline/profile-baseline.json \
+  --format text
+```
+
+期待結果:
+- `GovernorRiskService.run` と `QueueableJob.execute` が回帰として表示される
+- `[ci].fail_on_regression = true` のため exit code は `1`（予算超過は無し）
+
+## 4) 回帰を警告のみで通す（予算超過も無し）
+
+```bash
+zig build run -- profile examples/apex-validation/logs \
+  --config examples/apex-validation/apexgov-soft.toml \
+  --baseline examples/apex-validation/baseline/profile-baseline.json \
+  --format text
+```
+
+この場合:
+- 回帰メッセージは出る
+- exit code は `0`

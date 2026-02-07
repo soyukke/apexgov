@@ -56,3 +56,8 @@ regression_percent = 15
 zig build
 zig build test
 ```
+
+## Local validation fixtures
+
+`/Users/soyukke/dev/zig/apexgov/examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
+手順は `/Users/soyukke/dev/zig/apexgov/examples/apex-validation/README.md` を参照してください。

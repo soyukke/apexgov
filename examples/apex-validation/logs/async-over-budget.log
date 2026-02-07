@@ -1,0 +1,6 @@
+10:01:00.0 (1)|CODE_UNIT_STARTED|[EXTERNAL]|707000000000001|QUEUEABLE|QueueableJob.execute
+10:01:00.1 (2)|LIMIT_USAGE_FOR_NS|(default)|
+  Number of SOQL queries: 50 out of 200
+  Number of DML statements: 10 out of 150
+  Maximum CPU time: 61000 out of 60000
+  Maximum heap size: 12000000 out of 12000000
