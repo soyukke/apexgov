@@ -344,3 +344,47 @@ test "compareWithBaseline returns empty when baseline path is null" {
     defer deinitRegressions(std.testing.allocator, &regressions);
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
 }
+
+test "compareWithBaseline matches by basename when label is unknown" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const baseline_json =
+        \\{
+        \\  "profiles": [
+        \\    {
+        \\      "source": "path/to/tx.log",
+        \\      "label": "unknown",
+        \\      "mode": "sync",
+        \\      "cpu_ms": 2000,
+        \\      "heap_bytes": 3000
+        \\    }
+        \\  ]
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+
+    const baseline_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "baseline.json" },
+    );
+    defer std.testing.allocator.free(baseline_path);
+
+    const current = [_]model.ProfileResult{
+        .{
+            .source = "another/path/tx.log",
+            .label = "unknown",
+            .is_async = false,
+            .cpu_ms = 2500,
+            .heap_bytes = 3400,
+            .cpu_budget = 8000,
+            .heap_budget = 5000000,
+        },
+    };
+
+    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    defer deinitRegressions(std.testing.allocator, &regressions);
+
+    try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
+    try std.testing.expect(regressions.items[0].cpu_regressed);
+}

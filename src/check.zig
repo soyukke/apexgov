@@ -559,7 +559,7 @@ fn applyGuardBounds(
     bounds: *std.StringHashMap(Bound),
     line: []const u8,
 ) !void {
-    if (!std.mem.startsWith(u8, line, "if")) return;
+    if (!std.mem.startsWith(u8, line, "if") and !std.mem.startsWith(u8, line, "else if")) return;
     if (!containsExitStatement(line)) return;
     if (std.mem.indexOf(u8, line, "||") != null) return;
 
@@ -568,12 +568,22 @@ fn applyGuardBounds(
     if (close_idx <= open_idx) return;
 
     const condition = std.mem.trim(u8, line[(open_idx + 1)..close_idx], " \t");
-    var segments = std.mem.splitSequence(u8, condition, "&&");
-    while (segments.next()) |segment_raw| {
+    var has_any_bound = false;
+    var validate_segments = std.mem.splitSequence(u8, condition, "&&");
+    while (validate_segments.next()) |segment_raw| {
         const segment = std.mem.trim(u8, segment_raw, " \t");
-        if (parseGuardUpperBound(segment)) |update| {
-            try setBound(arena_allocator, bounds, update);
-        }
+        if (segment.len == 0) continue;
+        _ = parseGuardUpperBound(segment) orelse return;
+        has_any_bound = true;
+    }
+    if (!has_any_bound) return;
+
+    var apply_segments = std.mem.splitSequence(u8, condition, "&&");
+    while (apply_segments.next()) |segment_raw| {
+        const segment = std.mem.trim(u8, segment_raw, " \t");
+        if (segment.len == 0) continue;
+        const update = parseGuardUpperBound(segment) orelse unreachable;
+        try setBound(arena_allocator, bounds, update);
     }
 }
 
@@ -927,6 +937,65 @@ test "cpu model config changes AG009 slope" {
 
     const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, cpu.message, "450 + 120*10") != null);
+}
+
+test "guard with non-bound conjunct is ignored for safety" {
+    const source =
+        \\public with sharing class ConditionalGuardService {
+        \\    public static void run(List<Account> records, Boolean strictMode) {
+        \\        Integer n = records.size();
+        \\        if (n > 120 && strictMode) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "dynamic/unknown") != null);
+}
+
+test "math min loop bound is used" {
+    const source =
+        \\public with sharing class MathMinLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 500) return;
+        \\        for (Integer i = 0; i < Math.min(n, 100); i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 100") != null);
+}
+
+test "size guard with >= sets inclusive cap" {
+    const source =
+        \\public with sharing class SizeGuardService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() >= 151) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 150") != null);
 }
 
 fn runCheckOnTempSource(
