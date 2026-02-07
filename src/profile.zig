@@ -2,6 +2,34 @@ const std = @import("std");
 const model = @import("model.zig");
 const config = @import("config.zig");
 
+pub const Regression = struct {
+    source: []const u8,
+    label: []const u8,
+    is_async: bool,
+    cpu_current: u32,
+    cpu_baseline: u32,
+    heap_current: u64,
+    heap_baseline: u64,
+    cpu_regressed: bool,
+    heap_regressed: bool,
+
+    pub fn any(self: Regression) bool {
+        return self.cpu_regressed or self.heap_regressed;
+    }
+};
+
+const BaselineProfile = struct {
+    source: []const u8 = "",
+    label: []const u8 = "unknown",
+    mode: []const u8 = "sync",
+    cpu_ms: u32 = 0,
+    heap_bytes: u64 = 0,
+};
+
+const BaselineDocument = struct {
+    profiles: []const BaselineProfile = &.{},
+};
+
 pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Config) !std.ArrayList(model.ProfileResult) {
     var files: std.ArrayList([]const u8) = .empty;
     defer {
@@ -24,6 +52,88 @@ pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Confi
     }
 
     return results;
+}
+
+pub fn compareWithBaseline(
+    gpa: std.mem.Allocator,
+    current: []const model.ProfileResult,
+    baseline_path: ?[]const u8,
+    threshold_percent: u8,
+) !std.ArrayList(Regression) {
+    var regressions: std.ArrayList(Regression) = .empty;
+    errdefer deinitRegressions(gpa, &regressions);
+
+    if (baseline_path == null) return regressions;
+
+    const raw = try std.fs.cwd().readFileAlloc(gpa, baseline_path.?, 4 * 1024 * 1024);
+    defer gpa.free(raw);
+
+    var parsed = try std.json.parseFromSlice(BaselineDocument, gpa, raw, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    for (current) |curr| {
+        const baseline = findBaseline(curr, parsed.value.profiles) orelse continue;
+
+        const cpu_regressed = exceedsPercent(curr.cpu_ms, baseline.cpu_ms, threshold_percent);
+        const heap_regressed = exceedsPercent(curr.heap_bytes, baseline.heap_bytes, threshold_percent);
+        if (!cpu_regressed and !heap_regressed) continue;
+
+        try regressions.append(gpa, .{
+            .source = try gpa.dupe(u8, curr.source),
+            .label = try gpa.dupe(u8, curr.label),
+            .is_async = curr.is_async,
+            .cpu_current = curr.cpu_ms,
+            .cpu_baseline = baseline.cpu_ms,
+            .heap_current = curr.heap_bytes,
+            .heap_baseline = baseline.heap_bytes,
+            .cpu_regressed = cpu_regressed,
+            .heap_regressed = heap_regressed,
+        });
+    }
+
+    return regressions;
+}
+
+pub fn deinitRegressions(gpa: std.mem.Allocator, regressions: *std.ArrayList(Regression)) void {
+    for (regressions.items) |regression| {
+        gpa.free(regression.source);
+        gpa.free(regression.label);
+    }
+    regressions.deinit(gpa);
+}
+
+fn findBaseline(curr: model.ProfileResult, baseline_profiles: []const BaselineProfile) ?BaselineProfile {
+    const curr_mode = if (curr.is_async) "async" else "sync";
+    const curr_label_known = !isUnknown(curr.label);
+    const curr_base = std.fs.path.basename(curr.source);
+
+    for (baseline_profiles) |baseline| {
+        if (!std.ascii.eqlIgnoreCase(curr_mode, baseline.mode)) continue;
+
+        const baseline_label_known = !isUnknown(baseline.label);
+        if (curr_label_known and baseline_label_known) {
+            if (std.mem.eql(u8, curr.label, baseline.label)) return baseline;
+            continue;
+        }
+
+        if (std.mem.eql(u8, curr_base, std.fs.path.basename(baseline.source))) return baseline;
+    }
+
+    return null;
+}
+
+fn isUnknown(label: []const u8) bool {
+    return label.len == 0 or std.ascii.eqlIgnoreCase(label, "unknown");
+}
+
+fn exceedsPercent(current: u64, baseline: u64, threshold_percent: u8) bool {
+    if (baseline == 0) return current > 0;
+
+    const lhs: u128 = @as(u128, current) * 100;
+    const rhs: u128 = @as(u128, baseline) * (100 + @as(u128, threshold_percent));
+    return lhs > rhs;
 }
 
 fn collectLogs(gpa: std.mem.Allocator, input: []const u8, files: *std.ArrayList([]const u8)) !void {
@@ -146,4 +256,11 @@ test "parseLimitValue parses numeric prefix" {
     const line = "MAXIMUM LIMIT_USAGE_FOR_NS|(default)| Maximum CPU time: 1234 out of 10000";
     const parsed = parseLimitValue(line, "Maximum CPU time:") orelse unreachable;
     try std.testing.expectEqual(@as(u64, 1234), parsed);
+}
+
+test "exceedsPercent compares with threshold" {
+    try std.testing.expect(exceedsPercent(116, 100, 15));
+    try std.testing.expect(!exceedsPercent(115, 100, 15));
+    try std.testing.expect(exceedsPercent(1, 0, 15));
+    try std.testing.expect(!exceedsPercent(0, 0, 15));
 }

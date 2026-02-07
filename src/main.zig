@@ -15,6 +15,7 @@ const CheckOptions = struct {
 
 const ProfileOptions = struct {
     config_path: ?[]const u8 = null,
+    baseline_path: ?[]const u8 = null,
     out_path: ?[]const u8 = null,
     format: apexgov.model.OutputFormat = .text,
     paths: std.ArrayList([]const u8) = .empty,
@@ -92,6 +93,14 @@ fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var profiles = try apexgov.profile.run(gpa, opts.paths.items, cfg);
     defer apexgov.model.deinitProfiles(gpa, &profiles);
 
+    var regressions = try apexgov.profile.compareWithBaseline(
+        gpa,
+        profiles.items,
+        opts.baseline_path,
+        cfg.ci.regression_percent,
+    );
+    defer apexgov.profile.deinitRegressions(gpa, &regressions);
+
     try emitProfileOutput(opts.out_path, opts.format, profiles.items);
 
     var has_violation = false;
@@ -102,7 +111,12 @@ fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         }
     }
 
-    return if (has_violation) 1 else 0;
+    if (regressions.items.len > 0) {
+        printRegressions(regressions.items, cfg.ci.regression_percent);
+    }
+
+    const fail_for_regression = cfg.ci.fail_on_regression and regressions.items.len > 0;
+    return if (has_violation or fail_for_regression) 1 else 0;
 }
 
 fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOptions {
@@ -226,6 +240,18 @@ fn parseProfileOptions(gpa: std.mem.Allocator, args: []const []const u8) !Profil
             i += 1;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--baseline")) {
+            i += 1;
+            if (i >= args.len) return error.MissingOptionValue;
+            opts.baseline_path = args[i];
+            i += 1;
+            continue;
+        }
+        if (optionValue(arg, "--baseline")) |value| {
+            opts.baseline_path = value;
+            i += 1;
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
 
         try opts.paths.append(gpa, arg);
@@ -309,11 +335,12 @@ fn printUsage() void {
         \\
         \\Usage:
         \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif] [--out FILE] [--severity-threshold info|warning|error|none]
-        \\  apexgov profile <log_paths...> [--config FILE] [--format text|json|sarif] [--out FILE]
+        \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
         \\  apexgov profile artifacts/logs --config apexgov.toml --format json --out reports/profile.json
+        \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
         \\
     , .{});
 }
@@ -332,6 +359,7 @@ fn printProfileHelp() void {
         \\apexgov profile
         \\  Parse Apex debug logs and compare CPU/Heap usage against budgets.
         \\  Accepts log files or directories containing .log files.
+        \\  Optional: --baseline profile.json for regression checks.
         \\
     , .{});
 }
@@ -343,4 +371,24 @@ fn createOutputFile(path: []const u8) !std.fs.File {
         }
     }
     return std.fs.cwd().createFile(path, .{ .truncate = true });
+}
+
+fn printRegressions(regressions: []const apexgov.profile.Regression, threshold_percent: u8) void {
+    std.debug.print(
+        "regression: {d} transaction(s) exceeded baseline by >{d}%\n",
+        .{ regressions.len, threshold_percent },
+    );
+    for (regressions) |regression| {
+        std.debug.print(
+            "  {s} [{s}] cpu {d}->{d} heap {d}->{d}\n",
+            .{
+                regression.source,
+                if (regression.is_async) "async" else "sync",
+                regression.cpu_baseline,
+                regression.cpu_current,
+                regression.heap_baseline,
+                regression.heap_current,
+            },
+        );
+    }
 }

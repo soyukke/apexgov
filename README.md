@@ -26,9 +26,11 @@ Offline parser for Apex debug logs with budget checks.
 ```bash
 zig build run -- profile artifacts/logs --config apexgov.toml
 zig build run -- profile artifacts/logs --format json --out reports/profile.json
+zig build run -- profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
 ```
 
 If budget is exceeded, the process exits with code `1`.
+When `[ci].fail_on_regression = true`, baseline regressions also exit with code `1`.
 
 ## Configuration
 
