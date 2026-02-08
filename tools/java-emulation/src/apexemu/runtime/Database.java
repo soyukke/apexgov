@@ -2,6 +2,7 @@ package apexemu.runtime;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 public final class Database {
   private Database() {}
@@ -89,6 +90,14 @@ public final class Database {
 
   public static int countQuery(String soql) {
     return ApexStore.countQuery(soql);
+  }
+
+  public static List<ApexSObject> queryWithBinds(String soql, Map<String, Object> bindVariables) {
+    return ApexStore.queryWithBinds(soql, bindVariables);
+  }
+
+  public static int countQueryWithBinds(String soql, Map<String, Object> bindVariables) {
+    return ApexStore.countQueryWithBinds(soql, bindVariables);
   }
 
   public static void clearInMemoryStore() {

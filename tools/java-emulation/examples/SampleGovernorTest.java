@@ -10,6 +10,7 @@ import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
 import apexemu.runtime.Trigger;
 import java.util.List;
+import java.util.Map;
 
 public final class SampleGovernorTest {
   @Test
@@ -638,6 +639,61 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(2, likeRows.size(), "LIKE + AND query should return two rows");
     SystemAssert.assertEquals("Acme APAC", likeRows.get(0).get("Name"), "LIKE result ordering mismatch");
     SystemAssert.assertEquals("Acme Corp", likeRows.get(1).get("Name"), "LIKE result ordering mismatch");
+  }
+
+  @Test
+  public void soqlSupportsQueryWithBinds() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Acme Core").set("Score", 30).set("Grp", "A"),
+            ApexSObject.of("Account").set("Name", "Acme APAC").set("Score", 25).set("Grp", "B"),
+            ApexSObject.of("Account").set("Name", "Acme Low").set("Score", 15).set("Grp", "A"),
+            ApexSObject.of("Account").set("Name", "Beta").set("Score", 40).set("Grp", "A")));
+
+    Map<String, Object> binds =
+        Map.of(
+            "minScore", 20,
+            "namePattern", "Acme%",
+            "groups", List.of("A", "B"),
+            "maxRows", 3);
+
+    List<ApexSObject> rows =
+        Database.queryWithBinds(
+            "SELECT Id, Name, Score FROM Account "
+                + "WHERE Score >= :minScore "
+                + "AND Name LIKE :namePattern "
+                + "AND Grp IN :groups "
+                + "ORDER BY Score DESC, Name ASC LIMIT :maxRows",
+            binds);
+    SystemAssert.assertEquals(2, rows.size(), "bind query should return two rows");
+    SystemAssert.assertEquals("Acme Core", rows.get(0).get("Name"), "bind query order mismatch");
+    SystemAssert.assertEquals("Acme APAC", rows.get(1).get("Name"), "bind query order mismatch");
+
+    int count =
+        Database.countQueryWithBinds(
+            "SELECT count() FROM Account WHERE Name IN (:names)",
+            Map.of("names", List.of("Acme Core", "Beta")));
+    SystemAssert.assertEquals(2, count, "countQueryWithBinds should support list bind in IN clause");
+  }
+
+  @Test
+  public void soqlQueryWithBindsFailsOnMissingVariable() {
+    Database.clearInMemoryStore();
+
+    boolean threw = false;
+    try {
+      Database.queryWithBinds(
+          "SELECT Id, Name FROM Account WHERE Name = :name", Map.of("otherName", "Acme"));
+    } catch (IllegalArgumentException expected) {
+      threw = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("missing bind variable :name"),
+          "missing bind variable should report name");
+    }
+    SystemAssert.assertTrue(threw, "queryWithBinds should fail on missing bind variable");
   }
 
   @Test

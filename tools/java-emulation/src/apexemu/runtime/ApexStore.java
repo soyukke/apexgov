@@ -128,6 +128,14 @@ final class ApexStore {
     return count;
   }
 
+  static List<ApexSObject> queryWithBinds(String soql, Map<String, Object> bindVariables) {
+    return query(applyBindVariables(soql, bindVariables));
+  }
+
+  static int countQueryWithBinds(String soql, Map<String, Object> bindVariables) {
+    return countQuery(applyBindVariables(soql, bindVariables));
+  }
+
   private static Database.SaveResult[] apply(
       Collection<ApexSObject> records, boolean allOrNone, DmlVerb verb, DmlOperation operation) {
     List<ApexSObject> normalized = normalize(records);
@@ -838,6 +846,175 @@ final class ApexStore {
     }
 
     return new QuerySpec(sobjectType, whereExpr, orderByKeys, limit);
+  }
+
+  private static String applyBindVariables(String soql, Map<String, Object> bindVariables) {
+    if (soql == null || soql.isBlank()) {
+      throw new IllegalArgumentException("SOQL cannot be blank");
+    }
+
+    Map<String, Object> binds = bindVariables == null ? Map.of() : bindVariables;
+    StringBuilder out = new StringBuilder(soql.length() + 32);
+    boolean inSingle = false;
+    boolean inDouble = false;
+
+    for (int i = 0; i < soql.length(); i += 1) {
+      char ch = soql.charAt(i);
+      if (ch == '\'' && !inDouble) {
+        inSingle = !inSingle;
+        out.append(ch);
+        continue;
+      }
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+        out.append(ch);
+        continue;
+      }
+
+      if (!inSingle && !inDouble && ch == ':') {
+        int bindStart = i + 1;
+        int bindEnd = bindStart;
+        while (bindEnd < soql.length() && isBindNameChar(soql.charAt(bindEnd))) {
+          bindEnd += 1;
+        }
+
+        if (bindEnd == bindStart) {
+          out.append(ch);
+          continue;
+        }
+
+        String bindName = soql.substring(bindStart, bindEnd);
+        Object bindValue = resolveBindValue(binds, bindName, soql);
+        boolean wrappedByParentheses = isWrappedByParentheses(soql, i, bindEnd);
+        out.append(formatBindLiteral(bindValue, wrappedByParentheses, bindName));
+        i = bindEnd - 1;
+        continue;
+      }
+
+      out.append(ch);
+    }
+    return out.toString();
+  }
+
+  private static boolean isBindNameChar(char ch) {
+    return Character.isLetterOrDigit(ch) || ch == '_' || ch == '.';
+  }
+
+  private static Object resolveBindValue(
+      Map<String, Object> bindVariables, String bindName, String rawSoql) {
+    if (bindVariables.containsKey(bindName)) {
+      return bindVariables.get(bindName);
+    }
+    for (Map.Entry<String, Object> entry : bindVariables.entrySet()) {
+      if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(bindName)) {
+        return entry.getValue();
+      }
+    }
+    throw new IllegalArgumentException("missing bind variable :" + bindName + " in SOQL: " + rawSoql);
+  }
+
+  private static boolean isWrappedByParentheses(String source, int placeholderStart, int placeholderEnd) {
+    int previous = previousNonWhitespaceIndex(source, placeholderStart - 1);
+    int next = nextNonWhitespaceIndex(source, placeholderEnd);
+    return previous >= 0
+        && next >= 0
+        && source.charAt(previous) == '('
+        && source.charAt(next) == ')';
+  }
+
+  private static int previousNonWhitespaceIndex(String source, int index) {
+    for (int i = index; i >= 0; i -= 1) {
+      if (!Character.isWhitespace(source.charAt(i))) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static int nextNonWhitespaceIndex(String source, int index) {
+    for (int i = index; i < source.length(); i += 1) {
+      if (!Character.isWhitespace(source.charAt(i))) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static String formatBindLiteral(Object bindValue, boolean wrappedByParentheses, String bindName) {
+    if (bindValue instanceof Collection<?> collection) {
+      return formatBindCollection(collection, wrappedByParentheses, bindName);
+    }
+    if (bindValue != null && bindValue.getClass().isArray()) {
+      List<Object> values = new ArrayList<>();
+      int length = java.lang.reflect.Array.getLength(bindValue);
+      for (int i = 0; i < length; i += 1) {
+        values.add(java.lang.reflect.Array.get(bindValue, i));
+      }
+      return formatBindCollection(values, wrappedByParentheses, bindName);
+    }
+    return toSoqlLiteral(bindValue);
+  }
+
+  private static String formatBindCollection(
+      Collection<?> values, boolean wrappedByParentheses, String bindName) {
+    if (values == null || values.isEmpty()) {
+      throw new IllegalArgumentException("bind collection cannot be empty: :" + bindName);
+    }
+    List<String> out = new ArrayList<>(values.size());
+    for (Object value : values) {
+      if (value instanceof Collection<?> || (value != null && value.getClass().isArray())) {
+        throw new IllegalArgumentException("nested bind collections are not supported: :" + bindName);
+      }
+      out.add(toSoqlLiteral(value));
+    }
+    String joined = String.join(", ", out);
+    return wrappedByParentheses ? joined : "(" + joined + ")";
+  }
+
+  private static String toSoqlLiteral(Object value) {
+    if (value == null) {
+      return "null";
+    }
+    if (value instanceof String text) {
+      return quoteSoqlString(text);
+    }
+    if (value instanceof Character ch) {
+      return quoteSoqlString(String.valueOf(ch));
+    }
+    if (value instanceof Boolean bool) {
+      return bool ? "true" : "false";
+    }
+    if (value instanceof Number number) {
+      double numeric = number.doubleValue();
+      if (!Double.isFinite(numeric)) {
+        throw new IllegalArgumentException("bind number must be finite: " + number);
+      }
+      return String.valueOf(number);
+    }
+    if (value instanceof ApexSObject row) {
+      if (row.id() == null || row.id().isBlank()) {
+        return "null";
+      }
+      return quoteSoqlString(row.id());
+    }
+    if (value instanceof Enum<?> enumValue) {
+      return quoteSoqlString(enumValue.name());
+    }
+    return quoteSoqlString(String.valueOf(value));
+  }
+
+  private static String quoteSoqlString(String value) {
+    if (value == null) {
+      return "null";
+    }
+    if (!value.contains("'")) {
+      return "'" + value + "'";
+    }
+    if (!value.contains("\"")) {
+      return "\"" + value + "\"";
+    }
+    throw new IllegalArgumentException(
+        "bind string with both single and double quotes is not supported: " + value);
   }
 
   private static String sanitize(String soql) {
