@@ -77,6 +77,7 @@ const MethodCall = struct {
 const MethodSummary = struct {
     owner: []const u8,
     name: []const u8,
+    param_count: u16,
     direct: MethodMetrics = .{},
     total: MethodMetrics = .{},
     calls: std.ArrayListUnmanaged(MethodCall) = .{},
@@ -86,8 +87,14 @@ const MethodSummary = struct {
 const MethodScope = struct {
     owner: []const u8,
     name: []const u8,
+    param_count: u16,
     end_depth: i32,
     entered_body: bool,
+};
+
+const MethodDecl = struct {
+    name: []const u8,
+    param_count: u16,
 };
 
 const OwnerScope = struct {
@@ -456,8 +463,8 @@ fn collectMethodNames(
             try maybeEnterOwnerScope(arena_allocator, &owner_scopes, brace_depth, trimmed);
             if (owner_scopes.items.len > 0) {
                 const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
-                if (parseMethodStart(trimmed)) |name| {
-                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, name);
+                if (parseMethodStart(trimmed)) |decl| {
+                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, decl.name, decl.param_count);
                 }
             }
         }
@@ -495,13 +502,14 @@ fn collectMethodDirectMetricsAndCalls(
             const owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
 
             if (current_method == null and owner != null) {
-                if (parseMethodStart(trimmed)) |name| {
-                    if (findMethodSummaryByOwnerName(summaries, owner.?, name)) |_| {
+                if (parseMethodStart(trimmed)) |decl| {
+                    if (findMethodSummaryByOwnerNameArity(summaries, owner.?, decl.name, decl.param_count)) |_| {
                         method_loop_scopes.clearRetainingCapacity();
                         method_bounds = std.StringHashMap(Bound).init(arena_allocator);
                         current_method = .{
                             .owner = owner.?,
-                            .name = name,
+                            .name = decl.name,
+                            .param_count = decl.param_count,
                             .end_depth = brace_depth + 1,
                             .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
                         };
@@ -517,7 +525,12 @@ fn collectMethodDirectMetricsAndCalls(
                     const local_loop_info = if (isLoopStart(trimmed)) inferLoopInfo(trimmed, &method_bounds) else null;
                     const local_loop_multiplier = effectiveLoopUpperBound(method_loop_scopes.items, local_loop_info) orelse 1;
 
-                    const summary = findMethodSummaryByOwnerName(summaries, scope.owner, scope.name) orelse unreachable;
+                    const summary = findMethodSummaryByOwnerNameArity(
+                        summaries,
+                        scope.owner,
+                        scope.name,
+                        scope.param_count,
+                    ) orelse unreachable;
                     applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier);
                     try recordCalledMethods(
                         arena_allocator,
@@ -558,35 +571,44 @@ fn ensureMethodSummary(
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
+    param_count: u16,
 ) !*MethodSummary {
-    if (findMethodSummaryByOwnerName(summaries, owner, name)) |existing| return existing;
+    if (findMethodSummaryByOwnerNameArity(summaries, owner, name, param_count)) |existing| return existing;
 
     const owner_copy = try arena_allocator.dupe(u8, owner);
     const name_copy = try arena_allocator.dupe(u8, name);
-    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy);
+    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy, param_count);
     try summaries.put(key, .{
         .owner = owner_copy,
         .name = name_copy,
+        .param_count = param_count,
     });
     return summaries.getPtr(key).?;
 }
 
-fn findMethodSummaryByOwnerName(
+fn findMethodSummaryByOwnerNameArity(
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
+    param_count: u16,
 ) ?*MethodSummary {
     var it = summaries.iterator();
     while (it.next()) |entry| {
         if (!std.mem.eql(u8, entry.value_ptr.owner, owner)) continue;
         if (!std.mem.eql(u8, entry.value_ptr.name, name)) continue;
+        if (entry.value_ptr.param_count != param_count) continue;
         return entry.value_ptr;
     }
     return null;
 }
 
-fn formatMethodKey(arena_allocator: std.mem.Allocator, owner: []const u8, name: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ owner, name });
+fn formatMethodKey(
+    arena_allocator: std.mem.Allocator,
+    owner: []const u8,
+    name: []const u8,
+    param_count: u16,
+) ![]const u8 {
+    return std.fmt.allocPrint(arena_allocator, "{s}.{s}/{d}", .{ owner, name, param_count });
 }
 
 fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
@@ -608,11 +630,12 @@ fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []cons
     return total;
 }
 
-fn parseMethodStart(line: []const u8) ?[]const u8 {
+fn parseMethodStart(line: []const u8) ?MethodDecl {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len == 0) return null;
     const open_idx = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
-    if (std.mem.indexOfScalar(u8, trimmed, ')') == null) return null;
+    const close_idx = std.mem.lastIndexOfScalar(u8, trimmed, ')') orelse return null;
+    if (close_idx <= open_idx) return null;
     if (std.mem.indexOfScalar(u8, trimmed, ';') != null) return null;
     if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_idx| {
         if (eq_idx < open_idx) return null;
@@ -640,7 +663,60 @@ fn parseMethodStart(line: []const u8) ?[]const u8 {
     const left = std.mem.trim(u8, trimmed[0..open_idx], " \t");
     const name = extractLastIdentifier(left) orelse return null;
     if (isControlKeyword(name)) return null;
-    return name;
+    const params_raw = trimmed[(open_idx + 1)..close_idx];
+    const param_count = countParameters(params_raw) orelse return null;
+    return .{
+        .name = name,
+        .param_count = param_count,
+    };
+}
+
+fn countParameters(params_raw: []const u8) ?u16 {
+    const params = std.mem.trim(u8, params_raw, " \t");
+    if (params.len == 0) return 0;
+
+    var count: u16 = 1;
+    var angle_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+
+    for (params) |c| {
+        switch (c) {
+            '<' => {
+                angle_depth += 1;
+            },
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '(' => {
+                paren_depth += 1;
+            },
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => {
+                bracket_depth += 1;
+            },
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => {
+                brace_depth += 1;
+            },
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            ',' => {
+                if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    count = satAddU16(count, 1);
+                }
+            },
+            else => {},
+        }
+    }
+
+    return count;
 }
 
 fn isControlKeyword(word: []const u8) bool {
@@ -729,7 +805,7 @@ fn recordCalledMethods(
         const callee_key = entry.key_ptr.*;
         const callee = entry.value_ptr.*;
         if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
-        if (!lineCallsMethod(line, caller_owner, callee.owner, callee.name)) continue;
+        if (!lineCallsMethod(line, caller_owner, callee.owner, callee.name, callee.param_count)) continue;
         try appendOrAccumulateCall(arena_allocator, calls, callee_key, multiplier);
     }
 }
@@ -766,6 +842,7 @@ fn inferCalledMethodMetrics(
             current_owner orelse "",
             callee.owner,
             callee.name,
+            callee.param_count,
         )) continue;
         metrics.add(entry.value_ptr.total);
     }
@@ -777,14 +854,15 @@ fn lineCallsMethod(
     caller_owner: []const u8,
     callee_owner: []const u8,
     callee_name: []const u8,
+    callee_param_count: u16,
 ) bool {
-    if (containsQualifiedMethodCall(line, callee_owner, callee_name)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name)) return true;
+    if (containsQualifiedMethodCall(line, callee_owner, callee_name, callee_param_count)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name, callee_param_count)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name, callee_param_count)) return true;
     return false;
 }
 
-fn containsBareMethodCall(line: []const u8, method_name: []const u8) bool {
+fn containsBareMethodCall(line: []const u8, method_name: []const u8, expected_param_count: u16) bool {
     if (method_name.len == 0) return false;
 
     var start: usize = 0;
@@ -793,13 +871,24 @@ fn containsBareMethodCall(line: []const u8, method_name: []const u8) bool {
         var end = idx + method_name.len;
         while (end < line.len and (line[end] == ' ' or line[end] == '\t')) : (end += 1) {}
         const after_ok = end < line.len and line[end] == '(';
-        if (before_ok and after_ok) return true;
+        if (before_ok and after_ok) {
+            const arg_count = countCallArguments(line, end) orelse {
+                start = idx + method_name.len;
+                continue;
+            };
+            if (arg_count == expected_param_count) return true;
+        }
         start = idx + method_name.len;
     }
     return false;
 }
 
-fn containsQualifiedMethodCall(line: []const u8, owner: []const u8, method_name: []const u8) bool {
+fn containsQualifiedMethodCall(
+    line: []const u8,
+    owner: []const u8,
+    method_name: []const u8,
+    expected_param_count: u16,
+) bool {
     if (owner.len == 0 or method_name.len == 0) return false;
 
     var start: usize = 0;
@@ -830,12 +919,108 @@ fn containsQualifiedMethodCall(line: []const u8, owner: []const u8, method_name:
 
         var open_idx = method_idx + method_name.len;
         while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
-        if (open_idx < line.len and line[open_idx] == '(') return true;
+        if (open_idx < line.len and line[open_idx] == '(') {
+            const arg_count = countCallArguments(line, open_idx) orelse {
+                start = owner_idx + owner.len;
+                continue;
+            };
+            if (arg_count == expected_param_count) return true;
+        }
 
         start = owner_idx + owner.len;
     }
 
     return false;
+}
+
+fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
+    if (open_paren_idx >= line.len or line[open_paren_idx] != '(') return null;
+
+    var count: u16 = 0;
+    var has_token = false;
+    var paren_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var in_single = false;
+    var in_double = false;
+    var i = open_paren_idx + 1;
+
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+
+        if (in_single) {
+            if (c == '\'' and line[i - 1] != '\\') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (c == '"' and line[i - 1] != '\\') in_double = false;
+            continue;
+        }
+
+        switch (c) {
+            '\'' => {
+                in_single = true;
+                has_token = true;
+            },
+            '"' => {
+                in_double = true;
+                has_token = true;
+            },
+            '(' => {
+                paren_depth += 1;
+                has_token = true;
+            },
+            ')' => {
+                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    if (has_token) count = satAddU16(count, 1);
+                    return count;
+                }
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '<' => {
+                angle_depth += 1;
+                has_token = true;
+            },
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+                has_token = true;
+            },
+            '[' => {
+                bracket_depth += 1;
+                has_token = true;
+            },
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+                has_token = true;
+            },
+            '{' => {
+                brace_depth += 1;
+                has_token = true;
+            },
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+                has_token = true;
+            },
+            ',' => {
+                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    if (has_token) {
+                        count = satAddU16(count, 1);
+                        has_token = false;
+                    }
+                } else {
+                    has_token = true;
+                }
+            },
+            else => {
+                if (!std.ascii.isWhitespace(c)) {
+                    has_token = true;
+                }
+            },
+        }
+    }
+
+    return null;
 }
 
 fn satAdd(a: u64, b: u64) u64 {
@@ -844,6 +1029,10 @@ fn satAdd(a: u64, b: u64) u64 {
 
 fn satMul(a: u64, b: u64) u64 {
     return std.math.mul(u64, a, b) catch std.math.maxInt(u64);
+}
+
+fn satAddU16(a: u16, b: u16) u16 {
+    return std.math.add(u16, a, b) catch std.math.maxInt(u16);
 }
 
 fn appendCpuEstimateFinding(
@@ -1842,6 +2031,59 @@ test "callee looped helper call multiplies transitive DML" {
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(dml.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
+}
+
+test "overloaded methods use arity to avoid false positive" {
+    const source =
+        \\public with sharing class OverloadPrecisionService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            touch(records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void touch(Account acc) {
+        \\        acc.Name = acc.Name;
+        \\    }
+        \\
+        \\    private static void touch(Account acc, Boolean write) {
+        \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+}
+
+test "overloaded methods match arity for positive detection" {
+    const source =
+        \\public with sharing class OverloadPositiveService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            touch(records[i], true);
+        \\        }
+        \\    }
+        \\
+        \\    private static void touch(Account acc) {
+        \\        acc.Name = acc.Name;
+        \\    }
+        \\
+        \\    private static void touch(Account acc, Boolean write) {
+        \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
 fn runCheckOnTempSource(
