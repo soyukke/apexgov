@@ -16,6 +16,12 @@
             zls
             jdk21_headless
           ];
+          shellHook = ''
+            if [ -z "''${XDG_CACHE_HOME:-}" ]; then
+              export XDG_CACHE_HOME="$PWD/.cache"
+            fi
+            mkdir -p "$XDG_CACHE_HOME"
+          '';
         };
       }
     );

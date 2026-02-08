@@ -21,6 +21,7 @@ zig-out/
 reports/
 artifacts/
 tmp/
+.cache/
 
 # Nix
 result

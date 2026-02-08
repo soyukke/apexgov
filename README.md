@@ -5,6 +5,7 @@
 ## Why
 
 - Detect governor-risk code paths before deploy
+- Catch SOSL / Callout / Messaging operations inside loops with limit-aware warnings
 - Estimate loop upper bounds from guards (for example `if (n > 200) return`) and show likely limit exceed points
 - Follow helper method call chains across files/classes to catch indirect SOQL/DML in loops
 - Multiply callee-side loop effects into governor estimates (for example nested helper loops)
@@ -35,6 +36,16 @@ zig build run -- profile artifacts/logs --baseline reports/profile-baseline.json
 
 If budget is exceeded, the process exits with code `1`.
 When `[ci].fail_on_regression = true`, baseline regressions also exit with code `1`.
+
+### `emulate`
+
+Java系の補助エミュレーション機能です。
+
+```bash
+zig build run -- emulate java
+zig build run -- emulate java reports/java-calibration-local --iterations 80000 --nix
+zig build run -- emulate test tools/java-emulation/examples --out reports/java-emulation --nix
+```
 
 ## Configuration
 
@@ -68,6 +79,14 @@ zig build
 zig build test
 ```
 
+## Apex Coverage
+
+Apex言語対応カバレッジは次で管理します。
+
+- `docs/apex-language-coverage.md`
+
+PRで機能追加する場合は、実装・テストと同時にこのカバレッジ表も更新してください。
+
 ## Local validation fixtures
 
 `/Users/soyukke/dev/zig/apexgov/examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
@@ -80,6 +99,25 @@ zig build test
 ```bash
 nix develop
 ./tools/java-calibration/run.sh
+# または CLI から
+zig build run -- emulate java --nix
 ```
 
 生成された `cpu_model.toml` の `[cpu.model]` を `apexgov.toml` にマージすると、`AG009` のCPU見積もりで利用されます。
+
+## Java Test Emulation
+
+`/Users/soyukke/dev/zig/apexgov/tools/java-emulation` に、`@Test` をローカル実行して CPU/Heap 超過を検出する簡易ランナーがあります。
+
+```bash
+zig build run -- emulate test --nix
+CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
+```
+
+`apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest` も利用できます。
+`stopTest()` では `@Future` / Queueable / Batch / Schedulable の簡易flushも実行されます。
+`apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
+`apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD / SOQLサブセットも使えます。
+`Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult` も使えます。
+
+詳細は `/Users/soyukke/dev/zig/apexgov/tools/java-emulation/README.md` を参照してください。

@@ -4,6 +4,9 @@ const config = @import("config.zig");
 
 const soql_limit: u64 = 100;
 const dml_limit: u64 = 150;
+const sosl_limit: u64 = 20;
+const callout_limit: u64 = 100;
+const messaging_send_limit: u64 = 10;
 const trigger_batch_limit: u64 = 200;
 const sync_cpu_budget_ms: u64 = 10_000;
 
@@ -39,6 +42,9 @@ const BoundUpdate = struct {
 const MethodMetrics = struct {
     soql: u64 = 0,
     dml: u64 = 0,
+    sosl: u64 = 0,
+    callout: u64 = 0,
+    messaging: u64 = 0,
     json: u64 = 0,
     clone: u64 = 0,
     collection_alloc: u64 = 0,
@@ -47,6 +53,9 @@ const MethodMetrics = struct {
     fn add(self: *MethodMetrics, other: MethodMetrics) void {
         self.soql = satAdd(self.soql, other.soql);
         self.dml = satAdd(self.dml, other.dml);
+        self.sosl = satAdd(self.sosl, other.sosl);
+        self.callout = satAdd(self.callout, other.callout);
+        self.messaging = satAdd(self.messaging, other.messaging);
         self.json = satAdd(self.json, other.json);
         self.clone = satAdd(self.clone, other.clone);
         self.collection_alloc = satAdd(self.collection_alloc, other.collection_alloc);
@@ -56,6 +65,9 @@ const MethodMetrics = struct {
     fn addScaled(self: *MethodMetrics, other: MethodMetrics, multiplier: u64) void {
         self.soql = satAdd(self.soql, satMul(other.soql, multiplier));
         self.dml = satAdd(self.dml, satMul(other.dml, multiplier));
+        self.sosl = satAdd(self.sosl, satMul(other.sosl, multiplier));
+        self.callout = satAdd(self.callout, satMul(other.callout, multiplier));
+        self.messaging = satAdd(self.messaging, satMul(other.messaging, multiplier));
         self.json = satAdd(self.json, satMul(other.json, multiplier));
         self.clone = satAdd(self.clone, satMul(other.clone, multiplier));
         self.collection_alloc = satAdd(self.collection_alloc, satMul(other.collection_alloc, multiplier));
@@ -363,6 +375,64 @@ fn scanContent(
             );
         }
 
+        const sosl_count = satAdd(
+            if (containsSosl(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.sosl,
+        );
+        if (in_loop and sosl_count > 0) {
+            try appendGovernorFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                .sosl,
+                loop_upper_bound,
+                sosl_count,
+            );
+            try appendCpuEstimateFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                "SOSL",
+                satMul(cfg.cpu_model.soql_ms, sosl_count),
+                loop_upper_bound,
+                cfg.cpu_model.base_ms,
+            );
+        }
+
+        const callout_count = satAdd(
+            if (containsCallout(trimmed, &type_env)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.callout,
+        );
+        if (in_loop and callout_count > 0) {
+            try appendGovernorFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                .callout,
+                loop_upper_bound,
+                callout_count,
+            );
+        }
+
+        const messaging_count = satAdd(
+            if (containsMessaging(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.messaging,
+        );
+        if (in_loop and messaging_count > 0) {
+            try appendGovernorFinding(
+                gpa,
+                findings,
+                path,
+                line_no,
+                .messaging,
+                loop_upper_bound,
+                messaging_count,
+            );
+        }
+
         const json_count = satAdd(
             if (containsJsonWork(trimmed)) @as(u64, 1) else @as(u64, 0),
             call_metrics.json,
@@ -596,7 +666,7 @@ fn collectMethodDirectMetricsAndCalls(
                         scope.name,
                         scope.param_signature,
                     ) orelse unreachable;
-                    applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier);
+                    applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier, &type_env);
                     try recordCalledMethods(
                         arena_allocator,
                         &summary.calls,
@@ -1201,10 +1271,18 @@ fn extractLeadingIdentifier(raw: []const u8) ?[]const u8 {
     return raw[0..end];
 }
 
-fn applyDirectLineMetrics(metrics: *MethodMetrics, line: []const u8, multiplier: u64) void {
+fn applyDirectLineMetrics(
+    metrics: *MethodMetrics,
+    line: []const u8,
+    multiplier: u64,
+    type_env: *std.StringHashMap([]const u8),
+) void {
     const weight = if (multiplier == 0) @as(u64, 1) else multiplier;
     if (containsSoql(line)) metrics.soql = satAdd(metrics.soql, weight);
     if (containsDml(line)) metrics.dml = satAdd(metrics.dml, weight);
+    if (containsSosl(line)) metrics.sosl = satAdd(metrics.sosl, weight);
+    if (containsCallout(line, type_env)) metrics.callout = satAdd(metrics.callout, weight);
+    if (containsMessaging(line)) metrics.messaging = satAdd(metrics.messaging, weight);
     if (containsJsonWork(line)) metrics.json = satAdd(metrics.json, weight);
     if (containsCloneWork(line)) metrics.clone = satAdd(metrics.clone, weight);
     if (containsCollectionAlloc(line)) metrics.collection_alloc = satAdd(metrics.collection_alloc, weight);
@@ -1789,6 +1867,9 @@ fn estimateCpuTotalMs(base_cost_ms: u64, n: u64, per_iter_ms: u64) ?u64 {
 const GovernorKind = enum {
     soql,
     dml,
+    sosl,
+    callout,
+    messaging,
 };
 
 fn appendGovernorFinding(
@@ -1803,18 +1884,35 @@ fn appendGovernorFinding(
     const rule_id = switch (kind) {
         .soql => "AG002",
         .dml => "AG003",
+        .sosl => "AG008",
+        .callout => "AG010",
+        .messaging => "AG011",
     };
     const title = switch (kind) {
         .soql => "SOQL executed inside loop",
         .dml => "DML executed inside loop",
+        .sosl => "SOSL executed inside loop",
+        .callout => "Callout executed inside loop",
+        .messaging => "Messaging.sendEmail executed inside loop",
     };
     const limit = switch (kind) {
         .soql => soql_limit,
         .dml => dml_limit,
+        .sosl => sosl_limit,
+        .callout => callout_limit,
+        .messaging => messaging_send_limit,
     };
     const op_label = switch (kind) {
         .soql => "SOQL",
         .dml => "DML",
+        .sosl => "SOSL",
+        .callout => "Callout",
+        .messaging => "Messaging send",
+    };
+    const category = switch (kind) {
+        .callout => "integration",
+        .messaging => "messaging",
+        else => "governor",
     };
 
     const per_iter = if (operations_per_iteration == 0) @as(u64, 1) else operations_per_iteration;
@@ -1860,7 +1958,7 @@ fn appendGovernorFinding(
         title,
         message,
         severity,
-        "governor",
+        category,
     );
 }
 
@@ -2276,26 +2374,83 @@ fn isLoopStart(line: []const u8) bool {
 }
 
 fn containsSoql(line: []const u8) bool {
-    return std.mem.indexOf(u8, line, "[SELECT ") != null or
-        std.mem.indexOf(u8, line, "[select ") != null or
-        std.mem.indexOf(u8, line, "Database.query(") != null;
+    const needles = [_][]const u8{
+        "[select ",
+        "database.query(",
+        "database.querywithbinds(",
+        "database.countquery(",
+        "database.getquerylocator(",
+    };
+    return containsAnyCaseInsensitive(line, &needles);
 }
 
 fn containsDml(line: []const u8) bool {
     const trimmed = std.mem.trimLeft(u8, line, " \t");
-    return std.mem.startsWith(u8, trimmed, "insert ") or
-        std.mem.startsWith(u8, trimmed, "update ") or
-        std.mem.startsWith(u8, trimmed, "upsert ") or
-        std.mem.startsWith(u8, trimmed, "delete ") or
-        std.mem.indexOf(u8, line, "Database.insert(") != null or
-        std.mem.indexOf(u8, line, "Database.update(") != null or
-        std.mem.indexOf(u8, line, "Database.upsert(") != null or
-        std.mem.indexOf(u8, line, "Database.delete(") != null;
+    if (startsWithIgnoreCase(trimmed, "insert ") or
+        startsWithIgnoreCase(trimmed, "update ") or
+        startsWithIgnoreCase(trimmed, "upsert ") or
+        startsWithIgnoreCase(trimmed, "delete ") or
+        startsWithIgnoreCase(trimmed, "undelete ") or
+        startsWithIgnoreCase(trimmed, "merge "))
+    {
+        return true;
+    }
+
+    const db_dml_calls = [_][]const u8{
+        "database.insert(",
+        "database.update(",
+        "database.upsert(",
+        "database.delete(",
+        "database.undelete(",
+        "database.merge(",
+        "database.emptyrecyclebin(",
+        "database.convertlead(",
+    };
+    return containsAnyCaseInsensitive(line, &db_dml_calls);
+}
+
+fn containsSosl(line: []const u8) bool {
+    const needles = [_][]const u8{
+        "[find ",
+        "search.query(",
+    };
+    return containsAnyCaseInsensitive(line, &needles);
+}
+
+fn containsCallout(line: []const u8, type_env: *std.StringHashMap([]const u8)) bool {
+    const direct_needles = [_][]const u8{
+        "http.send(",
+        "webservicecallout.invoke(",
+        "continuation.addhttprequest(",
+    };
+    if (containsAnyCaseInsensitive(line, &direct_needles)) return true;
+
+    const send_idx = indexOfCaseInsensitive(line, ".send(") orelse return false;
+    const receiver = extractLastIdentifier(std.mem.trimRight(u8, line[0..send_idx], " \t")) orelse return false;
+    const bound_type = type_env.get(receiver) orelse return false;
+    return equalsCanonicalType(bound_type, "Http");
+}
+
+fn containsMessaging(line: []const u8) bool {
+    const needles = [_][]const u8{
+        "messaging.sendemail(",
+        "messaging.sendemailmessage(",
+        "messaging.sendnotification(",
+    };
+    return containsAnyCaseInsensitive(line, &needles);
 }
 
 fn containsJsonWork(line: []const u8) bool {
-    return std.mem.indexOf(u8, line, "JSON.serialize(") != null or
-        std.mem.indexOf(u8, line, "JSON.deserialize(") != null;
+    const needles = [_][]const u8{
+        "json.serialize(",
+        "json.serializepretty(",
+        "json.deserialize(",
+        "json.deserializeuntyped(",
+        "json.deserializestrict(",
+        "json.createparser(",
+        "json.creategenerator(",
+    };
+    return containsAnyCaseInsensitive(line, &needles);
 }
 
 fn containsCloneWork(line: []const u8) bool {
@@ -2313,6 +2468,18 @@ fn containsStringAppend(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "+=") != null and
         (std.mem.indexOf(u8, line, "\"") != null or
             std.mem.indexOf(u8, line, "String") != null);
+}
+
+fn containsAnyCaseInsensitive(line: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (indexOfCaseInsensitive(line, needle) != null) return true;
+    }
+    return false;
+}
+
+fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    if (haystack.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
 }
 
 fn isApexSource(path: []const u8) bool {
@@ -2392,6 +2559,133 @@ test "soql with bound 200 becomes governor error" {
     const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
     try std.testing.expect(soql.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 200") != null);
+}
+
+test "Database.countQuery in loop is treated as SOQL" {
+    const source =
+        \\public with sharing class CountQueryLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 90) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            Integer c = Database.countQuery('SELECT count() FROM Account');
+        \\            if (c < 0) break;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 90") != null);
+}
+
+test "Database.merge in loop is treated as DML" {
+    const source =
+        \\public with sharing class MergeLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            Database.merge(records[i], new Account());
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "JSON.deserializeUntyped in loop is flagged as JSON work" {
+    const source =
+        \\public with sharing class JsonUntypedLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 100) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            Map<String, Object> payload = (Map<String, Object>) JSON.deserializeUntyped('{"a":1}');
+        \\            String pretty = JSON.serializePretty(payload);
+        \\            if (pretty == null) break;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const json = findFindingByRule(findings.items, "AG004") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(json.severity == .warning);
+    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, cpu.title, "JSON") != null);
+}
+
+test "SOSL in loop is flagged as AG008" {
+    const source =
+        \\public with sharing class SoslLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 25) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            List<List<SObject>> result = [FIND 'Acme*' IN ALL FIELDS RETURNING Account(Id)];
+        \\            if (result.isEmpty()) break;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const sosl = findFindingByRule(findings.items, "AG008") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(sosl.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, sosl.message, "Loop upper bound <= 25") != null);
+}
+
+test "Http send in loop is flagged as AG010" {
+    const source =
+        \\public with sharing class CalloutLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        Http client = new Http();
+        \\        HttpRequest req = new HttpRequest();
+        \\        if (records.size() > 110) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            HttpResponse res = client.send(req);
+        \\            if (res == null) break;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const callout = findFindingByRule(findings.items, "AG010") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(callout.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, callout.message, "Loop upper bound <= 110") != null);
+}
+
+test "Messaging.sendEmail in loop is flagged as AG011" {
+    const source =
+        \\public with sharing class MessagingLoopService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 12) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            Messaging.SingleEmailMessage m = new Messaging.SingleEmailMessage();
+        \\            Messaging.sendEmail(new Messaging.SingleEmailMessage[] { m });
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const msg = findFindingByRule(findings.items, "AG011") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(msg.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, msg.message, "Loop upper bound <= 12") != null);
 }
 
 test "cpu model config changes AG009 slope" {

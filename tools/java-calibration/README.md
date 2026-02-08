@@ -16,6 +16,9 @@ nix develop
 # 既定出力: reports/java-calibration
 ./tools/java-calibration/run.sh
 
+# apexgov CLI から実行
+zig build run -- emulate java
+
 # 出力先指定
 ./tools/java-calibration/run.sh reports/java-calibration-myenv
 
