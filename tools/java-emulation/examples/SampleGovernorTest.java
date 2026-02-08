@@ -217,6 +217,36 @@ public final class SampleGovernorTest {
         "allOrNone update should not be committed");
   }
 
+  @Test
+  public void dmlCountersTrackStatementsForDatabaseApis() {
+    Database.clearInMemoryStore();
+    SystemAssert.assertEquals(0, Limits.getDmlStatements(), "fresh test should start at dml=0");
+
+    ApexSObject a = ApexSObject.of("Account").set("Name", "A");
+    ApexSObject b = ApexSObject.of("Account").set("Name", "B");
+    ApexSObject c = ApexSObject.of("Account").set("Name", "C");
+    Database.insert(List.of(a, b, c));
+    SystemAssert.assertEquals(1, Limits.getDmlStatements(), "insert(list) should count as one statement");
+
+    List<ApexSObject> rows = Database.query("SELECT Id, Name FROM Account");
+    ApexSObject u1 = ApexSObject.of("Account").withId(rows.get(0).id()).set("Name", "A-Updated");
+    ApexSObject u2 = ApexSObject.of("Account").withId(rows.get(1).id()).set("Name", "B-Updated");
+    Database.update(List.of(u1, u2));
+    SystemAssert.assertEquals(2, Limits.getDmlStatements(), "update(list) should count as one statement");
+
+    ApexSObject deleted = ApexSObject.of("Account").withId(rows.get(0).id());
+    Database.delete(List.of(deleted));
+    Database.undelete(List.of(deleted));
+    SystemAssert.assertEquals(
+        4, Limits.getDmlStatements(), "delete + undelete should each increment statement count");
+
+    ApexSObject ok = ApexSObject.of("Account").withId(rows.get(2).id()).set("Name", "C-Updated");
+    ApexSObject ng = ApexSObject.of("Account").set("Name", "MissingId");
+    Database.SaveResult[] partial = Database.update(List.of(ok, ng), false);
+    SystemAssert.assertFalse(partial[1].isSuccess(), "partial mode should report per-row failure");
+    SystemAssert.assertEquals(5, Limits.getDmlStatements(), "partial update call should count once");
+  }
+
   private static final class FutureWorker {
     static int executed;
 

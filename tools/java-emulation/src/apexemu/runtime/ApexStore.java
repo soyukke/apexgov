@@ -101,7 +101,7 @@ final class ApexStore {
     }
 
     State state = STATE.get();
-    Limits.addDml(normalized.size());
+    Limits.addDml(1);
 
     if (allOrNone) {
       StateSnapshot original = snapshotOf(state);
