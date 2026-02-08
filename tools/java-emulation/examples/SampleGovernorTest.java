@@ -226,6 +226,63 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void upsertAutoDispatchesInsertAndUpdateTriggers() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
+
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "Seed")));
+    ApexSObject seed = Database.query("SELECT Id, Name FROM Account LIMIT 1").get(0);
+
+    final int[] beforeInsert = new int[] {0};
+    final int[] afterInsert = new int[] {0};
+    final int[] beforeUpdate = new int[] {0};
+    final int[] afterUpdate = new int[] {0};
+
+    Trigger.onBeforeInsert(
+        "Account",
+        () -> {
+          beforeInsert[0] += 1;
+          SystemAssert.assertTrue(Trigger.isInsert(), "upsert insert path should use insert context");
+          for (Object row : Trigger.getNew()) {
+            ApexSObject sobject = (ApexSObject) row;
+            sobject.set("Name", String.valueOf(sobject.get("Name")) + "-BIU");
+          }
+        });
+    Trigger.onAfterInsert("Account", () -> afterInsert[0] += 1);
+
+    Trigger.onBeforeUpdate(
+        "Account",
+        () -> {
+          beforeUpdate[0] += 1;
+          SystemAssert.assertTrue(Trigger.isUpdate(), "upsert update path should use update context");
+          SystemAssert.assertEquals(1, Trigger.getOld().size(), "update-old size should be 1");
+          for (Object row : Trigger.getNew()) {
+            ApexSObject sobject = (ApexSObject) row;
+            sobject.set("Name", String.valueOf(sobject.get("Name")) + "-BUU");
+          }
+        });
+    Trigger.onAfterUpdate("Account", () -> afterUpdate[0] += 1);
+
+    Database.upsert(
+        List.of(
+            ApexSObject.of("Account").withId(seed.id()).set("Name", "Seed-Updated"),
+            ApexSObject.of("Account").set("Name", "Fresh")),
+        true);
+
+    SystemAssert.assertEquals(1, beforeInsert[0], "upsert should fire before insert once");
+    SystemAssert.assertEquals(1, afterInsert[0], "upsert should fire after insert once");
+    SystemAssert.assertEquals(1, beforeUpdate[0], "upsert should fire before update once");
+    SystemAssert.assertEquals(1, afterUpdate[0], "upsert should fire after update once");
+
+    List<ApexSObject> rows = Database.query("SELECT Id, Name FROM Account ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, rows.size(), "upsert should leave two rows");
+    SystemAssert.assertEquals("Fresh-BIU", rows.get(0).get("Name"), "insert-side trigger mutation missing");
+    SystemAssert.assertEquals(
+        "Seed-Updated-BUU", rows.get(1).get("Name"), "update-side trigger mutation missing");
+  }
+
+  @Test
   public void inMemorySObjectStoreSupportsCrudAndQuery() {
     Database.clearInMemoryStore();
 

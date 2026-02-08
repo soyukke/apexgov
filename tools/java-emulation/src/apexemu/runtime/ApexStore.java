@@ -113,7 +113,10 @@ final class ApexStore {
     Limits.addDml(1);
 
     if (verb == DmlVerb.UPSERT) {
-      return applyWithoutTrigger(state, normalized, allOrNone, operation);
+      if (allOrNone) {
+        return applyUpsertAllOrNone(state, normalized);
+      }
+      return applyUpsertPartial(state, normalized);
     }
 
     if (allOrNone) {
@@ -122,30 +125,61 @@ final class ApexStore {
     return applyPartialWithTrigger(state, normalized, verb, operation);
   }
 
-  private static Database.SaveResult[] applyWithoutTrigger(
-      State state, List<ApexSObject> normalized, boolean allOrNone, DmlOperation operation) {
-    if (allOrNone) {
-      StateSnapshot original = snapshotOf(state);
-      Database.SaveResult[] successes = new Database.SaveResult[normalized.size()];
-      for (int i = 0; i < normalized.size(); i += 1) {
-        ApexSObject record = normalized.get(i);
-        try {
-          String id = operation.apply(state, record);
-          successes[i] = success(id);
-        } catch (RuntimeException error) {
-          restore(state, original);
-          return allOrNoneFailures(normalized, classifyFailure(error));
-        }
-      }
-      return successes;
-    }
+  private static Database.SaveResult[] applyUpsertAllOrNone(State state, List<ApexSObject> normalized) {
+    StateSnapshot original = snapshotOf(state);
+    try {
+      List<UpsertPlanRow> plan = planUpsertRows(state, normalized);
 
+      List<ApexSObject> insertNew = upsertPlanNewRows(plan, UpsertPath.INSERT);
+      List<ApexSObject> updateNew = upsertPlanNewRows(plan, UpsertPath.UPDATE);
+      List<ApexSObject> updateOld = upsertPlanOldRows(plan);
+
+      dispatchBefore(DmlVerb.INSERT, insertNew, null);
+      dispatchBefore(DmlVerb.UPDATE, updateNew, updateOld);
+
+      Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
+      for (UpsertPlanRow row : plan) {
+        String id =
+            row.path == UpsertPath.UPDATE
+                ? updateOne(state, row.record)
+                : insertOne(state, row.record);
+        out[row.index] = success(id);
+      }
+
+      List<ApexSObject> insertedAfter = snapshotActiveRows(state, insertNew, "upsert");
+      List<ApexSObject> updatedAfter = snapshotActiveRows(state, updateNew, "upsert");
+
+      dispatchAfter(DmlVerb.INSERT, insertedAfter, null);
+      dispatchAfter(DmlVerb.UPDATE, updatedAfter, updateOld);
+      return out;
+    } catch (RuntimeException error) {
+      restore(state, original);
+      return allOrNoneFailures(normalized, classifyFailure(error));
+    }
+  }
+
+  private static Database.SaveResult[] applyUpsertPartial(State state, List<ApexSObject> normalized) {
     Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
     for (int i = 0; i < normalized.size(); i += 1) {
       ApexSObject record = normalized.get(i);
       try {
-        String id = operation.apply(state, record);
-        out[i] = success(id);
+        UpsertPath path = resolveUpsertPath(state, record);
+        if (path == UpsertPath.UPDATE) {
+          List<ApexSObject> singleRecord = List.of(record);
+          List<ApexSObject> oldRows = List.of(snapshotActiveRow(state, record, "upsert"));
+          dispatchBefore(DmlVerb.UPDATE, singleRecord, oldRows);
+          String id = updateOne(state, record);
+          List<ApexSObject> newRows = snapshotActiveRows(state, singleRecord, "upsert");
+          dispatchAfter(DmlVerb.UPDATE, newRows, oldRows);
+          out[i] = success(id);
+        } else {
+          List<ApexSObject> singleRecord = List.of(record);
+          dispatchBefore(DmlVerb.INSERT, singleRecord, null);
+          String id = insertOne(state, record);
+          List<ApexSObject> newRows = snapshotActiveRows(state, singleRecord, "upsert");
+          dispatchAfter(DmlVerb.INSERT, newRows, null);
+          out[i] = success(id);
+        }
       } catch (RuntimeException error) {
         out[i] = failure(record == null ? null : record.id(), classifyFailure(error), null);
       }
@@ -248,16 +282,54 @@ final class ApexStore {
 
   private static String upsertOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
-    String id = normalizeId(record.id());
+    return resolveUpsertPath(state, record) == UpsertPath.UPDATE
+        ? updateOne(state, record)
+        : insertOne(state, record);
+  }
 
-    if (id != null) {
-      Map<String, ApexSObject> bucket = state.active.get(record.type());
-      if (bucket != null && bucket.containsKey(id)) {
-        return updateOne(state, record);
+  private static UpsertPath resolveUpsertPath(State state, ApexSObject raw) {
+    ApexSObject record = requireRecord(raw);
+    String id = normalizeId(record.id());
+    if (id == null) {
+      return UpsertPath.INSERT;
+    }
+    Map<String, ApexSObject> bucket = state.active.get(record.type());
+    if (bucket != null && bucket.containsKey(id)) {
+      return UpsertPath.UPDATE;
+    }
+    return UpsertPath.INSERT;
+  }
+
+  private static List<UpsertPlanRow> planUpsertRows(State state, List<ApexSObject> normalized) {
+    List<UpsertPlanRow> plan = new ArrayList<>(normalized.size());
+    for (int i = 0; i < normalized.size(); i += 1) {
+      ApexSObject record = requireRecord(normalized.get(i));
+      UpsertPath path = resolveUpsertPath(state, record);
+      ApexSObject oldSnapshot =
+          path == UpsertPath.UPDATE ? snapshotActiveRow(state, record, "upsert") : null;
+      plan.add(new UpsertPlanRow(i, record, path, oldSnapshot));
+    }
+    return plan;
+  }
+
+  private static List<ApexSObject> upsertPlanNewRows(List<UpsertPlanRow> plan, UpsertPath path) {
+    List<ApexSObject> out = new ArrayList<>();
+    for (UpsertPlanRow row : plan) {
+      if (row.path == path) {
+        out.add(row.record);
       }
     }
+    return out;
+  }
 
-    return insertOne(state, record);
+  private static List<ApexSObject> upsertPlanOldRows(List<UpsertPlanRow> plan) {
+    List<ApexSObject> out = new ArrayList<>();
+    for (UpsertPlanRow row : plan) {
+      if (row.path == UpsertPath.UPDATE && row.oldSnapshot != null) {
+        out.add(row.oldSnapshot);
+      }
+    }
+    return out;
   }
 
   private static String deleteOne(State state, ApexSObject raw) {
@@ -1177,6 +1249,25 @@ final class ApexStore {
 
     DmlVerb(String operationName) {
       this.operationName = operationName;
+    }
+  }
+
+  private enum UpsertPath {
+    INSERT,
+    UPDATE
+  }
+
+  private static final class UpsertPlanRow {
+    final int index;
+    final ApexSObject record;
+    final UpsertPath path;
+    final ApexSObject oldSnapshot;
+
+    UpsertPlanRow(int index, ApexSObject record, UpsertPath path, ApexSObject oldSnapshot) {
+      this.index = index;
+      this.record = record;
+      this.path = path;
+      this.oldSnapshot = oldSnapshot;
     }
   }
 

@@ -89,7 +89,8 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
   - `onAfterUndelete`
 
 `Trigger.run(...)` は実行後にコンテキストを自動クリアします。
-登録済みハンドラは `Database.insert/update/delete/undelete` 実行時に自動起動されます。
+登録済みハンドラは `Database.insert/update/upsert/delete/undelete` 実行時に自動起動されます。
+`Database.upsert` は insert/update の実行経路に応じて trigger を自動起動します。
 
 ## In-Memory SObject Store
 
