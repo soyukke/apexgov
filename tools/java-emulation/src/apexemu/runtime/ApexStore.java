@@ -113,11 +113,11 @@ final class ApexStore {
           successes[i] = success(id);
         } catch (RuntimeException error) {
           restore(state, original);
-          String reason = messageOrDefault(error);
+          FailureInfo root = classifyFailure(error);
           Database.SaveResult[] failures = new Database.SaveResult[normalized.size()];
           for (int j = 0; j < normalized.size(); j += 1) {
             ApexSObject row = normalized.get(j);
-            failures[j] = failure(row == null ? null : row.id(), "allOrNone rollback: " + reason);
+            failures[j] = failure(row == null ? null : row.id(), root, "allOrNone rollback");
           }
           return failures;
         }
@@ -132,7 +132,7 @@ final class ApexStore {
         String id = operation.apply(state, record);
         out[i] = success(id);
       } catch (RuntimeException error) {
-        out[i] = failure(record == null ? null : record.id(), messageOrDefault(error));
+        out[i] = failure(record == null ? null : record.id(), classifyFailure(error), null);
       }
     }
     return out;
@@ -367,9 +367,27 @@ final class ApexStore {
     return new Database.SaveResult(true, id, new Database.Error[0]);
   }
 
-  private static Database.SaveResult failure(String id, String message) {
+  private static Database.SaveResult failure(String id, FailureInfo info, String messagePrefix) {
+    String message = info.message;
+    if (messagePrefix != null && !messagePrefix.isBlank()) {
+      message = messagePrefix + ": " + message;
+    }
     return new Database.SaveResult(
-        false, id, new Database.Error[] {new Database.Error("DML_ERROR", message == null ? "" : message)});
+        false, id, new Database.Error[] {new Database.Error(info.statusCode, message, info.fields)});
+  }
+
+  private static FailureInfo classifyFailure(Throwable error) {
+    String message = messageOrDefault(error);
+    if (message.contains("requires id")) {
+      return new FailureInfo("REQUIRED_FIELD_MISSING", message, new String[] {"Id"});
+    }
+    if (message.contains("duplicate id")) {
+      return new FailureInfo("DUPLICATE_VALUE", message, new String[] {"Id"});
+    }
+    if (message.contains("record not found")) {
+      return new FailureInfo("INVALID_CROSS_REFERENCE_KEY", message, new String[] {"Id"});
+    }
+    return new FailureInfo("DML_ERROR", message, new String[0]);
   }
 
   private static String messageOrDefault(Throwable error) {
@@ -425,6 +443,8 @@ final class ApexStore {
   private interface DmlOperation {
     String apply(State state, ApexSObject record);
   }
+
+  private record FailureInfo(String statusCode, String message, String[] fields) {}
 
   private record QuerySpec(String sobjectType, String whereField, Object whereLiteral, int limit) {}
 

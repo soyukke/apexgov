@@ -129,10 +129,16 @@ public final class Database {
   public static final class Error {
     private final String statusCode;
     private final String message;
+    private final String[] fields;
 
     Error(String statusCode, String message) {
+      this(statusCode, message, new String[0]);
+    }
+
+    Error(String statusCode, String message, String[] fields) {
       this.statusCode = statusCode;
       this.message = message == null ? "" : message;
+      this.fields = fields == null ? new String[0] : fields.clone();
     }
 
     public String getStatusCode() {
@@ -141,6 +147,10 @@ public final class Database {
 
     public String getMessage() {
       return message;
+    }
+
+    public String[] getFields() {
+      return fields.clone();
     }
   }
 }

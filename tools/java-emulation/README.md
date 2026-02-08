@@ -92,6 +92,7 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 - CRUD: `insert`, `update`, `upsert`, `delete`, `undelete`
 - transactional: `setSavepoint()`, `rollback(savepoint)`
 - save-result mode: `insert/update/upsert/delete/undelete(records, allOrNone)` + `Database.SaveResult`
+  - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
 - Query: `query(soql)`, `countQuery(soql)`
 - reset: `clearInMemoryStore()`
 

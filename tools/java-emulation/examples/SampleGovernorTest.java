@@ -191,7 +191,11 @@ public final class SampleGovernorTest {
     SystemAssert.assertTrue(partialResults[0].isSuccess(), "first row should succeed in partial mode");
     SystemAssert.assertFalse(partialResults[1].isSuccess(), "second row should fail in partial mode");
     SystemAssert.assertEquals(
-        "DML_ERROR", partialResults[1].getErrors()[0].getStatusCode(), "partial failure status mismatch");
+        "REQUIRED_FIELD_MISSING",
+        partialResults[1].getErrors()[0].getStatusCode(),
+        "partial failure status mismatch");
+    SystemAssert.assertEquals(
+        "Id", partialResults[1].getErrors()[0].getFields()[0], "missing-id failure should point Id field");
     SystemAssert.assertEquals(
         1,
         Database.countQuery("SELECT count() FROM Account WHERE Name = 'Updated-Partial'"),
@@ -204,6 +208,10 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(2, atomicResults.length, "allOrNone results size mismatch");
     SystemAssert.assertFalse(atomicResults[0].isSuccess(), "all rows should fail in allOrNone mode");
     SystemAssert.assertFalse(atomicResults[1].isSuccess(), "all rows should fail in allOrNone mode");
+    SystemAssert.assertEquals(
+        "REQUIRED_FIELD_MISSING",
+        atomicResults[0].getErrors()[0].getStatusCode(),
+        "allOrNone should preserve root status code");
     SystemAssert.assertTrue(
         atomicResults[0].getErrors()[0].getMessage().contains("allOrNone rollback"),
         "failure message should indicate rollback");
