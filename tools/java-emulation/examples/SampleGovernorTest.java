@@ -228,6 +228,39 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsInNotInAndLike() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Acme Corp").set("Score", 20),
+            ApexSObject.of("Account").set("Name", "Beta Ltd").set("Score", 30),
+            ApexSObject.of("Account").set("Name", "Gamma KK").set("Score", 10),
+            ApexSObject.of("Account").set("Name", "Acme APAC").set("Score", 25)));
+
+    List<ApexSObject> inRows =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE Name IN ('Acme Corp', 'Gamma KK') ORDER BY Name ASC LIMIT 5");
+    SystemAssert.assertEquals(2, inRows.size(), "IN clause should match two rows");
+    SystemAssert.assertEquals("Acme Corp", inRows.get(0).get("Name"), "IN + ORDER BY mismatch");
+    SystemAssert.assertEquals("Gamma KK", inRows.get(1).get("Name"), "IN + ORDER BY mismatch");
+
+    int notInCount =
+        Database.countQuery("SELECT count() FROM Account WHERE Name NOT IN ('Beta Ltd', 'Gamma KK')");
+    SystemAssert.assertEquals(2, notInCount, "NOT IN count mismatch");
+
+    List<ApexSObject> likeRows =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE Name LIKE 'Acme%' AND Score >= 20 ORDER BY Score DESC LIMIT 2");
+    SystemAssert.assertEquals(2, likeRows.size(), "LIKE + AND query should return two rows");
+    SystemAssert.assertEquals("Acme APAC", likeRows.get(0).get("Name"), "LIKE result ordering mismatch");
+    SystemAssert.assertEquals("Acme Corp", likeRows.get(1).get("Name"), "LIKE result ordering mismatch");
+  }
+
+  @Test
   public void savepointRollbackRestoresInMemoryStore() {
     Database.clearInMemoryStore();
 

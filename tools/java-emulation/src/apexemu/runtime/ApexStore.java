@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.PatternSyntaxException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -15,10 +16,13 @@ final class ApexStore {
   private static final Pattern WHERE_KEYWORD = Pattern.compile("(?i)\\bwhere\\b");
   private static final Pattern WHERE_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
+  private static final Pattern WHERE_IN_PATTERN =
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s+(not\\s+in|in)\\s*\\((.*)\\)$");
+  private static final Pattern WHERE_LIKE_PATTERN =
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s+like\\s+(.+)$");
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?$");
-  private static final Pattern AND_SPLIT_PATTERN = Pattern.compile("(?i)\\s+and\\s+");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private ApexStore() {}
@@ -273,14 +277,16 @@ final class ApexStore {
 
   private static boolean matchesClause(ApexSObject row, WhereClause clause) {
     Object value = row.get(clause.field);
-    Object whereLiteral = clause.literal;
     return switch (clause.operator) {
-      case "=" -> compareEquality(value, whereLiteral);
-      case "!=" -> !compareEquality(value, whereLiteral);
-      case ">" -> compareRange(value, whereLiteral, ">");
-      case ">=" -> compareRange(value, whereLiteral, ">=");
-      case "<" -> compareRange(value, whereLiteral, "<");
-      case "<=" -> compareRange(value, whereLiteral, "<=");
+      case "=" -> compareEquality(value, clause.literal);
+      case "!=" -> !compareEquality(value, clause.literal);
+      case ">" -> compareRange(value, clause.literal, ">");
+      case ">=" -> compareRange(value, clause.literal, ">=");
+      case "<" -> compareRange(value, clause.literal, "<");
+      case "<=" -> compareRange(value, clause.literal, "<=");
+      case "in" -> compareIn(value, clause.literal);
+      case "not in" -> !compareIn(value, clause.literal);
+      case "like" -> compareLike(value, clause.literal);
       default -> false;
     };
   }
@@ -339,6 +345,33 @@ final class ApexStore {
     String leftValue = String.valueOf(left);
     String rightValue = String.valueOf(right);
     return leftValue.compareTo(rightValue);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static boolean compareIn(Object value, Object whereLiteral) {
+    if (!(whereLiteral instanceof List<?> literalList)) {
+      return false;
+    }
+    for (Object item : literalList) {
+      if (compareEquality(value, item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean compareLike(Object value, Object whereLiteral) {
+    if (value == null || whereLiteral == null) {
+      return false;
+    }
+    String candidate = String.valueOf(value);
+    String pattern = String.valueOf(whereLiteral);
+    String regex = toLikeRegex(pattern);
+    try {
+      return Pattern.compile(regex, Pattern.DOTALL).matcher(candidate).matches();
+    } catch (PatternSyntaxException error) {
+      return false;
+    }
   }
 
   private static QuerySpec parseQuerySpec(String rawSoql) {
@@ -432,19 +465,117 @@ final class ApexStore {
       throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
     }
 
-    String[] clauseTexts = AND_SPLIT_PATTERN.split(whereExpr.trim());
-    List<WhereClause> clauses = new ArrayList<>(clauseTexts.length);
+    List<String> clauseTexts = splitWhereByAnd(whereExpr);
+    List<WhereClause> clauses = new ArrayList<>(clauseTexts.size());
     for (String clauseText : clauseTexts) {
-      Matcher whereMatcher = WHERE_PATTERN.matcher(clauseText.trim());
-      if (!whereMatcher.matches()) {
-        throw new IllegalArgumentException(
-            "only WHERE with AND and operators (=, !=, >, >=, <, <=) is supported: " + rawSoql);
-      }
-      clauses.add(
-          new WhereClause(
-              whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim())));
+      clauses.add(parseWhereClause(clauseText.trim(), rawSoql));
     }
     return clauses;
+  }
+
+  private static WhereClause parseWhereClause(String clauseText, String rawSoql) {
+    Matcher inMatcher = WHERE_IN_PATTERN.matcher(clauseText);
+    if (inMatcher.matches()) {
+      String field = inMatcher.group(1);
+      String operator = inMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
+      List<Object> inValues = parseInLiteralList(inMatcher.group(3), rawSoql);
+      return new WhereClause(field, operator, inValues);
+    }
+
+    Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(clauseText);
+    if (likeMatcher.matches()) {
+      String field = likeMatcher.group(1);
+      Object literal = parseLiteral(likeMatcher.group(2).trim());
+      return new WhereClause(field, "like", literal);
+    }
+
+    Matcher whereMatcher = WHERE_PATTERN.matcher(clauseText);
+    if (whereMatcher.matches()) {
+      return new WhereClause(
+          whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
+    }
+
+    throw new IllegalArgumentException(
+        "only WHERE with AND and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: " + rawSoql);
+  }
+
+  private static List<String> splitWhereByAnd(String whereExpr) {
+    List<String> out = new ArrayList<>();
+    String source = whereExpr.trim();
+    int start = 0;
+    boolean inSingle = false;
+    boolean inDouble = false;
+
+    for (int i = 0; i < source.length(); i += 1) {
+      char ch = source.charAt(i);
+      if (ch == '\'' && !inDouble) {
+        inSingle = !inSingle;
+        continue;
+      }
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+        continue;
+      }
+      if (inSingle || inDouble) {
+        continue;
+      }
+      if (i + 3 <= source.length()
+          && source.regionMatches(true, i, "and", 0, 3)
+          && i > 0
+          && i + 3 < source.length()
+          && Character.isWhitespace(source.charAt(i - 1))
+          && Character.isWhitespace(source.charAt(i + 3))) {
+        out.add(source.substring(start, i).trim());
+        start = i + 3;
+      }
+    }
+
+    out.add(source.substring(start).trim());
+    return out;
+  }
+
+  private static List<Object> parseInLiteralList(String rawList, String rawSoql) {
+    if (rawList == null) {
+      throw new IllegalArgumentException("IN list cannot be null: " + rawSoql);
+    }
+
+    List<Object> values = new ArrayList<>();
+    StringBuilder token = new StringBuilder();
+    boolean inSingle = false;
+    boolean inDouble = false;
+    for (int i = 0; i < rawList.length(); i += 1) {
+      char ch = rawList.charAt(i);
+      if (ch == '\'' && !inDouble) {
+        inSingle = !inSingle;
+        token.append(ch);
+        continue;
+      }
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+        token.append(ch);
+        continue;
+      }
+      if (ch == ',' && !inSingle && !inDouble) {
+        addInLiteralToken(values, token);
+        token.setLength(0);
+        continue;
+      }
+      token.append(ch);
+    }
+    addInLiteralToken(values, token);
+
+    if (values.isEmpty()) {
+      throw new IllegalArgumentException("IN list cannot be empty: " + rawSoql);
+    }
+    return values;
+  }
+
+  private static void addInLiteralToken(List<Object> values, StringBuilder token) {
+    String text = token.toString().trim();
+    if (text.isEmpty()) {
+      return;
+    }
+    values.add(parseLiteral(text));
   }
 
   private static Object parseLiteral(String raw) {
@@ -469,6 +600,26 @@ final class ApexStore {
     } catch (NumberFormatException ignored) {
       return value;
     }
+  }
+
+  private static String toLikeRegex(String pattern) {
+    StringBuilder regex = new StringBuilder();
+    regex.append("^");
+    for (int i = 0; i < pattern.length(); i += 1) {
+      char ch = pattern.charAt(i);
+      if (ch == '%') {
+        regex.append(".*");
+      } else if (ch == '_') {
+        regex.append(".");
+      } else {
+        if ("\\.[]{}()*+-?^$|".indexOf(ch) >= 0) {
+          regex.append("\\");
+        }
+        regex.append(ch);
+      }
+    }
+    regex.append("$");
+    return regex.toString();
   }
 
   private static Double toNumber(Object value) {

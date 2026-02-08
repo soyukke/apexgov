@@ -102,7 +102,7 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 
 - `SELECT ... FROM Object`
 - bracket style: `[SELECT ... FROM Object ...]`
-- optional `WHERE` with `AND` of simple predicates (`field op literal`)
-- supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`
+- optional `WHERE` with `AND` of predicates
+- supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
 - optional `ORDER BY field [ASC|DESC]`
 - optional `LIMIT n`
