@@ -103,7 +103,7 @@
 | in-memory CRUD store | supported | `insert/update/upsert/delete/undelete` |
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
 | allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` の部分成功/全体ロールバック |
-| SOQL subset query | partial | `FROM`, `WHERE field = literal`, `LIMIT` |
+| SOQL subset query | partial | `FROM`, `WHERE` (`AND`, `= != > >= < <=`), `ORDER BY field [ASC|DESC]`, `LIMIT` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |
 | Apex VM semantic parity | planned | 完全再現は対象外 |
 

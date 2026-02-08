@@ -140,6 +140,37 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsAndComparatorsAndOrderBy() {
+    Database.clearInMemoryStore();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Alpha").set("Score", 10).set("Tier", 1),
+            ApexSObject.of("Account").set("Name", "Beta").set("Score", 30).set("Tier", 2),
+            ApexSObject.of("Account").set("Name", "Gamma").set("Score", 20).set("Tier", 2),
+            ApexSObject.of("Account").set("Name", "Delta").set("Score", 30).set("Tier", 3)));
+
+    List<ApexSObject> top =
+        Database.query(
+            "SELECT Id, Name, Score FROM Account "
+                + "WHERE Score >= 20 AND Name != 'Gamma' "
+                + "ORDER BY Score DESC LIMIT 2");
+    SystemAssert.assertEquals(2, top.size(), "top query should return 2 rows");
+    SystemAssert.assertEquals("Beta", top.get(0).get("Name"), "first row should be highest score");
+    SystemAssert.assertEquals("Delta", top.get(1).get("Name"), "second row should follow score order");
+
+    int narrowCount =
+        Database.countQuery("SELECT count() FROM Account WHERE Score < 30 AND Tier = 2 LIMIT 5");
+    SystemAssert.assertEquals(1, narrowCount, "count query should support AND + comparators");
+
+    List<ApexSObject> byName =
+        Database.query("SELECT Id, Name FROM Account WHERE Score >= 10 ORDER BY Name ASC LIMIT 3");
+    SystemAssert.assertEquals("Alpha", byName.get(0).get("Name"), "ASC order should be lexical");
+    SystemAssert.assertEquals("Beta", byName.get(1).get("Name"), "ASC order should be lexical");
+    SystemAssert.assertEquals("Delta", byName.get(2).get("Name"), "ASC order should be lexical");
+  }
+
+  @Test
   public void savepointRollbackRestoresInMemoryStore() {
     Database.clearInMemoryStore();
 

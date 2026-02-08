@@ -13,7 +13,12 @@ final class ApexStore {
   private static final Pattern FROM_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([a-zA-Z_][\\w]*)");
   private static final Pattern LIMIT_PATTERN = Pattern.compile("(?i)\\blimit\\s+(\\d+)");
   private static final Pattern WHERE_KEYWORD = Pattern.compile("(?i)\\bwhere\\b");
-  private static final Pattern WHERE_PATTERN = Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s*=\\s*(.+)$");
+  private static final Pattern WHERE_PATTERN =
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
+  private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
+  private static final Pattern ORDER_BY_PATTERN =
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?$");
+  private static final Pattern AND_SPLIT_PATTERN = Pattern.compile("(?i)\\s+and\\s+");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private ApexStore() {}
@@ -231,25 +236,54 @@ final class ApexStore {
 
     List<ApexSObject> out = new ArrayList<>();
     for (ApexSObject row : bucket.values()) {
-      if (!matchesWhere(row, spec.whereField, spec.whereLiteral)) {
+      if (!matchesWhere(row, spec.whereClauses)) {
         continue;
       }
       out.add(row);
-      if (spec.limit > 0 && out.size() >= spec.limit) {
-        break;
-      }
-      if (countOnly && spec.limit > 0 && out.size() >= spec.limit) {
-        break;
-      }
+    }
+
+    if (!countOnly && spec.orderByField != null) {
+      out.sort(
+          (left, right) -> {
+            int compared = compareValues(left.get(spec.orderByField), right.get(spec.orderByField));
+            return spec.orderDescending ? -compared : compared;
+          });
+    }
+
+    if (spec.limit > 0 && out.size() > spec.limit) {
+      return new ArrayList<>(out.subList(0, spec.limit));
     }
     return out;
   }
 
-  private static boolean matchesWhere(ApexSObject row, String field, Object whereLiteral) {
-    if (field == null) {
+  private static boolean matchesWhere(ApexSObject row, List<WhereClause> whereClauses) {
+    if (whereClauses == null || whereClauses.isEmpty()) {
       return true;
     }
-    Object value = row.get(field);
+
+    for (WhereClause clause : whereClauses) {
+      if (!matchesClause(row, clause)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean matchesClause(ApexSObject row, WhereClause clause) {
+    Object value = row.get(clause.field);
+    Object whereLiteral = clause.literal;
+    return switch (clause.operator) {
+      case "=" -> compareEquality(value, whereLiteral);
+      case "!=" -> !compareEquality(value, whereLiteral);
+      case ">" -> compareRange(value, whereLiteral, ">");
+      case ">=" -> compareRange(value, whereLiteral, ">=");
+      case "<" -> compareRange(value, whereLiteral, "<");
+      case "<=" -> compareRange(value, whereLiteral, "<=");
+      default -> false;
+    };
+  }
+
+  private static boolean compareEquality(Object value, Object whereLiteral) {
     if (whereLiteral == null) {
       return value == null;
     }
@@ -260,7 +294,49 @@ final class ApexStore {
     if (whereLiteral instanceof Number numberLiteral && value instanceof Number valueNumber) {
       return Double.compare(numberLiteral.doubleValue(), valueNumber.doubleValue()) == 0;
     }
+    if (whereLiteral instanceof Boolean literalBoolean && value instanceof Boolean valueBoolean) {
+      return literalBoolean.equals(valueBoolean);
+    }
+    if (whereLiteral instanceof Boolean literalBoolean) {
+      return String.valueOf(value).equalsIgnoreCase(literalBoolean.toString());
+    }
     return Objects.equals(String.valueOf(whereLiteral), String.valueOf(value));
+  }
+
+  private static boolean compareRange(Object value, Object whereLiteral, String operator) {
+    if (value == null || whereLiteral == null) {
+      return false;
+    }
+    int compared = compareValues(value, whereLiteral);
+    return switch (operator) {
+      case ">" -> compared > 0;
+      case ">=" -> compared >= 0;
+      case "<" -> compared < 0;
+      case "<=" -> compared <= 0;
+      default -> false;
+    };
+  }
+
+  private static int compareValues(Object left, Object right) {
+    if (left == null && right == null) {
+      return 0;
+    }
+    if (left == null) {
+      return 1;
+    }
+    if (right == null) {
+      return -1;
+    }
+
+    Double leftNumber = toNumber(left);
+    Double rightNumber = toNumber(right);
+    if (leftNumber != null && rightNumber != null) {
+      return Double.compare(leftNumber, rightNumber);
+    }
+
+    String leftValue = String.valueOf(left);
+    String rightValue = String.valueOf(right);
+    return leftValue.compareTo(rightValue);
   }
 
   private static QuerySpec parseQuerySpec(String rawSoql) {
@@ -275,28 +351,56 @@ final class ApexStore {
     }
     String sobjectType = fromMatcher.group(1);
 
+    Matcher whereKeyword = WHERE_KEYWORD.matcher(soql);
+    int whereStart = -1;
+    int whereEnd = -1;
+    if (whereKeyword.find()) {
+      whereStart = whereKeyword.start();
+      whereEnd = whereKeyword.end();
+    }
+
+    Matcher orderByKeyword = ORDER_BY_KEYWORD.matcher(soql);
+    int orderByStart = -1;
+    int orderByEnd = -1;
+    if (orderByKeyword.find()) {
+      orderByStart = orderByKeyword.start();
+      orderByEnd = orderByKeyword.end();
+    }
+
     int limit = 0;
+    int limitStart = -1;
     Matcher limitMatcher = LIMIT_PATTERN.matcher(soql);
     if (limitMatcher.find()) {
+      limitStart = limitMatcher.start();
       limit = Integer.parseInt(limitMatcher.group(1));
     }
 
-    String whereField = null;
-    Object whereLiteral = null;
-    Matcher whereKeyword = WHERE_KEYWORD.matcher(soql);
-    if (whereKeyword.find()) {
-      int whereBodyStart = whereKeyword.end();
-      int whereBodyEnd = limitMatcher.find(whereBodyStart) ? limitMatcher.start() : soql.length();
-      String whereExpr = soql.substring(whereBodyStart, whereBodyEnd).trim();
-      Matcher whereMatcher = WHERE_PATTERN.matcher(whereExpr);
-      if (!whereMatcher.matches()) {
-        throw new IllegalArgumentException("only simple WHERE field = literal is supported: " + rawSoql);
-      }
-      whereField = whereMatcher.group(1);
-      whereLiteral = parseLiteral(whereMatcher.group(2).trim());
+    if (whereStart >= 0 && orderByStart >= 0 && orderByStart < whereStart) {
+      throw new IllegalArgumentException("ORDER BY before WHERE is not supported: " + rawSoql);
     }
 
-    return new QuerySpec(sobjectType, whereField, whereLiteral, limit);
+    List<WhereClause> whereClauses = List.of();
+    if (whereStart >= 0) {
+      int whereBodyEnd = nextClauseStart(soql.length(), whereEnd, orderByStart, limitStart);
+      String whereExpr = soql.substring(whereEnd, whereBodyEnd).trim();
+      whereClauses = parseWhereClauses(whereExpr, rawSoql);
+    }
+
+    String orderByField = null;
+    boolean orderDescending = false;
+    if (orderByStart >= 0) {
+      int orderByBodyEnd = limitStart > orderByEnd ? limitStart : soql.length();
+      String orderByExpr = soql.substring(orderByEnd, orderByBodyEnd).trim();
+      Matcher orderByMatcher = ORDER_BY_PATTERN.matcher(orderByExpr);
+      if (!orderByMatcher.matches()) {
+        throw new IllegalArgumentException("only ORDER BY <field> [ASC|DESC] is supported: " + rawSoql);
+      }
+      orderByField = orderByMatcher.group(1);
+      String direction = orderByMatcher.group(2);
+      orderDescending = direction != null && direction.equalsIgnoreCase("desc");
+    }
+
+    return new QuerySpec(sobjectType, whereClauses, orderByField, orderDescending, limit);
   }
 
   private static String sanitize(String soql) {
@@ -310,6 +414,37 @@ final class ApexStore {
     return out;
   }
 
+  private static int nextClauseStart(int defaultEnd, int bodyStart, int orderByStart, int limitStart) {
+    int end = defaultEnd;
+    if (orderByStart >= 0 && orderByStart > bodyStart) {
+      end = Math.min(end, orderByStart);
+    }
+    if (limitStart >= 0 && limitStart > bodyStart) {
+      end = Math.min(end, limitStart);
+    }
+    return end;
+  }
+
+  private static List<WhereClause> parseWhereClauses(String whereExpr, String rawSoql) {
+    if (whereExpr == null || whereExpr.isBlank()) {
+      throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
+    }
+
+    String[] clauseTexts = AND_SPLIT_PATTERN.split(whereExpr.trim());
+    List<WhereClause> clauses = new ArrayList<>(clauseTexts.length);
+    for (String clauseText : clauseTexts) {
+      Matcher whereMatcher = WHERE_PATTERN.matcher(clauseText.trim());
+      if (!whereMatcher.matches()) {
+        throw new IllegalArgumentException(
+            "only WHERE with AND and operators (=, !=, >, >=, <, <=) is supported: " + rawSoql);
+      }
+      clauses.add(
+          new WhereClause(
+              whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim())));
+    }
+    return clauses;
+  }
+
   private static Object parseLiteral(String raw) {
     String value = raw.trim();
     if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith("\"") && value.endsWith("\""))) {
@@ -317,6 +452,12 @@ final class ApexStore {
     }
     if ("null".equalsIgnoreCase(value)) {
       return null;
+    }
+    if ("true".equalsIgnoreCase(value)) {
+      return Boolean.TRUE;
+    }
+    if ("false".equalsIgnoreCase(value)) {
+      return Boolean.FALSE;
     }
     try {
       if (value.contains(".")) {
@@ -326,6 +467,23 @@ final class ApexStore {
     } catch (NumberFormatException ignored) {
       return value;
     }
+  }
+
+  private static Double toNumber(Object value) {
+    if (value instanceof Number number) {
+      return number.doubleValue();
+    }
+    if (value instanceof String text) {
+      try {
+        if (text.contains(".")) {
+          return Double.parseDouble(text);
+        }
+        return (double) Long.parseLong(text);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 
   private static ApexSObject requireRecord(ApexSObject record) {
@@ -446,7 +604,10 @@ final class ApexStore {
 
   private record FailureInfo(String statusCode, String message, String[] fields) {}
 
-  private record QuerySpec(String sobjectType, String whereField, Object whereLiteral, int limit) {}
+  private record WhereClause(String field, String operator, Object literal) {}
+
+  private record QuerySpec(
+      String sobjectType, List<WhereClause> whereClauses, String orderByField, boolean orderDescending, int limit) {}
 
   private record StateSnapshot(
       Map<String, Map<String, ApexSObject>> active,

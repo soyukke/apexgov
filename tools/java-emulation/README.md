@@ -99,5 +99,7 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 対応SOQLは最小サブセットです。
 
 - `SELECT ... FROM Object`
-- optional `WHERE field = literal`
+- optional `WHERE` with `AND` of simple predicates (`field op literal`)
+- supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`
+- optional `ORDER BY field [ASC|DESC]`
 - optional `LIMIT n`
