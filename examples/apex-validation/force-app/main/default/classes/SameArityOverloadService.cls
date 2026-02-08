@@ -4,7 +4,8 @@ public with sharing class SameArityOverloadService {
         if (n > 120) return;
 
         for (Integer i = 0; i < n; i++) {
-            touch(new Contact());
+            Contact target = records[i];
+            touch(target);
         }
     }
 
