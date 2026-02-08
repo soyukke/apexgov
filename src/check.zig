@@ -61,6 +61,8 @@ const ResolveState = enum {
 };
 
 const MethodSummary = struct {
+    owner: []const u8,
+    name: []const u8,
     direct: MethodMetrics = .{},
     total: MethodMetrics = .{},
     calls: std.ArrayListUnmanaged([]const u8) = .{},
@@ -68,8 +70,21 @@ const MethodSummary = struct {
 };
 
 const MethodScope = struct {
+    key: []const u8,
+    owner: []const u8,
     name: []const u8,
     end_depth: i32,
+    entered_body: bool,
+};
+
+const OwnerScope = struct {
+    name: []const u8,
+    end_depth: i32,
+};
+
+const ApexFile = struct {
+    path: []const u8,
+    content: []const u8,
 };
 
 pub fn run(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(model.Finding) {
@@ -80,25 +95,50 @@ pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: con
     var findings: std.ArrayList(model.Finding) = .empty;
     errdefer model.deinitFindings(gpa, &findings);
 
-    for (roots) |root| {
-        try scanPath(gpa, root, cfg, &findings);
+    var files = try collectApexFiles(gpa, roots);
+    defer deinitApexFiles(gpa, &files);
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var method_summaries = try buildMethodSummaries(arena_allocator, files.items);
+
+    for (files.items) |file| {
+        try scanContent(
+            gpa,
+            file.path,
+            file.content,
+            cfg,
+            &method_summaries,
+            &findings,
+        );
     }
 
     return findings;
 }
 
-fn scanPath(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
-    scanDirectory(gpa, path, cfg, findings) catch |err| switch (err) {
+fn collectApexFiles(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(ApexFile) {
+    var files: std.ArrayList(ApexFile) = .empty;
+    errdefer deinitApexFiles(gpa, &files);
+    for (roots) |root| {
+        try collectPath(gpa, root, &files);
+    }
+    return files;
+}
+
+fn collectPath(gpa: std.mem.Allocator, path: []const u8, files: *std.ArrayList(ApexFile)) !void {
+    collectDirectory(gpa, path, files) catch |err| switch (err) {
         error.NotDir => {
             if (isApexSource(path)) {
-                try scanFile(gpa, path, cfg, findings);
+                try appendApexFile(gpa, files, path);
             }
         },
         else => return err,
     };
 }
 
-fn scanDirectory(gpa: std.mem.Allocator, root: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
+fn collectDirectory(gpa: std.mem.Allocator, root: []const u8, files: *std.ArrayList(ApexFile)) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
@@ -112,23 +152,49 @@ fn scanDirectory(gpa: std.mem.Allocator, root: []const u8, cfg: config.Config, f
         const joined = try std.fs.path.join(gpa, &.{ root, entry.path });
         defer gpa.free(joined);
 
-        try scanFile(gpa, joined, cfg, findings);
+        try appendApexFile(gpa, files, joined);
     }
 }
 
-fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findings: *std.ArrayList(model.Finding)) !void {
+fn appendApexFile(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile), path: []const u8) !void {
     const content = try std.fs.cwd().readFileAlloc(gpa, path, 16 * 1024 * 1024);
-    defer gpa.free(content);
+    errdefer gpa.free(content);
 
+    const path_copy = try gpa.dupe(u8, path);
+    errdefer gpa.free(path_copy);
+
+    try files.append(gpa, .{
+        .path = path_copy,
+        .content = content,
+    });
+}
+
+fn deinitApexFiles(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile)) void {
+    for (files.items) |file| {
+        gpa.free(file.path);
+        gpa.free(file.content);
+    }
+    files.deinit(gpa);
+}
+
+fn scanContent(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    content: []const u8,
+    cfg: config.Config,
+    method_summaries: *std.StringHashMap(MethodSummary),
+    findings: *std.ArrayList(model.Finding),
+) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
-    var method_summaries = try buildMethodSummaries(arena_allocator, content);
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
+    var owner_scopes: std.ArrayList(OwnerScope) = .empty;
+    defer owner_scopes.deinit(gpa);
 
     var brace_depth: i32 = 0;
     var line_no: usize = 0;
@@ -138,12 +204,18 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
         line_no += 1;
 
         popClosedScopes(&loop_scopes, brace_depth);
+        popClosedOwners(&owner_scopes, brace_depth);
 
         const code_line = stripLineComment(raw);
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
+        if (trimmed.len > 0) {
+            try maybeEnterOwnerScope(gpa, &owner_scopes, brace_depth, trimmed);
+        }
+        const current_owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
         if (trimmed.len == 0) {
             brace_depth = updateBraceDepth(brace_depth, code_line);
             popClosedScopes(&loop_scopes, brace_depth);
+            popClosedOwners(&owner_scopes, brace_depth);
             continue;
         }
 
@@ -155,7 +227,7 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
         const in_loop = loop_started or loop_level > 0;
         const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
         const call_metrics = if (in_loop)
-            inferCalledMethodMetrics(trimmed, &method_summaries)
+            inferCalledMethodMetrics(trimmed, current_owner, method_summaries)
         else
             MethodMetrics{};
 
@@ -324,14 +396,19 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
         popClosedScopes(&loop_scopes, brace_depth);
+        popClosedOwners(&owner_scopes, brace_depth);
     }
 }
 
-fn buildMethodSummaries(arena_allocator: std.mem.Allocator, content: []const u8) !std.StringHashMap(MethodSummary) {
+fn buildMethodSummaries(arena_allocator: std.mem.Allocator, files: []const ApexFile) !std.StringHashMap(MethodSummary) {
     var summaries = std.StringHashMap(MethodSummary).init(arena_allocator);
 
-    try collectMethodNames(arena_allocator, content, &summaries);
-    try collectMethodDirectMetricsAndCalls(arena_allocator, content, &summaries);
+    for (files) |file| {
+        try collectMethodNames(arena_allocator, file.content, &summaries);
+    }
+    for (files) |file| {
+        try collectMethodDirectMetricsAndCalls(arena_allocator, file.content, &summaries);
+    }
 
     var keys: std.ArrayList([]const u8) = .empty;
     var it = summaries.iterator();
@@ -350,13 +427,28 @@ fn collectMethodNames(
     content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
 ) !void {
+    var owner_scopes: std.ArrayList(OwnerScope) = .empty;
+    defer owner_scopes.deinit(arena_allocator);
+
+    var brace_depth: i32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
         const code_line = stripLineComment(raw);
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
-        if (trimmed.len == 0) continue;
-        const name = parseMethodStart(trimmed) orelse continue;
-        _ = try ensureMethodSummary(arena_allocator, summaries, name);
+        popClosedOwners(&owner_scopes, brace_depth);
+
+        if (trimmed.len > 0) {
+            try maybeEnterOwnerScope(arena_allocator, &owner_scopes, brace_depth, trimmed);
+            if (owner_scopes.items.len > 0) {
+                const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
+                if (parseMethodStart(trimmed)) |name| {
+                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, name);
+                }
+            }
+        }
+
+        brace_depth = updateBraceDepth(brace_depth, code_line);
+        popClosedOwners(&owner_scopes, brace_depth);
     }
 }
 
@@ -365,6 +457,9 @@ fn collectMethodDirectMetricsAndCalls(
     content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
 ) !void {
+    var owner_scopes: std.ArrayList(OwnerScope) = .empty;
+    defer owner_scopes.deinit(arena_allocator);
+
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -372,48 +467,84 @@ fn collectMethodDirectMetricsAndCalls(
     while (lines.next()) |raw| {
         const code_line = stripLineComment(raw);
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
+        popClosedOwners(&owner_scopes, brace_depth);
 
         var started_method = false;
-        if (current_method == null and trimmed.len > 0) {
-            if (parseMethodStart(trimmed)) |name| {
-                if (summaries.getPtr(name) != null) {
-                    current_method = .{
-                        .name = name,
-                        .end_depth = brace_depth + 1,
-                    };
-                    started_method = true;
+        if (trimmed.len > 0) {
+            try maybeEnterOwnerScope(arena_allocator, &owner_scopes, brace_depth, trimmed);
+            const owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
+
+            if (current_method == null and owner != null) {
+                if (parseMethodStart(trimmed)) |name| {
+                    if (findMethodSummaryByOwnerName(summaries, owner.?, name)) |_| {
+                        current_method = .{
+                            .key = try formatMethodKey(arena_allocator, owner.?, name),
+                            .owner = owner.?,
+                            .name = name,
+                            .end_depth = brace_depth + 1,
+                            .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
+                        };
+                        started_method = true;
+                    }
                 }
             }
-        }
 
-        if (!started_method) {
-            if (current_method) |scope| {
-                if (trimmed.len > 0) {
-                    const summary = summaries.getPtr(scope.name) orelse unreachable;
+            if (!started_method) {
+                if (current_method) |scope| {
+                    const summary = findMethodSummaryByOwnerName(summaries, scope.owner, scope.name) orelse unreachable;
                     applyDirectLineMetrics(&summary.direct, trimmed);
-                    try recordCalledMethods(arena_allocator, &summary.calls, summaries, scope.name, trimmed);
+                    try recordCalledMethods(arena_allocator, &summary.calls, summaries, scope.owner, scope.name, trimmed);
                 }
             }
         }
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
-        if (current_method) |scope| {
-            if (brace_depth < scope.end_depth) {
+        if (current_method) |*scope| {
+            if (!scope.entered_body and brace_depth >= scope.end_depth) {
+                scope.entered_body = true;
+            }
+            if (scope.entered_body and brace_depth < scope.end_depth) {
                 current_method = null;
             }
         }
+        popClosedOwners(&owner_scopes, brace_depth);
     }
 }
 
 fn ensureMethodSummary(
     arena_allocator: std.mem.Allocator,
     summaries: *std.StringHashMap(MethodSummary),
+    owner: []const u8,
     name: []const u8,
 ) !*MethodSummary {
-    if (summaries.getPtr(name)) |existing| return existing;
-    const key = try arena_allocator.dupe(u8, name);
-    try summaries.put(key, .{});
+    if (findMethodSummaryByOwnerName(summaries, owner, name)) |existing| return existing;
+
+    const owner_copy = try arena_allocator.dupe(u8, owner);
+    const name_copy = try arena_allocator.dupe(u8, name);
+    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy);
+    try summaries.put(key, .{
+        .owner = owner_copy,
+        .name = name_copy,
+    });
     return summaries.getPtr(key).?;
+}
+
+fn findMethodSummaryByOwnerName(
+    summaries: *std.StringHashMap(MethodSummary),
+    owner: []const u8,
+    name: []const u8,
+) ?*MethodSummary {
+    var it = summaries.iterator();
+    while (it.next()) |entry| {
+        if (!std.mem.eql(u8, entry.value_ptr.owner, owner)) continue;
+        if (!std.mem.eql(u8, entry.value_ptr.name, name)) continue;
+        return entry.value_ptr;
+    }
+    return null;
+}
+
+fn formatMethodKey(arena_allocator: std.mem.Allocator, owner: []const u8, name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena_allocator, "{s}.{s}", .{ owner, name });
 }
 
 fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
@@ -438,8 +569,12 @@ fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []cons
 fn parseMethodStart(line: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len == 0) return null;
-    if (std.mem.indexOfScalar(u8, trimmed, '(') == null) return null;
-    if (std.mem.indexOfScalar(u8, trimmed, '{') == null) return null;
+    const open_idx = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    if (std.mem.indexOfScalar(u8, trimmed, ')') == null) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, ';') != null) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_idx| {
+        if (eq_idx < open_idx) return null;
+    }
     if (std.mem.indexOf(u8, trimmed, " class ") != null or
         std.mem.startsWith(u8, trimmed, "class "))
     {
@@ -460,7 +595,6 @@ fn parseMethodStart(line: []const u8) ?[]const u8 {
         return null;
     }
 
-    const open_idx = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
     const left = std.mem.trim(u8, trimmed[0..open_idx], " \t");
     const name = extractLastIdentifier(left) orelse return null;
     if (isControlKeyword(name)) return null;
@@ -477,6 +611,58 @@ fn isControlKeyword(word: []const u8) bool {
         std.mem.eql(u8, word, "new");
 }
 
+fn maybeEnterOwnerScope(
+    allocator: std.mem.Allocator,
+    scopes: *std.ArrayList(OwnerScope),
+    brace_depth: i32,
+    line: []const u8,
+) !void {
+    const owner = parseOwnerStart(line) orelse return;
+    try scopes.append(allocator, .{
+        .name = owner,
+        .end_depth = brace_depth + 1,
+    });
+}
+
+fn popClosedOwners(scopes: *std.ArrayList(OwnerScope), brace_depth: i32) void {
+    while (scopes.items.len > 0 and scopes.items[scopes.items.len - 1].end_depth > brace_depth) {
+        _ = scopes.pop();
+    }
+}
+
+fn parseOwnerStart(line: []const u8) ?[]const u8 {
+    return parseClassStart(line) orelse parseTriggerStart(line);
+}
+
+fn parseClassStart(line: []const u8) ?[]const u8 {
+    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+
+    var start: ?usize = null;
+    if (std.mem.startsWith(u8, line, "class ")) {
+        start = 6;
+    } else if (std.mem.indexOf(u8, line, " class ")) |idx| {
+        start = idx + 7;
+    }
+    const class_start = start orelse return null;
+    const rest = std.mem.trimLeft(u8, line[class_start..], " \t");
+    return extractLeadingIdentifier(rest);
+}
+
+fn parseTriggerStart(line: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, "trigger ")) return null;
+    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+    const rest = std.mem.trimLeft(u8, line[8..], " \t");
+    return extractLeadingIdentifier(rest);
+}
+
+fn extractLeadingIdentifier(raw: []const u8) ?[]const u8 {
+    if (raw.len == 0 or !isIdentChar(raw[0])) return null;
+    var end: usize = 0;
+    while (end < raw.len and isIdentChar(raw[end])) : (end += 1) {}
+    if (end == 0) return null;
+    return raw[0..end];
+}
+
 fn applyDirectLineMetrics(metrics: *MethodMetrics, line: []const u8) void {
     if (containsSoql(line)) metrics.soql = satAdd(metrics.soql, 1);
     if (containsDml(line)) metrics.dml = satAdd(metrics.dml, 1);
@@ -490,15 +676,17 @@ fn recordCalledMethods(
     arena_allocator: std.mem.Allocator,
     calls: *std.ArrayListUnmanaged([]const u8),
     summaries: *std.StringHashMap(MethodSummary),
+    caller_owner: []const u8,
     caller_name: []const u8,
     line: []const u8,
 ) !void {
     var it = summaries.iterator();
     while (it.next()) |entry| {
-        const callee = entry.key_ptr.*;
-        if (std.mem.eql(u8, callee, caller_name)) continue;
-        if (!containsMethodCall(line, callee)) continue;
-        try appendUniqueCall(arena_allocator, calls, callee);
+        const callee_key = entry.key_ptr.*;
+        const callee = entry.value_ptr.*;
+        if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
+        if (!lineCallsMethod(line, caller_owner, callee.owner, callee.name)) continue;
+        try appendUniqueCall(arena_allocator, calls, callee_key);
     }
 }
 
@@ -510,33 +698,92 @@ fn appendUniqueCall(
     for (calls.items) |existing| {
         if (std.mem.eql(u8, existing, callee)) return;
     }
-    const name = try arena_allocator.dupe(u8, callee);
-    try calls.append(arena_allocator, name);
+    try calls.append(arena_allocator, callee);
 }
 
-fn inferCalledMethodMetrics(line: []const u8, summaries: *std.StringHashMap(MethodSummary)) MethodMetrics {
+fn inferCalledMethodMetrics(
+    line: []const u8,
+    current_owner: ?[]const u8,
+    summaries: *std.StringHashMap(MethodSummary),
+) MethodMetrics {
     var metrics: MethodMetrics = .{};
     var it = summaries.iterator();
     while (it.next()) |entry| {
-        const method_name = entry.key_ptr.*;
-        if (!containsMethodCall(line, method_name)) continue;
+        const callee = entry.value_ptr.*;
+        if (!lineCallsMethod(
+            line,
+            current_owner orelse "",
+            callee.owner,
+            callee.name,
+        )) continue;
         metrics.add(entry.value_ptr.total);
     }
     return metrics;
 }
 
-fn containsMethodCall(line: []const u8, method_name: []const u8) bool {
+fn lineCallsMethod(
+    line: []const u8,
+    caller_owner: []const u8,
+    callee_owner: []const u8,
+    callee_name: []const u8,
+) bool {
+    if (containsQualifiedMethodCall(line, callee_owner, callee_name)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name)) return true;
+    return false;
+}
+
+fn containsBareMethodCall(line: []const u8, method_name: []const u8) bool {
     if (method_name.len == 0) return false;
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, line, start, method_name)) |idx| {
-        const before_ok = idx == 0 or !isIdentChar(line[idx - 1]);
+        const before_ok = idx == 0 or (!isIdentChar(line[idx - 1]) and line[idx - 1] != '.');
         var end = idx + method_name.len;
         while (end < line.len and (line[end] == ' ' or line[end] == '\t')) : (end += 1) {}
         const after_ok = end < line.len and line[end] == '(';
         if (before_ok and after_ok) return true;
         start = idx + method_name.len;
     }
+    return false;
+}
+
+fn containsQualifiedMethodCall(line: []const u8, owner: []const u8, method_name: []const u8) bool {
+    if (owner.len == 0 or method_name.len == 0) return false;
+
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, line, start, owner)) |owner_idx| {
+        const owner_before_ok = owner_idx == 0 or !isIdentChar(line[owner_idx - 1]);
+        if (!owner_before_ok) {
+            start = owner_idx + owner.len;
+            continue;
+        }
+
+        var dot_idx = owner_idx + owner.len;
+        while (dot_idx < line.len and (line[dot_idx] == ' ' or line[dot_idx] == '\t')) : (dot_idx += 1) {}
+        if (dot_idx >= line.len or line[dot_idx] != '.') {
+            start = owner_idx + owner.len;
+            continue;
+        }
+
+        var method_idx = dot_idx + 1;
+        while (method_idx < line.len and (line[method_idx] == ' ' or line[method_idx] == '\t')) : (method_idx += 1) {}
+        if (method_idx + method_name.len > line.len) {
+            start = owner_idx + owner.len;
+            continue;
+        }
+        if (!std.mem.eql(u8, line[method_idx .. method_idx + method_name.len], method_name)) {
+            start = owner_idx + owner.len;
+            continue;
+        }
+
+        var open_idx = method_idx + method_name.len;
+        while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
+        if (open_idx < line.len and line[open_idx] == '(') return true;
+
+        start = owner_idx + owner.len;
+    }
+
     return false;
 }
 
@@ -1373,17 +1620,145 @@ test "loop calling helper chain with SOQL is flagged transitively" {
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 80") != null);
 }
 
+test "loop calling helper in another class is flagged" {
+    const sources = [_]SourceFile{
+        .{
+            .name = "CrossFileCallerService.cls",
+            .source =
+            \\public with sharing class CrossFileCallerService {
+            \\    public static void run(List<Account> records) {
+            \\        Integer n = records.size();
+            \\        if (n > 110) return;
+            \\        for (Integer i = 0; i < n; i++) {
+            \\            CrossFileDmlHelper.apply(records[i]);
+            \\        }
+            \\    }
+            \\}
+            ,
+        },
+        .{
+            .name = "CrossFileDmlHelper.cls",
+            .source =
+            \\public with sharing class CrossFileDmlHelper {
+            \\    public static void apply(Account acc) {
+            \\        update acc;
+            \\    }
+            \\}
+            ,
+        },
+    };
+
+    var findings = try runCheckOnTempSources(std.testing.allocator, &sources, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 110") != null);
+}
+
+test "loop calling helper chain across classes propagates SOQL" {
+    const sources = [_]SourceFile{
+        .{
+            .name = "CrossFileSoqlCaller.cls",
+            .source =
+            \\public with sharing class CrossFileSoqlCaller {
+            \\    public static void run(List<Account> records) {
+            \\        Integer n = records.size();
+            \\        if (n > 70) return;
+            \\        for (Integer i = 0; i < n; i++) {
+            \\            CrossFileService.enrich(records[i].Id);
+            \\        }
+            \\    }
+            \\}
+            ,
+        },
+        .{
+            .name = "CrossFileService.cls",
+            .source =
+            \\public with sharing class CrossFileService {
+            \\    public static void enrich(Id accountId) {
+            \\        CrossFileRepo.loadOne(accountId);
+            \\    }
+            \\}
+            ,
+        },
+        .{
+            .name = "CrossFileRepo.cls",
+            .source =
+            \\public with sharing class CrossFileRepo {
+            \\    public static void loadOne(Id accountId) {
+            \\        List<Account> one = [SELECT Id FROM Account WHERE Id = :accountId LIMIT 1];
+            \\        if (!one.isEmpty()) {
+            \\            one[0].Name = one[0].Name;
+            \\        }
+            \\    }
+            \\}
+            ,
+        },
+    };
+
+    var findings = try runCheckOnTempSources(std.testing.allocator, &sources, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 70") != null);
+}
+
+test "helper signature with brace on next line is summarized" {
+    const source =
+        \\public with sharing class SplitBraceHelperService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 100) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            applyOne(records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void applyOne(Account acc)
+        \\    {
+        \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 100") != null);
+}
+
 fn runCheckOnTempSource(
     gpa: std.mem.Allocator,
     source: []const u8,
     cfg: config.Config,
 ) !std.ArrayList(model.Finding) {
+    const sources = [_]SourceFile{
+        .{
+            .name = "Case.cls",
+            .source = source,
+        },
+    };
+    return runCheckOnTempSources(gpa, &sources, cfg);
+}
+
+const SourceFile = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
+fn runCheckOnTempSources(
+    gpa: std.mem.Allocator,
+    sources: []const SourceFile,
+    cfg: config.Config,
+) !std.ArrayList(model.Finding) {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "Case.cls", .data = source });
+    for (sources) |file| {
+        try tmp.dir.writeFile(.{ .sub_path = file.name, .data = file.source });
+    }
 
-    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "Case.cls" });
+    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
     defer gpa.free(path);
 
     const roots = [_][]const u8{path};

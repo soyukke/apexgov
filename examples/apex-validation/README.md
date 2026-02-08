@@ -10,6 +10,7 @@
   - `GuardedLoopService.cls`: `if (n > 120) return;` で上限を与える例
   - `ExceededGuardService.cls`: `if (n > 200) return;` でもSOQL上限を超える例
   - `ElseIfGuardService.cls`: `} else if (n > 140) return;` 形式の上限ガード例
+  - `CrossFileCallerService.cls` + `CrossFileDmlHelper.cls`: 別クラス呼び出し経由でDMLに到達する例
   - `HelperChainService.cls`: ループ内ヘルパー呼び出し経由でDMLに到達する例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
@@ -28,6 +29,7 @@ zig build run -- check examples/apex-validation/force-app --format text
 - `GovernorRiskService.cls` に対して `AG002/AG003` を含むfindingが出る
 - `GuardedLoopService.cls` では `Loop upper bound <= 120` の警告が出る
 - `ExceededGuardService.cls` では `Loop upper bound <= 200` の超過エラーが出る
+- `CrossFileCallerService.cls` では別クラス経由でも `AG003` が出る
 - `HelperChainService.cls` ではヘルパーチェーン経由でも `AG003` が出る
 - exit code は `1`（デフォルト閾値 `warning`）
 
