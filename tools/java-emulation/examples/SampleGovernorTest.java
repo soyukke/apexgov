@@ -226,6 +226,30 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void nestedSavepointRollbackInvalidatesInnerToken() {
+    Database.clearInMemoryStore();
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "Base")));
+
+    Database.Savepoint outer = Database.setSavepoint();
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "OuterOnly")));
+
+    Database.Savepoint inner = Database.setSavepoint();
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "InnerOnly")));
+
+    Database.rollback(outer);
+    SystemAssert.assertEquals(
+        1, Database.countQuery("SELECT count() FROM Account"), "outer rollback should restore base state");
+
+    boolean threw = false;
+    try {
+      Database.rollback(inner);
+    } catch (IllegalArgumentException expected) {
+      threw = true;
+    }
+    SystemAssert.assertTrue(threw, "inner savepoint token should be invalid after outer rollback");
+  }
+
+  @Test
   public void dmlCountersTrackStatementsForDatabaseApis() {
     Database.clearInMemoryStore();
     SystemAssert.assertEquals(0, Limits.getDmlStatements(), "fresh test should start at dml=0");
