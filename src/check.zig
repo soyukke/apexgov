@@ -559,15 +559,16 @@ fn applyGuardBounds(
     bounds: *std.StringHashMap(Bound),
     line: []const u8,
 ) !void {
-    if (!std.mem.startsWith(u8, line, "if") and !std.mem.startsWith(u8, line, "else if")) return;
+    const if_idx = indexOfIfKeyword(line) orelse return;
     if (!containsExitStatement(line)) return;
     if (std.mem.indexOf(u8, line, "||") != null) return;
 
-    const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return;
-    const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return;
+    const scoped = line[if_idx..];
+    const open_idx = std.mem.indexOfScalar(u8, scoped, '(') orelse return;
+    const close_idx = std.mem.lastIndexOfScalar(u8, scoped, ')') orelse return;
     if (close_idx <= open_idx) return;
 
-    const condition = std.mem.trim(u8, line[(open_idx + 1)..close_idx], " \t");
+    const condition = std.mem.trim(u8, scoped[(open_idx + 1)..close_idx], " \t");
     var has_any_bound = false;
     var validate_segments = std.mem.splitSequence(u8, condition, "&&");
     while (validate_segments.next()) |segment_raw| {
@@ -585,6 +586,19 @@ fn applyGuardBounds(
         const update = parseGuardUpperBound(segment) orelse unreachable;
         try setBound(arena_allocator, bounds, update);
     }
+}
+
+fn indexOfIfKeyword(line: []const u8) ?usize {
+    var i: usize = 0;
+    while (i + 2 <= line.len) : (i += 1) {
+        if (!std.mem.eql(u8, line[i .. i + 2], "if")) continue;
+        const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+        if (!before_ok) continue;
+        if (i + 2 >= line.len) return i;
+        const next = line[i + 2];
+        if (next == ' ' or next == '(') return i;
+    }
+    return null;
 }
 
 fn parseGuardUpperBound(segment: []const u8) ?BoundUpdate {
@@ -996,6 +1010,28 @@ test "size guard with >= sets inclusive cap" {
 
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 150") != null);
+}
+
+test "else-if guard on same line with brace is recognized" {
+    const source =
+        \\public with sharing class ElseIfGuardService {
+        \\    public static void run(List<Account> records, Boolean bypass) {
+        \\        Integer n = records.size();
+        \\        if (bypass) {
+        \\            return;
+        \\        } else if (n > 140) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 140") != null);
 }
 
 fn runCheckOnTempSource(

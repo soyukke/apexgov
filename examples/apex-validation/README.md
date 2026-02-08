@@ -9,6 +9,7 @@
   - `GovernorRiskService.cls`: SOQL/DML in loop などのNG例
   - `GuardedLoopService.cls`: `if (n > 120) return;` で上限を与える例
   - `ExceededGuardService.cls`: `if (n > 200) return;` でもSOQL上限を超える例
+  - `ElseIfGuardService.cls`: `} else if (n > 140) return;` 形式の上限ガード例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
 - `baseline/profile-baseline.json`: 回帰比較用ベースライン
