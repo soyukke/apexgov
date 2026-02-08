@@ -89,12 +89,12 @@ PRで機能追加する場合は、実装・テストと同時にこのカバレ
 
 ## Local validation fixtures
 
-`/Users/soyukke/dev/zig/apexgov/examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
-手順は `/Users/soyukke/dev/zig/apexgov/examples/apex-validation/README.md` を参照してください。
+`examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
+手順は `examples/apex-validation/README.md` を参照してください。
 
 ## Java Calibration
 
-`/Users/soyukke/dev/zig/apexgov/tools/java-calibration` に、CPU係数の相対生成ツールがあります。
+`tools/java-calibration` に、CPU係数の相対生成ツールがあります。
 
 ```bash
 nix develop
@@ -107,7 +107,7 @@ zig build run -- emulate java --nix
 
 ## Java Test Emulation
 
-`/Users/soyukke/dev/zig/apexgov/tools/java-emulation` に、`@Test` をローカル実行して CPU/Heap 超過を検出する簡易ランナーがあります。
+`tools/java-emulation` に、`@Test` をローカル実行して CPU/Heap 超過を検出する簡易ランナーがあります。
 
 ```bash
 zig build run -- emulate test --nix
@@ -122,4 +122,8 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 `apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
 `Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。
 
-詳細は `/Users/soyukke/dev/zig/apexgov/tools/java-emulation/README.md` を参照してください。
+詳細は `tools/java-emulation/README.md` を参照してください。
+
+## License
+
+MIT License (`LICENSE`)
