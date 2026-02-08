@@ -7,6 +7,7 @@
 - Detect governor-risk code paths before deploy
 - Estimate loop upper bounds from guards (for example `if (n > 200) return`) and show likely limit exceed points
 - Follow helper method call chains across files/classes to catch indirect SOQL/DML in loops
+- Multiply callee-side loop effects into governor estimates (for example nested helper loops)
 - Track CPU/Heap budgets from Apex Debug Logs in CI
 - Emit machine-readable reports (`json`, `sarif`) for pipelines
 

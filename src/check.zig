@@ -52,6 +52,15 @@ const MethodMetrics = struct {
         self.collection_alloc = satAdd(self.collection_alloc, other.collection_alloc);
         self.string_append = satAdd(self.string_append, other.string_append);
     }
+
+    fn addScaled(self: *MethodMetrics, other: MethodMetrics, multiplier: u64) void {
+        self.soql = satAdd(self.soql, satMul(other.soql, multiplier));
+        self.dml = satAdd(self.dml, satMul(other.dml, multiplier));
+        self.json = satAdd(self.json, satMul(other.json, multiplier));
+        self.clone = satAdd(self.clone, satMul(other.clone, multiplier));
+        self.collection_alloc = satAdd(self.collection_alloc, satMul(other.collection_alloc, multiplier));
+        self.string_append = satAdd(self.string_append, satMul(other.string_append, multiplier));
+    }
 };
 
 const ResolveState = enum {
@@ -60,17 +69,21 @@ const ResolveState = enum {
     resolved,
 };
 
+const MethodCall = struct {
+    callee_key: []const u8,
+    multiplier: u64,
+};
+
 const MethodSummary = struct {
     owner: []const u8,
     name: []const u8,
     direct: MethodMetrics = .{},
     total: MethodMetrics = .{},
-    calls: std.ArrayListUnmanaged([]const u8) = .{},
+    calls: std.ArrayListUnmanaged(MethodCall) = .{},
     state: ResolveState = .unresolved,
 };
 
 const MethodScope = struct {
-    key: []const u8,
     owner: []const u8,
     name: []const u8,
     end_depth: i32,
@@ -257,6 +270,7 @@ fn scanContent(
                 line_no,
                 .soql,
                 loop_upper_bound,
+                soql_count,
             );
             try appendCpuEstimateFinding(
                 gpa,
@@ -282,6 +296,7 @@ fn scanContent(
                 line_no,
                 .dml,
                 loop_upper_bound,
+                dml_count,
             );
             try appendCpuEstimateFinding(
                 gpa,
@@ -460,6 +475,11 @@ fn collectMethodDirectMetricsAndCalls(
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(arena_allocator);
 
+    var method_loop_scopes: std.ArrayList(LoopScope) = .empty;
+    defer method_loop_scopes.deinit(arena_allocator);
+
+    var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
+
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -477,8 +497,9 @@ fn collectMethodDirectMetricsAndCalls(
             if (current_method == null and owner != null) {
                 if (parseMethodStart(trimmed)) |name| {
                     if (findMethodSummaryByOwnerName(summaries, owner.?, name)) |_| {
+                        method_loop_scopes.clearRetainingCapacity();
+                        method_bounds = std.StringHashMap(Bound).init(arena_allocator);
                         current_method = .{
-                            .key = try formatMethodKey(arena_allocator, owner.?, name),
                             .owner = owner.?,
                             .name = name,
                             .end_depth = brace_depth + 1,
@@ -491,15 +512,36 @@ fn collectMethodDirectMetricsAndCalls(
 
             if (!started_method) {
                 if (current_method) |scope| {
+                    popClosedScopes(&method_loop_scopes, brace_depth);
+                    try applyBoundUpdates(arena_allocator, &method_bounds, trimmed);
+                    const local_loop_info = if (isLoopStart(trimmed)) inferLoopInfo(trimmed, &method_bounds) else null;
+                    const local_loop_multiplier = effectiveLoopUpperBound(method_loop_scopes.items, local_loop_info) orelse 1;
+
                     const summary = findMethodSummaryByOwnerName(summaries, scope.owner, scope.name) orelse unreachable;
-                    applyDirectLineMetrics(&summary.direct, trimmed);
-                    try recordCalledMethods(arena_allocator, &summary.calls, summaries, scope.owner, scope.name, trimmed);
+                    applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier);
+                    try recordCalledMethods(
+                        arena_allocator,
+                        &summary.calls,
+                        summaries,
+                        scope.owner,
+                        scope.name,
+                        trimmed,
+                        local_loop_multiplier,
+                    );
+
+                    if (local_loop_info != null and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+                        try method_loop_scopes.append(arena_allocator, .{
+                            .end_depth = brace_depth + 1,
+                            .max_iterations = local_loop_info.?.max_iterations,
+                        });
+                    }
                 }
             }
         }
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
         if (current_method) |*scope| {
+            popClosedScopes(&method_loop_scopes, brace_depth);
             if (!scope.entered_body and brace_depth >= scope.end_depth) {
                 scope.entered_body = true;
             }
@@ -557,9 +599,9 @@ fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []cons
 
     summary.state = .resolving;
     var total = summary.direct;
-    for (summary.calls.items) |callee| {
-        const callee_total = resolveMethodTotal(summaries, callee);
-        total.add(callee_total);
+    for (summary.calls.items) |call| {
+        const callee_total = resolveMethodTotal(summaries, call.callee_key);
+        total.addScaled(callee_total, call.multiplier);
     }
     summary.total = total;
     summary.state = .resolved;
@@ -663,22 +705,24 @@ fn extractLeadingIdentifier(raw: []const u8) ?[]const u8 {
     return raw[0..end];
 }
 
-fn applyDirectLineMetrics(metrics: *MethodMetrics, line: []const u8) void {
-    if (containsSoql(line)) metrics.soql = satAdd(metrics.soql, 1);
-    if (containsDml(line)) metrics.dml = satAdd(metrics.dml, 1);
-    if (containsJsonWork(line)) metrics.json = satAdd(metrics.json, 1);
-    if (containsCloneWork(line)) metrics.clone = satAdd(metrics.clone, 1);
-    if (containsCollectionAlloc(line)) metrics.collection_alloc = satAdd(metrics.collection_alloc, 1);
-    if (containsStringAppend(line)) metrics.string_append = satAdd(metrics.string_append, 1);
+fn applyDirectLineMetrics(metrics: *MethodMetrics, line: []const u8, multiplier: u64) void {
+    const weight = if (multiplier == 0) @as(u64, 1) else multiplier;
+    if (containsSoql(line)) metrics.soql = satAdd(metrics.soql, weight);
+    if (containsDml(line)) metrics.dml = satAdd(metrics.dml, weight);
+    if (containsJsonWork(line)) metrics.json = satAdd(metrics.json, weight);
+    if (containsCloneWork(line)) metrics.clone = satAdd(metrics.clone, weight);
+    if (containsCollectionAlloc(line)) metrics.collection_alloc = satAdd(metrics.collection_alloc, weight);
+    if (containsStringAppend(line)) metrics.string_append = satAdd(metrics.string_append, weight);
 }
 
 fn recordCalledMethods(
     arena_allocator: std.mem.Allocator,
-    calls: *std.ArrayListUnmanaged([]const u8),
+    calls: *std.ArrayListUnmanaged(MethodCall),
     summaries: *std.StringHashMap(MethodSummary),
     caller_owner: []const u8,
     caller_name: []const u8,
     line: []const u8,
+    multiplier: u64,
 ) !void {
     var it = summaries.iterator();
     while (it.next()) |entry| {
@@ -686,19 +730,26 @@ fn recordCalledMethods(
         const callee = entry.value_ptr.*;
         if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
         if (!lineCallsMethod(line, caller_owner, callee.owner, callee.name)) continue;
-        try appendUniqueCall(arena_allocator, calls, callee_key);
+        try appendOrAccumulateCall(arena_allocator, calls, callee_key, multiplier);
     }
 }
 
-fn appendUniqueCall(
+fn appendOrAccumulateCall(
     arena_allocator: std.mem.Allocator,
-    calls: *std.ArrayListUnmanaged([]const u8),
-    callee: []const u8,
+    calls: *std.ArrayListUnmanaged(MethodCall),
+    callee_key: []const u8,
+    multiplier: u64,
 ) !void {
-    for (calls.items) |existing| {
-        if (std.mem.eql(u8, existing, callee)) return;
+    const weight = if (multiplier == 0) @as(u64, 1) else multiplier;
+    for (calls.items) |*existing| {
+        if (!std.mem.eql(u8, existing.callee_key, callee_key)) continue;
+        existing.multiplier = satAdd(existing.multiplier, weight);
+        return;
     }
-    try calls.append(arena_allocator, callee);
+    try calls.append(arena_allocator, .{
+        .callee_key = callee_key,
+        .multiplier = weight,
+    });
 }
 
 fn inferCalledMethodMetrics(
@@ -880,6 +931,7 @@ fn appendGovernorFinding(
     line_no: usize,
     kind: GovernorKind,
     loop_upper_bound: ?u64,
+    operations_per_iteration: u64,
 ) !void {
     const rule_id = switch (kind) {
         .soql => "AG002",
@@ -898,16 +950,25 @@ fn appendGovernorFinding(
         .dml => "DML",
     };
 
-    var message_buffer: [400]u8 = undefined;
+    const per_iter = if (operations_per_iteration == 0) @as(u64, 1) else operations_per_iteration;
+    var message_buffer: [520]u8 = undefined;
     var severity: model.Severity = .warning;
 
     const message = if (loop_upper_bound) |upper| blk: {
-        if (upper > limit) {
+        const estimated_total = satMul(upper, per_iter);
+        if (estimated_total > limit) {
             severity = .err;
             break :blk try std.fmt.bufPrint(
                 &message_buffer,
-                "Loop upper bound <= {d}. {s} in loop may run up to {d} times and exceed the transaction limit ({d}).",
-                .{ upper, op_label, upper, limit },
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration) and exceed the transaction limit ({d}).",
+                .{ upper, op_label, estimated_total, per_iter, limit },
+            );
+        }
+        if (per_iter > 1) {
+            break :blk try std.fmt.bufPrint(
+                &message_buffer,
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration), below transaction limit ({d}) for now but fragile under growth.",
+                .{ upper, op_label, estimated_total, per_iter, limit },
             );
         }
         break :blk try std.fmt.bufPrint(
@@ -918,8 +979,8 @@ fn appendGovernorFinding(
     } else blk: {
         break :blk try std.fmt.bufPrint(
             &message_buffer,
-            "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe. Add explicit cap checks (for example if (n > {d}) return).",
-            .{ op_label, limit },
+            "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe (estimated {d} per iteration). Add explicit cap checks (for example if (n > {d}) return).",
+            .{ op_label, per_iter, limit },
         );
     };
 
@@ -1725,6 +1786,62 @@ test "helper signature with brace on next line is summarized" {
 
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 100") != null);
+}
+
+test "callee inner loop multiplies governor estimate" {
+    const source =
+        \\public with sharing class InnerLoopMultiplierService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 40) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            applyFive(records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void applyFive(Account acc) {
+        \\        for (Integer j = 0; j < 5; j++) {
+        \\            update acc;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(dml.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
+}
+
+test "callee looped helper call multiplies transitive DML" {
+    const source =
+        \\public with sharing class NestedHelperMultiplierService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 50) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            applyFourTimes(records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void applyFourTimes(Account acc) {
+        \\        for (Integer j = 0; j < 4; j++) {
+        \\            applyOne(acc);
+        \\        }
+        \\    }
+        \\
+        \\    private static void applyOne(Account acc) {
+        \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(dml.severity == .err);
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
 }
 
 fn runCheckOnTempSource(
