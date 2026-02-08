@@ -684,37 +684,88 @@ public final class SampleGovernorTest {
             ApexSObject.of("Account").set("Name", "C-Null").set("Score", null),
             ApexSObject.of("Account").set("Name", "D-High").set("Score", 20)));
 
-    List<ApexSObject> defaultAsc =
-        Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score ASC, Name ASC");
-    SystemAssert.assertEquals("A-Null", defaultAsc.get(0).get("Name"), "default ASC should keep null first");
-    SystemAssert.assertEquals("C-Null", defaultAsc.get(1).get("Name"), "default ASC should keep null first");
-    SystemAssert.assertEquals("B-Low", defaultAsc.get(2).get("Name"), "default ASC numeric ordering mismatch");
-    SystemAssert.assertEquals("D-High", defaultAsc.get(3).get("Name"), "default ASC numeric ordering mismatch");
+    Database.NullOrderDefault original = Database.getSoqlNullOrderDefault();
+    try {
+      Database.setSoqlNullOrderDefault(Database.NullOrderDefault.FIRST);
 
-    List<ApexSObject> defaultDesc =
-        Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score DESC, Name ASC");
-    SystemAssert.assertEquals("A-Null", defaultDesc.get(0).get("Name"), "default DESC should keep null first");
-    SystemAssert.assertEquals("C-Null", defaultDesc.get(1).get("Name"), "default DESC should keep null first");
-    SystemAssert.assertEquals("D-High", defaultDesc.get(2).get("Name"), "default DESC numeric ordering mismatch");
-    SystemAssert.assertEquals("B-Low", defaultDesc.get(3).get("Name"), "default DESC numeric ordering mismatch");
+      List<ApexSObject> defaultAsc =
+          Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score ASC, Name ASC");
+      SystemAssert.assertEquals("A-Null", defaultAsc.get(0).get("Name"), "default ASC should keep null first");
+      SystemAssert.assertEquals("C-Null", defaultAsc.get(1).get("Name"), "default ASC should keep null first");
+      SystemAssert.assertEquals("B-Low", defaultAsc.get(2).get("Name"), "default ASC numeric ordering mismatch");
+      SystemAssert.assertEquals("D-High", defaultAsc.get(3).get("Name"), "default ASC numeric ordering mismatch");
 
-    List<ApexSObject> first =
-        Database.query(
-            "SELECT Id, Name, Score FROM Account ORDER BY Score ASC NULLS FIRST, Name ASC");
-    SystemAssert.assertEquals(4, first.size(), "NULLS FIRST query size mismatch");
-    SystemAssert.assertEquals("A-Null", first.get(0).get("Name"), "NULLS FIRST ordering mismatch");
-    SystemAssert.assertEquals("C-Null", first.get(1).get("Name"), "NULLS FIRST ordering mismatch");
-    SystemAssert.assertEquals("B-Low", first.get(2).get("Name"), "NULLS FIRST ordering mismatch");
-    SystemAssert.assertEquals("D-High", first.get(3).get("Name"), "NULLS FIRST ordering mismatch");
+      List<ApexSObject> defaultDesc =
+          Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score DESC, Name ASC");
+      SystemAssert.assertEquals("A-Null", defaultDesc.get(0).get("Name"), "default DESC should keep null first");
+      SystemAssert.assertEquals("C-Null", defaultDesc.get(1).get("Name"), "default DESC should keep null first");
+      SystemAssert.assertEquals("D-High", defaultDesc.get(2).get("Name"), "default DESC numeric ordering mismatch");
+      SystemAssert.assertEquals("B-Low", defaultDesc.get(3).get("Name"), "default DESC numeric ordering mismatch");
 
-    List<ApexSObject> last =
-        Database.query(
-            "SELECT Id, Name, Score FROM Account ORDER BY Score DESC NULLS LAST, Name ASC");
-    SystemAssert.assertEquals(4, last.size(), "NULLS LAST query size mismatch");
-    SystemAssert.assertEquals("D-High", last.get(0).get("Name"), "NULLS LAST ordering mismatch");
-    SystemAssert.assertEquals("B-Low", last.get(1).get("Name"), "NULLS LAST ordering mismatch");
-    SystemAssert.assertEquals("A-Null", last.get(2).get("Name"), "NULLS LAST ordering mismatch");
-    SystemAssert.assertEquals("C-Null", last.get(3).get("Name"), "NULLS LAST ordering mismatch");
+      List<ApexSObject> first =
+          Database.query(
+              "SELECT Id, Name, Score FROM Account ORDER BY Score ASC NULLS FIRST, Name ASC");
+      SystemAssert.assertEquals(4, first.size(), "NULLS FIRST query size mismatch");
+      SystemAssert.assertEquals("A-Null", first.get(0).get("Name"), "NULLS FIRST ordering mismatch");
+      SystemAssert.assertEquals("C-Null", first.get(1).get("Name"), "NULLS FIRST ordering mismatch");
+      SystemAssert.assertEquals("B-Low", first.get(2).get("Name"), "NULLS FIRST ordering mismatch");
+      SystemAssert.assertEquals("D-High", first.get(3).get("Name"), "NULLS FIRST ordering mismatch");
+
+      List<ApexSObject> last =
+          Database.query(
+              "SELECT Id, Name, Score FROM Account ORDER BY Score DESC NULLS LAST, Name ASC");
+      SystemAssert.assertEquals(4, last.size(), "NULLS LAST query size mismatch");
+      SystemAssert.assertEquals("D-High", last.get(0).get("Name"), "NULLS LAST ordering mismatch");
+      SystemAssert.assertEquals("B-Low", last.get(1).get("Name"), "NULLS LAST ordering mismatch");
+      SystemAssert.assertEquals("A-Null", last.get(2).get("Name"), "NULLS LAST ordering mismatch");
+      SystemAssert.assertEquals("C-Null", last.get(3).get("Name"), "NULLS LAST ordering mismatch");
+    } finally {
+      Database.setSoqlNullOrderDefault(original);
+    }
+  }
+
+  @Test
+  public void soqlNullOrderDefaultCanBeConfigured() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "B-Low").set("Score", 10),
+            ApexSObject.of("Account").set("Name", "C-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "D-High").set("Score", 20)));
+
+    Database.NullOrderDefault original = Database.getSoqlNullOrderDefault();
+    try {
+      Database.setSoqlNullOrderDefault(Database.NullOrderDefault.LAST);
+      List<ApexSObject> lastMode =
+          Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score DESC, Name ASC");
+      SystemAssert.assertEquals("D-High", lastMode.get(0).get("Name"), "LAST mode order mismatch");
+      SystemAssert.assertEquals("B-Low", lastMode.get(1).get("Name"), "LAST mode order mismatch");
+      SystemAssert.assertEquals("A-Null", lastMode.get(2).get("Name"), "LAST mode order mismatch");
+      SystemAssert.assertEquals("C-Null", lastMode.get(3).get("Name"), "LAST mode order mismatch");
+
+      Database.setSoqlNullOrderDefault(Database.NullOrderDefault.DIRECTIONAL);
+      List<ApexSObject> directionalAsc =
+          Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score ASC, Name ASC");
+      SystemAssert.assertEquals(
+          "A-Null", directionalAsc.get(0).get("Name"), "DIRECTIONAL ASC should keep null first");
+      SystemAssert.assertEquals(
+          "C-Null", directionalAsc.get(1).get("Name"), "DIRECTIONAL ASC should keep null first");
+      List<ApexSObject> directionalDesc =
+          Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score DESC, Name ASC");
+      SystemAssert.assertEquals(
+          "D-High", directionalDesc.get(0).get("Name"), "DIRECTIONAL DESC should keep null last");
+      SystemAssert.assertEquals(
+          "B-Low", directionalDesc.get(1).get("Name"), "DIRECTIONAL DESC should keep null last");
+      SystemAssert.assertEquals(
+          "A-Null", directionalDesc.get(2).get("Name"), "DIRECTIONAL DESC should keep null last");
+      SystemAssert.assertEquals(
+          "C-Null", directionalDesc.get(3).get("Name"), "DIRECTIONAL DESC should keep null last");
+    } finally {
+      Database.setSoqlNullOrderDefault(original);
+    }
   }
 
   @Test

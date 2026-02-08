@@ -24,11 +24,20 @@ final class ApexStore {
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
+  private static final ThreadLocal<RuntimeConfig> CONFIG = ThreadLocal.withInitial(RuntimeConfig::new);
 
   private ApexStore() {}
 
   static void reset() {
     STATE.set(new State());
+  }
+
+  static void setSoqlNullOrderDefault(Database.NullOrderDefault mode) {
+    CONFIG.get().nullOrderDefault = normalizeNullOrderDefault(mode);
+  }
+
+  static Database.NullOrderDefault getSoqlNullOrderDefault() {
+    return normalizeNullOrderDefault(CONFIG.get().nullOrderDefault);
   }
 
   static Database.SaveResult[] insert(Collection<ApexSObject> records, boolean allOrNone) {
@@ -594,7 +603,7 @@ final class ApexStore {
             for (OrderByKey key : spec.orderByKeys) {
               Object leftValue = left.get(key.field);
               Object rightValue = right.get(key.field);
-              boolean nullsFirst = key.nullsFirst == null || key.nullsFirst;
+              boolean nullsFirst = effectiveNullsFirst(key);
               int nullOrderCompared = compareNullOrder(leftValue, rightValue, nullsFirst);
               if (nullOrderCompared != 0) {
                 return nullOrderCompared;
@@ -726,6 +735,23 @@ final class ApexStore {
       return nullsFirst ? 1 : -1;
     }
     return 0;
+  }
+
+  private static boolean effectiveNullsFirst(OrderByKey key) {
+    if (key != null && key.nullsFirst != null) {
+      return key.nullsFirst;
+    }
+    Database.NullOrderDefault mode = normalizeNullOrderDefault(CONFIG.get().nullOrderDefault);
+    boolean descending = key != null && key.descending;
+    return switch (mode) {
+      case FIRST -> true;
+      case LAST -> false;
+      case DIRECTIONAL -> !descending;
+    };
+  }
+
+  private static Database.NullOrderDefault normalizeNullOrderDefault(Database.NullOrderDefault mode) {
+    return mode == null ? Database.NullOrderDefault.FIRST : mode;
   }
 
   @SuppressWarnings("unchecked")
@@ -1662,5 +1688,9 @@ final class ApexStore {
       savepointSequence += 1L;
       return savepointSequence;
     }
+  }
+
+  private static final class RuntimeConfig {
+    Database.NullOrderDefault nullOrderDefault = Database.NullOrderDefault.FIRST;
   }
 }

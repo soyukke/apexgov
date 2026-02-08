@@ -112,6 +112,7 @@ zig build run -- emulate java --nix
 ```bash
 zig build run -- emulate test --nix
 CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
+SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 ```
 
 `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest` も利用できます。

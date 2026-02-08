@@ -6,6 +6,7 @@ tests_dir="$repo_root/tools/java-emulation/examples"
 out_dir="$repo_root/reports/java-emulation"
 cpu_limit_ms="${CPU_LIMIT_MS:-10000}"
 heap_limit_bytes="${HEAP_LIMIT_BYTES:-6000000}"
+soql_null_order_default="${SOQL_NULL_ORDER_DEFAULT:-FIRST}"
 
 usage() {
   cat <<'USAGE'
@@ -14,6 +15,8 @@ usage: run-tests.sh [--tests-dir DIR] [--out-dir DIR]
 options:
   --tests-dir DIR   Java test source directory (default: tools/java-emulation/examples)
   --out-dir DIR     Output directory (default: reports/java-emulation)
+env:
+  SOQL_NULL_ORDER_DEFAULT=FIRST|LAST|DIRECTIONAL (default: FIRST)
 USAGE
 }
 
@@ -68,4 +71,5 @@ java -cp "$out_dir/build" apexemu.runner.Runner \
   --classes-dir "$out_dir/build" \
   --out "$out_dir/report.json" \
   --cpu-limit-ms "$cpu_limit_ms" \
-  --heap-limit-bytes "$heap_limit_bytes"
+  --heap-limit-bytes "$heap_limit_bytes" \
+  --soql-null-order-default "$soql_null_order_default"

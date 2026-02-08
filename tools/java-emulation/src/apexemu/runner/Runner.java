@@ -96,6 +96,7 @@ public final class Runner {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
     Database.clearTriggerHandlers();
+    Database.setSoqlNullOrderDefault(config.soqlNullOrderDefault);
     Limits.reset();
     Limits.configure(config.cpuLimitMs, config.heapLimitBytes);
 
@@ -322,12 +323,19 @@ public final class Runner {
     final Path outPath;
     final long cpuLimitMs;
     final long heapLimitBytes;
+    final Database.NullOrderDefault soqlNullOrderDefault;
 
-    Config(Path classesDir, Path outPath, long cpuLimitMs, long heapLimitBytes) {
+    Config(
+        Path classesDir,
+        Path outPath,
+        long cpuLimitMs,
+        long heapLimitBytes,
+        Database.NullOrderDefault soqlNullOrderDefault) {
       this.classesDir = classesDir;
       this.outPath = outPath;
       this.cpuLimitMs = cpuLimitMs;
       this.heapLimitBytes = heapLimitBytes;
+      this.soqlNullOrderDefault = soqlNullOrderDefault;
     }
 
     static Config parse(String[] args) {
@@ -335,6 +343,8 @@ public final class Runner {
       Path outPath = null;
       long cpuLimitMs = 10_000L;
       long heapLimitBytes = 6_000_000L;
+      Database.NullOrderDefault soqlNullOrderDefault =
+          parseNullOrderDefault(System.getenv("SOQL_NULL_ORDER_DEFAULT"));
 
       int i = 0;
       while (i < args.length) {
@@ -360,6 +370,11 @@ public final class Runner {
             requireValue(i, args, "--heap-limit-bytes");
             heapLimitBytes = Long.parseLong(args[i]);
             break;
+          case "--soql-null-order-default":
+            i += 1;
+            requireValue(i, args, "--soql-null-order-default");
+            soqlNullOrderDefault = parseNullOrderDefault(args[i]);
+            break;
           case "-h":
           case "--help":
             printHelpAndExit(0);
@@ -375,7 +390,7 @@ public final class Runner {
         System.err.println("missing --classes-dir");
         printHelpAndExit(2);
       }
-      return new Config(classesDir, outPath, cpuLimitMs, heapLimitBytes);
+      return new Config(classesDir, outPath, cpuLimitMs, heapLimitBytes, soqlNullOrderDefault);
     }
 
     private static void requireValue(int idx, String[] args, String option) {
@@ -387,8 +402,28 @@ public final class Runner {
 
     private static void printHelpAndExit(int code) {
       System.out.println(
-          "Runner options: --classes-dir DIR [--out FILE] [--cpu-limit-ms N] [--heap-limit-bytes N]");
+          "Runner options: --classes-dir DIR [--out FILE] [--cpu-limit-ms N] [--heap-limit-bytes N] [--soql-null-order-default FIRST|LAST|DIRECTIONAL]");
       System.exit(code);
+    }
+
+    private static Database.NullOrderDefault parseNullOrderDefault(String raw) {
+      if (raw == null || raw.isBlank()) {
+        return Database.NullOrderDefault.FIRST;
+      }
+      String normalized = raw.trim().toUpperCase();
+      return switch (normalized) {
+        case "FIRST" -> Database.NullOrderDefault.FIRST;
+        case "LAST" -> Database.NullOrderDefault.LAST;
+        case "DIRECTIONAL" -> Database.NullOrderDefault.DIRECTIONAL;
+        default -> {
+          System.err.println(
+              "invalid --soql-null-order-default: "
+                  + raw
+                  + " (allowed: FIRST, LAST, DIRECTIONAL)");
+          printHelpAndExit(2);
+          yield Database.NullOrderDefault.FIRST;
+        }
+      };
     }
   }
 }

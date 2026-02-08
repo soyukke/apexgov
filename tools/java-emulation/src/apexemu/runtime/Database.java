@@ -103,6 +103,14 @@ public final class Database {
     Trigger.clearHandlers();
   }
 
+  public static void setSoqlNullOrderDefault(NullOrderDefault mode) {
+    ApexStore.setSoqlNullOrderDefault(mode);
+  }
+
+  public static NullOrderDefault getSoqlNullOrderDefault() {
+    return ApexStore.getSoqlNullOrderDefault();
+  }
+
   private static void ensureSuccess(SaveResult[] results, String operation) {
     if (results == null) {
       return;
@@ -133,6 +141,12 @@ public final class Database {
     Savepoint(long token) {
       this.token = token;
     }
+  }
+
+  public enum NullOrderDefault {
+    FIRST,
+    LAST,
+    DIRECTIONAL
   }
 
   public static class SaveResult {

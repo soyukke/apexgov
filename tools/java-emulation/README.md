@@ -24,6 +24,7 @@ zig build run -- emulate test --nix
 
 ```bash
 CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
+SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 ```
 
 ## Outputs
@@ -120,5 +121,6 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 - supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
 - `LIKE` は大文字小文字を区別せず、`\%` / `\_` でワイルドカードをエスケープ可能
 - optional `ORDER BY field [ASC|DESC] [NULLS FIRST|LAST]` (comma-separated multi-key supported)
-  - NULL sort default は `NULLS FIRST` 扱い（方向未指定時）
+  - NULL sort default は `Database.setSoqlNullOrderDefault(...)` または `SOQL_NULL_ORDER_DEFAULT` で切替可能
+    - `FIRST` (default), `LAST`, `DIRECTIONAL` (`ASC=NULLS FIRST`, `DESC=NULLS LAST`)
 - optional `LIMIT n`
