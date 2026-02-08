@@ -283,6 +283,118 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void mergeAutoDispatchesUpdateAndDeleteTriggers() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Master"),
+            ApexSObject.of("Account").set("Name", "Dup-A"),
+            ApexSObject.of("Account").set("Name", "Dup-B")));
+
+    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject duplicateA = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-A' LIMIT 1").get(0);
+    ApexSObject duplicateB = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-B' LIMIT 1").get(0);
+
+    final int[] beforeUpdateCount = new int[] {0};
+    final int[] afterUpdateCount = new int[] {0};
+    final int[] beforeDeleteCount = new int[] {0};
+    final int[] afterDeleteCount = new int[] {0};
+
+    Trigger.onBeforeUpdate(
+        "Account",
+        () -> {
+          beforeUpdateCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isUpdate(), "merge should dispatch update context");
+          SystemAssert.assertEquals(1, Trigger.getOld().size(), "merge update old size mismatch");
+          ApexSObject row = (ApexSObject) Trigger.getNew().get(0);
+          row.set("Name", String.valueOf(row.get("Name")) + "-BM");
+        });
+    Trigger.onAfterUpdate("Account", () -> afterUpdateCount[0] += 1);
+    Trigger.onBeforeDelete(
+        "Account",
+        () -> {
+          beforeDeleteCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isDelete(), "merge should dispatch delete context");
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "merge delete old size mismatch");
+        });
+    Trigger.onAfterDelete(
+        "Account",
+        () -> {
+          afterDeleteCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isDelete(), "merge should dispatch delete context");
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "merge delete old size mismatch");
+        });
+
+    Database.merge(
+        ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Merged"),
+        List.of(
+            ApexSObject.of("Account").withId(duplicateA.id()),
+            ApexSObject.of("Account").withId(duplicateB.id())));
+
+    SystemAssert.assertEquals(1, beforeUpdateCount[0], "merge should fire before-update once");
+    SystemAssert.assertEquals(1, afterUpdateCount[0], "merge should fire after-update once");
+    SystemAssert.assertEquals(1, beforeDeleteCount[0], "merge should fire before-delete once");
+    SystemAssert.assertEquals(1, afterDeleteCount[0], "merge should fire after-delete once");
+
+    SystemAssert.assertEquals(1, Database.countQuery("SELECT count() FROM Account"), "merge should leave one row");
+    List<ApexSObject> mergedRows = Database.query("SELECT Id, Name FROM Account LIMIT 1");
+    SystemAssert.assertEquals(master.id(), mergedRows.get(0).id(), "master id should be retained after merge");
+    SystemAssert.assertEquals("Master-Merged-BM", mergedRows.get(0).get("Name"), "merged name mismatch");
+    SystemAssert.assertEquals(
+        0,
+        Database.countQuery("SELECT count() FROM Account WHERE Name IN ('Dup-A', 'Dup-B')"),
+        "duplicate rows should be removed from active store");
+  }
+
+  @Test
+  public void mergeAllOrNoneRollsBackOnFailure() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Master"),
+            ApexSObject.of("Account").set("Name", "Duplicate")));
+
+    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject duplicate =
+        Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
+
+    Database.SaveResult result =
+        Database.merge(
+            ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Changed"),
+            List.of(
+                ApexSObject.of("Account").withId(duplicate.id()),
+                ApexSObject.of("Account").withId("001xx-missing")),
+            true);
+
+    SystemAssert.assertFalse(result.isSuccess(), "merge should fail when one duplicate is missing");
+    SystemAssert.assertEquals(
+        "INVALID_CROSS_REFERENCE_KEY",
+        result.getErrors()[0].getStatusCode(),
+        "merge failure status mismatch");
+    SystemAssert.assertTrue(
+        result.getErrors()[0].getMessage().contains("allOrNone rollback"),
+        "merge allOrNone failure should indicate rollback");
+    SystemAssert.assertEquals(
+        2,
+        Database.countQuery("SELECT count() FROM Account"),
+        "failed merge should preserve original row count");
+    SystemAssert.assertEquals(
+        1,
+        Database.countQuery("SELECT count() FROM Account WHERE Name = 'Master'"),
+        "master should keep original value after failed merge");
+    SystemAssert.assertEquals(
+        0,
+        Database.countQuery("SELECT count() FROM Account WHERE Name = 'Master-Changed'"),
+        "master update should be rolled back when merge fails");
+  }
+
+  @Test
   public void inMemorySObjectStoreSupportsCrudAndQuery() {
     Database.clearInMemoryStore();
 
@@ -619,6 +731,11 @@ public final class SampleGovernorTest {
     Database.SaveResult[] partial = Database.update(List.of(ok, ng), false);
     SystemAssert.assertFalse(partial[1].isSuccess(), "partial mode should report per-row failure");
     SystemAssert.assertEquals(5, Limits.getDmlStatements(), "partial update call should count once");
+
+    Database.merge(
+        ApexSObject.of("Account").withId(rows.get(0).id()).set("Name", "A-Merged"),
+        ApexSObject.of("Account").withId(rows.get(1).id()));
+    SystemAssert.assertEquals(6, Limits.getDmlStatements(), "merge should count as one statement");
   }
 
   private static final class FutureWorker {

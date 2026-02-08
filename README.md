@@ -117,9 +117,9 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest` も利用できます。
 `stopTest()` では `@Future` / Queueable / Batch / Schedulable の簡易flushも実行されます。
 `apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
-`apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD / SOQLサブセットも使えます。
-`Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult` も使えます。
+`apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
+`Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult`、`Database.merge(master, duplicates, allOrNone)` も使えます。
 `apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
-`Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` 含む）実行時に trigger を自動発火できます。
+`Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。
 
 詳細は `/Users/soyukke/dev/zig/apexgov/tools/java-emulation/README.md` を参照してください。

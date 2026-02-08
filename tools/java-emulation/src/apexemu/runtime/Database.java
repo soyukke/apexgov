@@ -34,6 +34,14 @@ public final class Database {
     ensureSuccess(undelete(records, true), "undelete");
   }
 
+  public static void merge(ApexSObject masterRecord, ApexSObject duplicateRecord) {
+    ensureSuccess(merge(masterRecord, duplicateRecord, true), "merge");
+  }
+
+  public static void merge(ApexSObject masterRecord, Collection<ApexSObject> duplicateRecords) {
+    ensureSuccess(merge(masterRecord, duplicateRecords, true), "merge");
+  }
+
   public static SaveResult[] insert(Collection<ApexSObject> records, boolean allOrNone) {
     return ApexStore.insert(records, allOrNone);
   }
@@ -52,6 +60,16 @@ public final class Database {
 
   public static SaveResult[] undelete(Collection<ApexSObject> records, boolean allOrNone) {
     return ApexStore.undelete(records, allOrNone);
+  }
+
+  public static SaveResult merge(
+      ApexSObject masterRecord, ApexSObject duplicateRecord, boolean allOrNone) {
+    return merge(masterRecord, List.of(duplicateRecord), allOrNone);
+  }
+
+  public static SaveResult merge(
+      ApexSObject masterRecord, Collection<ApexSObject> duplicateRecords, boolean allOrNone) {
+    return ApexStore.merge(masterRecord, duplicateRecords, allOrNone);
   }
 
   public static Savepoint setSavepoint() {
@@ -100,6 +118,13 @@ public final class Database {
       }
       throw new IllegalArgumentException(operation + " failed: " + message);
     }
+  }
+
+  private static void ensureSuccess(SaveResult result, String operation) {
+    if (result == null) {
+      return;
+    }
+    ensureSuccess(new SaveResult[] {result}, operation);
   }
 
   public static final class Savepoint {

@@ -89,16 +89,18 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
   - `onAfterUndelete`
 
 `Trigger.run(...)` は実行後にコンテキストを自動クリアします。
-登録済みハンドラは `Database.insert/update/upsert/delete/undelete` 実行時に自動起動されます。
+登録済みハンドラは `Database.insert/update/upsert/delete/undelete/merge` 実行時に自動起動されます。
 `Database.upsert` は insert/update の実行経路に応じて trigger を自動起動します。
 
 ## In-Memory SObject Store
 
 `apexemu.runtime.Database` と `apexemu.runtime.ApexSObject` で、簡易CRUDとSOQLサブセットを使えます。
 
-- CRUD: `insert`, `update`, `upsert`, `delete`, `undelete`
+- CRUD: `insert`, `update`, `upsert`, `delete`, `undelete`, `merge`
 - transactional: `setSavepoint()`, `rollback(savepoint)`
-- save-result mode: `insert/update/upsert/delete/undelete(records, allOrNone)` + `Database.SaveResult`
+- save-result mode:
+  - `insert/update/upsert/delete/undelete(records, allOrNone)` + `Database.SaveResult[]`
+  - `merge(master, duplicateRecords, allOrNone)` + `Database.SaveResult`
   - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
 - schema registry: `Schema.object(\"Custom__c\")...register()`
   - registered object は required field / simple type validation を実施

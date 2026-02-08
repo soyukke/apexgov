@@ -6,9 +6,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.PatternSyntaxException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 final class ApexStore {
   private static final Pattern FROM_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([a-zA-Z_][\\w]*)");
@@ -49,6 +49,23 @@ final class ApexStore {
 
   static Database.SaveResult[] undelete(Collection<ApexSObject> records, boolean allOrNone) {
     return apply(records, allOrNone, DmlVerb.UNDELETE, ApexStore::undeleteOne);
+  }
+
+  static Database.SaveResult merge(
+      ApexSObject masterRecord, Collection<ApexSObject> duplicateRecords, boolean allOrNone) {
+    State state = STATE.get();
+    List<ApexSObject> normalizedDuplicates = normalize(duplicateRecords);
+    Limits.addDml(1);
+
+    StateSnapshot original = snapshotOf(state);
+    try {
+      return mergeOne(state, masterRecord, normalizedDuplicates);
+    } catch (RuntimeException error) {
+      restore(state, original);
+      String messagePrefix = allOrNone ? "allOrNone rollback" : null;
+      return failure(
+          masterRecord == null ? null : masterRecord.id(), classifyFailure(error), messagePrefix);
+    }
   }
 
   static long setSavepoint() {
@@ -363,6 +380,70 @@ final class ApexStore {
 
     activeBucket.put(id, deletedBucket.remove(id));
     return id;
+  }
+
+  private static Database.SaveResult mergeOne(
+      State state, ApexSObject rawMaster, List<ApexSObject> rawDuplicates) {
+    ApexSObject master = requireRecord(rawMaster);
+    validateForUpdate(master);
+    String masterId = requireId(master, "merge");
+    ApexSObject masterOld = snapshotActiveRow(state, master, "merge");
+    MergePlan plan = planMerge(state, master, masterId, rawDuplicates);
+
+    dispatchBefore(DmlVerb.UPDATE, List.of(master), List.of(masterOld));
+    dispatchBefore(DmlVerb.DELETE, null, plan.duplicateOldRows);
+
+    String mergedId = updateOne(state, master);
+    for (ApexSObject duplicateDelete : plan.duplicateDeleteRows) {
+      deleteOne(state, duplicateDelete);
+    }
+
+    ApexSObject masterNew = snapshotActiveRow(state, master, "merge");
+    dispatchAfter(DmlVerb.UPDATE, List.of(masterNew), List.of(masterOld));
+    dispatchAfter(DmlVerb.DELETE, null, plan.duplicateOldRows);
+
+    return success(mergedId);
+  }
+
+  private static MergePlan planMerge(
+      State state, ApexSObject master, String masterId, List<ApexSObject> rawDuplicates) {
+    if (rawDuplicates == null || rawDuplicates.isEmpty()) {
+      throw new IllegalArgumentException("merge requires at least one duplicate record");
+    }
+    if (rawDuplicates.size() > 2) {
+      throw new IllegalArgumentException("merge supports at most two duplicate records");
+    }
+
+    List<ApexSObject> duplicateDeleteRows = new ArrayList<>(rawDuplicates.size());
+    List<ApexSObject> duplicateOldRows = new ArrayList<>(rawDuplicates.size());
+    List<String> seenDuplicateIds = new ArrayList<>(rawDuplicates.size());
+
+    for (ApexSObject rawDuplicate : rawDuplicates) {
+      ApexSObject duplicate = requireRecord(rawDuplicate);
+      if (!duplicate.type().equalsIgnoreCase(master.type())) {
+        throw new IllegalArgumentException(
+            "merge requires same sobject type: master="
+                + master.type()
+                + " duplicate="
+                + duplicate.type());
+      }
+
+      String duplicateId = requireId(duplicate, "merge");
+      if (duplicateId.equalsIgnoreCase(masterId)) {
+        throw new IllegalArgumentException("duplicate id in merge equals master id: " + duplicateId);
+      }
+      for (String seenId : seenDuplicateIds) {
+        if (seenId.equalsIgnoreCase(duplicateId)) {
+          throw new IllegalArgumentException("duplicate id in merge: " + duplicateId);
+        }
+      }
+      seenDuplicateIds.add(duplicateId);
+
+      duplicateOldRows.add(snapshotActiveRow(state, duplicate, "merge"));
+      duplicateDeleteRows.add(ApexSObject.of(duplicate.type()).withId(duplicateId));
+    }
+
+    return new MergePlan(duplicateDeleteRows, duplicateOldRows);
   }
 
   private static List<ApexSObject> beforeOldRecords(
@@ -1268,6 +1349,16 @@ final class ApexStore {
       this.record = record;
       this.path = path;
       this.oldSnapshot = oldSnapshot;
+    }
+  }
+
+  private static final class MergePlan {
+    final List<ApexSObject> duplicateDeleteRows;
+    final List<ApexSObject> duplicateOldRows;
+
+    MergePlan(List<ApexSObject> duplicateDeleteRows, List<ApexSObject> duplicateOldRows) {
+      this.duplicateDeleteRows = duplicateDeleteRows;
+      this.duplicateOldRows = duplicateOldRows;
     }
   }
 
