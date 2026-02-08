@@ -77,6 +77,10 @@ public final class Database {
     ApexStore.reset();
   }
 
+  public static void clearSchemaRegistry() {
+    Schema.clear();
+  }
+
   private static void ensureSuccess(SaveResult[] results, String operation) {
     if (results == null) {
       return;

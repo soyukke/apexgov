@@ -119,5 +119,6 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 `apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
 `apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD / SOQLサブセットも使えます。
 `Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult` も使えます。
+`apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
 
 詳細は `/Users/soyukke/dev/zig/apexgov/tools/java-emulation/README.md` を参照してください。

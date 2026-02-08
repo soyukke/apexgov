@@ -6,6 +6,7 @@ import apexemu.runtime.Async;
 import apexemu.runtime.ApexSObject;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
+import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
 import apexemu.runtime.Trigger;
 import java.util.List;
@@ -168,6 +169,62 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals("Alpha", byName.get(0).get("Name"), "ASC order should be lexical");
     SystemAssert.assertEquals("Beta", byName.get(1).get("Name"), "ASC order should be lexical");
     SystemAssert.assertEquals("Delta", byName.get(2).get("Name"), "ASC order should be lexical");
+  }
+
+  @Test
+  public void customSObjectSchemaValidationAndBracketSelectWork() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Schema.object("Invoice__c")
+        .required("Name", Schema.FieldType.STRING)
+        .required("Amount__c", Schema.FieldType.DECIMAL)
+        .optional("Paid__c", Schema.FieldType.BOOLEAN)
+        .register();
+
+    Database.SaveResult[] missingRequired =
+        Database.insert(List.of(ApexSObject.of("Invoice__c").set("Name", "INV-001")), false);
+    SystemAssert.assertFalse(missingRequired[0].isSuccess(), "missing required field should fail");
+    SystemAssert.assertEquals(
+        "REQUIRED_FIELD_MISSING",
+        missingRequired[0].getErrors()[0].getStatusCode(),
+        "missing required field status mismatch");
+    SystemAssert.assertEquals(
+        "Amount__c",
+        missingRequired[0].getErrors()[0].getFields()[0],
+        "missing required field name mismatch");
+
+    Database.SaveResult[] invalidType =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-002")
+                    .set("Amount__c", "oops")
+                    .set("Paid__c", false)),
+            false);
+    SystemAssert.assertFalse(invalidType[0].isSuccess(), "invalid field type should fail");
+    SystemAssert.assertEquals(
+        "INVALID_TYPE_ON_FIELD_IN_RECORD",
+        invalidType[0].getErrors()[0].getStatusCode(),
+        "invalid type status mismatch");
+
+    Database.SaveResult[] valid =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-003")
+                    .set("Amount__c", 1200.0)
+                    .set("Paid__c", false)),
+            false);
+    SystemAssert.assertTrue(valid[0].isSuccess(), "valid custom object row should succeed");
+
+    List<ApexSObject> rows =
+        Database.query(
+            "[SELECT Id, Name FROM Invoice__c "
+                + "WHERE Amount__c >= 1000 AND Paid__c = false "
+                + "ORDER BY Name ASC LIMIT 5]");
+    SystemAssert.assertEquals(1, rows.size(), "bracket SELECT should be supported");
+    SystemAssert.assertEquals("INV-003", rows.get(0).get("Name"), "custom object query mismatch");
   }
 
   @Test

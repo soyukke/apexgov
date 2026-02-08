@@ -145,6 +145,7 @@ final class ApexStore {
 
   private static String insertOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
+    validateForInsert(record);
     ApexSObject stored = record.copy();
 
     String id = normalizeId(stored.id());
@@ -165,6 +166,7 @@ final class ApexStore {
 
   private static String updateOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
+    validateForUpdate(record);
     String id = requireId(record, "update");
 
     Map<String, ApexSObject> bucket = state.active.get(record.type());
@@ -493,6 +495,71 @@ final class ApexStore {
     return record;
   }
 
+  private static void validateForInsert(ApexSObject record) {
+    Schema.ObjectDefinition definition = Schema.find(record.type());
+    if (definition == null) {
+      return;
+    }
+    validateDefinedFields(record, definition);
+
+    for (Schema.FieldDefinition field : definition.fields.values()) {
+      if (!field.required) {
+        continue;
+      }
+      if (!record.hasField(field.name) || record.get(field.name) == null) {
+        throw new DmlFailure(
+            "REQUIRED_FIELD_MISSING", "required field missing: " + field.name, new String[] {field.name});
+      }
+    }
+  }
+
+  private static void validateForUpdate(ApexSObject record) {
+    Schema.ObjectDefinition definition = Schema.find(record.type());
+    if (definition == null) {
+      return;
+    }
+    validateDefinedFields(record, definition);
+  }
+
+  private static void validateDefinedFields(ApexSObject record, Schema.ObjectDefinition definition) {
+    for (Map.Entry<String, Object> entry : record.fields().entrySet()) {
+      Schema.FieldDefinition field = definition.field(entry.getKey());
+      if (field == null) {
+        throw new DmlFailure(
+            "INVALID_FIELD_FOR_INSERT_UPDATE",
+            "field is not defined in schema: " + entry.getKey(),
+            new String[] {entry.getKey()});
+      }
+
+      Object value = entry.getValue();
+      if (value == null) {
+        if (field.required) {
+          throw new DmlFailure(
+              "REQUIRED_FIELD_MISSING", "required field missing: " + field.name, new String[] {field.name});
+        }
+        continue;
+      }
+
+      if (!isTypeCompatible(field.type, value)) {
+        throw new DmlFailure(
+            "INVALID_TYPE_ON_FIELD_IN_RECORD",
+            "invalid type for field " + field.name + ": expected " + field.type + " but got " + value.getClass().getSimpleName(),
+            new String[] {field.name});
+      }
+    }
+  }
+
+  private static boolean isTypeCompatible(Schema.FieldType expected, Object value) {
+    return switch (expected) {
+      case STRING -> value instanceof String;
+      case BOOLEAN -> value instanceof Boolean;
+      case INTEGER -> value instanceof Integer;
+      case LONG -> value instanceof Long || value instanceof Integer;
+      case DECIMAL, DOUBLE -> value instanceof Number;
+      case ID -> value instanceof String text && !text.isBlank();
+    };
+  }
+
   private static String requireId(ApexSObject record, String operation) {
     String id = normalizeId(record.id());
     if (id == null) {
@@ -535,6 +602,9 @@ final class ApexStore {
   }
 
   private static FailureInfo classifyFailure(Throwable error) {
+    if (error instanceof DmlFailure dmlFailure) {
+      return new FailureInfo(dmlFailure.statusCode, dmlFailure.getMessage(), dmlFailure.fields);
+    }
     String message = messageOrDefault(error);
     if (message.contains("requires id")) {
       return new FailureInfo("REQUIRED_FIELD_MISSING", message, new String[] {"Id"});
@@ -608,6 +678,17 @@ final class ApexStore {
 
   private record QuerySpec(
       String sobjectType, List<WhereClause> whereClauses, String orderByField, boolean orderDescending, int limit) {}
+
+  private static final class DmlFailure extends RuntimeException {
+    final String statusCode;
+    final String[] fields;
+
+    DmlFailure(String statusCode, String message, String[] fields) {
+      super(message);
+      this.statusCode = statusCode == null ? "DML_ERROR" : statusCode;
+      this.fields = fields == null ? new String[0] : fields.clone();
+    }
+  }
 
   private record StateSnapshot(
       Map<String, Map<String, ApexSObject>> active,

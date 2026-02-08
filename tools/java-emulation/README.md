@@ -93,12 +93,15 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 - transactional: `setSavepoint()`, `rollback(savepoint)`
 - save-result mode: `insert/update/upsert/delete/undelete(records, allOrNone)` + `Database.SaveResult`
   - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
+- schema registry: `Schema.object(\"Custom__c\")...register()`
+  - registered object は required field / simple type validation を実施
 - Query: `query(soql)`, `countQuery(soql)`
 - reset: `clearInMemoryStore()`
 
 対応SOQLは最小サブセットです。
 
 - `SELECT ... FROM Object`
+- bracket style: `[SELECT ... FROM Object ...]`
 - optional `WHERE` with `AND` of simple predicates (`field op literal`)
 - supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`
 - optional `ORDER BY field [ASC|DESC]`
