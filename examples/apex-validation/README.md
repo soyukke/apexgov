@@ -13,6 +13,7 @@
   - `CrossFileCallerService.cls` + `CrossFileDmlHelper.cls`: 別クラス呼び出し経由でDMLに到達する例
   - `HelperChainService.cls`: ループ内ヘルパー呼び出し経由でDMLに到達する例
   - `NestedHelperMultiplierService.cls`: ヘルパー内ループ呼び出しでDML回数が乗算される例
+  - `SameArityOverloadService.cls`: 同一arityオーバーロードを型で選別する例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
 - `baseline/profile-baseline.json`: 回帰比較用ベースライン
@@ -33,6 +34,7 @@ zig build run -- check examples/apex-validation/force-app --format text
 - `CrossFileCallerService.cls` では別クラス経由でも `AG003` が出る
 - `HelperChainService.cls` ではヘルパーチェーン経由でも `AG003` が出る
 - `NestedHelperMultiplierService.cls` では `up to 200 times` 相当の `AG003` 超過エラーが出る
+- `SameArityOverloadService.cls` では `touch(Contact)` 側だけが選ばれて `AG003` が出る
 - exit code は `1`（デフォルト閾値 `warning`）
 
 ## 2) プロファイル予算チェック (`profile`)

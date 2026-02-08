@@ -78,6 +78,7 @@ const MethodSummary = struct {
     owner: []const u8,
     name: []const u8,
     param_count: u16,
+    param_signature: []const u8,
     direct: MethodMetrics = .{},
     total: MethodMetrics = .{},
     calls: std.ArrayListUnmanaged(MethodCall) = .{},
@@ -88,6 +89,7 @@ const MethodScope = struct {
     owner: []const u8,
     name: []const u8,
     param_count: u16,
+    param_signature: []const u8,
     end_depth: i32,
     entered_body: bool,
 };
@@ -95,6 +97,7 @@ const MethodScope = struct {
 const MethodDecl = struct {
     name: []const u8,
     param_count: u16,
+    params_raw: []const u8,
 };
 
 const OwnerScope = struct {
@@ -464,7 +467,7 @@ fn collectMethodNames(
             if (owner_scopes.items.len > 0) {
                 const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
                 if (parseMethodStart(trimmed)) |decl| {
-                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, decl.name, decl.param_count);
+                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, decl.name, decl.params_raw);
                 }
             }
         }
@@ -503,18 +506,24 @@ fn collectMethodDirectMetricsAndCalls(
 
             if (current_method == null and owner != null) {
                 if (parseMethodStart(trimmed)) |decl| {
-                    if (findMethodSummaryByOwnerNameArity(summaries, owner.?, decl.name, decl.param_count)) |_| {
-                        method_loop_scopes.clearRetainingCapacity();
-                        method_bounds = std.StringHashMap(Bound).init(arena_allocator);
-                        current_method = .{
-                            .owner = owner.?,
-                            .name = decl.name,
-                            .param_count = decl.param_count,
-                            .end_depth = brace_depth + 1,
-                            .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
-                        };
-                        started_method = true;
-                    }
+                    const summary = try ensureMethodSummary(
+                        arena_allocator,
+                        summaries,
+                        owner.?,
+                        decl.name,
+                        decl.params_raw,
+                    );
+                    method_loop_scopes.clearRetainingCapacity();
+                    method_bounds = std.StringHashMap(Bound).init(arena_allocator);
+                    current_method = .{
+                        .owner = owner.?,
+                        .name = decl.name,
+                        .param_count = summary.param_count,
+                        .param_signature = summary.param_signature,
+                        .end_depth = brace_depth + 1,
+                        .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
+                    };
+                    started_method = true;
                 }
             }
 
@@ -525,11 +534,11 @@ fn collectMethodDirectMetricsAndCalls(
                     const local_loop_info = if (isLoopStart(trimmed)) inferLoopInfo(trimmed, &method_bounds) else null;
                     const local_loop_multiplier = effectiveLoopUpperBound(method_loop_scopes.items, local_loop_info) orelse 1;
 
-                    const summary = findMethodSummaryByOwnerNameArity(
+                    const summary = findMethodSummaryByOwnerNameSignature(
                         summaries,
                         scope.owner,
                         scope.name,
-                        scope.param_count,
+                        scope.param_signature,
                     ) orelse unreachable;
                     applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier);
                     try recordCalledMethods(
@@ -571,32 +580,36 @@ fn ensureMethodSummary(
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
-    param_count: u16,
+    params_raw: []const u8,
 ) !*MethodSummary {
-    if (findMethodSummaryByOwnerNameArity(summaries, owner, name, param_count)) |existing| return existing;
+    const param_signature = try buildParamTypeSignature(arena_allocator, params_raw);
+    const param_count = countSignatureParams(param_signature);
+    if (findMethodSummaryByOwnerNameSignature(summaries, owner, name, param_signature)) |existing| return existing;
 
     const owner_copy = try arena_allocator.dupe(u8, owner);
     const name_copy = try arena_allocator.dupe(u8, name);
-    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy, param_count);
+    const signature_copy = try arena_allocator.dupe(u8, param_signature);
+    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy, signature_copy);
     try summaries.put(key, .{
         .owner = owner_copy,
         .name = name_copy,
         .param_count = param_count,
+        .param_signature = signature_copy,
     });
     return summaries.getPtr(key).?;
 }
 
-fn findMethodSummaryByOwnerNameArity(
+fn findMethodSummaryByOwnerNameSignature(
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
-    param_count: u16,
+    param_signature: []const u8,
 ) ?*MethodSummary {
     var it = summaries.iterator();
     while (it.next()) |entry| {
         if (!std.mem.eql(u8, entry.value_ptr.owner, owner)) continue;
         if (!std.mem.eql(u8, entry.value_ptr.name, name)) continue;
-        if (entry.value_ptr.param_count != param_count) continue;
+        if (!std.mem.eql(u8, entry.value_ptr.param_signature, param_signature)) continue;
         return entry.value_ptr;
     }
     return null;
@@ -606,9 +619,9 @@ fn formatMethodKey(
     arena_allocator: std.mem.Allocator,
     owner: []const u8,
     name: []const u8,
-    param_count: u16,
+    param_signature: []const u8,
 ) ![]const u8 {
-    return std.fmt.allocPrint(arena_allocator, "{s}.{s}/{d}", .{ owner, name, param_count });
+    return std.fmt.allocPrint(arena_allocator, "{s}.{s}/{s}", .{ owner, name, param_signature });
 }
 
 fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
@@ -668,6 +681,7 @@ fn parseMethodStart(line: []const u8) ?MethodDecl {
     return .{
         .name = name,
         .param_count = param_count,
+        .params_raw = params_raw,
     };
 }
 
@@ -717,6 +731,140 @@ fn countParameters(params_raw: []const u8) ?u16 {
     }
 
     return count;
+}
+
+fn buildParamTypeSignature(arena_allocator: std.mem.Allocator, params_raw: []const u8) ![]const u8 {
+    const params = std.mem.trim(u8, params_raw, " \t");
+    if (params.len == 0) return try arena_allocator.dupe(u8, "");
+
+    var out: std.ArrayList(u8) = .empty;
+
+    var seg_start: usize = 0;
+    var angle_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var i: usize = 0;
+    while (i <= params.len) : (i += 1) {
+        const at_end = i == params.len;
+        const c = if (at_end) ',' else params[i];
+
+        if (!at_end) {
+            switch (c) {
+                '<' => {
+                    angle_depth += 1;
+                },
+                '>' => {
+                    if (angle_depth > 0) angle_depth -= 1;
+                },
+                '(' => {
+                    paren_depth += 1;
+                },
+                ')' => {
+                    if (paren_depth > 0) paren_depth -= 1;
+                },
+                '[' => {
+                    bracket_depth += 1;
+                },
+                ']' => {
+                    if (bracket_depth > 0) bracket_depth -= 1;
+                },
+                '{' => {
+                    brace_depth += 1;
+                },
+                '}' => {
+                    if (brace_depth > 0) brace_depth -= 1;
+                },
+                else => {},
+            }
+        }
+
+        if (c == ',' and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+            const segment = std.mem.trim(u8, params[seg_start..i], " \t");
+            const type_part = extractParameterTypePart(segment);
+            if (out.items.len > 0) try out.append(arena_allocator, '|');
+            try appendCanonicalType(arena_allocator, &out, type_part);
+            seg_start = i + 1;
+        }
+    }
+
+    return try out.toOwnedSlice(arena_allocator);
+}
+
+fn countSignatureParams(signature: []const u8) u16 {
+    if (signature.len == 0) return 0;
+    var count: u16 = 1;
+    for (signature) |c| {
+        if (c == '|') count = satAddU16(count, 1);
+    }
+    return count;
+}
+
+fn extractParameterTypePart(segment_raw: []const u8) []const u8 {
+    var segment = std.mem.trim(u8, segment_raw, " \t");
+    if (segment.len == 0) return "?";
+
+    while (std.mem.startsWith(u8, segment, "final ")) {
+        segment = std.mem.trimLeft(u8, segment[6..], " \t");
+    }
+
+    var angle_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var i = segment.len;
+    while (i > 0) {
+        i -= 1;
+        const c = segment[i];
+        switch (c) {
+            '>' => {
+                angle_depth += 1;
+            },
+            '<' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            ')' => {
+                paren_depth += 1;
+            },
+            '(' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            ']' => {
+                bracket_depth += 1;
+            },
+            '[' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '}' => {
+                brace_depth += 1;
+            },
+            '{' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            else => {},
+        }
+        if ((c == ' ' or c == '\t') and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+            const left = std.mem.trimRight(u8, segment[0..i], " \t");
+            if (left.len == 0) return "?";
+            return left;
+        }
+    }
+    return "?";
+}
+
+fn appendCanonicalType(arena_allocator: std.mem.Allocator, out: *std.ArrayList(u8), type_part: []const u8) !void {
+    if (type_part.len == 0) {
+        try out.append(arena_allocator, '?');
+        return;
+    }
+    const before_len = out.items.len;
+    for (type_part) |c| {
+        if (std.ascii.isWhitespace(c)) continue;
+        try out.append(arena_allocator, c);
+    }
+    if (out.items.len == before_len) {
+        try out.append(arena_allocator, '?');
+    }
 }
 
 fn isControlKeyword(word: []const u8) bool {
@@ -805,7 +953,14 @@ fn recordCalledMethods(
         const callee_key = entry.key_ptr.*;
         const callee = entry.value_ptr.*;
         if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
-        if (!lineCallsMethod(line, caller_owner, callee.owner, callee.name, callee.param_count)) continue;
+        if (!lineCallsMethod(
+            line,
+            caller_owner,
+            callee.owner,
+            callee.name,
+            callee.param_count,
+            callee.param_signature,
+        )) continue;
         try appendOrAccumulateCall(arena_allocator, calls, callee_key, multiplier);
     }
 }
@@ -843,6 +998,7 @@ fn inferCalledMethodMetrics(
             callee.owner,
             callee.name,
             callee.param_count,
+            callee.param_signature,
         )) continue;
         metrics.add(entry.value_ptr.total);
     }
@@ -855,14 +1011,20 @@ fn lineCallsMethod(
     callee_owner: []const u8,
     callee_name: []const u8,
     callee_param_count: u16,
+    callee_param_signature: []const u8,
 ) bool {
-    if (containsQualifiedMethodCall(line, callee_owner, callee_name, callee_param_count)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name, callee_param_count)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name, callee_param_count)) return true;
+    if (containsQualifiedMethodCall(line, callee_owner, callee_name, callee_param_count, callee_param_signature)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name, callee_param_count, callee_param_signature)) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name, callee_param_count, callee_param_signature)) return true;
     return false;
 }
 
-fn containsBareMethodCall(line: []const u8, method_name: []const u8, expected_param_count: u16) bool {
+fn containsBareMethodCall(
+    line: []const u8,
+    method_name: []const u8,
+    expected_param_count: u16,
+    expected_param_signature: []const u8,
+) bool {
     if (method_name.len == 0) return false;
 
     var start: usize = 0;
@@ -876,7 +1038,7 @@ fn containsBareMethodCall(line: []const u8, method_name: []const u8, expected_pa
                 start = idx + method_name.len;
                 continue;
             };
-            if (arg_count == expected_param_count) return true;
+            if (arg_count == expected_param_count and argumentsMatchParamSignature(line, end, expected_param_signature)) return true;
         }
         start = idx + method_name.len;
     }
@@ -888,6 +1050,7 @@ fn containsQualifiedMethodCall(
     owner: []const u8,
     method_name: []const u8,
     expected_param_count: u16,
+    expected_param_signature: []const u8,
 ) bool {
     if (owner.len == 0 or method_name.len == 0) return false;
 
@@ -924,7 +1087,7 @@ fn containsQualifiedMethodCall(
                 start = owner_idx + owner.len;
                 continue;
             };
-            if (arg_count == expected_param_count) return true;
+            if (arg_count == expected_param_count and argumentsMatchParamSignature(line, open_idx, expected_param_signature)) return true;
         }
 
         start = owner_idx + owner.len;
@@ -1021,6 +1184,180 @@ fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
     }
 
     return null;
+}
+
+fn argumentsMatchParamSignature(line: []const u8, open_paren_idx: usize, expected_signature: []const u8) bool {
+    if (open_paren_idx >= line.len or line[open_paren_idx] != '(') return false;
+
+    var expected_iter = std.mem.splitScalar(u8, expected_signature, '|');
+    var arg_start = open_paren_idx + 1;
+    var paren_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var in_single = false;
+    var in_double = false;
+
+    var i = open_paren_idx + 1;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (in_single) {
+            if (c == '\'' and line[i - 1] != '\\') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (c == '"' and line[i - 1] != '\\') in_double = false;
+            continue;
+        }
+
+        switch (c) {
+            '\'' => {
+                in_single = true;
+            },
+            '"' => {
+                in_double = true;
+            },
+            '(' => {
+                paren_depth += 1;
+            },
+            ')' => {
+                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    const segment = std.mem.trim(u8, line[arg_start..i], " \t");
+                    if (segment.len == 0) {
+                        return expected_signature.len == 0 or (expected_iter.next() == null and expected_signature.len == 0);
+                    }
+                    const expected = expected_iter.next() orelse return false;
+                    if (!argumentExprMatchesType(segment, expected)) return false;
+                    return expected_iter.next() == null;
+                }
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '<' => {
+                angle_depth += 1;
+            },
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '[' => {
+                bracket_depth += 1;
+            },
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => {
+                brace_depth += 1;
+            },
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            ',' => {
+                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    const segment = std.mem.trim(u8, line[arg_start..i], " \t");
+                    const expected = expected_iter.next() orelse return false;
+                    if (!argumentExprMatchesType(segment, expected)) return false;
+                    arg_start = i + 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return false;
+}
+
+fn argumentExprMatchesType(expr_raw: []const u8, expected_type: []const u8) bool {
+    const expr = std.mem.trim(u8, expr_raw, " \t");
+    if (expr.len == 0) return false;
+
+    if (std.mem.eql(u8, expr, "null")) return true;
+    if (std.mem.eql(u8, expr, "true") or std.mem.eql(u8, expr, "false")) {
+        return std.mem.eql(u8, expected_type, "Boolean");
+    }
+    if ((expr[0] == '\'' and expr[expr.len - 1] == '\'') or (expr[0] == '"' and expr[expr.len - 1] == '"')) {
+        return std.mem.eql(u8, expected_type, "String");
+    }
+    if (looksNumericLiteral(expr)) {
+        if (std.mem.indexOfScalar(u8, expr, '.')) |_| {
+            return std.mem.eql(u8, expected_type, "Decimal") or
+                std.mem.eql(u8, expected_type, "Double");
+        }
+        return std.mem.eql(u8, expected_type, "Integer") or
+            std.mem.eql(u8, expected_type, "Long");
+    }
+    if (std.mem.startsWith(u8, expr, "new ")) {
+        const type_raw = extractTypeFromNewExpression(expr[4..]) orelse return true;
+        return equalsCanonicalType(type_raw, expected_type);
+    }
+
+    // Unknown expression types (variables, field accesses, calls) stay permissive.
+    return true;
+}
+
+fn extractTypeFromNewExpression(expr_after_new_raw: []const u8) ?[]const u8 {
+    const expr = std.mem.trimLeft(u8, expr_after_new_raw, " \t");
+    if (expr.len == 0) return null;
+
+    var angle_depth: i32 = 0;
+    var i: usize = 0;
+    while (i < expr.len) : (i += 1) {
+        const c = expr[i];
+        switch (c) {
+            '<' => {
+                angle_depth += 1;
+            },
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '(' => {
+                if (angle_depth == 0) break;
+            },
+            '[' => {
+                if (angle_depth == 0) break;
+            },
+            '{' => {
+                if (angle_depth == 0) break;
+            },
+            else => {},
+        }
+    }
+    if (i == 0) return null;
+    return std.mem.trim(u8, expr[0..i], " \t");
+}
+
+fn equalsCanonicalType(raw_type: []const u8, canonical_type: []const u8) bool {
+    var raw_i: usize = 0;
+    var canon_i: usize = 0;
+    while (raw_i < raw_type.len and canon_i < canonical_type.len) {
+        while (raw_i < raw_type.len and std.ascii.isWhitespace(raw_type[raw_i])) : (raw_i += 1) {}
+        if (raw_i >= raw_type.len) break;
+        if (raw_type[raw_i] != canonical_type[canon_i]) return false;
+        raw_i += 1;
+        canon_i += 1;
+    }
+    while (raw_i < raw_type.len and std.ascii.isWhitespace(raw_type[raw_i])) : (raw_i += 1) {}
+    return raw_i == raw_type.len and canon_i == canonical_type.len;
+}
+
+fn looksNumericLiteral(expr: []const u8) bool {
+    if (expr.len == 0) return false;
+    var i: usize = 0;
+    if (expr[0] == '-' and expr.len > 1) i = 1;
+    var has_digit = false;
+    var dot_count: u8 = 0;
+    while (i < expr.len) : (i += 1) {
+        const c = expr[i];
+        if (std.ascii.isDigit(c)) {
+            has_digit = true;
+            continue;
+        }
+        if (c == '.') {
+            dot_count += 1;
+            if (dot_count > 1) return false;
+            continue;
+        }
+        return false;
+    }
+    return has_digit;
 }
 
 fn satAdd(a: u64, b: u64) u64 {
@@ -2075,6 +2412,59 @@ test "overloaded methods match arity for positive detection" {
         \\
         \\    private static void touch(Account acc, Boolean write) {
         \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "same arity overload uses argument type for negative case" {
+    const source =
+        \\public with sharing class SameArityOverloadNegativeService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            touch(new Account());
+        \\        }
+        \\    }
+        \\
+        \\    private static void touch(Account acc) {
+        \\        acc.Name = acc.Name;
+        \\    }
+        \\
+        \\    private static void touch(Contact con) {
+        \\        update con;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+}
+
+test "same arity overload uses argument type for positive case" {
+    const source =
+        \\public with sharing class SameArityOverloadPositiveService {
+        \\    public static void run(List<Contact> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            touch(new Contact());
+        \\        }
+        \\    }
+        \\
+        \\    private static void touch(Account acc) {
+        \\        acc.Name = acc.Name;
+        \\    }
+        \\
+        \\    private static void touch(Contact con) {
+        \\        update con;
         \\    }
         \\}
     ;
