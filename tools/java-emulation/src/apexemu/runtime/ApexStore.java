@@ -22,7 +22,7 @@ final class ApexStore {
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s+like\\s+(.+)$");
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
   private static final Pattern ORDER_BY_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?$");
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private ApexStore() {}
@@ -586,7 +586,15 @@ final class ApexStore {
       out.sort(
           (left, right) -> {
             for (OrderByKey key : spec.orderByKeys) {
-              int compared = compareValues(left.get(key.field), right.get(key.field));
+              Object leftValue = left.get(key.field);
+              Object rightValue = right.get(key.field);
+              if (key.nullsFirst != null) {
+                int nullOrderCompared = compareNullOrder(leftValue, rightValue, key.nullsFirst);
+                if (nullOrderCompared != 0) {
+                  return nullOrderCompared;
+                }
+              }
+              int compared = compareValues(leftValue, rightValue);
               if (compared != 0) {
                 return key.descending ? -compared : compared;
               }
@@ -628,7 +636,7 @@ final class ApexStore {
 
   private static boolean matchesClause(ApexSObject row, WhereClause clause) {
     Object value = row.get(clause.field);
-    return switch (clause.operator) {
+    boolean matched = switch (clause.operator) {
       case "=" -> compareEquality(value, clause.literal);
       case "!=" -> !compareEquality(value, clause.literal);
       case ">" -> compareRange(value, clause.literal, ">");
@@ -640,6 +648,7 @@ final class ApexStore {
       case "like" -> compareLike(value, clause.literal);
       default -> false;
     };
+    return clause.negated ? !matched : matched;
   }
 
   private static boolean compareEquality(Object value, Object whereLiteral) {
@@ -696,6 +705,19 @@ final class ApexStore {
     String leftValue = String.valueOf(left);
     String rightValue = String.valueOf(right);
     return leftValue.compareTo(rightValue);
+  }
+
+  private static int compareNullOrder(Object left, Object right, boolean nullsFirst) {
+    if (left == null && right == null) {
+      return 0;
+    }
+    if (left == null) {
+      return nullsFirst ? -1 : 1;
+    }
+    if (right == null) {
+      return nullsFirst ? 1 : -1;
+    }
+    return 0;
   }
 
   @SuppressWarnings("unchecked")
@@ -829,30 +851,48 @@ final class ApexStore {
 
   private static WhereClause parseWhereClause(String clauseText, String rawSoql) {
     String normalized = stripWrappingParentheses(clauseText.trim());
+    boolean negated = false;
+    while (startsWithIgnoreCase(normalized, "not ")) {
+      negated = !negated;
+      normalized = stripWrappingParentheses(normalized.substring(4).trim());
+    }
 
     Matcher inMatcher = WHERE_IN_PATTERN.matcher(normalized);
     if (inMatcher.matches()) {
       String field = inMatcher.group(1);
       String operator = inMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
       List<Object> inValues = parseInLiteralList(inMatcher.group(3), rawSoql);
-      return new WhereClause(field, operator, inValues);
+      return new WhereClause(field, operator, inValues, negated);
     }
 
     Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(normalized);
     if (likeMatcher.matches()) {
       String field = likeMatcher.group(1);
       Object literal = parseLiteral(likeMatcher.group(2).trim());
-      return new WhereClause(field, "like", literal);
+      return new WhereClause(field, "like", literal, negated);
     }
 
     Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
       return new WhereClause(
-          whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
+          whereMatcher.group(1),
+          whereMatcher.group(2),
+          parseLiteral(whereMatcher.group(3).trim()),
+          negated);
     }
 
     throw new IllegalArgumentException(
         "only WHERE with AND and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: " + rawSoql);
+  }
+
+  private static boolean startsWithIgnoreCase(String text, String prefix) {
+    if (text == null || prefix == null) {
+      return false;
+    }
+    if (text.length() < prefix.length()) {
+      return false;
+    }
+    return text.regionMatches(true, 0, prefix, 0, prefix.length());
   }
 
   private static String stripWrappingParentheses(String text) {
@@ -963,8 +1003,13 @@ final class ApexStore {
       }
       String field = orderByMatcher.group(1);
       String direction = orderByMatcher.group(2);
+      String nullDirection = orderByMatcher.group(3);
       boolean descending = direction != null && direction.equalsIgnoreCase("desc");
-      keys.add(new OrderByKey(field, descending));
+      Boolean nullsFirst = null;
+      if (nullDirection != null) {
+        nullsFirst = nullDirection.equalsIgnoreCase("first");
+      }
+      keys.add(new OrderByKey(field, descending, nullsFirst));
     }
     return keys;
   }
@@ -1364,9 +1409,9 @@ final class ApexStore {
 
   private record FailureInfo(String statusCode, String message, String[] fields) {}
 
-  private record WhereClause(String field, String operator, Object literal) {}
+  private record WhereClause(String field, String operator, Object literal, boolean negated) {}
 
-  private record OrderByKey(String field, boolean descending) {}
+  private record OrderByKey(String field, boolean descending, Boolean nullsFirst) {}
 
   private record QuerySpec(
       String sobjectType, List<List<WhereClause>> whereAnyOf, List<OrderByKey> orderByKeys, int limit) {}

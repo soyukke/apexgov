@@ -548,6 +548,61 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsUnaryNot() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Acme Corp").set("Score", 20),
+            ApexSObject.of("Account").set("Name", "Beta Ltd").set("Score", 30),
+            ApexSObject.of("Account").set("Name", "Gamma KK").set("Score", 10)));
+
+    List<ApexSObject> rows =
+        Database.query(
+            "SELECT Id, Name FROM Account WHERE NOT (Name LIKE 'Acme%') ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, rows.size(), "NOT predicate should filter matching rows");
+    SystemAssert.assertEquals("Beta Ltd", rows.get(0).get("Name"), "NOT result mismatch");
+    SystemAssert.assertEquals("Gamma KK", rows.get(1).get("Name"), "NOT result mismatch");
+
+    int count =
+        Database.countQuery(
+            "SELECT count() FROM Account WHERE NOT (Name LIKE 'Acme%') AND NOT (Score < 20)");
+    SystemAssert.assertEquals(1, count, "NOT with AND should be supported");
+  }
+
+  @Test
+  public void soqlSupportsOrderByNullsFirstLast() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "B-Low").set("Score", 10),
+            ApexSObject.of("Account").set("Name", "C-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "D-High").set("Score", 20)));
+
+    List<ApexSObject> first =
+        Database.query(
+            "SELECT Id, Name, Score FROM Account ORDER BY Score ASC NULLS FIRST, Name ASC");
+    SystemAssert.assertEquals(4, first.size(), "NULLS FIRST query size mismatch");
+    SystemAssert.assertEquals("A-Null", first.get(0).get("Name"), "NULLS FIRST ordering mismatch");
+    SystemAssert.assertEquals("C-Null", first.get(1).get("Name"), "NULLS FIRST ordering mismatch");
+    SystemAssert.assertEquals("B-Low", first.get(2).get("Name"), "NULLS FIRST ordering mismatch");
+    SystemAssert.assertEquals("D-High", first.get(3).get("Name"), "NULLS FIRST ordering mismatch");
+
+    List<ApexSObject> last =
+        Database.query(
+            "SELECT Id, Name, Score FROM Account ORDER BY Score DESC NULLS LAST, Name ASC");
+    SystemAssert.assertEquals(4, last.size(), "NULLS LAST query size mismatch");
+    SystemAssert.assertEquals("D-High", last.get(0).get("Name"), "NULLS LAST ordering mismatch");
+    SystemAssert.assertEquals("B-Low", last.get(1).get("Name"), "NULLS LAST ordering mismatch");
+    SystemAssert.assertEquals("A-Null", last.get(2).get("Name"), "NULLS LAST ordering mismatch");
+    SystemAssert.assertEquals("C-Null", last.get(3).get("Name"), "NULLS LAST ordering mismatch");
+  }
+
+  @Test
   public void soqlSupportsOrMultiOrderByAndLikeEscapes() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();

@@ -104,7 +104,7 @@
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
 | allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` + `Database.merge(master, duplicates, allOrNone)` |
 | schema registry (custom object validation) | partial | `Schema.object(...).register()` で required/type の簡易検証 |
-| SOQL subset query | partial | `FROM` / `[SELECT ...]`, `WHERE` (`AND`/`OR`, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape), `ORDER BY` multi-key, `LIMIT` |
+| SOQL subset query | partial | `FROM` / `[SELECT ...]`, `WHERE` (`AND`/`OR`/unary `NOT`, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape), `ORDER BY` multi-key + `NULLS FIRST/LAST`, `LIMIT` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |
 | Apex VM semantic parity | planned | 完全再現は対象外 |
 
