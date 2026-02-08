@@ -397,7 +397,10 @@ final class ApexStore {
     for (ApexSObject duplicateDelete : plan.duplicateDeleteRows) {
       deleteOne(state, duplicateDelete);
     }
-    String[] updatedRelatedIds = reparentRelatedRows(state, master.type(), mergedId, plan.duplicateMergedIds);
+    RelatedReparentPlan relatedPlan =
+        planRelatedReparent(state, master.type(), mergedId, plan.duplicateMergedIds);
+    List<ApexSObject> relatedAfter = applyRelatedReparent(state, relatedPlan);
+    String[] updatedRelatedIds = collectSortedIds(relatedAfter);
 
     ApexSObject masterNew = snapshotActiveRow(state, master, "merge");
     dispatchAfter(DmlVerb.UPDATE, List.of(masterNew), List.of(masterOld));
@@ -1390,13 +1393,14 @@ final class ApexStore {
     return message;
   }
 
-  private static String[] reparentRelatedRows(
+  private static RelatedReparentPlan planRelatedReparent(
       State state, String masterType, String masterId, List<String> duplicateIds) {
     if (state == null || masterId == null || duplicateIds == null || duplicateIds.isEmpty()) {
-      return new String[0];
+      return RelatedReparentPlan.empty();
     }
 
-    List<String> updatedIds = new ArrayList<>();
+    List<ApexSObject> oldRows = new ArrayList<>();
+    List<ApexSObject> newRows = new ArrayList<>();
     for (Map.Entry<String, Map<String, ApexSObject>> bucket : state.active.entrySet()) {
       String rowType = bucket.getKey();
       for (ApexSObject row : bucket.getValue().values()) {
@@ -1407,27 +1411,68 @@ final class ApexStore {
           continue;
         }
 
-        boolean changed = false;
-        for (Map.Entry<String, Object> field : new ArrayList<>(row.fields().entrySet())) {
-          if (!isReferenceField(rowType, field.getKey())) {
-            continue;
-          }
-          if (!(field.getValue() instanceof String textValue)) {
-            continue;
-          }
-          if (!containsIdIgnoreCase(duplicateIds, textValue)) {
-            continue;
-          }
-          row.set(field.getKey(), masterId);
-          changed = true;
-        }
-
-        if (changed && !containsIdIgnoreCase(updatedIds, row.id())) {
-          updatedIds.add(row.id());
+        ApexSObject oldSnapshot = row.copy();
+        ApexSObject updateCandidate = row.copy();
+        if (replaceDuplicateReferences(updateCandidate, rowType, duplicateIds, masterId)) {
+          oldRows.add(oldSnapshot);
+          newRows.add(updateCandidate);
         }
       }
     }
-    return updatedIds.toArray(new String[0]);
+    return new RelatedReparentPlan(oldRows, newRows);
+  }
+
+  private static boolean replaceDuplicateReferences(
+      ApexSObject row, String rowType, List<String> duplicateIds, String masterId) {
+    boolean changed = false;
+    for (Map.Entry<String, Object> field : new ArrayList<>(row.fields().entrySet())) {
+      if (!isReferenceField(rowType, field.getKey())) {
+        continue;
+      }
+      if (!(field.getValue() instanceof String textValue)) {
+        continue;
+      }
+      if (!containsIdIgnoreCase(duplicateIds, textValue)) {
+        continue;
+      }
+      if (textValue.equalsIgnoreCase(masterId)) {
+        continue;
+      }
+      row.set(field.getKey(), masterId);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private static List<ApexSObject> applyRelatedReparent(State state, RelatedReparentPlan plan) {
+    if (plan == null || plan.newRows.isEmpty()) {
+      return List.of();
+    }
+
+    dispatchBefore(DmlVerb.UPDATE, plan.newRows, plan.oldRows);
+    for (ApexSObject row : plan.newRows) {
+      updateOne(state, row);
+    }
+    List<ApexSObject> afterRows = snapshotActiveRows(state, plan.newRows, "merge");
+    dispatchAfter(DmlVerb.UPDATE, afterRows, plan.oldRows);
+    return afterRows;
+  }
+
+  private static String[] collectSortedIds(List<ApexSObject> rows) {
+    if (rows == null || rows.isEmpty()) {
+      return new String[0];
+    }
+    List<String> ids = new ArrayList<>(rows.size());
+    for (ApexSObject row : rows) {
+      if (row == null || row.id() == null) {
+        continue;
+      }
+      if (!containsIdIgnoreCase(ids, row.id())) {
+        ids.add(row.id());
+      }
+    }
+    ids.sort(String.CASE_INSENSITIVE_ORDER);
+    return ids.toArray(new String[0]);
   }
 
   private static boolean isReferenceField(String sobjectType, String fieldName) {
@@ -1550,6 +1595,20 @@ final class ApexStore {
       this.duplicateDeleteRows = duplicateDeleteRows;
       this.duplicateOldRows = duplicateOldRows;
       this.duplicateMergedIds = duplicateMergedIds;
+    }
+  }
+
+  private static final class RelatedReparentPlan {
+    final List<ApexSObject> oldRows;
+    final List<ApexSObject> newRows;
+
+    RelatedReparentPlan(List<ApexSObject> oldRows, List<ApexSObject> newRows) {
+      this.oldRows = oldRows;
+      this.newRows = newRows;
+    }
+
+    static RelatedReparentPlan empty() {
+      return new RelatedReparentPlan(List.of(), List.of());
     }
   }
 

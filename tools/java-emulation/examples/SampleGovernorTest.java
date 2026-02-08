@@ -409,6 +409,27 @@ public final class SampleGovernorTest {
     Database.clearSchemaRegistry();
     Database.clearTriggerHandlers();
 
+    final int[] beforeContactUpdate = new int[] {0};
+    final int[] afterContactUpdate = new int[] {0};
+    Trigger.onBeforeUpdate(
+        "Contact",
+        () -> {
+          beforeContactUpdate[0] += 1;
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "related before-update old size mismatch");
+          SystemAssert.assertEquals(2, Trigger.getNew().size(), "related before-update new size mismatch");
+          for (Object row : Trigger.getNew()) {
+            ApexSObject sobject = (ApexSObject) row;
+            sobject.set("LastName", String.valueOf(sobject.get("LastName")) + "-RP");
+          }
+        });
+    Trigger.onAfterUpdate(
+        "Contact",
+        () -> {
+          afterContactUpdate[0] += 1;
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "related after-update old size mismatch");
+          SystemAssert.assertEquals(2, Trigger.getNew().size(), "related after-update new size mismatch");
+        });
+
     Database.insert(
         List.of(
             ApexSObject.of("Account").set("Name", "Master"),
@@ -438,6 +459,11 @@ public final class SampleGovernorTest {
     SystemAssert.assertTrue(result.isSuccess(), "merge with related rows should succeed");
     SystemAssert.assertEquals(1, result.getMergedRecordIds().length, "merged id count mismatch");
     SystemAssert.assertEquals(2, result.getUpdatedRelatedIds().length, "updated related id count mismatch");
+    SystemAssert.assertEquals(1, beforeContactUpdate[0], "related before-update should run once");
+    SystemAssert.assertEquals(1, afterContactUpdate[0], "related after-update should run once");
+    SystemAssert.assertTrue(
+        result.getUpdatedRelatedIds()[0].compareToIgnoreCase(result.getUpdatedRelatedIds()[1]) < 0,
+        "updated related ids should be returned in stable sorted order");
     SystemAssert.assertTrue(
         result.getUpdatedRelatedIds()[0].equals(childAId)
             || result.getUpdatedRelatedIds()[1].equals(childAId),
@@ -451,6 +477,10 @@ public final class SampleGovernorTest {
         3,
         Database.countQuery("SELECT count() FROM Contact WHERE AccountId = '" + master.id() + "'"),
         "all contacts should point to merged master");
+    SystemAssert.assertEquals(
+        2,
+        Database.countQuery("SELECT count() FROM Contact WHERE LastName LIKE '%-RP'"),
+        "related before-update trigger mutations should be persisted");
     SystemAssert.assertEquals(
         0,
         Database.countQuery("SELECT count() FROM Contact WHERE AccountId = '" + duplicate.id() + "'"),

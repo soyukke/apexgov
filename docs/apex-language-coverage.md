@@ -99,10 +99,10 @@
 | `Limits.get*` API | supported | queries/dml/cpu/heap と limit 値を取得 |
 | `Test.startTest()/stopTest()` | supported | start/stop 窓での計測に切り替え |
 | async flush at `stopTest()` | supported | `@Future`, Queueable, Batchable, Schedulable を順次実行 |
-| Trigger context (`new/old/maps/flags`) | supported | manual run + `Database` CRUD auto-dispatch (`insert/update/upsert/delete/undelete/merge`) |
+| Trigger context (`new/old/maps/flags`) | supported | manual run + `Database` CRUD auto-dispatch (`insert/update/upsert/delete/undelete/merge`) + merge-related update trigger dispatch |
 | in-memory CRUD store | supported | `insert/update/upsert/delete/undelete/merge` |
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
-| allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` + `Database.merge(master, duplicates, allOrNone)` (`MergeResult`, related reparent ids) |
+| allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` + `Database.merge(master, duplicates, allOrNone)` (`MergeResult`, related reparent ids + sorted `updatedRelatedIds`) |
 | schema registry (custom object validation) | partial | `Schema.object(...).register()` で required/type の簡易検証 |
 | SOQL subset query | partial | `FROM` / `[SELECT ...]`, `WHERE` (`AND`/`OR`/unary `NOT` with grouped expression, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape), `ORDER BY` multi-key + `NULLS FIRST/LAST` (default `NULLS FIRST`), `LIMIT` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |

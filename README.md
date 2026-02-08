@@ -121,6 +121,7 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 `Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult`、`Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）も使えます。
 `apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
 `Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。
+`merge` で related row が再親子付けされた場合は、関連オブジェクトの `before/after update` trigger も自動発火します。
 
 詳細は `tools/java-emulation/README.md` を参照してください。
 
