@@ -81,6 +81,10 @@ public final class Database {
     Schema.clear();
   }
 
+  public static void clearTriggerHandlers() {
+    Trigger.clearHandlers();
+  }
+
   private static void ensureSuccess(SaveResult[] results, String operation) {
     if (results == null) {
       return;

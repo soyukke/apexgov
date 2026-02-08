@@ -95,6 +95,7 @@ public final class Runner {
     Async.reset();
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
     Limits.reset();
     Limits.configure(config.cpuLimitMs, config.heapLimitBytes);
 

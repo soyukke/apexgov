@@ -99,7 +99,7 @@
 | `Limits.get*` API | supported | queries/dml/cpu/heap と limit 値を取得 |
 | `Test.startTest()/stopTest()` | supported | start/stop 窓での計測に切り替え |
 | async flush at `stopTest()` | supported | `@Future`, Queueable, Batchable, Schedulable を順次実行 |
-| Trigger context (`new/old/maps/flags`) | supported | `before/after` + `insert/update/delete/undelete` |
+| Trigger context (`new/old/maps/flags`) | supported | manual run + `Database` CRUD auto-dispatch (`insert/update/delete/undelete`) |
 | in-memory CRUD store | supported | `insert/update/upsert/delete/undelete` |
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
 | allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` の部分成功/全体ロールバック |

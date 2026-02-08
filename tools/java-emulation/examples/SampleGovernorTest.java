@@ -108,6 +108,124 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void databaseCrudAutoDispatchesRegisteredTriggers() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
+
+    final int[] beforeInsertCount = new int[] {0};
+    final int[] afterInsertCount = new int[] {0};
+    final int[] beforeUpdateCount = new int[] {0};
+    final int[] afterUpdateCount = new int[] {0};
+    final int[] beforeDeleteCount = new int[] {0};
+    final int[] afterDeleteCount = new int[] {0};
+    final int[] afterUndeleteCount = new int[] {0};
+
+    Trigger.onBeforeInsert(
+        "Account",
+        () -> {
+          beforeInsertCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isBefore(), "before-insert should set isBefore");
+          SystemAssert.assertTrue(Trigger.isInsert(), "before-insert should set isInsert");
+          SystemAssert.assertEquals(2, Trigger.size(), "before-insert trigger size mismatch");
+          for (Object row : Trigger.getNew()) {
+            ApexSObject sobject = (ApexSObject) row;
+            sobject.set("Name", String.valueOf(sobject.get("Name")) + "-BI");
+          }
+        });
+
+    Trigger.onAfterInsert(
+        "Account",
+        () -> {
+          afterInsertCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isAfter(), "after-insert should set isAfter");
+          SystemAssert.assertTrue(Trigger.isInsert(), "after-insert should set isInsert");
+          SystemAssert.assertEquals(2, Trigger.size(), "after-insert trigger size mismatch");
+        });
+
+    Trigger.onBeforeUpdate(
+        "Account",
+        () -> {
+          beforeUpdateCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isBefore(), "before-update should set isBefore");
+          SystemAssert.assertTrue(Trigger.isUpdate(), "before-update should set isUpdate");
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "before-update old size mismatch");
+          SystemAssert.assertEquals(2, Trigger.getNew().size(), "before-update new size mismatch");
+          for (Object row : Trigger.getNew()) {
+            ApexSObject sobject = (ApexSObject) row;
+            sobject.set("Name", String.valueOf(sobject.get("Name")) + "-BU");
+          }
+        });
+
+    Trigger.onAfterUpdate(
+        "Account",
+        () -> {
+          afterUpdateCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isAfter(), "after-update should set isAfter");
+          SystemAssert.assertTrue(Trigger.isUpdate(), "after-update should set isUpdate");
+          SystemAssert.assertEquals(2, Trigger.getOld().size(), "after-update old size mismatch");
+          SystemAssert.assertEquals(2, Trigger.getNew().size(), "after-update new size mismatch");
+        });
+
+    Trigger.onBeforeDelete(
+        "Account",
+        () -> {
+          beforeDeleteCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isBefore(), "before-delete should set isBefore");
+          SystemAssert.assertTrue(Trigger.isDelete(), "before-delete should set isDelete");
+          SystemAssert.assertEquals(1, Trigger.getOld().size(), "before-delete old size mismatch");
+        });
+
+    Trigger.onAfterDelete(
+        "Account",
+        () -> {
+          afterDeleteCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isAfter(), "after-delete should set isAfter");
+          SystemAssert.assertTrue(Trigger.isDelete(), "after-delete should set isDelete");
+          SystemAssert.assertEquals(1, Trigger.getOld().size(), "after-delete old size mismatch");
+        });
+
+    Trigger.onAfterUndelete(
+        "Account",
+        () -> {
+          afterUndeleteCount[0] += 1;
+          SystemAssert.assertTrue(Trigger.isAfter(), "after-undelete should set isAfter");
+          SystemAssert.assertTrue(Trigger.isUndelete(), "after-undelete should set isUndelete");
+          SystemAssert.assertEquals(1, Trigger.getNew().size(), "after-undelete new size mismatch");
+        });
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Alpha"),
+            ApexSObject.of("Account").set("Name", "Beta")));
+
+    List<ApexSObject> inserted = Database.query("SELECT Id, Name FROM Account ORDER BY Name ASC");
+    SystemAssert.assertEquals("Alpha-BI", inserted.get(0).get("Name"), "before-insert mutation mismatch");
+    SystemAssert.assertEquals("Beta-BI", inserted.get(1).get("Name"), "before-insert mutation mismatch");
+
+    Database.update(
+        List.of(
+            ApexSObject.of("Account").withId(inserted.get(0).id()).set("Name", "Alpha-U"),
+            ApexSObject.of("Account").withId(inserted.get(1).id()).set("Name", "Beta-U")));
+
+    List<ApexSObject> updated = Database.query("SELECT Id, Name FROM Account ORDER BY Name ASC");
+    SystemAssert.assertEquals("Alpha-U-BU", updated.get(0).get("Name"), "before-update mutation mismatch");
+    SystemAssert.assertEquals("Beta-U-BU", updated.get(1).get("Name"), "before-update mutation mismatch");
+
+    ApexSObject target = ApexSObject.of("Account").withId(updated.get(0).id());
+    Database.delete(List.of(target));
+    Database.undelete(List.of(target));
+
+    SystemAssert.assertEquals(1, beforeInsertCount[0], "before-insert should run once");
+    SystemAssert.assertEquals(1, afterInsertCount[0], "after-insert should run once");
+    SystemAssert.assertEquals(1, beforeUpdateCount[0], "before-update should run once");
+    SystemAssert.assertEquals(1, afterUpdateCount[0], "after-update should run once");
+    SystemAssert.assertEquals(1, beforeDeleteCount[0], "before-delete should run once");
+    SystemAssert.assertEquals(1, afterDeleteCount[0], "after-delete should run once");
+    SystemAssert.assertEquals(1, afterUndeleteCount[0], "after-undelete should run once");
+  }
+
+  @Test
   public void inMemorySObjectStoreSupportsCrudAndQuery() {
     Database.clearInMemoryStore();
 

@@ -32,23 +32,23 @@ final class ApexStore {
   }
 
   static Database.SaveResult[] insert(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, ApexStore::insertOne);
+    return apply(records, allOrNone, DmlVerb.INSERT, ApexStore::insertOne);
   }
 
   static Database.SaveResult[] update(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, ApexStore::updateOne);
+    return apply(records, allOrNone, DmlVerb.UPDATE, ApexStore::updateOne);
   }
 
   static Database.SaveResult[] upsert(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, ApexStore::upsertOne);
+    return apply(records, allOrNone, DmlVerb.UPSERT, ApexStore::upsertOne);
   }
 
   static Database.SaveResult[] delete(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, ApexStore::deleteOne);
+    return apply(records, allOrNone, DmlVerb.DELETE, ApexStore::deleteOne);
   }
 
   static Database.SaveResult[] undelete(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, ApexStore::undeleteOne);
+    return apply(records, allOrNone, DmlVerb.UNDELETE, ApexStore::undeleteOne);
   }
 
   static long setSavepoint() {
@@ -103,7 +103,7 @@ final class ApexStore {
   }
 
   private static Database.SaveResult[] apply(
-      Collection<ApexSObject> records, boolean allOrNone, DmlOperation operation) {
+      Collection<ApexSObject> records, boolean allOrNone, DmlVerb verb, DmlOperation operation) {
     List<ApexSObject> normalized = normalize(records);
     if (normalized.isEmpty()) {
       return new Database.SaveResult[0];
@@ -112,6 +112,18 @@ final class ApexStore {
     State state = STATE.get();
     Limits.addDml(1);
 
+    if (verb == DmlVerb.UPSERT) {
+      return applyWithoutTrigger(state, normalized, allOrNone, operation);
+    }
+
+    if (allOrNone) {
+      return applyAllOrNoneWithTrigger(state, normalized, verb, operation);
+    }
+    return applyPartialWithTrigger(state, normalized, verb, operation);
+  }
+
+  private static Database.SaveResult[] applyWithoutTrigger(
+      State state, List<ApexSObject> normalized, boolean allOrNone, DmlOperation operation) {
     if (allOrNone) {
       StateSnapshot original = snapshotOf(state);
       Database.SaveResult[] successes = new Database.SaveResult[normalized.size()];
@@ -122,13 +134,7 @@ final class ApexStore {
           successes[i] = success(id);
         } catch (RuntimeException error) {
           restore(state, original);
-          FailureInfo root = classifyFailure(error);
-          Database.SaveResult[] failures = new Database.SaveResult[normalized.size()];
-          for (int j = 0; j < normalized.size(); j += 1) {
-            ApexSObject row = normalized.get(j);
-            failures[j] = failure(row == null ? null : row.id(), root, "allOrNone rollback");
-          }
-          return failures;
+          return allOrNoneFailures(normalized, classifyFailure(error));
         }
       }
       return successes;
@@ -145,6 +151,60 @@ final class ApexStore {
       }
     }
     return out;
+  }
+
+  private static Database.SaveResult[] applyAllOrNoneWithTrigger(
+      State state, List<ApexSObject> normalized, DmlVerb verb, DmlOperation operation) {
+    StateSnapshot original = snapshotOf(state);
+    try {
+      List<ApexSObject> beforeOld = beforeOldRecords(state, verb, normalized);
+      dispatchBefore(verb, normalized, beforeOld);
+
+      Database.SaveResult[] successes = new Database.SaveResult[normalized.size()];
+      for (int i = 0; i < normalized.size(); i += 1) {
+        ApexSObject record = normalized.get(i);
+        String id = operation.apply(state, record);
+        successes[i] = success(id);
+      }
+
+      List<ApexSObject> afterNew = afterNewRecords(state, verb, normalized);
+      dispatchAfter(verb, afterNew, beforeOld);
+      return successes;
+    } catch (RuntimeException error) {
+      restore(state, original);
+      return allOrNoneFailures(normalized, classifyFailure(error));
+    }
+  }
+
+  private static Database.SaveResult[] applyPartialWithTrigger(
+      State state, List<ApexSObject> normalized, DmlVerb verb, DmlOperation operation) {
+    Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
+    for (int i = 0; i < normalized.size(); i += 1) {
+      ApexSObject record = normalized.get(i);
+      List<ApexSObject> singleRecord = List.of(record);
+      try {
+        List<ApexSObject> beforeOld = beforeOldRecords(state, verb, singleRecord);
+        dispatchBefore(verb, singleRecord, beforeOld);
+
+        String id = operation.apply(state, record);
+        List<ApexSObject> afterNew = afterNewRecords(state, verb, singleRecord);
+        dispatchAfter(verb, afterNew, beforeOld);
+        out[i] = success(id);
+      } catch (RuntimeException error) {
+        out[i] = failure(record == null ? null : record.id(), classifyFailure(error), null);
+      }
+    }
+    return out;
+  }
+
+  private static Database.SaveResult[] allOrNoneFailures(
+      List<ApexSObject> normalized, FailureInfo root) {
+    Database.SaveResult[] failures = new Database.SaveResult[normalized.size()];
+    for (int i = 0; i < normalized.size(); i += 1) {
+      ApexSObject row = normalized.get(i);
+      failures[i] = failure(row == null ? null : row.id(), root, "allOrNone rollback");
+    }
+    return failures;
   }
 
   private static String insertOne(State state, ApexSObject raw) {
@@ -231,6 +291,127 @@ final class ApexStore {
 
     activeBucket.put(id, deletedBucket.remove(id));
     return id;
+  }
+
+  private static List<ApexSObject> beforeOldRecords(
+      State state, DmlVerb verb, List<ApexSObject> records) {
+    return switch (verb) {
+      case UPDATE, DELETE -> snapshotActiveRows(state, records, verb.operationName);
+      case INSERT, UNDELETE, UPSERT -> List.of();
+    };
+  }
+
+  private static List<ApexSObject> afterNewRecords(
+      State state, DmlVerb verb, List<ApexSObject> records) {
+    return switch (verb) {
+      case INSERT, UPDATE, UNDELETE -> snapshotActiveRows(state, records, verb.operationName);
+      case DELETE, UPSERT -> List.of();
+    };
+  }
+
+  private static List<ApexSObject> snapshotActiveRows(
+      State state, List<ApexSObject> records, String operationName) {
+    if (records == null || records.isEmpty()) {
+      return List.of();
+    }
+    List<ApexSObject> out = new ArrayList<>(records.size());
+    for (ApexSObject record : records) {
+      out.add(snapshotActiveRow(state, record, operationName));
+    }
+    return out;
+  }
+
+  private static ApexSObject snapshotActiveRow(State state, ApexSObject record, String operationName) {
+    ApexSObject source = requireRecord(record);
+    String id = requireId(source, operationName);
+    Map<String, ApexSObject> bucket = state.active.get(source.type());
+    if (bucket == null || !bucket.containsKey(id)) {
+      throw new IllegalArgumentException(
+          "record not found for " + operationName + ": " + source.type() + "#" + id);
+    }
+    return bucket.get(id).copy();
+  }
+
+  private static void dispatchBefore(
+      DmlVerb verb, List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
+    switch (verb) {
+      case INSERT -> dispatchTrigger(true, Trigger.Operation.INSERT, newRecords, null);
+      case UPDATE -> dispatchTrigger(true, Trigger.Operation.UPDATE, newRecords, oldRecords);
+      case DELETE -> dispatchTrigger(true, Trigger.Operation.DELETE, null, oldRecords);
+      case UNDELETE, UPSERT -> {}
+    }
+  }
+
+  private static void dispatchAfter(
+      DmlVerb verb, List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
+    switch (verb) {
+      case INSERT -> dispatchTrigger(false, Trigger.Operation.INSERT, newRecords, null);
+      case UPDATE -> dispatchTrigger(false, Trigger.Operation.UPDATE, newRecords, oldRecords);
+      case DELETE -> dispatchTrigger(false, Trigger.Operation.DELETE, null, oldRecords);
+      case UNDELETE -> dispatchTrigger(false, Trigger.Operation.UNDELETE, newRecords, null);
+      case UPSERT -> {}
+    }
+  }
+
+  private static void dispatchTrigger(
+      boolean before,
+      Trigger.Operation operation,
+      List<ApexSObject> newRecords,
+      List<ApexSObject> oldRecords) {
+    List<String> types = collectTypes(newRecords, oldRecords);
+    for (String type : types) {
+      List<ApexSObject> typeNew = filterByType(newRecords, type);
+      List<ApexSObject> typeOld = filterByType(oldRecords, type);
+      List<ApexSObject> dispatchNew = typeNew.isEmpty() ? null : typeNew;
+      List<ApexSObject> dispatchOld = typeOld.isEmpty() ? null : typeOld;
+      if (before) {
+        Trigger.dispatchBefore(type, operation, dispatchNew, dispatchOld);
+      } else {
+        Trigger.dispatchAfter(type, operation, dispatchNew, dispatchOld);
+      }
+    }
+  }
+
+  private static List<String> collectTypes(List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
+    List<String> out = new ArrayList<>();
+    addTypes(out, newRecords);
+    addTypes(out, oldRecords);
+    return out;
+  }
+
+  private static void addTypes(List<String> out, List<ApexSObject> records) {
+    if (records == null || records.isEmpty()) {
+      return;
+    }
+    for (ApexSObject record : records) {
+      if (record == null || record.type() == null) {
+        continue;
+      }
+      String type = record.type();
+      boolean exists = false;
+      for (String item : out) {
+        if (item.equalsIgnoreCase(type)) {
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        out.add(type);
+      }
+    }
+  }
+
+  private static List<ApexSObject> filterByType(List<ApexSObject> records, String type) {
+    if (records == null || records.isEmpty() || type == null) {
+      return List.of();
+    }
+    List<ApexSObject> out = new ArrayList<>();
+    for (ApexSObject record : records) {
+      if (record != null && record.type().equalsIgnoreCase(type)) {
+        out.add(record);
+      }
+    }
+    return out;
   }
 
   private static List<ApexSObject> scan(QuerySpec spec, boolean countOnly) {
@@ -983,6 +1164,20 @@ final class ApexStore {
 
   private interface DmlOperation {
     String apply(State state, ApexSObject record);
+  }
+
+  private enum DmlVerb {
+    INSERT("insert"),
+    UPDATE("update"),
+    UPSERT("upsert"),
+    DELETE("delete"),
+    UNDELETE("undelete");
+
+    final String operationName;
+
+    DmlVerb(String operationName) {
+      this.operationName = operationName;
+    }
   }
 
   private record FailureInfo(String statusCode, String message, String[] fields) {}
