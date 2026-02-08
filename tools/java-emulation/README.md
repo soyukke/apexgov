@@ -101,7 +101,8 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 - save-result mode:
   - `insert/update/upsert/delete/undelete(records, allOrNone)` + `Database.SaveResult[]`
   - `merge(master, duplicateRecords, allOrNone)` + `Database.MergeResult`
-    - `getMergedRecordIds()` / `getUpdatedRelatedIds()` を参照可能（現状 related ids は空配列）
+    - `getMergedRecordIds()` / `getUpdatedRelatedIds()` を参照可能
+    - related row の簡易reparentを実施（参照Id系フィールドの duplicate id を master id に置換）
   - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
 - schema registry: `Schema.object(\"Custom__c\")...register()`
   - registered object は required field / simple type validation を実施

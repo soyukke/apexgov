@@ -102,7 +102,7 @@
 | Trigger context (`new/old/maps/flags`) | supported | manual run + `Database` CRUD auto-dispatch (`insert/update/upsert/delete/undelete/merge`) |
 | in-memory CRUD store | supported | `insert/update/upsert/delete/undelete/merge` |
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
-| allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` + `Database.merge(master, duplicates, allOrNone)` (`MergeResult`) |
+| allOrNone + SaveResult | supported | `Database.*(records, allOrNone)` + `Database.merge(master, duplicates, allOrNone)` (`MergeResult`, related reparent ids) |
 | schema registry (custom object validation) | partial | `Schema.object(...).register()` で required/type の簡易検証 |
 | SOQL subset query | partial | `FROM` / `[SELECT ...]`, `WHERE` (`AND`/`OR`/unary `NOT` with grouped expression, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape), `ORDER BY` multi-key + `NULLS FIRST/LAST` (default `NULLS FIRST`), `LIMIT` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |

@@ -404,6 +404,60 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void mergeReparentsRelatedRowsAndReturnsUpdatedRelatedIds() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    Database.clearTriggerHandlers();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Master"),
+            ApexSObject.of("Account").set("Name", "Duplicate")));
+
+    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject duplicate =
+        Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Contact").set("LastName", "A").set("AccountId", duplicate.id()),
+            ApexSObject.of("Contact").set("LastName", "B").set("AccountId", duplicate.id()),
+            ApexSObject.of("Contact").set("LastName", "M").set("AccountId", master.id())));
+
+    List<ApexSObject> before =
+        Database.query("SELECT Id, LastName, AccountId FROM Contact ORDER BY LastName ASC");
+    String childAId = before.get(0).id();
+    String childBId = before.get(1).id();
+
+    Database.MergeResult result =
+        Database.merge(
+            ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Keep"),
+            ApexSObject.of("Account").withId(duplicate.id()),
+            true);
+
+    SystemAssert.assertTrue(result.isSuccess(), "merge with related rows should succeed");
+    SystemAssert.assertEquals(1, result.getMergedRecordIds().length, "merged id count mismatch");
+    SystemAssert.assertEquals(2, result.getUpdatedRelatedIds().length, "updated related id count mismatch");
+    SystemAssert.assertTrue(
+        result.getUpdatedRelatedIds()[0].equals(childAId)
+            || result.getUpdatedRelatedIds()[1].equals(childAId),
+        "updated related ids should include child A");
+    SystemAssert.assertTrue(
+        result.getUpdatedRelatedIds()[0].equals(childBId)
+            || result.getUpdatedRelatedIds()[1].equals(childBId),
+        "updated related ids should include child B");
+
+    SystemAssert.assertEquals(
+        3,
+        Database.countQuery("SELECT count() FROM Contact WHERE AccountId = '" + master.id() + "'"),
+        "all contacts should point to merged master");
+    SystemAssert.assertEquals(
+        0,
+        Database.countQuery("SELECT count() FROM Contact WHERE AccountId = '" + duplicate.id() + "'"),
+        "duplicate parent id should not remain in related rows");
+  }
+
+  @Test
   public void inMemorySObjectStoreSupportsCrudAndQuery() {
     Database.clearInMemoryStore();
 

@@ -397,12 +397,13 @@ final class ApexStore {
     for (ApexSObject duplicateDelete : plan.duplicateDeleteRows) {
       deleteOne(state, duplicateDelete);
     }
+    String[] updatedRelatedIds = reparentRelatedRows(state, master.type(), mergedId, plan.duplicateMergedIds);
 
     ApexSObject masterNew = snapshotActiveRow(state, master, "merge");
     dispatchAfter(DmlVerb.UPDATE, List.of(masterNew), List.of(masterOld));
     dispatchAfter(DmlVerb.DELETE, null, plan.duplicateOldRows);
 
-    return mergeSuccess(mergedId, plan.duplicateMergedIds, new String[0]);
+    return mergeSuccess(mergedId, plan.duplicateMergedIds, updatedRelatedIds);
   }
 
   private static MergePlan planMerge(
@@ -1387,6 +1388,78 @@ final class ApexStore {
       return error.getClass().getSimpleName();
     }
     return message;
+  }
+
+  private static String[] reparentRelatedRows(
+      State state, String masterType, String masterId, List<String> duplicateIds) {
+    if (state == null || masterId == null || duplicateIds == null || duplicateIds.isEmpty()) {
+      return new String[0];
+    }
+
+    List<String> updatedIds = new ArrayList<>();
+    for (Map.Entry<String, Map<String, ApexSObject>> bucket : state.active.entrySet()) {
+      String rowType = bucket.getKey();
+      for (ApexSObject row : bucket.getValue().values()) {
+        if (row == null || row.id() == null) {
+          continue;
+        }
+        if (rowType != null && rowType.equalsIgnoreCase(masterType) && row.id().equalsIgnoreCase(masterId)) {
+          continue;
+        }
+
+        boolean changed = false;
+        for (Map.Entry<String, Object> field : new ArrayList<>(row.fields().entrySet())) {
+          if (!isReferenceField(rowType, field.getKey())) {
+            continue;
+          }
+          if (!(field.getValue() instanceof String textValue)) {
+            continue;
+          }
+          if (!containsIdIgnoreCase(duplicateIds, textValue)) {
+            continue;
+          }
+          row.set(field.getKey(), masterId);
+          changed = true;
+        }
+
+        if (changed && !containsIdIgnoreCase(updatedIds, row.id())) {
+          updatedIds.add(row.id());
+        }
+      }
+    }
+    return updatedIds.toArray(new String[0]);
+  }
+
+  private static boolean isReferenceField(String sobjectType, String fieldName) {
+    if (fieldName == null || fieldName.isBlank()) {
+      return false;
+    }
+    if ("id".equalsIgnoreCase(fieldName)) {
+      return false;
+    }
+
+    Schema.ObjectDefinition definition = Schema.find(sobjectType);
+    if (definition != null) {
+      Schema.FieldDefinition schemaField = definition.field(fieldName);
+      if (schemaField != null) {
+        return schemaField.type == Schema.FieldType.ID;
+      }
+    }
+
+    String normalized = fieldName.trim().toLowerCase();
+    return normalized.endsWith("id") || normalized.endsWith("__c");
+  }
+
+  private static boolean containsIdIgnoreCase(List<String> ids, String target) {
+    if (ids == null || ids.isEmpty() || target == null) {
+      return false;
+    }
+    for (String id : ids) {
+      if (id != null && id.equalsIgnoreCase(target)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static List<ApexSObject> normalize(Collection<ApexSObject> records) {
