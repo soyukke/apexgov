@@ -36,6 +36,42 @@ const BoundUpdate = struct {
     origin: BoundOrigin,
 };
 
+const MethodMetrics = struct {
+    soql: u64 = 0,
+    dml: u64 = 0,
+    json: u64 = 0,
+    clone: u64 = 0,
+    collection_alloc: u64 = 0,
+    string_append: u64 = 0,
+
+    fn add(self: *MethodMetrics, other: MethodMetrics) void {
+        self.soql = satAdd(self.soql, other.soql);
+        self.dml = satAdd(self.dml, other.dml);
+        self.json = satAdd(self.json, other.json);
+        self.clone = satAdd(self.clone, other.clone);
+        self.collection_alloc = satAdd(self.collection_alloc, other.collection_alloc);
+        self.string_append = satAdd(self.string_append, other.string_append);
+    }
+};
+
+const ResolveState = enum {
+    unresolved,
+    resolving,
+    resolved,
+};
+
+const MethodSummary = struct {
+    direct: MethodMetrics = .{},
+    total: MethodMetrics = .{},
+    calls: std.ArrayListUnmanaged([]const u8) = .{},
+    state: ResolveState = .unresolved,
+};
+
+const MethodScope = struct {
+    name: []const u8,
+    end_depth: i32,
+};
+
 pub fn run(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(model.Finding) {
     return runWithConfig(gpa, roots, config.Config.defaults());
 }
@@ -89,6 +125,7 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
     const arena_allocator = arena.allocator();
 
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
+    var method_summaries = try buildMethodSummaries(arena_allocator, content);
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
@@ -117,6 +154,10 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
         const loop_level = loop_scopes.items.len;
         const in_loop = loop_started or loop_level > 0;
         const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
+        const call_metrics = if (in_loop)
+            inferCalledMethodMetrics(trimmed, &method_summaries)
+        else
+            MethodMetrics{};
 
         if (loop_started and loop_level > 0) {
             try appendFinding(
@@ -132,7 +173,11 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
             );
         }
 
-        if (in_loop and containsSoql(trimmed)) {
+        const soql_count = satAdd(
+            if (containsSoql(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.soql,
+        );
+        if (in_loop and soql_count > 0) {
             try appendGovernorFinding(
                 gpa,
                 findings,
@@ -147,13 +192,17 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
                 path,
                 line_no,
                 "SOQL",
-                cfg.cpu_model.soql_ms,
+                satMul(cfg.cpu_model.soql_ms, soql_count),
                 loop_upper_bound,
                 cfg.cpu_model.base_ms,
             );
         }
 
-        if (in_loop and containsDml(trimmed)) {
+        const dml_count = satAdd(
+            if (containsDml(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.dml,
+        );
+        if (in_loop and dml_count > 0) {
             try appendGovernorFinding(
                 gpa,
                 findings,
@@ -168,13 +217,17 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
                 path,
                 line_no,
                 "DML",
-                cfg.cpu_model.dml_ms,
+                satMul(cfg.cpu_model.dml_ms, dml_count),
                 loop_upper_bound,
                 cfg.cpu_model.base_ms,
             );
         }
 
-        if (in_loop and containsJsonWork(trimmed)) {
+        const json_count = satAdd(
+            if (containsJsonWork(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.json,
+        );
+        if (in_loop and json_count > 0) {
             try appendFinding(
                 gpa,
                 findings,
@@ -192,13 +245,17 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
                 path,
                 line_no,
                 "JSON",
-                cfg.cpu_model.json_ms,
+                satMul(cfg.cpu_model.json_ms, json_count),
                 loop_upper_bound,
                 cfg.cpu_model.base_ms,
             );
         }
 
-        if (in_loop and containsCloneWork(trimmed)) {
+        const clone_count = satAdd(
+            if (containsCloneWork(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.clone,
+        );
+        if (in_loop and clone_count > 0) {
             try appendFinding(
                 gpa,
                 findings,
@@ -216,13 +273,17 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
                 path,
                 line_no,
                 "clone/deepClone",
-                cfg.cpu_model.clone_ms,
+                satMul(cfg.cpu_model.clone_ms, clone_count),
                 loop_upper_bound,
                 cfg.cpu_model.base_ms,
             );
         }
 
-        if (in_loop and containsCollectionAlloc(trimmed)) {
+        const collection_alloc_count = satAdd(
+            if (containsCollectionAlloc(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.collection_alloc,
+        );
+        if (in_loop and collection_alloc_count > 0) {
             try appendFinding(
                 gpa,
                 findings,
@@ -236,7 +297,11 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
             );
         }
 
-        if (in_loop and containsStringAppend(trimmed)) {
+        const string_append_count = satAdd(
+            if (containsStringAppend(trimmed)) @as(u64, 1) else @as(u64, 0),
+            call_metrics.string_append,
+        );
+        if (in_loop and string_append_count > 0) {
             try appendFinding(
                 gpa,
                 findings,
@@ -260,6 +325,227 @@ fn scanFile(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config, findin
         brace_depth = updateBraceDepth(brace_depth, code_line);
         popClosedScopes(&loop_scopes, brace_depth);
     }
+}
+
+fn buildMethodSummaries(arena_allocator: std.mem.Allocator, content: []const u8) !std.StringHashMap(MethodSummary) {
+    var summaries = std.StringHashMap(MethodSummary).init(arena_allocator);
+
+    try collectMethodNames(arena_allocator, content, &summaries);
+    try collectMethodDirectMetricsAndCalls(arena_allocator, content, &summaries);
+
+    var keys: std.ArrayList([]const u8) = .empty;
+    var it = summaries.iterator();
+    while (it.next()) |entry| {
+        try keys.append(arena_allocator, entry.key_ptr.*);
+    }
+    for (keys.items) |name| {
+        _ = resolveMethodTotal(&summaries, name);
+    }
+
+    return summaries;
+}
+
+fn collectMethodNames(
+    arena_allocator: std.mem.Allocator,
+    content: []const u8,
+    summaries: *std.StringHashMap(MethodSummary),
+) !void {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const code_line = stripLineComment(raw);
+        const trimmed = std.mem.trim(u8, code_line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const name = parseMethodStart(trimmed) orelse continue;
+        _ = try ensureMethodSummary(arena_allocator, summaries, name);
+    }
+}
+
+fn collectMethodDirectMetricsAndCalls(
+    arena_allocator: std.mem.Allocator,
+    content: []const u8,
+    summaries: *std.StringHashMap(MethodSummary),
+) !void {
+    var brace_depth: i32 = 0;
+    var current_method: ?MethodScope = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+
+    while (lines.next()) |raw| {
+        const code_line = stripLineComment(raw);
+        const trimmed = std.mem.trim(u8, code_line, " \t\r");
+
+        var started_method = false;
+        if (current_method == null and trimmed.len > 0) {
+            if (parseMethodStart(trimmed)) |name| {
+                if (summaries.getPtr(name) != null) {
+                    current_method = .{
+                        .name = name,
+                        .end_depth = brace_depth + 1,
+                    };
+                    started_method = true;
+                }
+            }
+        }
+
+        if (!started_method) {
+            if (current_method) |scope| {
+                if (trimmed.len > 0) {
+                    const summary = summaries.getPtr(scope.name) orelse unreachable;
+                    applyDirectLineMetrics(&summary.direct, trimmed);
+                    try recordCalledMethods(arena_allocator, &summary.calls, summaries, scope.name, trimmed);
+                }
+            }
+        }
+
+        brace_depth = updateBraceDepth(brace_depth, code_line);
+        if (current_method) |scope| {
+            if (brace_depth < scope.end_depth) {
+                current_method = null;
+            }
+        }
+    }
+}
+
+fn ensureMethodSummary(
+    arena_allocator: std.mem.Allocator,
+    summaries: *std.StringHashMap(MethodSummary),
+    name: []const u8,
+) !*MethodSummary {
+    if (summaries.getPtr(name)) |existing| return existing;
+    const key = try arena_allocator.dupe(u8, name);
+    try summaries.put(key, .{});
+    return summaries.getPtr(key).?;
+}
+
+fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
+    const summary = summaries.getPtr(name) orelse return .{};
+    switch (summary.state) {
+        .resolved => return summary.total,
+        .resolving => return summary.direct,
+        .unresolved => {},
+    }
+
+    summary.state = .resolving;
+    var total = summary.direct;
+    for (summary.calls.items) |callee| {
+        const callee_total = resolveMethodTotal(summaries, callee);
+        total.add(callee_total);
+    }
+    summary.total = total;
+    summary.state = .resolved;
+    return total;
+}
+
+fn parseMethodStart(line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '(') == null) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') == null) return null;
+    if (std.mem.indexOf(u8, trimmed, " class ") != null or
+        std.mem.startsWith(u8, trimmed, "class "))
+    {
+        return null;
+    }
+    if (std.mem.startsWith(u8, trimmed, "if(") or
+        std.mem.startsWith(u8, trimmed, "if ") or
+        std.mem.startsWith(u8, trimmed, "for(") or
+        std.mem.startsWith(u8, trimmed, "for ") or
+        std.mem.startsWith(u8, trimmed, "while(") or
+        std.mem.startsWith(u8, trimmed, "while ") or
+        std.mem.startsWith(u8, trimmed, "switch(") or
+        std.mem.startsWith(u8, trimmed, "switch ") or
+        std.mem.startsWith(u8, trimmed, "catch(") or
+        std.mem.startsWith(u8, trimmed, "catch ") or
+        std.mem.startsWith(u8, trimmed, "else"))
+    {
+        return null;
+    }
+
+    const open_idx = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    const left = std.mem.trim(u8, trimmed[0..open_idx], " \t");
+    const name = extractLastIdentifier(left) orelse return null;
+    if (isControlKeyword(name)) return null;
+    return name;
+}
+
+fn isControlKeyword(word: []const u8) bool {
+    return std.mem.eql(u8, word, "if") or
+        std.mem.eql(u8, word, "for") or
+        std.mem.eql(u8, word, "while") or
+        std.mem.eql(u8, word, "switch") or
+        std.mem.eql(u8, word, "catch") or
+        std.mem.eql(u8, word, "return") or
+        std.mem.eql(u8, word, "new");
+}
+
+fn applyDirectLineMetrics(metrics: *MethodMetrics, line: []const u8) void {
+    if (containsSoql(line)) metrics.soql = satAdd(metrics.soql, 1);
+    if (containsDml(line)) metrics.dml = satAdd(metrics.dml, 1);
+    if (containsJsonWork(line)) metrics.json = satAdd(metrics.json, 1);
+    if (containsCloneWork(line)) metrics.clone = satAdd(metrics.clone, 1);
+    if (containsCollectionAlloc(line)) metrics.collection_alloc = satAdd(metrics.collection_alloc, 1);
+    if (containsStringAppend(line)) metrics.string_append = satAdd(metrics.string_append, 1);
+}
+
+fn recordCalledMethods(
+    arena_allocator: std.mem.Allocator,
+    calls: *std.ArrayListUnmanaged([]const u8),
+    summaries: *std.StringHashMap(MethodSummary),
+    caller_name: []const u8,
+    line: []const u8,
+) !void {
+    var it = summaries.iterator();
+    while (it.next()) |entry| {
+        const callee = entry.key_ptr.*;
+        if (std.mem.eql(u8, callee, caller_name)) continue;
+        if (!containsMethodCall(line, callee)) continue;
+        try appendUniqueCall(arena_allocator, calls, callee);
+    }
+}
+
+fn appendUniqueCall(
+    arena_allocator: std.mem.Allocator,
+    calls: *std.ArrayListUnmanaged([]const u8),
+    callee: []const u8,
+) !void {
+    for (calls.items) |existing| {
+        if (std.mem.eql(u8, existing, callee)) return;
+    }
+    const name = try arena_allocator.dupe(u8, callee);
+    try calls.append(arena_allocator, name);
+}
+
+fn inferCalledMethodMetrics(line: []const u8, summaries: *std.StringHashMap(MethodSummary)) MethodMetrics {
+    var metrics: MethodMetrics = .{};
+    var it = summaries.iterator();
+    while (it.next()) |entry| {
+        const method_name = entry.key_ptr.*;
+        if (!containsMethodCall(line, method_name)) continue;
+        metrics.add(entry.value_ptr.total);
+    }
+    return metrics;
+}
+
+fn containsMethodCall(line: []const u8, method_name: []const u8) bool {
+    if (method_name.len == 0) return false;
+
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, line, start, method_name)) |idx| {
+        const before_ok = idx == 0 or !isIdentChar(line[idx - 1]);
+        var end = idx + method_name.len;
+        while (end < line.len and (line[end] == ' ' or line[end] == '\t')) : (end += 1) {}
+        const after_ok = end < line.len and line[end] == '(';
+        if (before_ok and after_ok) return true;
+        start = idx + method_name.len;
+    }
+    return false;
+}
+
+fn satAdd(a: u64, b: u64) u64 {
+    return std.math.add(u64, a, b) catch std.math.maxInt(u64);
+}
+
+fn satMul(a: u64, b: u64) u64 {
+    return std.math.mul(u64, a, b) catch std.math.maxInt(u64);
 }
 
 fn appendCpuEstimateFinding(
@@ -1032,6 +1318,59 @@ test "else-if guard on same line with brace is recognized" {
 
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 140") != null);
+}
+
+test "loop calling helper with DML is flagged via method summary" {
+    const source =
+        \\public with sharing class HelperCallDmlService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            applyOne(records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void applyOne(Account acc) {
+        \\        update acc;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "loop calling helper chain with SOQL is flagged transitively" {
+    const source =
+        \\public with sharing class HelperChainSoqlService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 80) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            enrich(records[i].Id);
+        \\        }
+        \\    }
+        \\
+        \\    private static void enrich(Id accountId) {
+        \\        loadOne(accountId);
+        \\    }
+        \\
+        \\    private static void loadOne(Id accountId) {
+        \\        List<Account> one = [SELECT Id FROM Account WHERE Id = :accountId LIMIT 1];
+        \\        if (!one.isEmpty()) {
+        \\            one[0].Name = one[0].Name;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 80") != null);
 }
 
 fn runCheckOnTempSource(
