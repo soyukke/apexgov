@@ -328,11 +328,17 @@ public final class SampleGovernorTest {
           SystemAssert.assertEquals(2, Trigger.getOld().size(), "merge delete old size mismatch");
         });
 
-    Database.merge(
-        ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Merged"),
-        List.of(
-            ApexSObject.of("Account").withId(duplicateA.id()),
-            ApexSObject.of("Account").withId(duplicateB.id())));
+    Database.MergeResult mergeResult =
+        Database.merge(
+            ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Merged"),
+            List.of(
+                ApexSObject.of("Account").withId(duplicateA.id()),
+                ApexSObject.of("Account").withId(duplicateB.id())),
+            true);
+    SystemAssert.assertTrue(mergeResult.isSuccess(), "merge result should succeed");
+    SystemAssert.assertEquals(master.id(), mergeResult.getId(), "merge result id should be master id");
+    SystemAssert.assertEquals(2, mergeResult.getMergedRecordIds().length, "merged id list size mismatch");
+    SystemAssert.assertEquals(0, mergeResult.getUpdatedRelatedIds().length, "updated related ids should be empty");
 
     SystemAssert.assertEquals(1, beforeUpdateCount[0], "merge should fire before-update once");
     SystemAssert.assertEquals(1, afterUpdateCount[0], "merge should fire after-update once");
@@ -364,7 +370,7 @@ public final class SampleGovernorTest {
     ApexSObject duplicate =
         Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
 
-    Database.SaveResult result =
+    Database.MergeResult result =
         Database.merge(
             ApexSObject.of("Account").withId(master.id()).set("Name", "Master-Changed"),
             List.of(
@@ -380,6 +386,9 @@ public final class SampleGovernorTest {
     SystemAssert.assertTrue(
         result.getErrors()[0].getMessage().contains("allOrNone rollback"),
         "merge allOrNone failure should indicate rollback");
+    SystemAssert.assertEquals(0, result.getMergedRecordIds().length, "failed merge should not return merged ids");
+    SystemAssert.assertEquals(
+        0, result.getUpdatedRelatedIds().length, "failed merge should not return updated related ids");
     SystemAssert.assertEquals(
         2,
         Database.countQuery("SELECT count() FROM Account"),
@@ -569,6 +578,14 @@ public final class SampleGovernorTest {
         Database.countQuery(
             "SELECT count() FROM Account WHERE NOT (Name LIKE 'Acme%') AND NOT (Score < 20)");
     SystemAssert.assertEquals(1, count, "NOT with AND should be supported");
+
+    List<ApexSObject> compound =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE NOT (Name LIKE 'Acme%' OR Score < 20) "
+                + "ORDER BY Name ASC");
+    SystemAssert.assertEquals(1, compound.size(), "NOT over OR should be supported");
+    SystemAssert.assertEquals("Beta Ltd", compound.get(0).get("Name"), "compound NOT result mismatch");
   }
 
   @Test
@@ -582,6 +599,20 @@ public final class SampleGovernorTest {
             ApexSObject.of("Account").set("Name", "B-Low").set("Score", 10),
             ApexSObject.of("Account").set("Name", "C-Null").set("Score", null),
             ApexSObject.of("Account").set("Name", "D-High").set("Score", 20)));
+
+    List<ApexSObject> defaultAsc =
+        Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score ASC, Name ASC");
+    SystemAssert.assertEquals("A-Null", defaultAsc.get(0).get("Name"), "default ASC should keep null first");
+    SystemAssert.assertEquals("C-Null", defaultAsc.get(1).get("Name"), "default ASC should keep null first");
+    SystemAssert.assertEquals("B-Low", defaultAsc.get(2).get("Name"), "default ASC numeric ordering mismatch");
+    SystemAssert.assertEquals("D-High", defaultAsc.get(3).get("Name"), "default ASC numeric ordering mismatch");
+
+    List<ApexSObject> defaultDesc =
+        Database.query("SELECT Id, Name, Score FROM Account ORDER BY Score DESC, Name ASC");
+    SystemAssert.assertEquals("A-Null", defaultDesc.get(0).get("Name"), "default DESC should keep null first");
+    SystemAssert.assertEquals("C-Null", defaultDesc.get(1).get("Name"), "default DESC should keep null first");
+    SystemAssert.assertEquals("D-High", defaultDesc.get(2).get("Name"), "default DESC numeric ordering mismatch");
+    SystemAssert.assertEquals("B-Low", defaultDesc.get(3).get("Name"), "default DESC numeric ordering mismatch");
 
     List<ApexSObject> first =
         Database.query(

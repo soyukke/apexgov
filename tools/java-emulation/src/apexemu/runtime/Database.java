@@ -62,12 +62,12 @@ public final class Database {
     return ApexStore.undelete(records, allOrNone);
   }
 
-  public static SaveResult merge(
+  public static MergeResult merge(
       ApexSObject masterRecord, ApexSObject duplicateRecord, boolean allOrNone) {
     return merge(masterRecord, List.of(duplicateRecord), allOrNone);
   }
 
-  public static SaveResult merge(
+  public static MergeResult merge(
       ApexSObject masterRecord, Collection<ApexSObject> duplicateRecords, boolean allOrNone) {
     return ApexStore.merge(masterRecord, duplicateRecords, allOrNone);
   }
@@ -135,7 +135,7 @@ public final class Database {
     }
   }
 
-  public static final class SaveResult {
+  public static class SaveResult {
     private final boolean success;
     private final String id;
     private final Error[] errors;
@@ -156,6 +156,30 @@ public final class Database {
 
     public Error[] getErrors() {
       return errors.clone();
+    }
+  }
+
+  public static final class MergeResult extends SaveResult {
+    private final String[] mergedRecordIds;
+    private final String[] updatedRelatedIds;
+
+    MergeResult(
+        boolean success,
+        String id,
+        Error[] errors,
+        String[] mergedRecordIds,
+        String[] updatedRelatedIds) {
+      super(success, id, errors);
+      this.mergedRecordIds = mergedRecordIds == null ? new String[0] : mergedRecordIds.clone();
+      this.updatedRelatedIds = updatedRelatedIds == null ? new String[0] : updatedRelatedIds.clone();
+    }
+
+    public String[] getMergedRecordIds() {
+      return mergedRecordIds.clone();
+    }
+
+    public String[] getUpdatedRelatedIds() {
+      return updatedRelatedIds.clone();
     }
   }
 

@@ -51,7 +51,7 @@ final class ApexStore {
     return apply(records, allOrNone, DmlVerb.UNDELETE, ApexStore::undeleteOne);
   }
 
-  static Database.SaveResult merge(
+  static Database.MergeResult merge(
       ApexSObject masterRecord, Collection<ApexSObject> duplicateRecords, boolean allOrNone) {
     State state = STATE.get();
     List<ApexSObject> normalizedDuplicates = normalize(duplicateRecords);
@@ -63,7 +63,7 @@ final class ApexStore {
     } catch (RuntimeException error) {
       restore(state, original);
       String messagePrefix = allOrNone ? "allOrNone rollback" : null;
-      return failure(
+      return mergeFailure(
           masterRecord == null ? null : masterRecord.id(), classifyFailure(error), messagePrefix);
     }
   }
@@ -382,7 +382,7 @@ final class ApexStore {
     return id;
   }
 
-  private static Database.SaveResult mergeOne(
+  private static Database.MergeResult mergeOne(
       State state, ApexSObject rawMaster, List<ApexSObject> rawDuplicates) {
     ApexSObject master = requireRecord(rawMaster);
     validateForUpdate(master);
@@ -402,7 +402,7 @@ final class ApexStore {
     dispatchAfter(DmlVerb.UPDATE, List.of(masterNew), List.of(masterOld));
     dispatchAfter(DmlVerb.DELETE, null, plan.duplicateOldRows);
 
-    return success(mergedId);
+    return mergeSuccess(mergedId, plan.duplicateMergedIds, new String[0]);
   }
 
   private static MergePlan planMerge(
@@ -416,6 +416,7 @@ final class ApexStore {
 
     List<ApexSObject> duplicateDeleteRows = new ArrayList<>(rawDuplicates.size());
     List<ApexSObject> duplicateOldRows = new ArrayList<>(rawDuplicates.size());
+    List<String> duplicateMergedIds = new ArrayList<>(rawDuplicates.size());
     List<String> seenDuplicateIds = new ArrayList<>(rawDuplicates.size());
 
     for (ApexSObject rawDuplicate : rawDuplicates) {
@@ -438,12 +439,13 @@ final class ApexStore {
         }
       }
       seenDuplicateIds.add(duplicateId);
+      duplicateMergedIds.add(duplicateId);
 
       duplicateOldRows.add(snapshotActiveRow(state, duplicate, "merge"));
       duplicateDeleteRows.add(ApexSObject.of(duplicate.type()).withId(duplicateId));
     }
 
-    return new MergePlan(duplicateDeleteRows, duplicateOldRows);
+    return new MergePlan(duplicateDeleteRows, duplicateOldRows, duplicateMergedIds);
   }
 
   private static List<ApexSObject> beforeOldRecords(
@@ -576,7 +578,7 @@ final class ApexStore {
 
     List<ApexSObject> out = new ArrayList<>();
     for (ApexSObject row : bucket.values()) {
-      if (!matchesWhere(row, spec.whereAnyOf)) {
+      if (!matchesWhere(row, spec.whereExpr)) {
         continue;
       }
       out.add(row);
@@ -588,11 +590,10 @@ final class ApexStore {
             for (OrderByKey key : spec.orderByKeys) {
               Object leftValue = left.get(key.field);
               Object rightValue = right.get(key.field);
-              if (key.nullsFirst != null) {
-                int nullOrderCompared = compareNullOrder(leftValue, rightValue, key.nullsFirst);
-                if (nullOrderCompared != 0) {
-                  return nullOrderCompared;
-                }
+              boolean nullsFirst = key.nullsFirst == null || key.nullsFirst;
+              int nullOrderCompared = compareNullOrder(leftValue, rightValue, nullsFirst);
+              if (nullOrderCompared != 0) {
+                return nullOrderCompared;
               }
               int compared = compareValues(leftValue, rightValue);
               if (compared != 0) {
@@ -609,34 +610,38 @@ final class ApexStore {
     return out;
   }
 
-  private static boolean matchesWhere(ApexSObject row, List<List<WhereClause>> whereAnyOf) {
-    if (whereAnyOf == null || whereAnyOf.isEmpty()) {
+  private static boolean matchesWhere(ApexSObject row, WhereExpr whereExpr) {
+    if (whereExpr == null) {
       return true;
     }
-
-    for (List<WhereClause> whereAllOf : whereAnyOf) {
-      if (matchesWhereAll(row, whereAllOf)) {
+    if (whereExpr instanceof WherePredicateExpr predicateExpr) {
+      return matchesClause(row, predicateExpr.clause);
+    }
+    if (whereExpr instanceof WhereNotExpr notExpr) {
+      return !matchesWhere(row, notExpr.inner);
+    }
+    if (whereExpr instanceof WhereLogicalExpr logicalExpr) {
+      if (logicalExpr.operator == LogicalOperator.AND) {
+        for (WhereExpr term : logicalExpr.terms) {
+          if (!matchesWhere(row, term)) {
+            return false;
+          }
+        }
         return true;
       }
+      for (WhereExpr term : logicalExpr.terms) {
+        if (matchesWhere(row, term)) {
+          return true;
+        }
+      }
+      return false;
     }
     return false;
   }
 
-  private static boolean matchesWhereAll(ApexSObject row, List<WhereClause> whereAllOf) {
-    if (whereAllOf == null || whereAllOf.isEmpty()) {
-      return true;
-    }
-    for (WhereClause clause : whereAllOf) {
-      if (!matchesClause(row, clause)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   private static boolean matchesClause(ApexSObject row, WhereClause clause) {
     Object value = row.get(clause.field);
-    boolean matched = switch (clause.operator) {
+    return switch (clause.operator) {
       case "=" -> compareEquality(value, clause.literal);
       case "!=" -> !compareEquality(value, clause.literal);
       case ">" -> compareRange(value, clause.literal, ">");
@@ -648,7 +653,6 @@ final class ApexStore {
       case "like" -> compareLike(value, clause.literal);
       default -> false;
     };
-    return clause.negated ? !matched : matched;
   }
 
   private static boolean compareEquality(Object value, Object whereLiteral) {
@@ -789,11 +793,11 @@ final class ApexStore {
       throw new IllegalArgumentException("ORDER BY before WHERE is not supported: " + rawSoql);
     }
 
-    List<List<WhereClause>> whereAnyOf = List.of();
+    WhereExpr whereExpr = null;
     if (whereStart >= 0) {
       int whereBodyEnd = nextClauseStart(soql.length(), whereEnd, orderByStart, limitStart);
-      String whereExpr = soql.substring(whereEnd, whereBodyEnd).trim();
-      whereAnyOf = parseWhereClauses(whereExpr, rawSoql);
+      String whereExprRaw = soql.substring(whereEnd, whereBodyEnd).trim();
+      whereExpr = parseWhereExpression(whereExprRaw, rawSoql);
     }
 
     List<OrderByKey> orderByKeys = List.of();
@@ -803,7 +807,7 @@ final class ApexStore {
       orderByKeys = parseOrderByKeys(orderByExpr, rawSoql);
     }
 
-    return new QuerySpec(sobjectType, whereAnyOf, orderByKeys, limit);
+    return new QuerySpec(sobjectType, whereExpr, orderByKeys, limit);
   }
 
   private static String sanitize(String soql) {
@@ -828,71 +832,115 @@ final class ApexStore {
     return end;
   }
 
-  private static List<List<WhereClause>> parseWhereClauses(String whereExpr, String rawSoql) {
+  private static WhereExpr parseWhereExpression(String whereExpr, String rawSoql) {
     if (whereExpr == null || whereExpr.isBlank()) {
       throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
     }
+    return parseWhereOrExpression(whereExpr.trim(), rawSoql);
+  }
 
-    List<String> orTerms = splitByLogicalKeyword(whereExpr.trim(), "or");
-    List<List<WhereClause>> whereAnyOf = new ArrayList<>(orTerms.size());
-    for (String orTerm : orTerms) {
-      String normalizedOrTerm = stripWrappingParentheses(orTerm.trim());
-      List<String> andTerms = splitByLogicalKeyword(normalizedOrTerm, "and");
-      List<WhereClause> whereAllOf = new ArrayList<>(andTerms.size());
-      for (String andTerm : andTerms) {
-        whereAllOf.add(parseWhereClause(andTerm.trim(), rawSoql));
-      }
-      if (!whereAllOf.isEmpty()) {
-        whereAnyOf.add(whereAllOf);
+  private static WhereExpr parseWhereOrExpression(String expression, String rawSoql) {
+    List<String> orTerms = splitByLogicalKeyword(expression, "or");
+    if (orTerms.size() <= 1) {
+      return parseWhereAndExpression(expression, rawSoql);
+    }
+
+    List<WhereExpr> out = new ArrayList<>(orTerms.size());
+    for (String term : orTerms) {
+      out.add(parseWhereAndExpression(term.trim(), rawSoql));
+    }
+    return new WhereLogicalExpr(LogicalOperator.OR, out);
+  }
+
+  private static WhereExpr parseWhereAndExpression(String expression, String rawSoql) {
+    List<String> andTerms = splitByLogicalKeyword(expression, "and");
+    if (andTerms.size() <= 1) {
+      return parseWhereNotExpression(expression, rawSoql);
+    }
+
+    List<WhereExpr> out = new ArrayList<>(andTerms.size());
+    for (String term : andTerms) {
+      out.add(parseWhereNotExpression(term.trim(), rawSoql));
+    }
+    return new WhereLogicalExpr(LogicalOperator.AND, out);
+  }
+
+  private static WhereExpr parseWhereNotExpression(String expression, String rawSoql) {
+    String normalized = expression == null ? "" : expression.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
+    }
+
+    int notCount = 0;
+    while (startsWithLogicalNot(normalized)) {
+      notCount += 1;
+      normalized = normalized.substring(3).trim();
+      if (normalized.isEmpty()) {
+        throw new IllegalArgumentException("NOT requires an expression: " + rawSoql);
       }
     }
-    return whereAnyOf;
+
+    WhereExpr primary = parseWherePrimary(normalized, rawSoql);
+    if ((notCount & 1) == 0) {
+      return primary;
+    }
+    return new WhereNotExpr(primary);
+  }
+
+  private static WhereExpr parseWherePrimary(String expression, String rawSoql) {
+    String normalized = expression == null ? "" : expression.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
+    }
+
+    if (normalized.startsWith("(") && normalized.endsWith(")") && isTopLevelWrapped(normalized)) {
+      String inner = normalized.substring(1, normalized.length() - 1).trim();
+      return parseWhereOrExpression(inner, rawSoql);
+    }
+
+    return new WherePredicateExpr(parseWhereClause(normalized, rawSoql));
   }
 
   private static WhereClause parseWhereClause(String clauseText, String rawSoql) {
     String normalized = stripWrappingParentheses(clauseText.trim());
-    boolean negated = false;
-    while (startsWithIgnoreCase(normalized, "not ")) {
-      negated = !negated;
-      normalized = stripWrappingParentheses(normalized.substring(4).trim());
-    }
 
     Matcher inMatcher = WHERE_IN_PATTERN.matcher(normalized);
     if (inMatcher.matches()) {
       String field = inMatcher.group(1);
       String operator = inMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
       List<Object> inValues = parseInLiteralList(inMatcher.group(3), rawSoql);
-      return new WhereClause(field, operator, inValues, negated);
+      return new WhereClause(field, operator, inValues);
     }
 
     Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(normalized);
     if (likeMatcher.matches()) {
       String field = likeMatcher.group(1);
       Object literal = parseLiteral(likeMatcher.group(2).trim());
-      return new WhereClause(field, "like", literal, negated);
+      return new WhereClause(field, "like", literal);
     }
 
     Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
-      return new WhereClause(
-          whereMatcher.group(1),
-          whereMatcher.group(2),
-          parseLiteral(whereMatcher.group(3).trim()),
-          negated);
+      return new WhereClause(whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
     }
 
     throw new IllegalArgumentException(
-        "only WHERE with AND and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: " + rawSoql);
+        "only WHERE with AND/OR/NOT and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: "
+            + rawSoql);
   }
 
-  private static boolean startsWithIgnoreCase(String text, String prefix) {
-    if (text == null || prefix == null) {
+  private static boolean startsWithLogicalNot(String text) {
+    if (text == null) {
       return false;
     }
-    if (text.length() < prefix.length()) {
+    if (text.length() < 3 || !text.regionMatches(true, 0, "not", 0, 3)) {
       return false;
     }
-    return text.regionMatches(true, 0, prefix, 0, prefix.length());
+    if (text.length() == 3) {
+      return true;
+    }
+    char boundary = text.charAt(3);
+    return Character.isWhitespace(boundary) || boundary == '(';
   }
 
   private static String stripWrappingParentheses(String text) {
@@ -999,7 +1047,8 @@ final class ApexStore {
       Matcher orderByMatcher = ORDER_BY_PATTERN.matcher(term.trim());
       if (!orderByMatcher.matches()) {
         throw new IllegalArgumentException(
-            "only ORDER BY <field> [ASC|DESC] (comma-separated) is supported: " + rawSoql);
+            "only ORDER BY <field> [ASC|DESC] [NULLS FIRST|LAST] (comma-separated) is supported: "
+                + rawSoql);
       }
       String field = orderByMatcher.group(1);
       String direction = orderByMatcher.group(2);
@@ -1293,6 +1342,25 @@ final class ApexStore {
         false, id, new Database.Error[] {new Database.Error(info.statusCode, message, info.fields)});
   }
 
+  private static Database.MergeResult mergeSuccess(
+      String id, List<String> mergedRecordIds, String[] updatedRelatedIds) {
+    String[] mergedIds = mergedRecordIds == null ? new String[0] : mergedRecordIds.toArray(new String[0]);
+    return new Database.MergeResult(true, id, new Database.Error[0], mergedIds, updatedRelatedIds);
+  }
+
+  private static Database.MergeResult mergeFailure(String id, FailureInfo info, String messagePrefix) {
+    String message = info.message;
+    if (messagePrefix != null && !messagePrefix.isBlank()) {
+      message = messagePrefix + ": " + message;
+    }
+    return new Database.MergeResult(
+        false,
+        id,
+        new Database.Error[] {new Database.Error(info.statusCode, message, info.fields)},
+        new String[0],
+        new String[0]);
+  }
+
   private static FailureInfo classifyFailure(Throwable error) {
     if (error instanceof DmlFailure dmlFailure) {
       return new FailureInfo(dmlFailure.statusCode, dmlFailure.getMessage(), dmlFailure.fields);
@@ -1400,21 +1468,38 @@ final class ApexStore {
   private static final class MergePlan {
     final List<ApexSObject> duplicateDeleteRows;
     final List<ApexSObject> duplicateOldRows;
+    final List<String> duplicateMergedIds;
 
-    MergePlan(List<ApexSObject> duplicateDeleteRows, List<ApexSObject> duplicateOldRows) {
+    MergePlan(
+        List<ApexSObject> duplicateDeleteRows,
+        List<ApexSObject> duplicateOldRows,
+        List<String> duplicateMergedIds) {
       this.duplicateDeleteRows = duplicateDeleteRows;
       this.duplicateOldRows = duplicateOldRows;
+      this.duplicateMergedIds = duplicateMergedIds;
     }
   }
 
   private record FailureInfo(String statusCode, String message, String[] fields) {}
 
-  private record WhereClause(String field, String operator, Object literal, boolean negated) {}
+  private interface WhereExpr {}
+
+  private enum LogicalOperator {
+    AND,
+    OR
+  }
+
+  private record WherePredicateExpr(WhereClause clause) implements WhereExpr {}
+
+  private record WhereNotExpr(WhereExpr inner) implements WhereExpr {}
+
+  private record WhereLogicalExpr(LogicalOperator operator, List<WhereExpr> terms) implements WhereExpr {}
+
+  private record WhereClause(String field, String operator, Object literal) {}
 
   private record OrderByKey(String field, boolean descending, Boolean nullsFirst) {}
 
-  private record QuerySpec(
-      String sobjectType, List<List<WhereClause>> whereAnyOf, List<OrderByKey> orderByKeys, int limit) {}
+  private record QuerySpec(String sobjectType, WhereExpr whereExpr, List<OrderByKey> orderByKeys, int limit) {}
 
   private static final class DmlFailure extends RuntimeException {
     final String statusCode;
