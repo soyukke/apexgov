@@ -20,7 +20,9 @@
             if [ -z "''${XDG_CACHE_HOME:-}" ]; then
               export XDG_CACHE_HOME="$PWD/.cache"
             fi
-            mkdir -p "$XDG_CACHE_HOME"
+            export ZIG_GLOBAL_CACHE_DIR="$XDG_CACHE_HOME/zig-global"
+            export ZIG_LOCAL_CACHE_DIR="$PWD/.zig-cache"
+            mkdir -p "$XDG_CACHE_HOME" "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
           '';
         };
       }
