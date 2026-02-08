@@ -1,6 +1,8 @@
 package apexemu.runtime;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -100,6 +102,15 @@ public final class Database {
     return ApexStore.countQueryWithBinds(soql, bindVariables);
   }
 
+  public static QueryLocator getQueryLocator(String soql) {
+    return new QueryLocator(query(soql));
+  }
+
+  public static QueryLocator getQueryLocatorWithBinds(
+      String soql, Map<String, Object> bindVariables) {
+    return new QueryLocator(queryWithBinds(soql, bindVariables));
+  }
+
   public static void clearInMemoryStore() {
     ApexStore.reset();
   }
@@ -149,6 +160,38 @@ public final class Database {
 
     Savepoint(long token) {
       this.token = token;
+    }
+  }
+
+  public static final class QueryLocator implements Iterable<ApexSObject> {
+    private final List<ApexSObject> rows;
+
+    QueryLocator(List<ApexSObject> rows) {
+      this.rows = copyRows(rows);
+    }
+
+    public int size() {
+      return rows.size();
+    }
+
+    public List<ApexSObject> getRecords() {
+      return copyRows(rows);
+    }
+
+    @Override
+    public Iterator<ApexSObject> iterator() {
+      return getRecords().iterator();
+    }
+
+    private static List<ApexSObject> copyRows(List<ApexSObject> input) {
+      if (input == null || input.isEmpty()) {
+        return List.of();
+      }
+      List<ApexSObject> out = new ArrayList<>(input.size());
+      for (ApexSObject row : input) {
+        out.add(row == null ? null : row.copy());
+      }
+      return out;
     }
   }
 

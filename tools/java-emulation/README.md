@@ -109,7 +109,10 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
   - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
 - schema registry: `Schema.object(\"Custom__c\")...register()`
   - registered object は required field / simple type validation を実施
-- Query: `query(soql)`, `countQuery(soql)`, `queryWithBinds(soql, binds)`, `countQueryWithBinds(soql, binds)`
+- Query:
+  - `query(soql)`, `countQuery(soql)`
+  - `queryWithBinds(soql, binds)`, `countQueryWithBinds(soql, binds)`
+  - `getQueryLocator(soql)`, `getQueryLocatorWithBinds(soql, binds)` (`QueryLocator#size`, `#getRecords`, iteration)
   - bind は `:name` 形式（`Map<String, Object>` から解決）
   - scalar (`String`/`Number`/`Boolean`/`null`) と collection bind（`IN :names`）をサポート
 - reset: `clearInMemoryStore()`

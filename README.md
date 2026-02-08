@@ -119,7 +119,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 `stopTest()` では `@Future` / Queueable / Batch / Schedulable の簡易flushも実行されます。
 `apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
 `apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
-`Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）にも対応しています。
+`Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）と `Database.getQueryLocator/getQueryLocatorWithBinds` にも対応しています。
 `Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult`、`Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）も使えます。
 `apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
 `Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。

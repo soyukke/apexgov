@@ -697,6 +697,44 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlQueryLocatorSupportsBindsAndIteration() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Acme").set("Score", 30),
+            ApexSObject.of("Account").set("Name", "Beta").set("Score", 20),
+            ApexSObject.of("Account").set("Name", "Gamma").set("Score", 10)));
+
+    Database.QueryLocator locator =
+        Database.getQueryLocator("SELECT Id, Name FROM Account WHERE Score >= 20 ORDER BY Score DESC");
+    SystemAssert.assertEquals(2, locator.size(), "query locator should keep filtered row count");
+
+    List<String> iteratedNames = new java.util.ArrayList<>();
+    for (ApexSObject row : locator) {
+      iteratedNames.add(String.valueOf(row.get("Name")));
+    }
+    SystemAssert.assertEquals("Acme", iteratedNames.get(0), "locator iteration order mismatch");
+    SystemAssert.assertEquals("Beta", iteratedNames.get(1), "locator iteration order mismatch");
+
+    List<ApexSObject> detachedRows = locator.getRecords();
+    detachedRows.get(0).set("Name", "MutatedOutside");
+    SystemAssert.assertEquals(
+        "Acme", locator.getRecords().get(0).get("Name"), "locator rows should be defensive copies");
+
+    Database.QueryLocator boundLocator =
+        Database.getQueryLocatorWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name IN :names ORDER BY Name ASC",
+            Map.of("names", List.of("Beta", "Gamma")));
+    SystemAssert.assertEquals(2, boundLocator.size(), "bound locator should support list bind");
+    SystemAssert.assertEquals(
+        "Beta", boundLocator.getRecords().get(0).get("Name"), "bound locator order mismatch");
+    SystemAssert.assertEquals(
+        "Gamma", boundLocator.getRecords().get(1).get("Name"), "bound locator order mismatch");
+  }
+
+  @Test
   public void soqlSupportsUnaryNot() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
