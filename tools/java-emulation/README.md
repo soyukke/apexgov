@@ -102,7 +102,8 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 
 - `SELECT ... FROM Object`
 - bracket style: `[SELECT ... FROM Object ...]`
-- optional `WHERE` with `AND` of predicates
+- optional `WHERE` with `AND` / `OR` of predicates (`AND` 優先)
 - supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
-- optional `ORDER BY field [ASC|DESC]`
+- `LIKE` は大文字小文字を区別せず、`\%` / `\_` でワイルドカードをエスケープ可能
+- optional `ORDER BY field [ASC|DESC]` (comma-separated multi-key supported)
 - optional `LIMIT n`

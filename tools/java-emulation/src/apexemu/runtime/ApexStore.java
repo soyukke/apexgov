@@ -242,17 +242,22 @@ final class ApexStore {
 
     List<ApexSObject> out = new ArrayList<>();
     for (ApexSObject row : bucket.values()) {
-      if (!matchesWhere(row, spec.whereClauses)) {
+      if (!matchesWhere(row, spec.whereAnyOf)) {
         continue;
       }
       out.add(row);
     }
 
-    if (!countOnly && spec.orderByField != null) {
+    if (!countOnly && spec.orderByKeys != null && !spec.orderByKeys.isEmpty()) {
       out.sort(
           (left, right) -> {
-            int compared = compareValues(left.get(spec.orderByField), right.get(spec.orderByField));
-            return spec.orderDescending ? -compared : compared;
+            for (OrderByKey key : spec.orderByKeys) {
+              int compared = compareValues(left.get(key.field), right.get(key.field));
+              if (compared != 0) {
+                return key.descending ? -compared : compared;
+              }
+            }
+            return 0;
           });
     }
 
@@ -262,12 +267,24 @@ final class ApexStore {
     return out;
   }
 
-  private static boolean matchesWhere(ApexSObject row, List<WhereClause> whereClauses) {
-    if (whereClauses == null || whereClauses.isEmpty()) {
+  private static boolean matchesWhere(ApexSObject row, List<List<WhereClause>> whereAnyOf) {
+    if (whereAnyOf == null || whereAnyOf.isEmpty()) {
       return true;
     }
 
-    for (WhereClause clause : whereClauses) {
+    for (List<WhereClause> whereAllOf : whereAnyOf) {
+      if (matchesWhereAll(row, whereAllOf)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean matchesWhereAll(ApexSObject row, List<WhereClause> whereAllOf) {
+    if (whereAllOf == null || whereAllOf.isEmpty()) {
+      return true;
+    }
+    for (WhereClause clause : whereAllOf) {
       if (!matchesClause(row, clause)) {
         return false;
       }
@@ -368,7 +385,9 @@ final class ApexStore {
     String pattern = String.valueOf(whereLiteral);
     String regex = toLikeRegex(pattern);
     try {
-      return Pattern.compile(regex, Pattern.DOTALL).matcher(candidate).matches();
+      return Pattern.compile(regex, Pattern.DOTALL | Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE)
+          .matcher(candidate)
+          .matches();
     } catch (PatternSyntaxException error) {
       return false;
     }
@@ -414,28 +433,21 @@ final class ApexStore {
       throw new IllegalArgumentException("ORDER BY before WHERE is not supported: " + rawSoql);
     }
 
-    List<WhereClause> whereClauses = List.of();
+    List<List<WhereClause>> whereAnyOf = List.of();
     if (whereStart >= 0) {
       int whereBodyEnd = nextClauseStart(soql.length(), whereEnd, orderByStart, limitStart);
       String whereExpr = soql.substring(whereEnd, whereBodyEnd).trim();
-      whereClauses = parseWhereClauses(whereExpr, rawSoql);
+      whereAnyOf = parseWhereClauses(whereExpr, rawSoql);
     }
 
-    String orderByField = null;
-    boolean orderDescending = false;
+    List<OrderByKey> orderByKeys = List.of();
     if (orderByStart >= 0) {
       int orderByBodyEnd = limitStart > orderByEnd ? limitStart : soql.length();
       String orderByExpr = soql.substring(orderByEnd, orderByBodyEnd).trim();
-      Matcher orderByMatcher = ORDER_BY_PATTERN.matcher(orderByExpr);
-      if (!orderByMatcher.matches()) {
-        throw new IllegalArgumentException("only ORDER BY <field> [ASC|DESC] is supported: " + rawSoql);
-      }
-      orderByField = orderByMatcher.group(1);
-      String direction = orderByMatcher.group(2);
-      orderDescending = direction != null && direction.equalsIgnoreCase("desc");
+      orderByKeys = parseOrderByKeys(orderByExpr, rawSoql);
     }
 
-    return new QuerySpec(sobjectType, whereClauses, orderByField, orderDescending, limit);
+    return new QuerySpec(sobjectType, whereAnyOf, orderByKeys, limit);
   }
 
   private static String sanitize(String soql) {
@@ -460,21 +472,31 @@ final class ApexStore {
     return end;
   }
 
-  private static List<WhereClause> parseWhereClauses(String whereExpr, String rawSoql) {
+  private static List<List<WhereClause>> parseWhereClauses(String whereExpr, String rawSoql) {
     if (whereExpr == null || whereExpr.isBlank()) {
       throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
     }
 
-    List<String> clauseTexts = splitWhereByAnd(whereExpr);
-    List<WhereClause> clauses = new ArrayList<>(clauseTexts.size());
-    for (String clauseText : clauseTexts) {
-      clauses.add(parseWhereClause(clauseText.trim(), rawSoql));
+    List<String> orTerms = splitByLogicalKeyword(whereExpr.trim(), "or");
+    List<List<WhereClause>> whereAnyOf = new ArrayList<>(orTerms.size());
+    for (String orTerm : orTerms) {
+      String normalizedOrTerm = stripWrappingParentheses(orTerm.trim());
+      List<String> andTerms = splitByLogicalKeyword(normalizedOrTerm, "and");
+      List<WhereClause> whereAllOf = new ArrayList<>(andTerms.size());
+      for (String andTerm : andTerms) {
+        whereAllOf.add(parseWhereClause(andTerm.trim(), rawSoql));
+      }
+      if (!whereAllOf.isEmpty()) {
+        whereAnyOf.add(whereAllOf);
+      }
     }
-    return clauses;
+    return whereAnyOf;
   }
 
   private static WhereClause parseWhereClause(String clauseText, String rawSoql) {
-    Matcher inMatcher = WHERE_IN_PATTERN.matcher(clauseText);
+    String normalized = stripWrappingParentheses(clauseText.trim());
+
+    Matcher inMatcher = WHERE_IN_PATTERN.matcher(normalized);
     if (inMatcher.matches()) {
       String field = inMatcher.group(1);
       String operator = inMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
@@ -482,14 +504,14 @@ final class ApexStore {
       return new WhereClause(field, operator, inValues);
     }
 
-    Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(clauseText);
+    Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(normalized);
     if (likeMatcher.matches()) {
       String field = likeMatcher.group(1);
       Object literal = parseLiteral(likeMatcher.group(2).trim());
       return new WhereClause(field, "like", literal);
     }
 
-    Matcher whereMatcher = WHERE_PATTERN.matcher(clauseText);
+    Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
       return new WhereClause(
           whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
@@ -499,15 +521,20 @@ final class ApexStore {
         "only WHERE with AND and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: " + rawSoql);
   }
 
-  private static List<String> splitWhereByAnd(String whereExpr) {
-    List<String> out = new ArrayList<>();
-    String source = whereExpr.trim();
-    int start = 0;
+  private static String stripWrappingParentheses(String text) {
+    String out = text == null ? "" : text.trim();
+    while (out.startsWith("(") && out.endsWith(")") && isTopLevelWrapped(out)) {
+      out = out.substring(1, out.length() - 1).trim();
+    }
+    return out;
+  }
+
+  private static boolean isTopLevelWrapped(String text) {
+    int depth = 0;
     boolean inSingle = false;
     boolean inDouble = false;
-
-    for (int i = 0; i < source.length(); i += 1) {
-      char ch = source.charAt(i);
+    for (int i = 0; i < text.length(); i += 1) {
+      char ch = text.charAt(i);
       if (ch == '\'' && !inDouble) {
         inSingle = !inSingle;
         continue;
@@ -519,18 +546,140 @@ final class ApexStore {
       if (inSingle || inDouble) {
         continue;
       }
-      if (i + 3 <= source.length()
-          && source.regionMatches(true, i, "and", 0, 3)
+      if (ch == '(') {
+        depth += 1;
+      } else if (ch == ')') {
+        depth -= 1;
+        if (depth == 0 && i < text.length() - 1) {
+          return false;
+        }
+      }
+      if (depth < 0) {
+        return false;
+      }
+    }
+    return depth == 0;
+  }
+
+  private static List<String> splitByLogicalKeyword(String expression, String keyword) {
+    List<String> out = new ArrayList<>();
+    String source = expression.trim();
+    if (source.isEmpty()) {
+      return out;
+    }
+    int start = 0;
+    boolean inSingle = false;
+    boolean inDouble = false;
+    int parenDepth = 0;
+    int keywordLength = keyword.length();
+
+    for (int i = 0; i < source.length(); i += 1) {
+      char ch = source.charAt(i);
+      if (ch == '\'' && !inDouble) {
+        inSingle = !inSingle;
+        continue;
+      }
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+        continue;
+      }
+      if (!inSingle && !inDouble) {
+        if (ch == '(') {
+          parenDepth += 1;
+          continue;
+        }
+        if (ch == ')' && parenDepth > 0) {
+          parenDepth -= 1;
+          continue;
+        }
+      }
+      if (inSingle || inDouble) {
+        continue;
+      }
+      if (parenDepth != 0) {
+        continue;
+      }
+      if (i + keywordLength <= source.length()
+          && source.regionMatches(true, i, keyword, 0, keywordLength)
           && i > 0
-          && i + 3 < source.length()
+          && i + keywordLength < source.length()
           && Character.isWhitespace(source.charAt(i - 1))
-          && Character.isWhitespace(source.charAt(i + 3))) {
+          && Character.isWhitespace(source.charAt(i + keywordLength))) {
         out.add(source.substring(start, i).trim());
-        start = i + 3;
+        start = i + keywordLength;
       }
     }
 
     out.add(source.substring(start).trim());
+    return out;
+  }
+
+  private static List<OrderByKey> parseOrderByKeys(String orderByExpr, String rawSoql) {
+    if (orderByExpr == null || orderByExpr.isBlank()) {
+      throw new IllegalArgumentException("ORDER BY expression cannot be blank: " + rawSoql);
+    }
+
+    List<String> terms = splitByComma(orderByExpr);
+    List<OrderByKey> keys = new ArrayList<>(terms.size());
+    for (String term : terms) {
+      Matcher orderByMatcher = ORDER_BY_PATTERN.matcher(term.trim());
+      if (!orderByMatcher.matches()) {
+        throw new IllegalArgumentException(
+            "only ORDER BY <field> [ASC|DESC] (comma-separated) is supported: " + rawSoql);
+      }
+      String field = orderByMatcher.group(1);
+      String direction = orderByMatcher.group(2);
+      boolean descending = direction != null && direction.equalsIgnoreCase("desc");
+      keys.add(new OrderByKey(field, descending));
+    }
+    return keys;
+  }
+
+  private static List<String> splitByComma(String raw) {
+    List<String> out = new ArrayList<>();
+    StringBuilder token = new StringBuilder();
+    boolean inSingle = false;
+    boolean inDouble = false;
+    int parenDepth = 0;
+    for (int i = 0; i < raw.length(); i += 1) {
+      char ch = raw.charAt(i);
+      if (ch == '\'' && !inDouble) {
+        inSingle = !inSingle;
+        token.append(ch);
+        continue;
+      }
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+        token.append(ch);
+        continue;
+      }
+      if (!inSingle && !inDouble) {
+        if (ch == '(') {
+          parenDepth += 1;
+          token.append(ch);
+          continue;
+        }
+        if (ch == ')' && parenDepth > 0) {
+          parenDepth -= 1;
+          token.append(ch);
+          continue;
+        }
+        if (ch == ',' && parenDepth == 0) {
+          String term = token.toString().trim();
+          if (!term.isEmpty()) {
+            out.add(term);
+          }
+          token.setLength(0);
+          continue;
+        }
+      }
+      token.append(ch);
+    }
+
+    String tail = token.toString().trim();
+    if (!tail.isEmpty()) {
+      out.add(tail);
+    }
     return out;
   }
 
@@ -605,21 +754,34 @@ final class ApexStore {
   private static String toLikeRegex(String pattern) {
     StringBuilder regex = new StringBuilder();
     regex.append("^");
+    boolean escaping = false;
     for (int i = 0; i < pattern.length(); i += 1) {
       char ch = pattern.charAt(i);
-      if (ch == '%') {
+      if (escaping) {
+        appendEscapedRegexChar(regex, ch);
+        escaping = false;
+      } else if (ch == '\\') {
+        escaping = true;
+      } else if (ch == '%') {
         regex.append(".*");
       } else if (ch == '_') {
         regex.append(".");
       } else {
-        if ("\\.[]{}()*+-?^$|".indexOf(ch) >= 0) {
-          regex.append("\\");
-        }
-        regex.append(ch);
+        appendEscapedRegexChar(regex, ch);
       }
+    }
+    if (escaping) {
+      appendEscapedRegexChar(regex, '\\');
     }
     regex.append("$");
     return regex.toString();
+  }
+
+  private static void appendEscapedRegexChar(StringBuilder regex, char ch) {
+    if ("\\.[]{}()*+-?^$|".indexOf(ch) >= 0) {
+      regex.append("\\");
+    }
+    regex.append(ch);
   }
 
   private static Double toNumber(Object value) {
@@ -827,8 +989,10 @@ final class ApexStore {
 
   private record WhereClause(String field, String operator, Object literal) {}
 
+  private record OrderByKey(String field, boolean descending) {}
+
   private record QuerySpec(
-      String sobjectType, List<WhereClause> whereClauses, String orderByField, boolean orderDescending, int limit) {}
+      String sobjectType, List<List<WhereClause>> whereAnyOf, List<OrderByKey> orderByKeys, int limit) {}
 
   private static final class DmlFailure extends RuntimeException {
     final String statusCode;

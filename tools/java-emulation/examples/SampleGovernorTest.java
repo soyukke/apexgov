@@ -261,6 +261,52 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsOrMultiOrderByAndLikeEscapes() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "alpha_X").set("Score", 30).set("Tier", 2).set("Grp", "A"),
+            ApexSObject.of("Account").set("Name", "Alpha%Y").set("Score", 30).set("Tier", 1).set("Grp", "A"),
+            ApexSObject.of("Account").set("Name", "beta_x").set("Score", 20).set("Tier", 1).set("Grp", "B"),
+            ApexSObject.of("Account").set("Name", "gamma").set("Score", 25).set("Tier", 3).set("Grp", "C")));
+
+    List<ApexSObject> orRows =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE (Score >= 30 AND Tier = 1) OR Name = 'gamma' "
+                + "ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, orRows.size(), "OR condition should combine disjoint predicates");
+    SystemAssert.assertEquals("Alpha%Y", orRows.get(0).get("Name"), "OR result order mismatch");
+    SystemAssert.assertEquals("gamma", orRows.get(1).get("Name"), "OR result order mismatch");
+
+    List<ApexSObject> ordered =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE Grp IN ('A', 'B') "
+                + "ORDER BY Score DESC, Tier ASC, Name DESC");
+    SystemAssert.assertEquals(3, ordered.size(), "multi ORDER BY should keep all filtered rows");
+    SystemAssert.assertEquals("Alpha%Y", ordered.get(0).get("Name"), "multi ORDER BY key#1 mismatch");
+    SystemAssert.assertEquals("alpha_X", ordered.get(1).get("Name"), "multi ORDER BY key#2 mismatch");
+    SystemAssert.assertEquals("beta_x", ordered.get(2).get("Name"), "multi ORDER BY key#3 mismatch");
+
+    List<ApexSObject> likeUnderscore =
+        Database.query("SELECT Id, Name FROM Account WHERE Name LIKE 'alpha\\_%' ORDER BY Name ASC");
+    SystemAssert.assertEquals(1, likeUnderscore.size(), "escaped underscore should be literal");
+    SystemAssert.assertEquals("alpha_X", likeUnderscore.get(0).get("Name"), "LIKE underscore escape mismatch");
+
+    List<ApexSObject> likePercent =
+        Database.query("SELECT Id, Name FROM Account WHERE Name LIKE 'alpha\\%%' ORDER BY Name ASC");
+    SystemAssert.assertEquals(1, likePercent.size(), "escaped percent should be literal");
+    SystemAssert.assertEquals("Alpha%Y", likePercent.get(0).get("Name"), "LIKE percent escape mismatch");
+
+    List<ApexSObject> likeCaseInsensitive =
+        Database.query("SELECT Id, Name FROM Account WHERE Name LIKE 'ALPHA%' ORDER BY Name ASC LIMIT 2");
+    SystemAssert.assertEquals(2, likeCaseInsensitive.size(), "LIKE should be case-insensitive");
+  }
+
+  @Test
   public void savepointRollbackRestoresInMemoryStore() {
     Database.clearInMemoryStore();
 
