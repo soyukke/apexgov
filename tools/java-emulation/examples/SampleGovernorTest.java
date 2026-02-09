@@ -11,6 +11,8 @@ import apexemu.runtime.QueryLocatorBatchable;
 import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
 import apexemu.runtime.Trigger;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -983,6 +985,71 @@ public final class SampleGovernorTest {
     List<ApexSObject> emptyCount = Database.query("SELECT COUNT() totalRows FROM Account");
     SystemAssert.assertEquals(1, emptyCount.size(), "COUNT() on empty table should return one row");
     SystemAssert.assertEquals(0L, emptyCount.get(0).get("totalRows"), "COUNT() on empty table mismatch");
+  }
+
+  @Test
+  public void soqlSupportsRelativeAndAbsoluteDateLiterals() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    LocalDate today = LocalDate.now(ZoneOffset.UTC);
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Task").set("Subject", "past3").set("ActivityDate", today.minusDays(3)),
+            ApexSObject.of("Task").set("Subject", "past2").set("ActivityDate", today.minusDays(2)),
+            ApexSObject.of("Task").set("Subject", "yesterday").set("ActivityDate", today.minusDays(1)),
+            ApexSObject.of("Task").set("Subject", "today").set("ActivityDate", today),
+            ApexSObject.of("Task").set("Subject", "tomorrow").set("ActivityDate", today.plusDays(1))));
+
+    List<ApexSObject> todayRows =
+        Database.query("SELECT Subject FROM Task WHERE ActivityDate = TODAY ORDER BY Subject ASC");
+    SystemAssert.assertEquals(1, todayRows.size(), "TODAY literal should keep only today's row");
+    SystemAssert.assertEquals("today", todayRows.get(0).get("Subject"), "TODAY literal row mismatch");
+
+    List<ApexSObject> lastNDaysRows =
+        Database.query(
+            "SELECT Subject FROM Task WHERE ActivityDate = LAST_N_DAYS:2 ORDER BY ActivityDate ASC");
+    SystemAssert.assertEquals(3, lastNDaysRows.size(), "LAST_N_DAYS should include bounded date window");
+    SystemAssert.assertEquals("past2", lastNDaysRows.get(0).get("Subject"), "LAST_N_DAYS lower bound mismatch");
+    SystemAssert.assertEquals(
+        "today", lastNDaysRows.get(2).get("Subject"), "LAST_N_DAYS upper bound mismatch");
+
+    List<ApexSObject> nDaysAgoRows =
+        Database.query("SELECT Subject FROM Task WHERE ActivityDate = N_DAYS_AGO:1");
+    SystemAssert.assertEquals(1, nDaysAgoRows.size(), "N_DAYS_AGO should match a single day");
+    SystemAssert.assertEquals("yesterday", nDaysAgoRows.get(0).get("Subject"), "N_DAYS_AGO row mismatch");
+
+    List<ApexSObject> nextNDaysRows =
+        Database.query(
+            "SELECT Subject FROM Task WHERE ActivityDate = NEXT_N_DAYS:1 ORDER BY ActivityDate ASC");
+    SystemAssert.assertEquals(2, nextNDaysRows.size(), "NEXT_N_DAYS should include today and tomorrow");
+    SystemAssert.assertEquals("today", nextNDaysRows.get(0).get("Subject"), "NEXT_N_DAYS lower bound mismatch");
+    SystemAssert.assertEquals(
+        "tomorrow", nextNDaysRows.get(1).get("Subject"), "NEXT_N_DAYS upper bound mismatch");
+
+    List<ApexSObject> absoluteDateRows =
+        Database.query(
+            "SELECT Subject FROM Task WHERE ActivityDate >= "
+                + today.minusDays(1)
+                + " ORDER BY ActivityDate ASC");
+    SystemAssert.assertEquals(3, absoluteDateRows.size(), "absolute date literal should support range compare");
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Event__c").set("Name", "evtA").set("OccurredAt__c", "2025-03-01T10:15:00Z"),
+            ApexSObject.of("Event__c").set("Name", "evtB").set("OccurredAt__c", "2025-03-03T00:00:00Z")));
+    List<ApexSObject> isoDatetimeRows =
+        Database.query(
+            "SELECT Name FROM Event__c WHERE OccurredAt__c >= 2025-03-02 ORDER BY Name ASC");
+    SystemAssert.assertEquals(1, isoDatetimeRows.size(), "ISO datetime value should compare with date literal");
+    SystemAssert.assertEquals("evtB", isoDatetimeRows.get(0).get("Name"), "ISO datetime comparison mismatch");
+
+    Database.insert(List.of(ApexSObject.of("Milestone__c").set("Name", "strDate").set("DueDate__c", today.toString())));
+    List<ApexSObject> stringDateRows =
+        Database.query("SELECT Name FROM Milestone__c WHERE DueDate__c = TODAY");
+    SystemAssert.assertEquals(1, stringDateRows.size(), "string ISO date should compare with relative literal");
+    SystemAssert.assertEquals("strDate", stringDateRows.get(0).get("Name"), "string date literal mismatch");
   }
 
   @Test

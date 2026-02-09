@@ -131,6 +131,8 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - optional `WHERE` with `AND` / `OR` of predicates (`AND` 優先)
 - unary `NOT (...)` predicate is supported (including compound forms like `NOT (A OR B)`)
 - supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
+- date literal subset: `TODAY`, `YESTERDAY`, `TOMORROW`, `LAST_N_DAYS:n`, `NEXT_N_DAYS:n`, `N_DAYS_AGO:n`
+- absolute date/date-time literal subset: unquoted ISO date/date-time (`2026-02-09`, `2026-02-09T12:34:56Z`)
 - `LIKE` は大文字小文字を区別せず、`\%` / `\_` でワイルドカードをエスケープ可能
 - aggregate select: `COUNT()`, `COUNT(field)`, `COUNT_DISTINCT(field)`, `SUM(field)`, `AVG(field)`, `MIN(field)`, `MAX(field)`（`AS alias` 対応）
 - optional `GROUP BY field[, ...]` + optional `HAVING`（`AND`/`OR`/`NOT` と `= != > >= < <=`）

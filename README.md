@@ -124,6 +124,7 @@ Batch は `QueryLocatorBatchable` で `QueryLocator` を scope 分割して `exe
 `apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
 `Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）と `Database.getQueryLocator/getQueryLocatorWithBinds` にも対応しています。
 SOQL サブセットは `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET` にも対応しています。
+`WHERE` では date literal (`TODAY` / `LAST_N_DAYS:n` など) と unquoted ISO date/date-time literal も使えます。
 `Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult`、`Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）も使えます。
 `apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
 `Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。

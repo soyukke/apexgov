@@ -1,5 +1,13 @@
 package apexemu.runtime;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -38,6 +46,9 @@ final class ApexStore {
       Pattern.compile("(?i)^(.+?)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern HAVING_AGGREGATE_OPERAND_PATTERN =
       Pattern.compile("(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)$");
+  private static final Pattern RELATIVE_N_DAYS_LITERAL_PATTERN =
+      Pattern.compile("(?i)^(last_n_days|next_n_days|n_days_ago):(\\d+)$");
+  private static final Clock SOQL_CLOCK = Clock.systemUTC();
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
   private static final ThreadLocal<RuntimeConfig> CONFIG = ThreadLocal.withInitial(RuntimeConfig::new);
 
@@ -961,6 +972,17 @@ final class ApexStore {
       return false;
     }
 
+    if (whereLiteral instanceof DateRangeLiteral dateRangeLiteral) {
+      LocalDate valueDate = toDateValue(value);
+      return valueDate != null && dateRangeLiteral.contains(valueDate);
+    }
+
+    LocalDate literalDate = toDateValue(whereLiteral);
+    LocalDate valueDate = toDateValue(value);
+    if (literalDate != null && valueDate != null) {
+      return literalDate.isEqual(valueDate);
+    }
+
     if (whereLiteral instanceof Number numberLiteral && value instanceof Number valueNumber) {
       return Double.compare(numberLiteral.doubleValue(), valueNumber.doubleValue()) == 0;
     }
@@ -977,6 +999,21 @@ final class ApexStore {
     if (value == null || whereLiteral == null) {
       return false;
     }
+
+    if (whereLiteral instanceof DateRangeLiteral dateRangeLiteral) {
+      LocalDate valueDate = toDateValue(value);
+      if (valueDate == null) {
+        return false;
+      }
+      return switch (operator) {
+        case ">" -> valueDate.isAfter(dateRangeLiteral.endInclusive());
+        case ">=" -> !valueDate.isBefore(dateRangeLiteral.startInclusive());
+        case "<" -> valueDate.isBefore(dateRangeLiteral.startInclusive());
+        case "<=" -> !valueDate.isAfter(dateRangeLiteral.endInclusive());
+        default -> false;
+      };
+    }
+
     int compared = compareValues(value, whereLiteral);
     return switch (operator) {
       case ">" -> compared > 0;
@@ -1002,6 +1039,12 @@ final class ApexStore {
     Double rightNumber = toNumber(right);
     if (leftNumber != null && rightNumber != null) {
       return Double.compare(leftNumber, rightNumber);
+    }
+
+    LocalDate leftDate = toDateValue(left);
+    LocalDate rightDate = toDateValue(right);
+    if (leftDate != null && rightDate != null) {
+      return leftDate.compareTo(rightDate);
     }
 
     String leftValue = String.valueOf(left);
@@ -2041,6 +2084,17 @@ final class ApexStore {
     if ("false".equalsIgnoreCase(value)) {
       return Boolean.FALSE;
     }
+
+    DateRangeLiteral relativeDateLiteral = parseRelativeDateLiteral(value);
+    if (relativeDateLiteral != null) {
+      return relativeDateLiteral;
+    }
+
+    LocalDate absoluteDateLiteral = parseAbsoluteDateLiteral(value);
+    if (absoluteDateLiteral != null) {
+      return absoluteDateLiteral;
+    }
+
     try {
       if (value.contains(".")) {
         return Double.parseDouble(value);
@@ -2048,6 +2102,119 @@ final class ApexStore {
       return Long.parseLong(value);
     } catch (NumberFormatException ignored) {
       return value;
+    }
+  }
+
+  private static DateRangeLiteral parseRelativeDateLiteral(String literal) {
+    if (literal == null || literal.isBlank()) {
+      return null;
+    }
+
+    LocalDate today = LocalDate.now(SOQL_CLOCK);
+    if ("TODAY".equalsIgnoreCase(literal)) {
+      return DateRangeLiteral.singleDay(today);
+    }
+    if ("YESTERDAY".equalsIgnoreCase(literal)) {
+      return DateRangeLiteral.singleDay(today.minusDays(1));
+    }
+    if ("TOMORROW".equalsIgnoreCase(literal)) {
+      return DateRangeLiteral.singleDay(today.plusDays(1));
+    }
+
+    Matcher matcher = RELATIVE_N_DAYS_LITERAL_PATTERN.matcher(literal.trim());
+    if (!matcher.matches()) {
+      return null;
+    }
+
+    int dayCount = Integer.parseInt(matcher.group(2));
+    String type = matcher.group(1);
+    if ("last_n_days".equalsIgnoreCase(type)) {
+      return new DateRangeLiteral(today.minusDays(dayCount), today);
+    }
+    if ("next_n_days".equalsIgnoreCase(type)) {
+      return new DateRangeLiteral(today, today.plusDays(dayCount));
+    }
+    if ("n_days_ago".equalsIgnoreCase(type)) {
+      return DateRangeLiteral.singleDay(today.minusDays(dayCount));
+    }
+
+    return null;
+  }
+
+  private static LocalDate parseAbsoluteDateLiteral(String literal) {
+    if (literal == null || literal.isBlank()) {
+      return null;
+    }
+    String normalized = literal.trim();
+    try {
+      return LocalDate.parse(normalized, DateTimeFormatter.ISO_LOCAL_DATE);
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    return parseIsoDateLike(normalized);
+  }
+
+  private static LocalDate toDateValue(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof LocalDate localDate) {
+      return localDate;
+    }
+    if (value instanceof LocalDateTime localDateTime) {
+      return localDateTime.toLocalDate();
+    }
+    if (value instanceof OffsetDateTime offsetDateTime) {
+      return offsetDateTime.toLocalDate();
+    }
+    if (value instanceof Instant instant) {
+      return instant.atOffset(ZoneOffset.UTC).toLocalDate();
+    }
+    if (value instanceof java.util.Date utilDate) {
+      return Instant.ofEpochMilli(utilDate.getTime()).atOffset(ZoneOffset.UTC).toLocalDate();
+    }
+    if (value instanceof CharSequence text) {
+      return parseIsoDateLike(text.toString().trim());
+    }
+    return null;
+  }
+
+  private static LocalDate parseIsoDateLike(String text) {
+    if (text == null || text.isBlank()) {
+      return null;
+    }
+
+    try {
+      return LocalDate.parse(text, DateTimeFormatter.ISO_LOCAL_DATE);
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toLocalDate();
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    try {
+      return LocalDateTime.parse(text, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toLocalDate();
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    try {
+      return Instant.parse(text).atOffset(ZoneOffset.UTC).toLocalDate();
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
+          .toLocalDate();
+    } catch (DateTimeParseException ignored) {
+      // fallthrough
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ"))
+          .toLocalDate();
+    } catch (DateTimeParseException ignored) {
+      return null;
     }
   }
 
@@ -2569,6 +2736,31 @@ final class ApexStore {
       List<OrderByKey> orderByKeys,
       int limit,
       int offset) {}
+
+  private record DateRangeLiteral(LocalDate startInclusive, LocalDate endInclusive) {
+    DateRangeLiteral {
+      if (startInclusive == null || endInclusive == null) {
+        throw new IllegalArgumentException("date range bounds cannot be null");
+      }
+      if (endInclusive.isBefore(startInclusive)) {
+        throw new IllegalArgumentException("date range end cannot be before start");
+      }
+    }
+
+    static DateRangeLiteral singleDay(LocalDate day) {
+      if (day == null) {
+        throw new IllegalArgumentException("date literal day cannot be null");
+      }
+      return new DateRangeLiteral(day, day);
+    }
+
+    boolean contains(LocalDate day) {
+      if (day == null) {
+        return false;
+      }
+      return !day.isBefore(startInclusive) && !day.isAfter(endInclusive);
+    }
+  }
 
   private static final class DmlFailure extends RuntimeException {
     final String statusCode;
