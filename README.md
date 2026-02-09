@@ -118,6 +118,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest` も利用できます。
 `stopTest()` では `@Future` / Queueable / Batch / Schedulable の簡易flushも実行されます。
 Batch は `QueryLocatorBatchable` で `QueryLocator` を scope 分割して `execute(List<ApexSObject>)` 実行する経路も使えます。
+この経路の `start/execute/finish` はそれぞれ独立したLimitsコンテキストで動き、scopeごとにCPU/Heap判定されます。
 `apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
 `apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
 `Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）と `Database.getQueryLocator/getQueryLocatorWithBinds` にも対応しています。

@@ -151,8 +151,8 @@ public final class Async {
         case FUTURE -> job.futureTask.run();
         case QUEUEABLE -> job.queueableJob.execute();
         case BATCH -> {
-          job.batchJob.execute(job.batchScopeSize);
-          job.batchJob.finish();
+          Limits.runWithFreshTransaction(() -> job.batchJob.execute(job.batchScopeSize));
+          Limits.runWithFreshTransaction(job.batchJob::finish);
         }
         case BATCH_QUERY_LOCATOR -> executeQueryLocatorBatch(job.queryLocatorBatchJob, job.batchScopeSize);
         case SCHEDULABLE -> job.schedulableJob.execute();
@@ -166,7 +166,7 @@ public final class Async {
       throw new IllegalArgumentException("query locator batch job cannot be null");
     }
 
-    Database.QueryLocator locator = batchJob.start();
+    Database.QueryLocator locator = Limits.runWithFreshTransaction(batchJob::start);
     if (locator == null) {
       throw new IllegalArgumentException("batch start cannot return null query locator");
     }
@@ -180,11 +180,11 @@ public final class Async {
           ApexSObject row = allRows.get(i);
           scope.add(row == null ? null : row.copy());
         }
-        batchJob.execute(scope);
+        Limits.runWithFreshTransaction(() -> batchJob.execute(scope));
       }
     }
 
-    batchJob.finish();
+    Limits.runWithFreshTransaction(batchJob::finish);
   }
 
   public static Snapshot snapshot() {

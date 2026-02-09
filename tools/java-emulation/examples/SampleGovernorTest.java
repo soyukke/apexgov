@@ -178,6 +178,95 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void queryLocatorBatchExecuteScopesUseFreshLimits() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A"),
+            ApexSObject.of("Account").set("Name", "B"),
+            ApexSObject.of("Account").set("Name", "C"),
+            ApexSObject.of("Account").set("Name", "D"),
+            ApexSObject.of("Account").set("Name", "E")));
+
+    final List<Integer> scopeQueryCounts = new java.util.ArrayList<>();
+    final List<Integer> scopeDmlCounts = new java.util.ArrayList<>();
+
+    apexemu.runtime.Test.startTest();
+    Database.executeBatch(
+        new QueryLocatorBatchable() {
+          @Override
+          public Database.QueryLocator start() {
+            return Database.getQueryLocator("SELECT Id, Name FROM Account ORDER BY Name ASC");
+          }
+
+          @Override
+          public void execute(List<ApexSObject> scope) {
+            ApexDb.queryRows(scope.size());
+            ApexDb.dmlRows(scope.size());
+            scopeQueryCounts.add(Limits.getQueries());
+            scopeDmlCounts.add(Limits.getDmlStatements());
+          }
+        },
+        2);
+    apexemu.runtime.Test.stopTest();
+
+    SystemAssert.assertEquals(3, scopeQueryCounts.size(), "scope execution count mismatch");
+    SystemAssert.assertEquals(1, scopeQueryCounts.get(0), "scope#1 query count should start from 1");
+    SystemAssert.assertEquals(1, scopeQueryCounts.get(1), "scope#2 query count should reset to 1");
+    SystemAssert.assertEquals(1, scopeQueryCounts.get(2), "scope#3 query count should reset to 1");
+
+    SystemAssert.assertEquals(3, scopeDmlCounts.size(), "scope execution count mismatch");
+    SystemAssert.assertEquals(1, scopeDmlCounts.get(0), "scope#1 dml count should start from 1");
+    SystemAssert.assertEquals(1, scopeDmlCounts.get(1), "scope#2 dml count should reset to 1");
+    SystemAssert.assertEquals(1, scopeDmlCounts.get(2), "scope#3 dml count should reset to 1");
+
+    SystemAssert.assertEquals(0, Limits.getQueries(), "batch sub-transactions should not leak query count");
+    SystemAssert.assertEquals(0, Limits.getDmlStatements(), "batch sub-transactions should not leak dml count");
+  }
+
+  @Test
+  public void queryLocatorBatchScopeExceedingCpuLimitFails() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "A")));
+
+    int originalCpuLimit = Limits.getLimitCpuTime();
+    long originalHeapLimit = Limits.getLimitHeapSize();
+    Limits.configure(5, originalHeapLimit);
+
+    boolean threw = false;
+    try {
+      apexemu.runtime.Test.startTest();
+      Database.executeBatch(
+          new QueryLocatorBatchable() {
+            @Override
+            public Database.QueryLocator start() {
+              return Database.getQueryLocator("SELECT Id, Name FROM Account");
+            }
+
+            @Override
+            public void execute(List<ApexSObject> scope) {
+              ApexDb.cpuBurnMs(8);
+            }
+          },
+          1);
+      apexemu.runtime.Test.stopTest();
+    } catch (AssertionError expected) {
+      threw = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("CPU limit exceeded"),
+          "batch scope cpu overflow should report cpu limit message");
+    } finally {
+      Limits.configure(originalCpuLimit, originalHeapLimit);
+    }
+
+    SystemAssert.assertTrue(threw, "batch scope exceeding cpu limit must fail");
+  }
+
+  @Test
   public void triggerContextFlagsAndMapsWork() {
     TriggerRow before = new TriggerRow("001xx0000001", "Before");
     TriggerRow after = new TriggerRow("001xx0000001", "After");

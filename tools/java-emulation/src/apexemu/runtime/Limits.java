@@ -127,6 +127,42 @@ public final class Limits {
 
   public record Snapshot(int soqlCount, int dmlCount, long heapBytes, long cpuMs, boolean windowScoped) {}
 
+  static void runWithFreshTransaction(Runnable runnable) {
+    runWithFreshTransaction(
+        () -> {
+          runnable.run();
+          return null;
+        });
+  }
+
+  static <T> T runWithFreshTransaction(TransactionWork<T> work) {
+    if (work == null) {
+      throw new IllegalArgumentException("work cannot be null");
+    }
+
+    State previous = STATE.get();
+    State isolated = new State();
+    isolated.cpuLimitMs = previous.cpuLimitMs;
+    isolated.heapLimitBytes = previous.heapLimitBytes;
+
+    STATE.set(isolated);
+    try {
+      T result = work.run();
+      Snapshot snapshot = snapshot();
+      if (snapshot.cpuMs() > getLimitCpuTime()) {
+        throw new AssertionError(
+            "CPU limit exceeded: cpu_ms=" + snapshot.cpuMs() + " limit_ms=" + getLimitCpuTime());
+      }
+      if (snapshot.heapBytes() > getLimitHeapSize()) {
+        throw new AssertionError(
+            "Heap limit exceeded: heap_bytes=" + snapshot.heapBytes() + " limit_bytes=" + getLimitHeapSize());
+      }
+      return result;
+    } finally {
+      STATE.set(previous);
+    }
+  }
+
   private static long elapsedMs(long startNs, long endNs) {
     if (startNs <= 0L || endNs <= startNs) {
       return 0L;
@@ -160,5 +196,10 @@ public final class Limits {
     int windowSoqlCount;
     int windowDmlCount;
     long windowHeapBytes;
+  }
+
+  @FunctionalInterface
+  interface TransactionWork<T> {
+    T run();
   }
 }
