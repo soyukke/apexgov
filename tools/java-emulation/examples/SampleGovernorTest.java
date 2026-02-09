@@ -143,6 +143,41 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void queryLocatorBatchStartMustReturnNonNull() {
+    final int[] finishCount = new int[] {0};
+
+    boolean threw = false;
+    try {
+      apexemu.runtime.Test.startTest();
+      Database.executeBatch(
+          new QueryLocatorBatchable() {
+            @Override
+            public Database.QueryLocator start() {
+              return null;
+            }
+
+            @Override
+            public void execute(List<ApexSObject> scope) {}
+
+            @Override
+            public void finish() {
+              finishCount[0] += 1;
+            }
+          },
+          2);
+      apexemu.runtime.Test.stopTest();
+    } catch (IllegalArgumentException expected) {
+      threw = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("batch start cannot return null query locator"),
+          "null start should report explicit message");
+    }
+
+    SystemAssert.assertTrue(threw, "null query locator from start must throw");
+    SystemAssert.assertEquals(0, finishCount[0], "finish should not run when start returns null");
+  }
+
+  @Test
   public void triggerContextFlagsAndMapsWork() {
     TriggerRow before = new TriggerRow("001xx0000001", "Before");
     TriggerRow after = new TriggerRow("001xx0000001", "After");
