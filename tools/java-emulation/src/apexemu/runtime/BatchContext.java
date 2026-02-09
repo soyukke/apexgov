@@ -17,6 +17,14 @@ public final class BatchContext {
     return STATE.get().totalScopes;
   }
 
+  public static int getScopeSize() {
+    return STATE.get().scopeSize;
+  }
+
+  public static int getScopeRecordCount() {
+    return STATE.get().scopeRecordCount;
+  }
+
   public static Phase getPhase() {
     return STATE.get().phase;
   }
@@ -37,11 +45,19 @@ public final class BatchContext {
     return STATE.get().jobId != null;
   }
 
-  static void enter(String jobId, int scopeIndex, int totalScopes, Phase phase) {
+  static void enter(
+      String jobId,
+      int scopeIndex,
+      int totalScopes,
+      int scopeSize,
+      int scopeRecordCount,
+      Phase phase) {
     State state = STATE.get();
     state.jobId = normalizeJobId(jobId);
     state.scopeIndex = Math.max(0, scopeIndex);
     state.totalScopes = Math.max(0, totalScopes);
+    state.scopeSize = Math.max(0, scopeSize);
+    state.scopeRecordCount = Math.max(0, scopeRecordCount);
     state.phase = phase == null ? Phase.NONE : phase;
   }
 
@@ -60,6 +76,8 @@ public final class BatchContext {
     String jobId;
     int scopeIndex;
     int totalScopes;
+    int scopeSize;
+    int scopeRecordCount;
     Phase phase = Phase.NONE;
   }
 

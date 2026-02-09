@@ -77,7 +77,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
   - `QueryLocatorBatchable.start()` は `null` を返せません（`IllegalArgumentException`）
   - `start/execute/finish` はそれぞれ fresh な Limits コンテキストで実行（scopeごとにquery/dml/cpu/heapがリセット）
   - 各コンテキストで CPU/Heap limit を超えると `AssertionError` で失敗
-  - `BatchContext.getJobId()/getScopeIndex()/getTotalScopes()/getPhase()` でbatchメタデータを参照可能
+  - `BatchContext.getJobId()/getScopeIndex()/getTotalScopes()/getScopeSize()/getScopeRecordCount()/getPhase()` でbatchメタデータを参照可能
 - `apexemu.runtime.System.schedule(name, cron, Schedulable)`
 
 ## Trigger Context Emulation
