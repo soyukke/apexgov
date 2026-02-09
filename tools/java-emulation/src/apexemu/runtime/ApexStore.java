@@ -957,8 +957,11 @@ final class ApexStore {
 
   private static String formatBindCollection(
       Collection<?> values, boolean wrappedByParentheses, String bindName) {
-    if (values == null || values.isEmpty()) {
-      throw new IllegalArgumentException("bind collection cannot be empty: :" + bindName);
+    if (values == null) {
+      throw new IllegalArgumentException("bind collection cannot be null: :" + bindName);
+    }
+    if (values.isEmpty()) {
+      return wrappedByParentheses ? "" : "()";
     }
     List<String> out = new ArrayList<>(values.size());
     for (Object value : values) {
@@ -1375,10 +1378,6 @@ final class ApexStore {
       token.append(ch);
     }
     addInLiteralToken(values, token);
-
-    if (values.isEmpty()) {
-      throw new IllegalArgumentException("IN list cannot be empty: " + rawSoql);
-    }
     return values;
   }
 

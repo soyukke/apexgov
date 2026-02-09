@@ -722,6 +722,38 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlQueryWithBindsSupportsEmptyInCollection() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Alpha"),
+            ApexSObject.of("Account").set("Name", "Beta"),
+            ApexSObject.of("Account").set("Name", "Gamma")));
+
+    List<ApexSObject> inRows =
+        Database.queryWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name IN :names ORDER BY Name ASC",
+            Map.of("names", List.of()));
+    SystemAssert.assertEquals(0, inRows.size(), "empty IN bind should return no rows");
+
+    int inCount =
+        Database.countQueryWithBinds(
+            "SELECT count() FROM Account WHERE Name IN (:names)", Map.of("names", List.of()));
+    SystemAssert.assertEquals(0, inCount, "empty IN bind count should be zero");
+
+    List<ApexSObject> notInRows =
+        Database.queryWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name NOT IN :names ORDER BY Name ASC",
+            Map.of("names", List.of()));
+    SystemAssert.assertEquals(3, notInRows.size(), "empty NOT IN bind should include all rows");
+    SystemAssert.assertEquals("Alpha", notInRows.get(0).get("Name"), "empty NOT IN order mismatch");
+    SystemAssert.assertEquals("Beta", notInRows.get(1).get("Name"), "empty NOT IN order mismatch");
+    SystemAssert.assertEquals("Gamma", notInRows.get(2).get("Name"), "empty NOT IN order mismatch");
+  }
+
+  @Test
   public void soqlQueryLocatorSupportsBindsAndIteration() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();

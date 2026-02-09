@@ -116,6 +116,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
   - bind は `:name` 形式（`Map<String, Object>` から解決）
   - 文字列bindは `'` を `''` にエスケープして展開（`'`/`"` 混在値にも対応）
   - scalar (`String`/`Number`/`Boolean`/`null`) と collection bind（`IN :names`）をサポート
+  - 空collection bindは `IN :names` で0件、`NOT IN :names` で全件として扱う
 - reset: `clearInMemoryStore()`
 
 対応SOQLは最小サブセットです。
