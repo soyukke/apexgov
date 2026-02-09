@@ -964,6 +964,21 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(1, countOnly.size(), "aggregate without GROUP BY should return one row");
     SystemAssert.assertEquals(2L, countOnly.get(0).get("totalRows"), "COUNT() aggregate mismatch");
 
+    List<ApexSObject> countDistinctByTier =
+        Database.query(
+            "SELECT Tier, COUNT_DISTINCT(Score) uniqScore "
+                + "FROM Account GROUP BY Tier HAVING COUNT_DISTINCT(Score) >= 2 ORDER BY Tier ASC");
+    SystemAssert.assertEquals(2, countDistinctByTier.size(), "COUNT_DISTINCT with HAVING should filter groups");
+    SystemAssert.assertEquals("A", countDistinctByTier.get(0).get("Tier"), "COUNT_DISTINCT row #1 tier mismatch");
+    SystemAssert.assertEquals(2L, countDistinctByTier.get(0).get("uniqScore"), "COUNT_DISTINCT row #1 mismatch");
+    SystemAssert.assertEquals("B", countDistinctByTier.get(1).get("Tier"), "COUNT_DISTINCT row #2 tier mismatch");
+    SystemAssert.assertEquals(2L, countDistinctByTier.get(1).get("uniqScore"), "COUNT_DISTINCT row #2 mismatch");
+
+    List<ApexSObject> countDistinctTotal =
+        Database.query("SELECT COUNT_DISTINCT(Tier) uniqTier FROM Account");
+    SystemAssert.assertEquals(1, countDistinctTotal.size(), "aggregate without GROUP BY should return one row");
+    SystemAssert.assertEquals(3L, countDistinctTotal.get(0).get("uniqTier"), "COUNT_DISTINCT total mismatch");
+
     Database.clearInMemoryStore();
     List<ApexSObject> emptyCount = Database.query("SELECT COUNT() totalRows FROM Account");
     SystemAssert.assertEquals(1, emptyCount.size(), "COUNT() on empty table should return one row");

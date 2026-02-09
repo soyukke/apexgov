@@ -2,10 +2,12 @@ package apexemu.runtime;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -29,13 +31,13 @@ final class ApexStore {
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("(?i)^[a-zA-Z_][\\w]*$");
   private static final Pattern SELECT_AGGREGATE_PATTERN =
       Pattern.compile(
-          "(?i)^(count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
+          "(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
   private static final Pattern SELECT_FIELD_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
   private static final Pattern HAVING_CLAUSE_PATTERN =
       Pattern.compile("(?i)^(.+?)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern HAVING_AGGREGATE_OPERAND_PATTERN =
-      Pattern.compile("(?i)^(count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)$");
+      Pattern.compile("(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)$");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
   private static final ThreadLocal<RuntimeConfig> CONFIG = ThreadLocal.withInitial(RuntimeConfig::new);
 
@@ -838,6 +840,22 @@ final class ApexStore {
       }
       return count;
     }
+    if (function == AggregateFunction.COUNT_DISTINCT) {
+      if (field == null || field.isBlank()) {
+        return 0L;
+      }
+      Set<Object> distinct = new HashSet<>();
+      for (ApexSObject row : source) {
+        if (row == null) {
+          continue;
+        }
+        Object value = row.get(field);
+        if (value != null) {
+          distinct.add(value);
+        }
+      }
+      return (long) distinct.size();
+    }
 
     if (function == AggregateFunction.SUM || function == AggregateFunction.AVG) {
       double sum = 0.0;
@@ -1305,6 +1323,7 @@ final class ApexStore {
     }
     String normalized = text.trim().toUpperCase();
     return switch (normalized) {
+      case "COUNT_DISTINCT" -> AggregateFunction.COUNT_DISTINCT;
       case "COUNT" -> AggregateFunction.COUNT;
       case "SUM" -> AggregateFunction.SUM;
       case "AVG" -> AggregateFunction.AVG;
@@ -2501,6 +2520,7 @@ final class ApexStore {
   }
 
   private enum AggregateFunction {
+    COUNT_DISTINCT,
     COUNT,
     SUM,
     AVG,

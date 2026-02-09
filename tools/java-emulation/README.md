@@ -132,7 +132,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - unary `NOT (...)` predicate is supported (including compound forms like `NOT (A OR B)`)
 - supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
 - `LIKE` は大文字小文字を区別せず、`\%` / `\_` でワイルドカードをエスケープ可能
-- aggregate select: `COUNT()`, `COUNT(field)`, `SUM(field)`, `AVG(field)`, `MIN(field)`, `MAX(field)`（`AS alias` 対応）
+- aggregate select: `COUNT()`, `COUNT(field)`, `COUNT_DISTINCT(field)`, `SUM(field)`, `AVG(field)`, `MIN(field)`, `MAX(field)`（`AS alias` 対応）
 - optional `GROUP BY field[, ...]` + optional `HAVING`（`AND`/`OR`/`NOT` と `= != > >= < <=`）
   - `HAVING` は aggregate operand（例: `COUNT(Id)`）か `GROUP BY` に含まれる field を評価対象にできます
 - optional `ORDER BY field [ASC|DESC] [NULLS FIRST|LAST]` (comma-separated multi-key supported)
