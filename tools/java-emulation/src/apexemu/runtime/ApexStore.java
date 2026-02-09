@@ -1007,14 +1007,42 @@ final class ApexStore {
     if (value == null) {
       return "null";
     }
-    if (!value.contains("'")) {
-      return "'" + value + "'";
+    if (value.isEmpty()) {
+      return "''";
     }
-    if (!value.contains("\"")) {
-      return "\"" + value + "\"";
+    String escaped = value.replace("'", "''");
+    return "'" + escaped + "'";
+  }
+
+  private static String decodeQuotedLiteral(String text, char quote) {
+    if (text == null || text.isEmpty()) {
+      return "";
     }
-    throw new IllegalArgumentException(
-        "bind string with both single and double quotes is not supported: " + value);
+
+    StringBuilder out = new StringBuilder(text.length());
+    for (int i = 0; i < text.length(); i += 1) {
+      char ch = text.charAt(i);
+
+      // SQL-style escaped quote: '' or "" (depending on delimiter)
+      if (ch == quote && i + 1 < text.length() && text.charAt(i + 1) == quote) {
+        out.append(quote);
+        i += 1;
+        continue;
+      }
+
+      // Keep compatibility with backslash-escaped quote/backslash.
+      if (ch == '\\' && i + 1 < text.length()) {
+        char next = text.charAt(i + 1);
+        if (next == quote || next == '\\') {
+          out.append(next);
+          i += 1;
+          continue;
+        }
+      }
+
+      out.append(ch);
+    }
+    return out.toString();
   }
 
   private static String sanitize(String soql) {
@@ -1365,7 +1393,7 @@ final class ApexStore {
   private static Object parseLiteral(String raw) {
     String value = raw.trim();
     if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith("\"") && value.endsWith("\""))) {
-      return value.substring(1, value.length() - 1);
+      return decodeQuotedLiteral(value.substring(1, value.length() - 1), value.charAt(0));
     }
     if ("null".equalsIgnoreCase(value)) {
       return null;

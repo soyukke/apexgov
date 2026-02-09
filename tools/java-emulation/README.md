@@ -114,6 +114,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
   - `queryWithBinds(soql, binds)`, `countQueryWithBinds(soql, binds)`
   - `getQueryLocator(soql)`, `getQueryLocatorWithBinds(soql, binds)` (`QueryLocator#size`, `#getRecords`, iteration)
   - bind は `:name` 形式（`Map<String, Object>` から解決）
+  - 文字列bindは `'` を `''` にエスケープして展開（`'`/`"` 混在値にも対応）
   - scalar (`String`/`Number`/`Boolean`/`null`) と collection bind（`IN :names`）をサポート
 - reset: `clearInMemoryStore()`
 

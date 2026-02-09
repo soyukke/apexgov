@@ -697,6 +697,31 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlQueryWithBindsSupportsMixedQuotesInStringLiteral() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    String quoted = "O'Reilly \"Media\"";
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", quoted),
+            ApexSObject.of("Account").set("Name", "Plain")));
+
+    List<ApexSObject> matched =
+        Database.queryWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name = :target LIMIT 1",
+            Map.of("target", quoted));
+    SystemAssert.assertEquals(1, matched.size(), "mixed quote bind should match one row");
+    SystemAssert.assertEquals(quoted, matched.get(0).get("Name"), "mixed quote bind value mismatch");
+
+    int count =
+        Database.countQueryWithBinds(
+            "SELECT count() FROM Account WHERE Name IN :names",
+            Map.of("names", List.of(quoted, "Plain")));
+    SystemAssert.assertEquals(2, count, "IN bind should include mixed quote value");
+  }
+
+  @Test
   public void soqlQueryLocatorSupportsBindsAndIteration() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
