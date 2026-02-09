@@ -4,8 +4,10 @@ import apexemu.annotations.Future;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 
 public final class Async {
   private static final int MAX_FLUSH_JOBS = 1000;
@@ -112,6 +114,18 @@ public final class Async {
     return id;
   }
 
+  public static String enqueueBatch(QueryLocatorBatchable job, int scopeSize) {
+    if (job == null) {
+      throw new IllegalArgumentException("batch job cannot be null");
+    }
+    int normalizedScope = Math.max(1, scopeSize);
+    State state = STATE.get();
+    String id = nextJobId(state, "batch");
+    enqueue(state, new Job(id, Kind.BATCH_QUERY_LOCATOR, job, normalizedScope));
+    state.enqueuedBatch += 1;
+    return id;
+  }
+
   public static String enqueueSchedulable(Schedulable job) {
     if (job == null) {
       throw new IllegalArgumentException("schedulable job cannot be null");
@@ -140,10 +154,37 @@ public final class Async {
           job.batchJob.execute(job.batchScopeSize);
           job.batchJob.finish();
         }
+        case BATCH_QUERY_LOCATOR -> executeQueryLocatorBatch(job.queryLocatorBatchJob, job.batchScopeSize);
         case SCHEDULABLE -> job.schedulableJob.execute();
       }
       state.flushedTotal += 1;
     }
+  }
+
+  private static void executeQueryLocatorBatch(QueryLocatorBatchable batchJob, int scopeSize) {
+    if (batchJob == null) {
+      throw new IllegalArgumentException("query locator batch job cannot be null");
+    }
+
+    Database.QueryLocator locator = batchJob.start();
+    if (locator == null) {
+      throw new IllegalArgumentException("batch start cannot return null query locator");
+    }
+
+    List<ApexSObject> allRows = locator.getRecords();
+    if (allRows != null && !allRows.isEmpty()) {
+      for (int offset = 0; offset < allRows.size(); offset += scopeSize) {
+        int end = Math.min(offset + scopeSize, allRows.size());
+        List<ApexSObject> scope = new ArrayList<>(end - offset);
+        for (int i = offset; i < end; i += 1) {
+          ApexSObject row = allRows.get(i);
+          scope.add(row == null ? null : row.copy());
+        }
+        batchJob.execute(scope);
+      }
+    }
+
+    batchJob.finish();
   }
 
   public static Snapshot snapshot() {
@@ -183,6 +224,7 @@ public final class Async {
     FUTURE,
     QUEUEABLE,
     BATCH,
+    BATCH_QUERY_LOCATOR,
     SCHEDULABLE
   }
 
@@ -192,6 +234,7 @@ public final class Async {
     final Runnable futureTask;
     final Queueable queueableJob;
     final Batchable batchJob;
+    final QueryLocatorBatchable queryLocatorBatchJob;
     final int batchScopeSize;
     final Schedulable schedulableJob;
 
@@ -205,6 +248,10 @@ public final class Async {
       this(id, kind, futureTask, queueableJob, batchJob, batchScopeSize, null);
     }
 
+    Job(String id, Kind kind, QueryLocatorBatchable queryLocatorBatchJob, int batchScopeSize) {
+      this(id, kind, null, null, null, queryLocatorBatchJob, batchScopeSize, null);
+    }
+
     Job(
         String id,
         Kind kind,
@@ -213,11 +260,24 @@ public final class Async {
         Batchable batchJob,
         int batchScopeSize,
         Schedulable schedulableJob) {
+      this(id, kind, futureTask, queueableJob, batchJob, null, batchScopeSize, schedulableJob);
+    }
+
+    Job(
+        String id,
+        Kind kind,
+        Runnable futureTask,
+        Queueable queueableJob,
+        Batchable batchJob,
+        QueryLocatorBatchable queryLocatorBatchJob,
+        int batchScopeSize,
+        Schedulable schedulableJob) {
       this.id = id;
       this.kind = kind;
       this.futureTask = futureTask;
       this.queueableJob = queueableJob;
       this.batchJob = batchJob;
+      this.queryLocatorBatchJob = queryLocatorBatchJob;
       this.batchScopeSize = batchScopeSize;
       this.schedulableJob = schedulableJob;
     }

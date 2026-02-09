@@ -73,6 +73,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `apexemu.runtime.Test.enqueueFutureMethod(Foo.class, "methodName")` (`@apexemu.annotations.Future` 必須)
 - `apexemu.runtime.System.enqueueJob(Queueable)`
 - `apexemu.runtime.Database.executeBatch(Batchable, scopeSize)`
+- `apexemu.runtime.Database.executeBatch(QueryLocatorBatchable, scopeSize)` (`start()` の `QueryLocator` を scope で分割して `execute(List<ApexSObject>)`)
 - `apexemu.runtime.System.schedule(name, cron, Schedulable)`
 
 ## Trigger Context Emulation

@@ -17,6 +17,14 @@ public final class Database {
     return Async.enqueueBatch(job, scopeSize);
   }
 
+  public static String executeBatch(QueryLocatorBatchable job) {
+    return executeBatch(job, 200);
+  }
+
+  public static String executeBatch(QueryLocatorBatchable job, int scopeSize) {
+    return Async.enqueueBatch(job, scopeSize);
+  }
+
   public static void insert(Collection<ApexSObject> records) {
     ensureSuccess(insert(records, true), "insert");
   }

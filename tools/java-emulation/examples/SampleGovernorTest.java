@@ -6,6 +6,7 @@ import apexemu.runtime.Async;
 import apexemu.runtime.ApexSObject;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
+import apexemu.runtime.QueryLocatorBatchable;
 import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
 import apexemu.runtime.Trigger;
@@ -78,6 +79,67 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(4, snapshot.enqueuedJobs(), "expected 4 async enqueues");
     SystemAssert.assertEquals(4, snapshot.flushedJobs(), "all async jobs should be flushed");
     SystemAssert.assertEquals(0, snapshot.pendingJobs(), "pending queue must be empty after stopTest");
+  }
+
+  @Test
+  public void queryLocatorBatchSplitsByScopeAndCallsFinishOnce() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A"),
+            ApexSObject.of("Account").set("Name", "B"),
+            ApexSObject.of("Account").set("Name", "C"),
+            ApexSObject.of("Account").set("Name", "D"),
+            ApexSObject.of("Account").set("Name", "E")));
+
+    final List<Integer> scopeSizes = new java.util.ArrayList<>();
+    final List<String> seenNames = new java.util.ArrayList<>();
+    final int[] finishCount = new int[] {0};
+
+    apexemu.runtime.Test.startTest();
+    Database.executeBatch(
+        new QueryLocatorBatchable() {
+          @Override
+          public Database.QueryLocator start() {
+            return Database.getQueryLocator("SELECT Id, Name FROM Account ORDER BY Name ASC");
+          }
+
+          @Override
+          public void execute(List<ApexSObject> scope) {
+            scopeSizes.add(scope.size());
+            for (ApexSObject row : scope) {
+              seenNames.add(String.valueOf(row.get("Name")));
+            }
+            if (!scope.isEmpty()) {
+              scope.get(0).set("Name", "Mutated-In-Scope");
+            }
+          }
+
+          @Override
+          public void finish() {
+            finishCount[0] += 1;
+          }
+        },
+        2);
+    apexemu.runtime.Test.stopTest();
+
+    SystemAssert.assertEquals(3, scopeSizes.size(), "query locator batch should split into 3 chunks");
+    SystemAssert.assertEquals(2, scopeSizes.get(0), "chunk#1 size mismatch");
+    SystemAssert.assertEquals(2, scopeSizes.get(1), "chunk#2 size mismatch");
+    SystemAssert.assertEquals(1, scopeSizes.get(2), "chunk#3 size mismatch");
+    SystemAssert.assertEquals(1, finishCount[0], "finish should run exactly once");
+
+    SystemAssert.assertEquals(5, seenNames.size(), "all rows should be processed");
+    SystemAssert.assertEquals("A", seenNames.get(0), "processed order mismatch");
+    SystemAssert.assertEquals("B", seenNames.get(1), "processed order mismatch");
+    SystemAssert.assertEquals("C", seenNames.get(2), "processed order mismatch");
+    SystemAssert.assertEquals("D", seenNames.get(3), "processed order mismatch");
+    SystemAssert.assertEquals("E", seenNames.get(4), "processed order mismatch");
+
+    List<ApexSObject> persisted = Database.query("SELECT Id, Name FROM Account ORDER BY Name ASC");
+    SystemAssert.assertEquals("A", persisted.get(0).get("Name"), "scope mutation must not alter stored rows");
   }
 
   @Test

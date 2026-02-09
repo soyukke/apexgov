@@ -98,7 +98,7 @@
 | CPU/Heap threshold fail | supported | `--cpu-limit-ms` / `--heap-limit-bytes` |
 | `Limits.get*` API | supported | queries/dml/cpu/heap と limit 値を取得 |
 | `Test.startTest()/stopTest()` | supported | start/stop 窓での計測に切り替え |
-| async flush at `stopTest()` | supported | `@Future`, Queueable, Batchable, Schedulable を順次実行 |
+| async flush at `stopTest()` | supported | `@Future`, Queueable, Batchable, Schedulable を順次実行（Batchable は `QueryLocatorBatchable` の scope 分割実行にも対応） |
 | Trigger context (`new/old/maps/flags`) | supported | manual run + `Database` CRUD auto-dispatch (`insert/update/upsert/delete/undelete/merge`) + merge-related update trigger dispatch |
 | in-memory CRUD store | supported | `insert/update/upsert/delete/undelete/merge` |
 | savepoint / rollback | supported | `Database.setSavepoint()`, `Database.rollback(savepoint)` |
