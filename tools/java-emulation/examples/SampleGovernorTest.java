@@ -4,6 +4,7 @@ import apexemu.annotations.Test;
 import apexemu.runtime.ApexDb;
 import apexemu.runtime.Async;
 import apexemu.runtime.ApexSObject;
+import apexemu.runtime.BatchContext;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
 import apexemu.runtime.QueryLocatorBatchable;
@@ -264,6 +265,126 @@ public final class SampleGovernorTest {
     }
 
     SystemAssert.assertTrue(threw, "batch scope exceeding cpu limit must fail");
+  }
+
+  @Test
+  public void queryLocatorBatchExposesJobAndScopeContext() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A"),
+            ApexSObject.of("Account").set("Name", "B"),
+            ApexSObject.of("Account").set("Name", "C"),
+            ApexSObject.of("Account").set("Name", "D"),
+            ApexSObject.of("Account").set("Name", "E")));
+
+    final String[] startJobId = new String[1];
+    final int[] startScopeIndex = new int[1];
+    final int[] startTotalScopes = new int[1];
+
+    final List<String> executeJobIds = new java.util.ArrayList<>();
+    final List<Integer> executeScopeIndexes = new java.util.ArrayList<>();
+    final List<Integer> executeTotalScopes = new java.util.ArrayList<>();
+
+    final String[] finishJobId = new String[1];
+    final int[] finishScopeIndex = new int[1];
+    final int[] finishTotalScopes = new int[1];
+
+    apexemu.runtime.Test.startTest();
+    String jobId =
+        Database.executeBatch(
+            new QueryLocatorBatchable() {
+              @Override
+              public Database.QueryLocator start() {
+                startJobId[0] = BatchContext.getJobId();
+                startScopeIndex[0] = BatchContext.getScopeIndex();
+                startTotalScopes[0] = BatchContext.getTotalScopes();
+                return Database.getQueryLocator("SELECT Id, Name FROM Account ORDER BY Name ASC");
+              }
+
+              @Override
+              public void execute(List<ApexSObject> scope) {
+                executeJobIds.add(BatchContext.getJobId());
+                executeScopeIndexes.add(BatchContext.getScopeIndex());
+                executeTotalScopes.add(BatchContext.getTotalScopes());
+              }
+
+              @Override
+              public void finish() {
+                finishJobId[0] = BatchContext.getJobId();
+                finishScopeIndex[0] = BatchContext.getScopeIndex();
+                finishTotalScopes[0] = BatchContext.getTotalScopes();
+              }
+            },
+            2);
+    apexemu.runtime.Test.stopTest();
+
+    SystemAssert.assertEquals(jobId, startJobId[0], "start should receive same batch job id");
+    SystemAssert.assertEquals(0, startScopeIndex[0], "start should have scopeIndex=0");
+    SystemAssert.assertEquals(0, startTotalScopes[0], "start should have totalScopes=0 before chunking");
+
+    SystemAssert.assertEquals(3, executeJobIds.size(), "execute call count mismatch");
+    SystemAssert.assertEquals(jobId, executeJobIds.get(0), "execute #1 job id mismatch");
+    SystemAssert.assertEquals(jobId, executeJobIds.get(1), "execute #2 job id mismatch");
+    SystemAssert.assertEquals(jobId, executeJobIds.get(2), "execute #3 job id mismatch");
+    SystemAssert.assertEquals(1, executeScopeIndexes.get(0), "execute #1 scope index mismatch");
+    SystemAssert.assertEquals(2, executeScopeIndexes.get(1), "execute #2 scope index mismatch");
+    SystemAssert.assertEquals(3, executeScopeIndexes.get(2), "execute #3 scope index mismatch");
+    SystemAssert.assertEquals(3, executeTotalScopes.get(0), "execute #1 total scopes mismatch");
+    SystemAssert.assertEquals(3, executeTotalScopes.get(1), "execute #2 total scopes mismatch");
+    SystemAssert.assertEquals(3, executeTotalScopes.get(2), "execute #3 total scopes mismatch");
+
+    SystemAssert.assertEquals(jobId, finishJobId[0], "finish should receive same batch job id");
+    SystemAssert.assertEquals(0, finishScopeIndex[0], "finish should have scopeIndex=0");
+    SystemAssert.assertEquals(3, finishTotalScopes[0], "finish should receive resolved total scopes");
+
+    SystemAssert.assertFalse(BatchContext.isExecuting(), "batch context should be cleared after stopTest");
+    SystemAssert.assertNull(BatchContext.getJobId(), "batch context job id should be cleared");
+    SystemAssert.assertEquals(0, BatchContext.getScopeIndex(), "batch context scope index should reset");
+    SystemAssert.assertEquals(0, BatchContext.getTotalScopes(), "batch context total scopes should reset");
+  }
+
+  @Test
+  public void simpleBatchExposesSingleScopeContext() {
+    final String[] executeJobId = new String[1];
+    final int[] executeScopeIndex = new int[1];
+    final int[] executeTotalScopes = new int[1];
+    final String[] finishJobId = new String[1];
+    final int[] finishScopeIndex = new int[1];
+    final int[] finishTotalScopes = new int[1];
+    final int[] executeScopeSize = new int[1];
+
+    apexemu.runtime.Test.startTest();
+    String jobId =
+        Database.executeBatch(
+            new apexemu.runtime.Batchable() {
+              @Override
+              public void execute(int scopeSize) {
+                executeJobId[0] = BatchContext.getJobId();
+                executeScopeIndex[0] = BatchContext.getScopeIndex();
+                executeTotalScopes[0] = BatchContext.getTotalScopes();
+                executeScopeSize[0] = scopeSize;
+              }
+
+              @Override
+              public void finish() {
+                finishJobId[0] = BatchContext.getJobId();
+                finishScopeIndex[0] = BatchContext.getScopeIndex();
+                finishTotalScopes[0] = BatchContext.getTotalScopes();
+              }
+            },
+            5);
+    apexemu.runtime.Test.stopTest();
+
+    SystemAssert.assertEquals(5, executeScopeSize[0], "simple batch should pass configured scope size");
+    SystemAssert.assertEquals(jobId, executeJobId[0], "simple batch execute job id mismatch");
+    SystemAssert.assertEquals(1, executeScopeIndex[0], "simple batch execute scope index mismatch");
+    SystemAssert.assertEquals(1, executeTotalScopes[0], "simple batch execute total scopes mismatch");
+    SystemAssert.assertEquals(jobId, finishJobId[0], "simple batch finish job id mismatch");
+    SystemAssert.assertEquals(0, finishScopeIndex[0], "simple batch finish scope index mismatch");
+    SystemAssert.assertEquals(1, finishTotalScopes[0], "simple batch finish total scopes mismatch");
   }
 
   @Test

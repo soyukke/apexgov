@@ -17,6 +17,7 @@ public final class Async {
 
   public static void reset() {
     STATE.set(new State());
+    BatchContext.clear();
   }
 
   public static void startTestWindow() {
@@ -151,40 +152,74 @@ public final class Async {
         case FUTURE -> job.futureTask.run();
         case QUEUEABLE -> job.queueableJob.execute();
         case BATCH -> {
-          Limits.runWithFreshTransaction(() -> job.batchJob.execute(job.batchScopeSize));
-          Limits.runWithFreshTransaction(job.batchJob::finish);
+          runBatchPhase(job.id, 1, 1, () -> job.batchJob.execute(job.batchScopeSize));
+          runBatchPhase(job.id, 0, 1, job.batchJob::finish);
         }
-        case BATCH_QUERY_LOCATOR -> executeQueryLocatorBatch(job.queryLocatorBatchJob, job.batchScopeSize);
+        case BATCH_QUERY_LOCATOR ->
+            executeQueryLocatorBatch(job.id, job.queryLocatorBatchJob, job.batchScopeSize);
         case SCHEDULABLE -> job.schedulableJob.execute();
       }
       state.flushedTotal += 1;
     }
   }
 
-  private static void executeQueryLocatorBatch(QueryLocatorBatchable batchJob, int scopeSize) {
+  private static void executeQueryLocatorBatch(
+      String jobId, QueryLocatorBatchable batchJob, int scopeSize) {
     if (batchJob == null) {
       throw new IllegalArgumentException("query locator batch job cannot be null");
     }
 
-    Database.QueryLocator locator = Limits.runWithFreshTransaction(batchJob::start);
+    Database.QueryLocator locator = runBatchPhase(jobId, 0, 0, batchJob::start);
     if (locator == null) {
       throw new IllegalArgumentException("batch start cannot return null query locator");
     }
 
     List<ApexSObject> allRows = locator.getRecords();
+    int totalScopes = countTotalScopes(allRows, scopeSize);
     if (allRows != null && !allRows.isEmpty()) {
+      int scopeIndex = 0;
       for (int offset = 0; offset < allRows.size(); offset += scopeSize) {
+        scopeIndex += 1;
         int end = Math.min(offset + scopeSize, allRows.size());
         List<ApexSObject> scope = new ArrayList<>(end - offset);
         for (int i = offset; i < end; i += 1) {
           ApexSObject row = allRows.get(i);
           scope.add(row == null ? null : row.copy());
         }
-        Limits.runWithFreshTransaction(() -> batchJob.execute(scope));
+        List<ApexSObject> immutableScope = List.copyOf(scope);
+        runBatchPhase(jobId, scopeIndex, totalScopes, () -> batchJob.execute(immutableScope));
       }
     }
 
-    Limits.runWithFreshTransaction(batchJob::finish);
+    runBatchPhase(jobId, 0, totalScopes, batchJob::finish);
+  }
+
+  private static int countTotalScopes(List<ApexSObject> rows, int scopeSize) {
+    if (rows == null || rows.isEmpty() || scopeSize <= 0) {
+      return 0;
+    }
+    return (rows.size() + scopeSize - 1) / scopeSize;
+  }
+
+  private static <T> T runBatchPhase(
+      String jobId, int scopeIndex, int totalScopes, Limits.TransactionWork<T> work) {
+    BatchContext.enter(jobId, scopeIndex, totalScopes);
+    try {
+      return Limits.runWithFreshTransaction(work);
+    } finally {
+      BatchContext.clear();
+    }
+  }
+
+  private static void runBatchPhase(String jobId, int scopeIndex, int totalScopes, Runnable runnable) {
+    runBatchPhase(
+        jobId,
+        scopeIndex,
+        totalScopes,
+        () -> {
+          runnable.run();
+          return null;
+        });
   }
 
   public static Snapshot snapshot() {
