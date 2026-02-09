@@ -916,6 +916,61 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsGroupByHavingAggregatesAndOffset() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A1").set("Tier", "A").set("Score", 10),
+            ApexSObject.of("Account").set("Name", "A2").set("Tier", "A").set("Score", 20),
+            ApexSObject.of("Account").set("Name", "B1").set("Tier", "B").set("Score", 15),
+            ApexSObject.of("Account").set("Name", "B2").set("Tier", "B").set("Score", 35),
+            ApexSObject.of("Account").set("Name", "B3").set("Tier", "B").set("Score", null),
+            ApexSObject.of("Account").set("Name", "C1").set("Tier", "C").set("Score", null)));
+
+    List<ApexSObject> grouped =
+        Database.query(
+            "SELECT Tier, COUNT(Id) cnt, SUM(Score) total, AVG(Score) avgScore "
+                + "FROM Account GROUP BY Tier HAVING COUNT(Id) >= 2 ORDER BY Tier ASC");
+    SystemAssert.assertEquals(2, grouped.size(), "GROUP BY + HAVING should keep A/B only");
+
+    SystemAssert.assertEquals("A", grouped.get(0).get("Tier"), "group row #1 tier mismatch");
+    SystemAssert.assertEquals(2L, grouped.get(0).get("cnt"), "group row #1 count mismatch");
+    SystemAssert.assertEquals(30.0, grouped.get(0).get("total"), "group row #1 sum mismatch");
+    SystemAssert.assertEquals(15.0, grouped.get(0).get("avgScore"), "group row #1 avg mismatch");
+
+    SystemAssert.assertEquals("B", grouped.get(1).get("Tier"), "group row #2 tier mismatch");
+    SystemAssert.assertEquals(3L, grouped.get(1).get("cnt"), "group row #2 count mismatch");
+    SystemAssert.assertEquals(50.0, grouped.get(1).get("total"), "group row #2 sum mismatch");
+    SystemAssert.assertEquals(25.0, grouped.get(1).get("avgScore"), "group row #2 avg mismatch");
+
+    List<ApexSObject> filteredByGroupField =
+        Database.query(
+            "SELECT Tier, COUNT(Id) cnt "
+                + "FROM Account GROUP BY Tier HAVING Tier = 'B' ORDER BY Tier ASC");
+    SystemAssert.assertEquals(1, filteredByGroupField.size(), "HAVING on group field should filter tiers");
+    SystemAssert.assertEquals("B", filteredByGroupField.get(0).get("Tier"), "HAVING field match mismatch");
+
+    List<ApexSObject> offsetRows =
+        Database.query(
+            "SELECT Tier, COUNT(Id) cnt "
+                + "FROM Account GROUP BY Tier ORDER BY cnt DESC, Tier ASC LIMIT 1 OFFSET 1");
+    SystemAssert.assertEquals(1, offsetRows.size(), "OFFSET with aggregate query should be supported");
+    SystemAssert.assertEquals("A", offsetRows.get(0).get("Tier"), "OFFSET aggregate ordering mismatch");
+
+    List<ApexSObject> countOnly =
+        Database.query("SELECT COUNT() totalRows FROM Account WHERE Score >= 20");
+    SystemAssert.assertEquals(1, countOnly.size(), "aggregate without GROUP BY should return one row");
+    SystemAssert.assertEquals(2L, countOnly.get(0).get("totalRows"), "COUNT() aggregate mismatch");
+
+    Database.clearInMemoryStore();
+    List<ApexSObject> emptyCount = Database.query("SELECT COUNT() totalRows FROM Account");
+    SystemAssert.assertEquals(1, emptyCount.size(), "COUNT() on empty table should return one row");
+    SystemAssert.assertEquals(0L, emptyCount.get(0).get("totalRows"), "COUNT() on empty table mismatch");
+  }
+
+  @Test
   public void customSObjectSchemaValidationAndBracketSelectWork() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();

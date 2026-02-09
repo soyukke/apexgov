@@ -13,7 +13,10 @@ import java.util.regex.PatternSyntaxException;
 final class ApexStore {
   private static final Pattern FROM_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([a-zA-Z_][\\w]*)");
   private static final Pattern LIMIT_PATTERN = Pattern.compile("(?i)\\blimit\\s+(\\d+)");
+  private static final Pattern OFFSET_PATTERN = Pattern.compile("(?i)\\boffset\\s+(\\d+)");
   private static final Pattern WHERE_KEYWORD = Pattern.compile("(?i)\\bwhere\\b");
+  private static final Pattern GROUP_BY_KEYWORD = Pattern.compile("(?i)\\bgroup\\s+by\\b");
+  private static final Pattern HAVING_KEYWORD = Pattern.compile("(?i)\\bhaving\\b");
   private static final Pattern WHERE_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern WHERE_IN_PATTERN =
@@ -23,6 +26,16 @@ final class ApexStore {
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
+  private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("(?i)^[a-zA-Z_][\\w]*$");
+  private static final Pattern SELECT_AGGREGATE_PATTERN =
+      Pattern.compile(
+          "(?i)^(count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
+  private static final Pattern SELECT_FIELD_PATTERN =
+      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
+  private static final Pattern HAVING_CLAUSE_PATTERN =
+      Pattern.compile("(?i)^(.+?)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
+  private static final Pattern HAVING_AGGREGATE_OPERAND_PATTERN =
+      Pattern.compile("(?i)^(count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)$");
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
   private static final ThreadLocal<RuntimeConfig> CONFIG = ThreadLocal.withInitial(RuntimeConfig::new);
 
@@ -593,8 +606,16 @@ final class ApexStore {
   private static List<ApexSObject> scan(QuerySpec spec, boolean countOnly) {
     State state = STATE.get();
     Map<String, ApexSObject> bucket = state.active.get(spec.sobjectType);
+    boolean aggregateQuery = isAggregateQuery(spec);
     if (bucket == null || bucket.isEmpty()) {
-      return List.of();
+      if (!countOnly && aggregateQuery && (spec.groupByFields == null || spec.groupByFields.isEmpty())) {
+        ApexSObject aggregate = buildAggregateRow(spec, List.of(), List.of());
+        if (aggregate == null) {
+          return List.of();
+        }
+        return applyOrderingAndPaging(spec, new ArrayList<>(List.of(aggregate)), false);
+      }
+      return applyOrderingAndPaging(spec, new ArrayList<>(), countOnly);
     }
 
     List<ApexSObject> out = new ArrayList<>();
@@ -604,6 +625,26 @@ final class ApexStore {
       }
       out.add(row);
     }
+
+    if (!countOnly && aggregateQuery) {
+      return scanAggregate(spec, out);
+    }
+    return applyOrderingAndPaging(spec, out, countOnly);
+  }
+
+  private static boolean isAggregateQuery(QuerySpec spec) {
+    if (spec == null) {
+      return false;
+    }
+    if (spec.selectSpec != null && spec.selectSpec.hasAggregate) {
+      return true;
+    }
+    return spec.groupByFields != null && !spec.groupByFields.isEmpty();
+  }
+
+  private static List<ApexSObject> applyOrderingAndPaging(
+      QuerySpec spec, List<ApexSObject> rows, boolean countOnly) {
+    List<ApexSObject> out = rows == null ? new ArrayList<>() : rows;
 
     if (!countOnly && spec.orderByKeys != null && !spec.orderByKeys.isEmpty()) {
       out.sort(
@@ -625,10 +666,228 @@ final class ApexStore {
           });
     }
 
+    int offset = Math.max(0, spec.offset);
+    if (offset > 0) {
+      if (offset >= out.size()) {
+        return new ArrayList<>();
+      }
+      out = new ArrayList<>(out.subList(offset, out.size()));
+    }
+
     if (spec.limit > 0 && out.size() > spec.limit) {
-      return new ArrayList<>(out.subList(0, spec.limit));
+      out = new ArrayList<>(out.subList(0, spec.limit));
     }
     return out;
+  }
+
+  private static List<ApexSObject> scanAggregate(QuerySpec spec, List<ApexSObject> filteredRows) {
+    List<String> groupFields = spec.groupByFields == null ? List.of() : spec.groupByFields;
+    LinkedHashMap<GroupKey, List<ApexSObject>> groups = new LinkedHashMap<>();
+
+    if (groupFields.isEmpty()) {
+      groups.put(new GroupKey(List.of()), filteredRows == null ? List.of() : filteredRows);
+    } else if (filteredRows != null && !filteredRows.isEmpty()) {
+      for (ApexSObject row : filteredRows) {
+        List<Object> keyValues = new ArrayList<>(groupFields.size());
+        for (String field : groupFields) {
+          keyValues.add(row == null ? null : row.get(field));
+        }
+        GroupKey key = new GroupKey(keyValues);
+        groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
+      }
+    }
+
+    List<ApexSObject> out = new ArrayList<>();
+    for (Map.Entry<GroupKey, List<ApexSObject>> entry : groups.entrySet()) {
+      List<ApexSObject> groupRows = entry.getValue() == null ? List.of() : entry.getValue();
+      List<Object> keyValues = entry.getKey() == null ? List.of() : entry.getKey().values;
+      if (!matchesHaving(groupRows, keyValues, spec.havingExpr)) {
+        continue;
+      }
+      ApexSObject aggregate = buildAggregateRow(spec, groupRows, keyValues);
+      if (aggregate != null) {
+        out.add(aggregate);
+      }
+    }
+
+    return applyOrderingAndPaging(spec, out, false);
+  }
+
+  private static ApexSObject buildAggregateRow(
+      QuerySpec spec, List<ApexSObject> groupRows, List<Object> groupKeyValues) {
+    if (spec == null || spec.selectSpec == null || spec.selectSpec.items == null) {
+      return null;
+    }
+
+    ApexSObject row = ApexSObject.of("AggregateResult");
+
+    if (spec.groupByFields != null && !spec.groupByFields.isEmpty()) {
+      for (int i = 0; i < spec.groupByFields.size(); i += 1) {
+        String field = spec.groupByFields.get(i);
+        Object value = i < groupKeyValues.size() ? groupKeyValues.get(i) : null;
+        row.set(field, value);
+      }
+    }
+
+    for (SelectItem item : spec.selectSpec.items) {
+      Object value = evaluateSelectItem(item, groupRows, spec.groupByFields, groupKeyValues);
+      row.set(item.outputName, value);
+    }
+    return row;
+  }
+
+  private static boolean matchesHaving(
+      List<ApexSObject> groupRows, List<Object> groupKeyValues, HavingExpr havingExpr) {
+    if (havingExpr == null) {
+      return true;
+    }
+    if (havingExpr instanceof HavingPredicateExpr predicate) {
+      return matchesHavingClause(groupRows, groupKeyValues, predicate.clause);
+    }
+    if (havingExpr instanceof HavingNotExpr notExpr) {
+      return !matchesHaving(groupRows, groupKeyValues, notExpr.inner);
+    }
+    if (havingExpr instanceof HavingLogicalExpr logicalExpr) {
+      if (logicalExpr.operator == LogicalOperator.AND) {
+        for (HavingExpr term : logicalExpr.terms) {
+          if (!matchesHaving(groupRows, groupKeyValues, term)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      for (HavingExpr term : logicalExpr.terms) {
+        if (matchesHaving(groupRows, groupKeyValues, term)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return false;
+  }
+
+  private static boolean matchesHavingClause(
+      List<ApexSObject> groupRows, List<Object> groupKeyValues, HavingClause clause) {
+    Object left = resolveHavingOperand(groupRows, groupKeyValues, clause.operand);
+    return switch (clause.operator) {
+      case "=" -> compareEquality(left, clause.literal);
+      case "!=" -> !compareEquality(left, clause.literal);
+      case ">" -> compareRange(left, clause.literal, ">");
+      case ">=" -> compareRange(left, clause.literal, ">=");
+      case "<" -> compareRange(left, clause.literal, "<");
+      case "<=" -> compareRange(left, clause.literal, "<=");
+      default -> false;
+    };
+  }
+
+  private static Object resolveHavingOperand(
+      List<ApexSObject> groupRows, List<Object> groupKeyValues, HavingOperand operand) {
+    if (operand instanceof HavingFieldOperand fieldOperand) {
+      String field = fieldOperand.field;
+      if (fieldOperand.groupFieldIndex >= 0
+          && groupKeyValues != null
+          && fieldOperand.groupFieldIndex < groupKeyValues.size()) {
+        return groupKeyValues.get(fieldOperand.groupFieldIndex);
+      }
+      if (groupRows == null || groupRows.isEmpty()) {
+        return null;
+      }
+      ApexSObject first = groupRows.get(0);
+      return first == null ? null : first.get(field);
+    }
+    if (operand instanceof HavingAggregateOperand aggregateOperand) {
+      return evaluateAggregate(
+          aggregateOperand.function, aggregateOperand.field, aggregateOperand.countAll, groupRows);
+    }
+    return null;
+  }
+
+  private static Object evaluateSelectItem(
+      SelectItem item,
+      List<ApexSObject> groupRows,
+      List<String> groupByFields,
+      List<Object> groupKeyValues) {
+    if (item.kind == SelectItemKind.FIELD) {
+      int groupFieldIndex = indexOfIgnoreCase(groupByFields, item.field);
+      if (groupFieldIndex >= 0
+          && groupKeyValues != null
+          && groupFieldIndex < groupKeyValues.size()) {
+        return groupKeyValues.get(groupFieldIndex);
+      }
+      if (groupRows == null || groupRows.isEmpty()) {
+        return null;
+      }
+      ApexSObject first = groupRows.get(0);
+      return first == null ? null : first.get(item.field);
+    }
+    return evaluateAggregate(item.aggregateFunction, item.field, item.countAll, groupRows);
+  }
+
+  private static Object evaluateAggregate(
+      AggregateFunction function, String field, boolean countAll, List<ApexSObject> rows) {
+    List<ApexSObject> source = rows == null ? List.of() : rows;
+    if (function == AggregateFunction.COUNT) {
+      if (countAll || field == null || field.isBlank()) {
+        return (long) source.size();
+      }
+      long count = 0L;
+      for (ApexSObject row : source) {
+        if (row != null && row.get(field) != null) {
+          count += 1L;
+        }
+      }
+      return count;
+    }
+
+    if (function == AggregateFunction.SUM || function == AggregateFunction.AVG) {
+      double sum = 0.0;
+      long count = 0L;
+      for (ApexSObject row : source) {
+        if (row == null) {
+          continue;
+        }
+        Double numeric = toNumber(row.get(field));
+        if (numeric == null) {
+          continue;
+        }
+        sum += numeric;
+        count += 1L;
+      }
+      if (count == 0L) {
+        return null;
+      }
+      if (function == AggregateFunction.SUM) {
+        return sum;
+      }
+      return sum / (double) count;
+    }
+
+    if (function == AggregateFunction.MIN || function == AggregateFunction.MAX) {
+      Object best = null;
+      boolean found = false;
+      for (ApexSObject row : source) {
+        if (row == null) {
+          continue;
+        }
+        Object value = row.get(field);
+        if (value == null) {
+          continue;
+        }
+        if (!found) {
+          best = value;
+          found = true;
+          continue;
+        }
+        int compared = compareValues(value, best);
+        if ((function == AggregateFunction.MIN && compared < 0)
+            || (function == AggregateFunction.MAX && compared > 0)) {
+          best = value;
+        }
+      }
+      return found ? best : null;
+    }
+
+    return null;
   }
 
   private static boolean matchesWhere(ApexSObject row, WhereExpr whereExpr) {
@@ -801,7 +1060,9 @@ final class ApexStore {
     if (!fromMatcher.find()) {
       throw new IllegalArgumentException("SOQL must contain FROM <SObject>: " + rawSoql);
     }
+    int fromStart = fromMatcher.start();
     String sobjectType = fromMatcher.group(1);
+    SelectSpec selectSpec = parseSelectSpec(soql.substring(0, fromStart).trim(), rawSoql);
 
     Matcher whereKeyword = WHERE_KEYWORD.matcher(soql);
     int whereStart = -1;
@@ -809,6 +1070,22 @@ final class ApexStore {
     if (whereKeyword.find()) {
       whereStart = whereKeyword.start();
       whereEnd = whereKeyword.end();
+    }
+
+    Matcher groupByKeyword = GROUP_BY_KEYWORD.matcher(soql);
+    int groupByStart = -1;
+    int groupByEnd = -1;
+    if (groupByKeyword.find()) {
+      groupByStart = groupByKeyword.start();
+      groupByEnd = groupByKeyword.end();
+    }
+
+    Matcher havingKeyword = HAVING_KEYWORD.matcher(soql);
+    int havingStart = -1;
+    int havingEnd = -1;
+    if (havingKeyword.find()) {
+      havingStart = havingKeyword.start();
+      havingEnd = havingKeyword.end();
     }
 
     Matcher orderByKeyword = ORDER_BY_KEYWORD.matcher(soql);
@@ -827,25 +1104,226 @@ final class ApexStore {
       limit = Integer.parseInt(limitMatcher.group(1));
     }
 
+    int offset = 0;
+    int offsetStart = -1;
+    Matcher offsetMatcher = OFFSET_PATTERN.matcher(soql);
+    if (offsetMatcher.find()) {
+      offsetStart = offsetMatcher.start();
+      offset = Integer.parseInt(offsetMatcher.group(1));
+    }
+
     if (whereStart >= 0 && orderByStart >= 0 && orderByStart < whereStart) {
       throw new IllegalArgumentException("ORDER BY before WHERE is not supported: " + rawSoql);
+    }
+    if (whereStart >= 0 && groupByStart >= 0 && groupByStart < whereStart) {
+      throw new IllegalArgumentException("GROUP BY before WHERE is not supported: " + rawSoql);
+    }
+    if (havingStart >= 0 && groupByStart < 0) {
+      throw new IllegalArgumentException("HAVING requires GROUP BY: " + rawSoql);
+    }
+    if (groupByStart >= 0 && havingStart >= 0 && havingStart < groupByStart) {
+      throw new IllegalArgumentException("HAVING before GROUP BY is not supported: " + rawSoql);
+    }
+    if (groupByStart >= 0 && orderByStart >= 0 && orderByStart < groupByStart) {
+      throw new IllegalArgumentException("ORDER BY before GROUP BY is not supported: " + rawSoql);
+    }
+    if (havingStart >= 0 && orderByStart >= 0 && orderByStart < havingStart) {
+      throw new IllegalArgumentException("ORDER BY before HAVING is not supported: " + rawSoql);
+    }
+    if (orderByStart >= 0 && limitStart >= 0 && limitStart < orderByStart) {
+      throw new IllegalArgumentException("LIMIT before ORDER BY is not supported: " + rawSoql);
+    }
+    if (orderByStart >= 0 && offsetStart >= 0 && offsetStart < orderByStart) {
+      throw new IllegalArgumentException("OFFSET before ORDER BY is not supported: " + rawSoql);
+    }
+    if (limitStart >= 0 && offsetStart >= 0 && offsetStart < limitStart) {
+      throw new IllegalArgumentException("OFFSET before LIMIT is not supported: " + rawSoql);
     }
 
     WhereExpr whereExpr = null;
     if (whereStart >= 0) {
-      int whereBodyEnd = nextClauseStart(soql.length(), whereEnd, orderByStart, limitStart);
+      int whereBodyEnd =
+          nextClauseStart(soql.length(), whereEnd, groupByStart, orderByStart, limitStart, offsetStart);
       String whereExprRaw = soql.substring(whereEnd, whereBodyEnd).trim();
       whereExpr = parseWhereExpression(whereExprRaw, rawSoql);
     }
 
+    List<String> groupByFields = List.of();
+    if (groupByStart >= 0) {
+      int groupByBodyEnd =
+          nextClauseStart(
+              soql.length(), groupByEnd, havingStart, orderByStart, limitStart, offsetStart);
+      String groupByRaw = soql.substring(groupByEnd, groupByBodyEnd).trim();
+      groupByFields = parseGroupByFields(groupByRaw, rawSoql);
+    }
+
+    HavingExpr havingExpr = null;
+    if (havingStart >= 0) {
+      int havingBodyEnd = nextClauseStart(soql.length(), havingEnd, orderByStart, limitStart, offsetStart);
+      String havingRaw = soql.substring(havingEnd, havingBodyEnd).trim();
+      havingExpr = parseHavingExpression(havingRaw, rawSoql, groupByFields);
+    }
+
+    validateSelectSpec(selectSpec, groupByFields, rawSoql);
+
     List<OrderByKey> orderByKeys = List.of();
     if (orderByStart >= 0) {
-      int orderByBodyEnd = limitStart > orderByEnd ? limitStart : soql.length();
+      int orderByBodyEnd = nextClauseStart(soql.length(), orderByEnd, limitStart, offsetStart);
       String orderByExpr = soql.substring(orderByEnd, orderByBodyEnd).trim();
       orderByKeys = parseOrderByKeys(orderByExpr, rawSoql);
     }
 
-    return new QuerySpec(sobjectType, whereExpr, orderByKeys, limit);
+    return new QuerySpec(
+        sobjectType, selectSpec, whereExpr, groupByFields, havingExpr, orderByKeys, limit, offset);
+  }
+
+  private static SelectSpec parseSelectSpec(String selectExpr, String rawSoql) {
+    if (selectExpr == null || selectExpr.isBlank()) {
+      throw new IllegalArgumentException("SOQL must begin with SELECT: " + rawSoql);
+    }
+    if (!selectExpr.regionMatches(true, 0, "select", 0, 6)) {
+      throw new IllegalArgumentException("SOQL must begin with SELECT: " + rawSoql);
+    }
+
+    String body = selectExpr.substring(6).trim();
+    if (body.isEmpty()) {
+      throw new IllegalArgumentException("SELECT expression cannot be blank: " + rawSoql);
+    }
+
+    List<String> terms = splitByComma(body);
+    List<SelectItem> items = new ArrayList<>(terms.size());
+    boolean hasAggregate = false;
+    int aggregateOrdinal = 0;
+    for (String term : terms) {
+      String normalized = term == null ? "" : term.trim();
+      if (normalized.isEmpty()) {
+        continue;
+      }
+
+      Matcher aggregateMatcher = SELECT_AGGREGATE_PATTERN.matcher(normalized);
+      if (aggregateMatcher.matches()) {
+        AggregateFunction function = parseAggregateFunction(aggregateMatcher.group(1), rawSoql);
+        String aggregateArg = aggregateMatcher.group(2);
+        String alias = aggregateMatcher.group(3);
+        boolean countAll =
+            function == AggregateFunction.COUNT
+                && (aggregateArg == null
+                    || aggregateArg.isBlank()
+                    || "*".equals(aggregateArg.trim()));
+        String field = null;
+        if (!countAll && aggregateArg != null && !aggregateArg.isBlank()) {
+          field = aggregateArg.trim();
+        }
+        if (!countAll && (field == null || field.isBlank())) {
+          throw new IllegalArgumentException("aggregate field is required: " + rawSoql);
+        }
+        String outputName =
+            alias != null && !alias.isBlank()
+                ? alias.trim()
+                : "expr" + aggregateOrdinal;
+        items.add(
+            SelectItem.aggregate(function, field, countAll, outputName, normalized));
+        aggregateOrdinal += 1;
+        hasAggregate = true;
+        continue;
+      }
+
+      Matcher fieldMatcher = SELECT_FIELD_PATTERN.matcher(normalized);
+      if (fieldMatcher.matches()) {
+        String field = fieldMatcher.group(1).trim();
+        String alias = fieldMatcher.group(2);
+        String outputName = alias != null && !alias.isBlank() ? alias.trim() : field;
+        items.add(SelectItem.field(field, outputName, normalized));
+        continue;
+      }
+
+      throw new IllegalArgumentException("unsupported SELECT term: " + normalized + " in " + rawSoql);
+    }
+
+    if (items.isEmpty()) {
+      throw new IllegalArgumentException("SELECT expression cannot be blank: " + rawSoql);
+    }
+    return new SelectSpec(items, hasAggregate);
+  }
+
+  private static List<String> parseGroupByFields(String groupByExpr, String rawSoql) {
+    if (groupByExpr == null || groupByExpr.isBlank()) {
+      throw new IllegalArgumentException("GROUP BY expression cannot be blank: " + rawSoql);
+    }
+
+    List<String> terms = splitByComma(groupByExpr);
+    List<String> out = new ArrayList<>(terms.size());
+    for (String term : terms) {
+      String field = term == null ? "" : term.trim();
+      if (field.isEmpty() || !IDENTIFIER_PATTERN.matcher(field).matches()) {
+        throw new IllegalArgumentException("unsupported GROUP BY field: " + term + " in " + rawSoql);
+      }
+      if (!containsIgnoreCase(out, field)) {
+        out.add(field);
+      }
+    }
+
+    if (out.isEmpty()) {
+      throw new IllegalArgumentException("GROUP BY expression cannot be blank: " + rawSoql);
+    }
+    return out;
+  }
+
+  private static void validateSelectSpec(SelectSpec selectSpec, List<String> groupByFields, String rawSoql) {
+    if (selectSpec == null || selectSpec.items == null || selectSpec.items.isEmpty()) {
+      throw new IllegalArgumentException("SELECT expression cannot be blank: " + rawSoql);
+    }
+
+    List<String> groups = groupByFields == null ? List.of() : groupByFields;
+    boolean hasAggregate = selectSpec.hasAggregate;
+
+    if (groups.isEmpty() && hasAggregate) {
+      for (SelectItem item : selectSpec.items) {
+        if (item.kind == SelectItemKind.FIELD) {
+          throw new IllegalArgumentException(
+              "non-aggregate field in aggregate query requires GROUP BY: " + item.field);
+        }
+      }
+      return;
+    }
+
+    if (groups.isEmpty()) {
+      return;
+    }
+
+    for (SelectItem item : selectSpec.items) {
+      if (item.kind == SelectItemKind.FIELD && !containsIgnoreCase(groups, item.field)) {
+        throw new IllegalArgumentException(
+            "selected field must appear in GROUP BY: " + item.field + " in " + rawSoql);
+      }
+    }
+  }
+
+  private static AggregateFunction parseAggregateFunction(String text, String rawSoql) {
+    if (text == null || text.isBlank()) {
+      throw new IllegalArgumentException("aggregate function cannot be blank: " + rawSoql);
+    }
+    String normalized = text.trim().toUpperCase();
+    return switch (normalized) {
+      case "COUNT" -> AggregateFunction.COUNT;
+      case "SUM" -> AggregateFunction.SUM;
+      case "AVG" -> AggregateFunction.AVG;
+      case "MIN" -> AggregateFunction.MIN;
+      case "MAX" -> AggregateFunction.MAX;
+      default -> throw new IllegalArgumentException("unsupported aggregate function: " + text);
+    };
+  }
+
+  private static boolean containsIgnoreCase(List<String> values, String target) {
+    if (values == null || values.isEmpty() || target == null) {
+      return false;
+    }
+    for (String value : values) {
+      if (value != null && value.equalsIgnoreCase(target)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static String applyBindVariables(String soql, Map<String, Object> bindVariables) {
@@ -1059,13 +1537,15 @@ final class ApexStore {
     return out;
   }
 
-  private static int nextClauseStart(int defaultEnd, int bodyStart, int orderByStart, int limitStart) {
+  private static int nextClauseStart(int defaultEnd, int bodyStart, int... clauseStarts) {
     int end = defaultEnd;
-    if (orderByStart >= 0 && orderByStart > bodyStart) {
-      end = Math.min(end, orderByStart);
+    if (clauseStarts == null || clauseStarts.length == 0) {
+      return end;
     }
-    if (limitStart >= 0 && limitStart > bodyStart) {
-      end = Math.min(end, limitStart);
+    for (int clauseStart : clauseStarts) {
+      if (clauseStart >= 0 && clauseStart > bodyStart) {
+        end = Math.min(end, clauseStart);
+      }
     }
     return end;
   }
@@ -1075,6 +1555,145 @@ final class ApexStore {
       throw new IllegalArgumentException("WHERE clause cannot be blank: " + rawSoql);
     }
     return parseWhereOrExpression(whereExpr.trim(), rawSoql);
+  }
+
+  private static HavingExpr parseHavingExpression(
+      String havingExpr, String rawSoql, List<String> groupByFields) {
+    if (havingExpr == null || havingExpr.isBlank()) {
+      throw new IllegalArgumentException("HAVING clause cannot be blank: " + rawSoql);
+    }
+    return parseHavingOrExpression(havingExpr.trim(), rawSoql, groupByFields == null ? List.of() : groupByFields);
+  }
+
+  private static HavingExpr parseHavingOrExpression(
+      String expression, String rawSoql, List<String> groupByFields) {
+    List<String> orTerms = splitByLogicalKeyword(expression, "or");
+    if (orTerms.size() <= 1) {
+      return parseHavingAndExpression(expression, rawSoql, groupByFields);
+    }
+
+    List<HavingExpr> out = new ArrayList<>(orTerms.size());
+    for (String term : orTerms) {
+      out.add(parseHavingAndExpression(term.trim(), rawSoql, groupByFields));
+    }
+    return new HavingLogicalExpr(LogicalOperator.OR, out);
+  }
+
+  private static HavingExpr parseHavingAndExpression(
+      String expression, String rawSoql, List<String> groupByFields) {
+    List<String> andTerms = splitByLogicalKeyword(expression, "and");
+    if (andTerms.size() <= 1) {
+      return parseHavingNotExpression(expression, rawSoql, groupByFields);
+    }
+
+    List<HavingExpr> out = new ArrayList<>(andTerms.size());
+    for (String term : andTerms) {
+      out.add(parseHavingNotExpression(term.trim(), rawSoql, groupByFields));
+    }
+    return new HavingLogicalExpr(LogicalOperator.AND, out);
+  }
+
+  private static HavingExpr parseHavingNotExpression(
+      String expression, String rawSoql, List<String> groupByFields) {
+    String normalized = expression == null ? "" : expression.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("HAVING clause cannot be blank: " + rawSoql);
+    }
+
+    int notCount = 0;
+    while (startsWithLogicalNot(normalized)) {
+      notCount += 1;
+      normalized = normalized.substring(3).trim();
+      if (normalized.isEmpty()) {
+        throw new IllegalArgumentException("NOT requires an expression in HAVING: " + rawSoql);
+      }
+    }
+
+    HavingExpr primary = parseHavingPrimary(normalized, rawSoql, groupByFields);
+    if ((notCount & 1) == 0) {
+      return primary;
+    }
+    return new HavingNotExpr(primary);
+  }
+
+  private static HavingExpr parseHavingPrimary(
+      String expression, String rawSoql, List<String> groupByFields) {
+    String normalized = expression == null ? "" : expression.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("HAVING clause cannot be blank: " + rawSoql);
+    }
+
+    if (normalized.startsWith("(") && normalized.endsWith(")") && isTopLevelWrapped(normalized)) {
+      String inner = normalized.substring(1, normalized.length() - 1).trim();
+      return parseHavingOrExpression(inner, rawSoql, groupByFields);
+    }
+
+    return new HavingPredicateExpr(parseHavingClause(normalized, rawSoql, groupByFields));
+  }
+
+  private static HavingClause parseHavingClause(
+      String clauseText, String rawSoql, List<String> groupByFields) {
+    String normalized = stripWrappingParentheses(clauseText == null ? "" : clauseText.trim());
+    Matcher matcher = HAVING_CLAUSE_PATTERN.matcher(normalized);
+    if (!matcher.matches()) {
+      throw new IllegalArgumentException(
+          "HAVING supports (=, !=, >, >=, <, <=) over aggregate/group fields: " + rawSoql);
+    }
+
+    String left = matcher.group(1) == null ? "" : matcher.group(1).trim();
+    String operator = matcher.group(2);
+    Object literal = parseLiteral(matcher.group(3).trim());
+    HavingOperand operand = parseHavingOperand(left, rawSoql, groupByFields);
+    return new HavingClause(operand, operator, literal);
+  }
+
+  private static HavingOperand parseHavingOperand(
+      String operandText, String rawSoql, List<String> groupByFields) {
+    String normalized = operandText == null ? "" : operandText.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("HAVING operand cannot be blank: " + rawSoql);
+    }
+
+    Matcher aggregateMatcher = HAVING_AGGREGATE_OPERAND_PATTERN.matcher(normalized);
+    if (aggregateMatcher.matches()) {
+      AggregateFunction function = parseAggregateFunction(aggregateMatcher.group(1), rawSoql);
+      String arg = aggregateMatcher.group(2);
+      boolean countAll =
+          function == AggregateFunction.COUNT
+              && (arg == null || arg.isBlank() || "*".equals(arg.trim()));
+      String field = null;
+      if (!countAll && arg != null && !arg.isBlank()) {
+        field = arg.trim();
+      }
+      if (!countAll && (field == null || field.isBlank())) {
+        throw new IllegalArgumentException("HAVING aggregate field cannot be blank: " + rawSoql);
+      }
+      return new HavingAggregateOperand(function, field, countAll);
+    }
+
+    if (IDENTIFIER_PATTERN.matcher(normalized).matches()) {
+      int groupFieldIndex = indexOfIgnoreCase(groupByFields, normalized);
+      if (groupFieldIndex < 0) {
+        throw new IllegalArgumentException(
+            "HAVING field must appear in GROUP BY: " + normalized + " in " + rawSoql);
+      }
+      return new HavingFieldOperand(normalized, groupFieldIndex);
+    }
+
+    throw new IllegalArgumentException("unsupported HAVING operand: " + operandText + " in " + rawSoql);
+  }
+
+  private static int indexOfIgnoreCase(List<String> values, String target) {
+    if (values == null || values.isEmpty() || target == null) {
+      return -1;
+    }
+    for (int i = 0; i < values.size(); i += 1) {
+      String value = values.get(i);
+      if (value != null && value.equalsIgnoreCase(target)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   private static WhereExpr parseWhereOrExpression(String expression, String rawSoql) {
@@ -1859,9 +2478,77 @@ final class ApexStore {
 
   private record WhereClause(String field, String operator, Object literal) {}
 
+  private interface HavingExpr {}
+
+  private record HavingPredicateExpr(HavingClause clause) implements HavingExpr {}
+
+  private record HavingNotExpr(HavingExpr inner) implements HavingExpr {}
+
+  private record HavingLogicalExpr(LogicalOperator operator, List<HavingExpr> terms) implements HavingExpr {}
+
+  private record HavingClause(HavingOperand operand, String operator, Object literal) {}
+
+  private interface HavingOperand {}
+
+  private record HavingFieldOperand(String field, int groupFieldIndex) implements HavingOperand {}
+
+  private record HavingAggregateOperand(
+      AggregateFunction function, String field, boolean countAll) implements HavingOperand {}
+
+  private enum SelectItemKind {
+    FIELD,
+    AGGREGATE
+  }
+
+  private enum AggregateFunction {
+    COUNT,
+    SUM,
+    AVG,
+    MIN,
+    MAX
+  }
+
+  private record SelectItem(
+      SelectItemKind kind,
+      String field,
+      AggregateFunction aggregateFunction,
+      boolean countAll,
+      String outputName,
+      String sourceText) {
+    static SelectItem field(String field, String outputName, String sourceText) {
+      return new SelectItem(SelectItemKind.FIELD, field, null, false, outputName, sourceText);
+    }
+
+    static SelectItem aggregate(
+        AggregateFunction function,
+        String field,
+        boolean countAll,
+        String outputName,
+        String sourceText) {
+      return new SelectItem(
+          SelectItemKind.AGGREGATE, field, function, countAll, outputName, sourceText);
+    }
+  }
+
+  private record SelectSpec(List<SelectItem> items, boolean hasAggregate) {}
+
+  private record GroupKey(List<Object> values) {
+    GroupKey {
+      values = values == null ? List.of() : List.copyOf(values);
+    }
+  }
+
   private record OrderByKey(String field, boolean descending, Boolean nullsFirst) {}
 
-  private record QuerySpec(String sobjectType, WhereExpr whereExpr, List<OrderByKey> orderByKeys, int limit) {}
+  private record QuerySpec(
+      String sobjectType,
+      SelectSpec selectSpec,
+      WhereExpr whereExpr,
+      List<String> groupByFields,
+      HavingExpr havingExpr,
+      List<OrderByKey> orderByKeys,
+      int limit,
+      int offset) {}
 
   private static final class DmlFailure extends RuntimeException {
     final String statusCode;
