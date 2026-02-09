@@ -17,15 +17,32 @@ public final class BatchContext {
     return STATE.get().totalScopes;
   }
 
+  public static Phase getPhase() {
+    return STATE.get().phase;
+  }
+
+  public static boolean isStart() {
+    return getPhase() == Phase.START;
+  }
+
+  public static boolean isExecute() {
+    return getPhase() == Phase.EXECUTE;
+  }
+
+  public static boolean isFinish() {
+    return getPhase() == Phase.FINISH;
+  }
+
   public static boolean isExecuting() {
     return STATE.get().jobId != null;
   }
 
-  static void enter(String jobId, int scopeIndex, int totalScopes) {
+  static void enter(String jobId, int scopeIndex, int totalScopes, Phase phase) {
     State state = STATE.get();
     state.jobId = normalizeJobId(jobId);
     state.scopeIndex = Math.max(0, scopeIndex);
     state.totalScopes = Math.max(0, totalScopes);
+    state.phase = phase == null ? Phase.NONE : phase;
   }
 
   static void clear() {
@@ -43,5 +60,13 @@ public final class BatchContext {
     String jobId;
     int scopeIndex;
     int totalScopes;
+    Phase phase = Phase.NONE;
+  }
+
+  public enum Phase {
+    NONE,
+    START,
+    EXECUTE,
+    FINISH
   }
 }

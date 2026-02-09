@@ -152,8 +152,9 @@ public final class Async {
         case FUTURE -> job.futureTask.run();
         case QUEUEABLE -> job.queueableJob.execute();
         case BATCH -> {
-          runBatchPhase(job.id, 1, 1, () -> job.batchJob.execute(job.batchScopeSize));
-          runBatchPhase(job.id, 0, 1, job.batchJob::finish);
+          runBatchPhase(
+              job.id, 1, 1, BatchContext.Phase.EXECUTE, () -> job.batchJob.execute(job.batchScopeSize));
+          runBatchPhase(job.id, 0, 1, BatchContext.Phase.FINISH, job.batchJob::finish);
         }
         case BATCH_QUERY_LOCATOR ->
             executeQueryLocatorBatch(job.id, job.queryLocatorBatchJob, job.batchScopeSize);
@@ -169,7 +170,8 @@ public final class Async {
       throw new IllegalArgumentException("query locator batch job cannot be null");
     }
 
-    Database.QueryLocator locator = runBatchPhase(jobId, 0, 0, batchJob::start);
+    Database.QueryLocator locator =
+        runBatchPhase(jobId, 0, 0, BatchContext.Phase.START, batchJob::start);
     if (locator == null) {
       throw new IllegalArgumentException("batch start cannot return null query locator");
     }
@@ -187,11 +189,16 @@ public final class Async {
           scope.add(row == null ? null : row.copy());
         }
         List<ApexSObject> immutableScope = List.copyOf(scope);
-        runBatchPhase(jobId, scopeIndex, totalScopes, () -> batchJob.execute(immutableScope));
+        runBatchPhase(
+            jobId,
+            scopeIndex,
+            totalScopes,
+            BatchContext.Phase.EXECUTE,
+            () -> batchJob.execute(immutableScope));
       }
     }
 
-    runBatchPhase(jobId, 0, totalScopes, batchJob::finish);
+    runBatchPhase(jobId, 0, totalScopes, BatchContext.Phase.FINISH, batchJob::finish);
   }
 
   private static int countTotalScopes(List<ApexSObject> rows, int scopeSize) {
@@ -202,8 +209,12 @@ public final class Async {
   }
 
   private static <T> T runBatchPhase(
-      String jobId, int scopeIndex, int totalScopes, Limits.TransactionWork<T> work) {
-    BatchContext.enter(jobId, scopeIndex, totalScopes);
+      String jobId,
+      int scopeIndex,
+      int totalScopes,
+      BatchContext.Phase phase,
+      Limits.TransactionWork<T> work) {
+    BatchContext.enter(jobId, scopeIndex, totalScopes, phase);
     try {
       return Limits.runWithFreshTransaction(work);
     } finally {
@@ -211,11 +222,13 @@ public final class Async {
     }
   }
 
-  private static void runBatchPhase(String jobId, int scopeIndex, int totalScopes, Runnable runnable) {
+  private static void runBatchPhase(
+      String jobId, int scopeIndex, int totalScopes, BatchContext.Phase phase, Runnable runnable) {
     runBatchPhase(
         jobId,
         scopeIndex,
         totalScopes,
+        phase,
         () -> {
           runnable.run();
           return null;

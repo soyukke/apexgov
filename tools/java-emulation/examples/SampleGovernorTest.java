@@ -283,14 +283,17 @@ public final class SampleGovernorTest {
     final String[] startJobId = new String[1];
     final int[] startScopeIndex = new int[1];
     final int[] startTotalScopes = new int[1];
+    final BatchContext.Phase[] startPhase = new BatchContext.Phase[1];
 
     final List<String> executeJobIds = new java.util.ArrayList<>();
     final List<Integer> executeScopeIndexes = new java.util.ArrayList<>();
     final List<Integer> executeTotalScopes = new java.util.ArrayList<>();
+    final List<BatchContext.Phase> executePhases = new java.util.ArrayList<>();
 
     final String[] finishJobId = new String[1];
     final int[] finishScopeIndex = new int[1];
     final int[] finishTotalScopes = new int[1];
+    final BatchContext.Phase[] finishPhase = new BatchContext.Phase[1];
 
     apexemu.runtime.Test.startTest();
     String jobId =
@@ -301,6 +304,7 @@ public final class SampleGovernorTest {
                 startJobId[0] = BatchContext.getJobId();
                 startScopeIndex[0] = BatchContext.getScopeIndex();
                 startTotalScopes[0] = BatchContext.getTotalScopes();
+                startPhase[0] = BatchContext.getPhase();
                 return Database.getQueryLocator("SELECT Id, Name FROM Account ORDER BY Name ASC");
               }
 
@@ -309,6 +313,7 @@ public final class SampleGovernorTest {
                 executeJobIds.add(BatchContext.getJobId());
                 executeScopeIndexes.add(BatchContext.getScopeIndex());
                 executeTotalScopes.add(BatchContext.getTotalScopes());
+                executePhases.add(BatchContext.getPhase());
               }
 
               @Override
@@ -316,6 +321,7 @@ public final class SampleGovernorTest {
                 finishJobId[0] = BatchContext.getJobId();
                 finishScopeIndex[0] = BatchContext.getScopeIndex();
                 finishTotalScopes[0] = BatchContext.getTotalScopes();
+                finishPhase[0] = BatchContext.getPhase();
               }
             },
             2);
@@ -324,6 +330,7 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(jobId, startJobId[0], "start should receive same batch job id");
     SystemAssert.assertEquals(0, startScopeIndex[0], "start should have scopeIndex=0");
     SystemAssert.assertEquals(0, startTotalScopes[0], "start should have totalScopes=0 before chunking");
+    SystemAssert.assertEquals(BatchContext.Phase.START, startPhase[0], "start phase mismatch");
 
     SystemAssert.assertEquals(3, executeJobIds.size(), "execute call count mismatch");
     SystemAssert.assertEquals(jobId, executeJobIds.get(0), "execute #1 job id mismatch");
@@ -335,15 +342,20 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(3, executeTotalScopes.get(0), "execute #1 total scopes mismatch");
     SystemAssert.assertEquals(3, executeTotalScopes.get(1), "execute #2 total scopes mismatch");
     SystemAssert.assertEquals(3, executeTotalScopes.get(2), "execute #3 total scopes mismatch");
+    SystemAssert.assertEquals(BatchContext.Phase.EXECUTE, executePhases.get(0), "execute #1 phase mismatch");
+    SystemAssert.assertEquals(BatchContext.Phase.EXECUTE, executePhases.get(1), "execute #2 phase mismatch");
+    SystemAssert.assertEquals(BatchContext.Phase.EXECUTE, executePhases.get(2), "execute #3 phase mismatch");
 
     SystemAssert.assertEquals(jobId, finishJobId[0], "finish should receive same batch job id");
     SystemAssert.assertEquals(0, finishScopeIndex[0], "finish should have scopeIndex=0");
     SystemAssert.assertEquals(3, finishTotalScopes[0], "finish should receive resolved total scopes");
+    SystemAssert.assertEquals(BatchContext.Phase.FINISH, finishPhase[0], "finish phase mismatch");
 
     SystemAssert.assertFalse(BatchContext.isExecuting(), "batch context should be cleared after stopTest");
     SystemAssert.assertNull(BatchContext.getJobId(), "batch context job id should be cleared");
     SystemAssert.assertEquals(0, BatchContext.getScopeIndex(), "batch context scope index should reset");
     SystemAssert.assertEquals(0, BatchContext.getTotalScopes(), "batch context total scopes should reset");
+    SystemAssert.assertEquals(BatchContext.Phase.NONE, BatchContext.getPhase(), "batch phase should reset");
   }
 
   @Test
@@ -351,9 +363,11 @@ public final class SampleGovernorTest {
     final String[] executeJobId = new String[1];
     final int[] executeScopeIndex = new int[1];
     final int[] executeTotalScopes = new int[1];
+    final BatchContext.Phase[] executePhase = new BatchContext.Phase[1];
     final String[] finishJobId = new String[1];
     final int[] finishScopeIndex = new int[1];
     final int[] finishTotalScopes = new int[1];
+    final BatchContext.Phase[] finishPhase = new BatchContext.Phase[1];
     final int[] executeScopeSize = new int[1];
 
     apexemu.runtime.Test.startTest();
@@ -365,6 +379,7 @@ public final class SampleGovernorTest {
                 executeJobId[0] = BatchContext.getJobId();
                 executeScopeIndex[0] = BatchContext.getScopeIndex();
                 executeTotalScopes[0] = BatchContext.getTotalScopes();
+                executePhase[0] = BatchContext.getPhase();
                 executeScopeSize[0] = scopeSize;
               }
 
@@ -373,6 +388,7 @@ public final class SampleGovernorTest {
                 finishJobId[0] = BatchContext.getJobId();
                 finishScopeIndex[0] = BatchContext.getScopeIndex();
                 finishTotalScopes[0] = BatchContext.getTotalScopes();
+                finishPhase[0] = BatchContext.getPhase();
               }
             },
             5);
@@ -382,9 +398,11 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(jobId, executeJobId[0], "simple batch execute job id mismatch");
     SystemAssert.assertEquals(1, executeScopeIndex[0], "simple batch execute scope index mismatch");
     SystemAssert.assertEquals(1, executeTotalScopes[0], "simple batch execute total scopes mismatch");
+    SystemAssert.assertEquals(BatchContext.Phase.EXECUTE, executePhase[0], "simple batch execute phase mismatch");
     SystemAssert.assertEquals(jobId, finishJobId[0], "simple batch finish job id mismatch");
     SystemAssert.assertEquals(0, finishScopeIndex[0], "simple batch finish scope index mismatch");
     SystemAssert.assertEquals(1, finishTotalScopes[0], "simple batch finish total scopes mismatch");
+    SystemAssert.assertEquals(BatchContext.Phase.FINISH, finishPhase[0], "simple batch finish phase mismatch");
   }
 
   @Test
