@@ -310,6 +310,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 
     try appendFmt(gpa, &out, "package {s};\n\n", .{package_name});
     try out.appendSlice(gpa, "import apexemu.annotations.Test;\n\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
     try appendFmt(
         gpa,
         &out,
@@ -338,7 +339,12 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
             const trimmed = std.mem.trim(u8, clean, " \t");
             if (trimmed.len == 0) continue;
             if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) continue;
-            try appendFmt(gpa, &out, "    // {s}\n", .{trimmed});
+            if (try transpileAssertionLine(gpa, trimmed)) |statement| {
+                defer gpa.free(statement);
+                try appendFmt(gpa, &out, "    {s}\n", .{statement});
+            } else {
+                try appendFmt(gpa, &out, "    // {s}\n", .{trimmed});
+            }
         }
 
         try out.appendSlice(gpa, "  }\n\n");
@@ -346,6 +352,221 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 
     try out.appendSlice(gpa, "}\n");
     return out.toOwnedSlice(gpa);
+}
+
+fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    }
+
+    const open_paren = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    const close_paren = findMatchingParen(trimmed, open_paren) orelse return null;
+    if (close_paren + 1 < trimmed.len) {
+        const trailing = std.mem.trim(u8, trimmed[(close_paren + 1)..], " \t");
+        if (trailing.len != 0) return null;
+    }
+
+    const head = std.mem.trim(u8, trimmed[0..open_paren], " \t");
+    if (!startsWithIgnoreCase(head, "System.")) return null;
+
+    const method_name = std.mem.trim(u8, head["System.".len..], " \t");
+    if (method_name.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, method_name, '.')) |_| return null;
+
+    var args = try splitCallArguments(gpa, trimmed[(open_paren + 1)..close_paren]);
+    defer args.deinit(gpa);
+
+    var converted: std.ArrayList([]u8) = .empty;
+    defer {
+        for (converted.items) |arg| gpa.free(arg);
+        converted.deinit(gpa);
+    }
+
+    for (args.items) |arg| {
+        try converted.append(gpa, try convertApexExpressionToJava(gpa, arg));
+    }
+
+    if (std.ascii.eqlIgnoreCase(method_name, "assert")) {
+        if (converted.items.len < 1 or converted.items.len > 2) return null;
+        return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertEquals")) {
+        if (converted.items.len < 2 or converted.items.len > 3) return null;
+        return try buildSystemAssertCall(gpa, "assertEquals", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertNotEquals")) {
+        if (converted.items.len < 2 or converted.items.len > 3) return null;
+        return try buildSystemAssertCall(gpa, "assertNotEquals", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertFalse")) {
+        if (converted.items.len < 1 or converted.items.len > 2) return null;
+        return try buildSystemAssertCall(gpa, "assertFalse", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertTrue")) {
+        if (converted.items.len < 1 or converted.items.len > 2) return null;
+        return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertNull")) {
+        if (converted.items.len < 1 or converted.items.len > 2) return null;
+        return try buildSystemAssertCall(gpa, "assertNull", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "assertNotNull")) {
+        if (converted.items.len < 1 or converted.items.len > 2) return null;
+        return try buildSystemAssertCall(gpa, "assertNotNull", converted.items);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
+        if (converted.items.len < 1 or converted.items.len > 1) return null;
+        return try buildSystemAssertCall(gpa, "fail", converted.items);
+    }
+
+    return null;
+}
+
+fn splitCallArguments(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return out;
+
+    var in_single = false;
+    var in_double = false;
+    var paren_depth: i32 = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < trimmed.len) : (i += 1) {
+        const ch = trimmed[i];
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < trimmed.len and trimmed[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+
+        switch (ch) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            ',' => {
+                if (paren_depth != 0) continue;
+                const piece = std.mem.trim(u8, trimmed[start..i], " \t");
+                if (piece.len > 0) try out.append(gpa, piece);
+                start = i + 1;
+            },
+            else => {},
+        }
+    }
+
+    const tail = std.mem.trim(u8, trimmed[start..], " \t");
+    if (tail.len > 0) try out.append(gpa, tail);
+    return out;
+}
+
+fn buildSystemAssertCall(gpa: std.mem.Allocator, method_name: []const u8, args: []const []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    try out.appendSlice(gpa, "SystemAssert.");
+    try out.appendSlice(gpa, method_name);
+    try out.appendSlice(gpa, "(");
+    for (args, 0..) |arg, idx| {
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, arg);
+    }
+    try out.appendSlice(gpa, ");");
+    return out.toOwnedSlice(gpa);
+}
+
+fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, expression, " \t");
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < trimmed.len) {
+        const ch = trimmed[i];
+        if (ch != '\'') {
+            try out.append(gpa, ch);
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+        try out.append(gpa, '"');
+        while (i < trimmed.len) {
+            const curr = trimmed[i];
+            if (curr == '\'') {
+                if (i + 1 < trimmed.len and trimmed[i + 1] == '\'') {
+                    try appendEscapedJavaStringChar(gpa, &out, '\'');
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                break;
+            }
+
+            try appendEscapedJavaStringChar(gpa, &out, curr);
+            i += 1;
+        }
+        try out.append(gpa, '"');
+    }
+
+    return out.toOwnedSlice(gpa);
+}
+
+fn appendEscapedJavaStringChar(gpa: std.mem.Allocator, out: *std.ArrayList(u8), ch: u8) !void {
+    switch (ch) {
+        '"' => try out.appendSlice(gpa, "\\\""),
+        '\\' => try out.appendSlice(gpa, "\\\\"),
+        '\n' => try out.appendSlice(gpa, "\\n"),
+        '\r' => try out.appendSlice(gpa, "\\r"),
+        '\t' => try out.appendSlice(gpa, "\\t"),
+        else => try out.append(gpa, ch),
+    }
+}
+
+fn findMatchingParen(text: []const u8, open_index: usize) ?usize {
+    if (open_index >= text.len or text[open_index] != '(') return null;
+
+    var depth: i32 = 0;
+    var in_single = false;
+    var in_double = false;
+    var i: usize = open_index;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+
+        if (ch == '(') {
+            depth += 1;
+        } else if (ch == ')') {
+            depth -= 1;
+            if (depth == 0) return i;
+            if (depth < 0) return null;
+        }
+    }
+    return null;
 }
 
 fn uniqueMethodName(
@@ -517,7 +738,7 @@ test "renderJavaClass emits test annotation and method comment body" {
     try std.testing.expect(std.mem.indexOf(u8, output, "package generated;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "@Test") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "public static void firstMethod()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "System.assertEquals(1, 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "SystemAssert.assertEquals(1, 1);") != null);
 }
 
 test "detectClassIsTest catches annotation immediately before class" {
@@ -528,4 +749,26 @@ test "detectClassIsTest catches annotation immediately before class" {
         \\}
     ;
     try std.testing.expect(detectClassIsTest(source));
+}
+
+test "transpileAssertionLine converts System.assert overloads" {
+    const gpa = std.testing.allocator;
+    const one = try transpileAssertionLine(gpa, "System.assert(total > 0, 'must be positive');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings(
+        "SystemAssert.assertTrue(total > 0, \"must be positive\");",
+        one.?,
+    );
+
+    const two = try transpileAssertionLine(gpa, "System.assertEquals(1, actual, 'don''t fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings(
+        "SystemAssert.assertEquals(1, actual, \"don't fail\");",
+        two.?,
+    );
+
+    const non_assert = try transpileAssertionLine(gpa, "System.debug('noop');");
+    try std.testing.expect(non_assert == null);
 }
