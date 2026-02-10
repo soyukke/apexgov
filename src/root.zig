@@ -3,6 +3,7 @@ pub const config = @import("config.zig");
 pub const check = @import("check.zig");
 pub const profile = @import("profile.zig");
 pub const report = @import("report.zig");
+pub const transpile = @import("transpile.zig");
 
 test {
     _ = model;
@@ -10,4 +11,5 @@ test {
     _ = check;
     _ = profile;
     _ = report;
+    _ = transpile;
 }

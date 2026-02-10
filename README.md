@@ -45,6 +45,7 @@ Java系の補助エミュレーション機能です。
 zig build run -- emulate java
 zig build run -- emulate java reports/java-calibration-local --iterations 80000 --nix
 zig build run -- emulate test tools/java-emulation/examples --out reports/java-emulation --nix
+zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
 ```
 
 ## Configuration
@@ -132,6 +133,15 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 `merge` で related row が再親子付けされた場合は、関連オブジェクトの `before/after update` trigger も自動発火します。
 
 詳細は `tools/java-emulation/README.md` を参照してください。
+
+## Apex-to-Java Transpile (Scaffold)
+
+`apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
+現状はメソッド本体をコメントとして埋め込み、`@IsTest` クラス/メソッドを `@Test` 付きメソッドに変換します。
+
+```bash
+zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
+```
 
 ## License
 

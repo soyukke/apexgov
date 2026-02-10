@@ -42,6 +42,17 @@ const EmulateTestOptions = struct {
     use_nix: bool = false,
 };
 
+const EmulateTranspileOptions = struct {
+    out_dir: []const u8 = "reports/apex-transpile",
+    package_name: []const u8 = "generated",
+    overwrite: bool = false,
+    input_paths: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *EmulateTranspileOptions, gpa: std.mem.Allocator) void {
+        self.input_paths.deinit(gpa);
+    }
+};
+
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
@@ -143,6 +154,9 @@ fn runEmulate(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     if (args.len > 0 and std.mem.eql(u8, args[0], "test")) {
         return runEmulateTest(gpa, args[1..]);
     }
+    if (args.len > 0 and std.mem.eql(u8, args[0], "transpile")) {
+        return runEmulateTranspile(gpa, args[1..]);
+    }
 
     return runEmulateCalibration(gpa, args);
 }
@@ -235,6 +249,29 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         .Exited => |code| code,
         else => 1,
     };
+}
+
+fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+    var opts = try parseEmulateTranspileOptions(gpa, args);
+    defer opts.deinit(gpa);
+
+    const summary = try apexgov.transpile.run(gpa, .{
+        .input_paths = opts.input_paths.items,
+        .out_dir = opts.out_dir,
+        .package_name = opts.package_name,
+        .overwrite = opts.overwrite,
+    });
+
+    std.debug.print(
+        "transpile: generated {d} Java file(s) from {d} Apex class file(s) into {s} (methods: {d})\n",
+        .{
+            summary.files_generated,
+            summary.files_scanned,
+            opts.out_dir,
+            summary.methods_generated,
+        },
+    );
+    return 0;
 }
 
 fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOptions {
@@ -550,6 +587,59 @@ fn parseEmulateTestOptions(args: []const []const u8) !EmulateTestOptions {
     return opts;
 }
 
+fn parseEmulateTranspileOptions(gpa: std.mem.Allocator, args: []const []const u8) !EmulateTranspileOptions {
+    var opts = EmulateTranspileOptions{};
+    errdefer opts.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < args.len) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            printEmulateHelp();
+            return error.HelpRequested;
+        }
+        if (std.mem.eql(u8, arg, "--out")) {
+            i += 1;
+            if (i >= args.len) return error.MissingOptionValue;
+            opts.out_dir = args[i];
+            i += 1;
+            continue;
+        }
+        if (optionValue(arg, "--out")) |value| {
+            opts.out_dir = value;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--package")) {
+            i += 1;
+            if (i >= args.len) return error.MissingOptionValue;
+            opts.package_name = args[i];
+            i += 1;
+            continue;
+        }
+        if (optionValue(arg, "--package")) |value| {
+            opts.package_name = value;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--overwrite")) {
+            opts.overwrite = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+
+        try opts.input_paths.append(gpa, arg);
+        i += 1;
+    }
+
+    if (opts.input_paths.items.len == 0) {
+        try opts.input_paths.append(gpa, "force-app/main/default/classes");
+    }
+    return opts;
+}
+
 fn optionValue(arg: []const u8, name: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, arg, name)) return null;
     if (arg.len <= name.len) return null;
@@ -664,6 +754,7 @@ fn printUsage() void {
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
         \\  apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
         \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
+        \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite]
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
@@ -671,6 +762,7 @@ fn printUsage() void {
         \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
         \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
         \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --nix
+        \\  apexgov emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
         \\
     , .{});
 }
@@ -701,6 +793,8 @@ fn printEmulateHelp() void {
         \\    apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
         \\  Mode 2: local @Test emulation
         \\    apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
+        \\  Mode 3: Apex -> Java test scaffold transpile (best-effort)
+        \\    apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite]
         \\
     , .{});
 }
@@ -785,4 +879,33 @@ test "parseEmulateTestOptions parses flags and positional values" {
 test "parseEmulateTestOptions rejects extra positional paths" {
     const args = [_][]const u8{ "tests-a", "tests-b" };
     try std.testing.expectError(error.TooManyInputPaths, parseEmulateTestOptions(args[0..]));
+}
+
+test "parseEmulateTranspileOptions parses flags and defaults" {
+    const gpa = std.testing.allocator;
+    const args = [_][]const u8{
+        "force-app/main/default/classes",
+        "--out=reports/apex-transpile-local",
+        "--package",
+        "generated.demo",
+        "--overwrite",
+    };
+
+    var opts = try parseEmulateTranspileOptions(gpa, args[0..]);
+    defer opts.deinit(gpa);
+
+    try std.testing.expectEqualStrings("reports/apex-transpile-local", opts.out_dir);
+    try std.testing.expectEqualStrings("generated.demo", opts.package_name);
+    try std.testing.expectEqual(true, opts.overwrite);
+    try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
+    try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
+}
+
+test "parseEmulateTranspileOptions injects default input path" {
+    const gpa = std.testing.allocator;
+    var opts = try parseEmulateTranspileOptions(gpa, &.{});
+    defer opts.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
+    try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
 }
