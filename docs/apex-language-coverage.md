@@ -107,7 +107,7 @@
 | schema registry (custom object validation) | partial | `Schema.object(...).register()` で required/type の簡易検証 |
 | SOQL subset query | partial | `FROM` / `[SELECT ...]`, relationship field path (`Owner.Name`, `Parent__r.Name`), `WHERE` (`AND`/`OR`/unary `NOT` with grouped expression, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape), date literals (`TODAY/YESTERDAY/TOMORROW/LAST_N_DAYS/NEXT_N_DAYS/N_DAYS_AGO`) + unquoted ISO date/date-time literals, aggregate select (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`), `GROUP BY`, `HAVING` (`AND`/`OR`/`NOT` over aggregate/group fields), `ORDER BY` multi-key + `NULLS FIRST/LAST` (default mode configurable: `FIRST`/`LAST`/`DIRECTIONAL`), `LIMIT`, `OFFSET`, `queryWithBinds/countQueryWithBinds` (`:name`, scalar + collection bind), `getQueryLocator/getQueryLocatorWithBinds` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |
-| Apex-to-Java transpile scaffold (`emulate transpile`) | partial | `.cls` を Java クラス骨組みに変換し、`@IsTest` を `@Test` 化。`System.assert*` は `SystemAssert.*` へ変換。メソッド本体は基本コメント埋め込み（手動移植前提） |
+| Apex-to-Java transpile scaffold (`emulate transpile`) | partial | `.cls` を Java クラス骨組みに変換し、`@IsTest` を `@Test` 化。`System.assert*` は `SystemAssert.*`、`System.debug` は `System.out.println` へ変換。`List/Map/Set` の基本宣言は Java collection 型へ変換。メソッド本体は基本コメント埋め込み（手動移植前提） |
 | Apex VM semantic parity | planned | 完全再現は対象外 |
 
 ## Maintenance Rules

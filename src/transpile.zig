@@ -311,6 +311,12 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try appendFmt(gpa, &out, "package {s};\n\n", .{package_name});
     try out.appendSlice(gpa, "import apexemu.annotations.Test;\n\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
+    try out.appendSlice(gpa, "import java.util.ArrayList;\n");
+    try out.appendSlice(gpa, "import java.util.LinkedHashMap;\n");
+    try out.appendSlice(gpa, "import java.util.LinkedHashSet;\n");
+    try out.appendSlice(gpa, "import java.util.List;\n");
+    try out.appendSlice(gpa, "import java.util.Map;\n");
+    try out.appendSlice(gpa, "import java.util.Set;\n\n");
     try appendFmt(
         gpa,
         &out,
@@ -339,7 +345,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
             const trimmed = std.mem.trim(u8, clean, " \t");
             if (trimmed.len == 0) continue;
             if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) continue;
-            if (try transpileAssertionLine(gpa, trimmed)) |statement| {
+            if (try transpileExecutableLine(gpa, trimmed)) |statement| {
                 defer gpa.free(statement);
                 try appendFmt(gpa, &out, "    {s}\n", .{statement});
             } else {
@@ -352,6 +358,13 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 
     try out.appendSlice(gpa, "}\n");
     return out.toOwnedSlice(gpa);
+}
+
+fn transpileExecutableLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    if (try transpileAssertionLine(gpa, line)) |statement| return statement;
+    if (try transpileSystemDebugLine(gpa, line)) |statement| return statement;
+    if (try transpileCollectionDeclarationLine(gpa, line)) |statement| return statement;
+    return null;
 }
 
 fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
@@ -421,6 +434,279 @@ fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
         return try buildSystemAssertCall(gpa, "fail", converted.items);
     }
 
+    return null;
+}
+
+fn transpileSystemDebugLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    }
+
+    if (!startsWithIgnoreCase(trimmed, "System.debug")) return null;
+    const open_paren = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    const close_paren = findMatchingParen(trimmed, open_paren) orelse return null;
+    if (close_paren + 1 < trimmed.len) {
+        const trailing = std.mem.trim(u8, trimmed[(close_paren + 1)..], " \t");
+        if (trailing.len != 0) return null;
+    }
+
+    var args = try splitCallArguments(gpa, trimmed[(open_paren + 1)..close_paren]);
+    defer args.deinit(gpa);
+    if (args.items.len == 0) return null;
+
+    const payload = args.items[args.items.len - 1];
+    const converted = try convertApexExpressionToJava(gpa, payload);
+    defer gpa.free(converted);
+    return try std.fmt.allocPrint(gpa, "System.out.println({s});", .{converted});
+}
+
+fn transpileCollectionDeclarationLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    }
+
+    const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=');
+    const left = std.mem.trim(u8, if (eq_pos) |pos| trimmed[0..pos] else trimmed, " \t");
+    const right = if (eq_pos) |pos| std.mem.trim(u8, trimmed[(pos + 1)..], " \t") else "";
+
+    const declaration = try parseCollectionDeclaration(gpa, left);
+    if (declaration == null) return null;
+    const decl = declaration.?;
+    defer {
+        gpa.free(decl.java_type);
+        gpa.free(decl.variable_name);
+    }
+
+    if (eq_pos == null) {
+        return try std.fmt.allocPrint(gpa, "{s} {s};", .{ decl.java_type, decl.variable_name });
+    }
+
+    if (right.len == 0) return null;
+
+    const maybe_init = try transpileCollectionInitializer(gpa, decl.kind, right);
+    if (maybe_init) |initializer| {
+        defer gpa.free(initializer);
+        return try std.fmt.allocPrint(gpa, "{s} {s} = {s};", .{ decl.java_type, decl.variable_name, initializer });
+    }
+
+    if (std.mem.indexOfScalar(u8, right, '[')) |_| return null;
+    const rhs = try convertApexExpressionToJava(gpa, right);
+    defer gpa.free(rhs);
+    return try std.fmt.allocPrint(gpa, "{s} {s} = {s};", .{ decl.java_type, decl.variable_name, rhs });
+}
+
+const CollectionKind = enum {
+    list,
+    map,
+    set,
+};
+
+const CollectionDeclaration = struct {
+    kind: CollectionKind,
+    java_type: []u8,
+    variable_name: []u8,
+};
+
+fn parseCollectionDeclaration(gpa: std.mem.Allocator, left: []const u8) !?CollectionDeclaration {
+    var rest = std.mem.trim(u8, left, " \t");
+    if (startsWithIgnoreCase(rest, "final ")) {
+        rest = std.mem.trimLeft(u8, rest["final".len..], " \t");
+    }
+    if (rest.len == 0) return null;
+
+    const lt = std.mem.indexOfScalar(u8, rest, '<') orelse return null;
+    const raw_type = std.mem.trim(u8, rest[0..lt], " \t");
+    const kind = collectionKindFromName(raw_type) orelse return null;
+
+    const gt = findMatchingAngle(rest, lt) orelse return null;
+    const generic_part = std.mem.trim(u8, rest[(lt + 1)..gt], " \t");
+    if (generic_part.len == 0) return null;
+
+    const variable_part = std.mem.trim(u8, rest[(gt + 1)..], " \t");
+    if (variable_part.len == 0) return null;
+    const variable_name = leadingIdentifier(variable_part) orelse return null;
+    if (!std.mem.eql(u8, variable_name, variable_part)) return null;
+
+    const converted_generic = try convertApexTypeList(gpa, generic_part);
+    defer gpa.free(converted_generic);
+    const java_interface = collectionInterfaceName(kind);
+    const java_type = try std.fmt.allocPrint(gpa, "{s}<{s}>", .{ java_interface, converted_generic });
+
+    return .{
+        .kind = kind,
+        .java_type = java_type,
+        .variable_name = try gpa.dupe(u8, variable_name),
+    };
+}
+
+fn transpileCollectionInitializer(gpa: std.mem.Allocator, kind: CollectionKind, right: []const u8) !?[]u8 {
+    var rest = std.mem.trim(u8, right, " \t");
+    if (!startsWithIgnoreCase(rest, "new")) return null;
+    rest = std.mem.trimLeft(u8, rest["new".len..], " \t");
+
+    const lt = std.mem.indexOfScalar(u8, rest, '<') orelse return null;
+    const raw_type = std.mem.trim(u8, rest[0..lt], " \t");
+    const parsed_kind = collectionKindFromName(raw_type) orelse return null;
+    if (parsed_kind != kind) return null;
+
+    const gt = findMatchingAngle(rest, lt) orelse return null;
+    var after = std.mem.trim(u8, rest[(gt + 1)..], " \t");
+    if (after.len == 0 or after[0] != '(') return null;
+
+    const close = findMatchingParen(after, 0) orelse return null;
+    const trailing = std.mem.trim(u8, after[(close + 1)..], " \t");
+    if (trailing.len != 0) return null;
+
+    const args_raw = std.mem.trim(u8, after[1..close], " \t");
+    const impl_name = collectionImplName(kind);
+    if (args_raw.len == 0) {
+        return try std.fmt.allocPrint(gpa, "new {s}<>()", .{impl_name});
+    }
+    if (std.mem.indexOfScalar(u8, args_raw, '[')) |_| return null;
+
+    var args = try splitCallArguments(gpa, args_raw);
+    defer args.deinit(gpa);
+    if (args.items.len == 0) {
+        return try std.fmt.allocPrint(gpa, "new {s}<>()", .{impl_name});
+    }
+
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(gpa);
+
+    try appendFmt(gpa, &rendered, "new {s}<>(", .{impl_name});
+    for (args.items, 0..) |arg, idx| {
+        const converted = try convertApexExpressionToJava(gpa, arg);
+        defer gpa.free(converted);
+        if (idx != 0) try rendered.appendSlice(gpa, ", ");
+        try rendered.appendSlice(gpa, converted);
+    }
+    try rendered.append(gpa, ')');
+    return try rendered.toOwnedSlice(gpa);
+}
+
+fn convertApexTypeList(gpa: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]u8 {
+    var items = try splitTypeArguments(gpa, raw);
+    defer items.deinit(gpa);
+
+    if (items.items.len == 0) return gpa.dupe(u8, "Object");
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    for (items.items, 0..) |part, idx| {
+        const converted = try convertApexType(gpa, part);
+        defer gpa.free(converted);
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, converted);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn convertApexType(gpa: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return gpa.dupe(u8, "Object");
+
+    if (std.mem.indexOfScalar(u8, trimmed, '<')) |lt| {
+        const gt = findMatchingAngle(trimmed, lt) orelse return gpa.dupe(u8, normalizeScalarTypeName(trimmed));
+        const outer_raw = std.mem.trim(u8, trimmed[0..lt], " \t");
+        const inner_raw = std.mem.trim(u8, trimmed[(lt + 1)..gt], " \t");
+
+        const outer = normalizeScalarTypeName(outer_raw);
+        const inner = try convertApexTypeList(gpa, inner_raw);
+        defer gpa.free(inner);
+        return std.fmt.allocPrint(gpa, "{s}<{s}>", .{ outer, inner });
+    }
+
+    return gpa.dupe(u8, normalizeScalarTypeName(trimmed));
+}
+
+fn splitTypeArguments(gpa: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error!std.ArrayList([]const u8) {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return out;
+
+    var depth: i32 = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < trimmed.len) : (i += 1) {
+        const ch = trimmed[i];
+        switch (ch) {
+            '<' => depth += 1,
+            '>' => {
+                if (depth > 0) depth -= 1;
+            },
+            ',' => {
+                if (depth != 0) continue;
+                const part = std.mem.trim(u8, trimmed[start..i], " \t");
+                if (part.len > 0) try out.append(gpa, part);
+                start = i + 1;
+            },
+            else => {},
+        }
+    }
+    const tail = std.mem.trim(u8, trimmed[start..], " \t");
+    if (tail.len > 0) try out.append(gpa, tail);
+    return out;
+}
+
+fn normalizeScalarTypeName(raw: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(raw, "Id")) return "String";
+    if (std.ascii.eqlIgnoreCase(raw, "Decimal")) return "Double";
+    if (std.ascii.eqlIgnoreCase(raw, "List")) return "List";
+    if (std.ascii.eqlIgnoreCase(raw, "Map")) return "Map";
+    if (std.ascii.eqlIgnoreCase(raw, "Set")) return "Set";
+    if (std.ascii.eqlIgnoreCase(raw, "Integer")) return "Integer";
+    if (std.ascii.eqlIgnoreCase(raw, "Long")) return "Long";
+    if (std.ascii.eqlIgnoreCase(raw, "Double")) return "Double";
+    if (std.ascii.eqlIgnoreCase(raw, "Boolean")) return "Boolean";
+    if (std.ascii.eqlIgnoreCase(raw, "String")) return "String";
+    if (std.ascii.eqlIgnoreCase(raw, "Object")) return "Object";
+    return raw;
+}
+
+fn collectionKindFromName(type_name: []const u8) ?CollectionKind {
+    if (std.ascii.eqlIgnoreCase(type_name, "List")) return .list;
+    if (std.ascii.eqlIgnoreCase(type_name, "Map")) return .map;
+    if (std.ascii.eqlIgnoreCase(type_name, "Set")) return .set;
+    return null;
+}
+
+fn collectionInterfaceName(kind: CollectionKind) []const u8 {
+    return switch (kind) {
+        .list => "List",
+        .map => "Map",
+        .set => "Set",
+    };
+}
+
+fn collectionImplName(kind: CollectionKind) []const u8 {
+    return switch (kind) {
+        .list => "ArrayList",
+        .map => "LinkedHashMap",
+        .set => "LinkedHashSet",
+    };
+}
+
+fn findMatchingAngle(text: []const u8, open_index: usize) ?usize {
+    if (open_index >= text.len or text[open_index] != '<') return null;
+    var depth: i32 = 0;
+    var i: usize = open_index;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '<') {
+            depth += 1;
+        } else if (ch == '>') {
+            depth -= 1;
+            if (depth == 0) return i;
+            if (depth < 0) return null;
+        }
+    }
     return null;
 }
 
@@ -771,4 +1057,49 @@ test "transpileAssertionLine converts System.assert overloads" {
 
     const non_assert = try transpileAssertionLine(gpa, "System.debug('noop');");
     try std.testing.expect(non_assert == null);
+}
+
+test "transpileSystemDebugLine converts to println and keeps last arg" {
+    const gpa = std.testing.allocator;
+
+    const one = try transpileSystemDebugLine(gpa, "System.debug('hello');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings("System.out.println(\"hello\");", one.?);
+
+    const two = try transpileSystemDebugLine(gpa, "System.debug(LoggingLevel.ERROR, 'fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings("System.out.println(\"fail\");", two.?);
+}
+
+test "transpileCollectionDeclarationLine converts list map set declarations" {
+    const gpa = std.testing.allocator;
+
+    const list_line = try transpileCollectionDeclarationLine(gpa, "List<Id> ids = new List<Id>();");
+    defer if (list_line) |value| gpa.free(value);
+    try std.testing.expect(list_line != null);
+    try std.testing.expectEqualStrings(
+        "List<String> ids = new ArrayList<>();",
+        list_line.?,
+    );
+
+    const map_line = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>();",
+    );
+    defer if (map_line) |value| gpa.free(value);
+    try std.testing.expect(map_line != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, Account> accountMap = new LinkedHashMap<>();",
+        map_line.?,
+    );
+
+    const set_line = try transpileCollectionDeclarationLine(gpa, "final Set<Id> accountIds = new Set<Id>();");
+    defer if (set_line) |value| gpa.free(value);
+    try std.testing.expect(set_line != null);
+    try std.testing.expectEqualStrings(
+        "Set<String> accountIds = new LinkedHashSet<>();",
+        set_line.?,
+    );
 }

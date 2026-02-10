@@ -139,6 +139,8 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 `apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
 現状はメソッド本体をコメントとして埋め込み、`@IsTest` クラス/メソッドを `@Test` 付きメソッドに変換します。
 `System.assert*` 行は `SystemAssert.*` 呼び出しへ自動変換します。
+`System.debug(...)` は `System.out.println(...)` に変換します。
+`List/Map/Set` の基本宣言（`new List/Map/Set`）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) へ変換します。
 
 ```bash
 zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
