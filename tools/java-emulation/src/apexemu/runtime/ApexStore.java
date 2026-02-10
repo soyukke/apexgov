@@ -21,6 +21,8 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 final class ApexStore {
+  private static final String IDENTIFIER_TEXT = "[a-zA-Z_][\\w]*";
+  private static final String FIELD_PATH_TEXT = IDENTIFIER_TEXT + "(?:\\." + IDENTIFIER_TEXT + ")*";
   private static final Pattern FROM_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([a-zA-Z_][\\w]*)");
   private static final Pattern LIMIT_PATTERN = Pattern.compile("(?i)\\blimit\\s+(\\d+)");
   private static final Pattern OFFSET_PATTERN = Pattern.compile("(?i)\\boffset\\s+(\\d+)");
@@ -28,24 +30,38 @@ final class ApexStore {
   private static final Pattern GROUP_BY_KEYWORD = Pattern.compile("(?i)\\bgroup\\s+by\\b");
   private static final Pattern HAVING_KEYWORD = Pattern.compile("(?i)\\bhaving\\b");
   private static final Pattern WHERE_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
+      Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern WHERE_IN_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s+(not\\s+in|in)\\s*\\((.*)\\)$");
+      Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+(not\\s+in|in)\\s*\\((.*)\\)$");
   private static final Pattern WHERE_LIKE_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)\\s+like\\s+(.+)$");
+      Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+like\\s+(.+)$");
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
   private static final Pattern ORDER_BY_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
-  private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("(?i)^[a-zA-Z_][\\w]*$");
+      Pattern.compile(
+          "(?i)^(" + FIELD_PATH_TEXT + ")(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
+  private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("(?i)^" + IDENTIFIER_TEXT + "$");
+  private static final Pattern FIELD_PATH_PATTERN = Pattern.compile("(?i)^" + FIELD_PATH_TEXT + "$");
   private static final Pattern SELECT_AGGREGATE_PATTERN =
       Pattern.compile(
-          "(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
+          "(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|"
+              + FIELD_PATH_TEXT
+              + ")?\\s*\\)(?:\\s+(?:as\\s+)?("
+              + IDENTIFIER_TEXT
+              + "))?$");
   private static final Pattern SELECT_FIELD_PATTERN =
-      Pattern.compile("(?i)^([a-zA-Z_][\\w]*)(?:\\s+(?:as\\s+)?([a-zA-Z_][\\w]*))?$");
+      Pattern.compile(
+          "(?i)^("
+              + FIELD_PATH_TEXT
+              + ")(?:\\s+(?:as\\s+)?("
+              + IDENTIFIER_TEXT
+              + "))?$");
   private static final Pattern HAVING_CLAUSE_PATTERN =
       Pattern.compile("(?i)^(.+?)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern HAVING_AGGREGATE_OPERAND_PATTERN =
-      Pattern.compile("(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|[a-zA-Z_][\\w]*)?\\s*\\)$");
+      Pattern.compile(
+          "(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|"
+              + FIELD_PATH_TEXT
+              + ")?\\s*\\)$");
   private static final Pattern RELATIVE_N_DAYS_LITERAL_PATTERN =
       Pattern.compile("(?i)^(last_n_days|next_n_days|n_days_ago):(\\d+)$");
   private static final Clock SOQL_CLOCK = Clock.systemUTC();
@@ -663,8 +679,8 @@ final class ApexStore {
       out.sort(
           (left, right) -> {
             for (OrderByKey key : spec.orderByKeys) {
-              Object leftValue = left.get(key.field);
-              Object rightValue = right.get(key.field);
+              Object leftValue = resolveFieldValue(left, key.field);
+              Object rightValue = resolveFieldValue(right, key.field);
               boolean nullsFirst = effectiveNullsFirst(key);
               int nullOrderCompared = compareNullOrder(leftValue, rightValue, nullsFirst);
               if (nullOrderCompared != 0) {
@@ -703,7 +719,7 @@ final class ApexStore {
       for (ApexSObject row : filteredRows) {
         List<Object> keyValues = new ArrayList<>(groupFields.size());
         for (String field : groupFields) {
-          keyValues.add(row == null ? null : row.get(field));
+          keyValues.add(resolveFieldValue(row, field));
         }
         GroupKey key = new GroupKey(keyValues);
         groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
@@ -806,7 +822,7 @@ final class ApexStore {
         return null;
       }
       ApexSObject first = groupRows.get(0);
-      return first == null ? null : first.get(field);
+      return resolveFieldValue(first, field);
     }
     if (operand instanceof HavingAggregateOperand aggregateOperand) {
       return evaluateAggregate(
@@ -831,7 +847,7 @@ final class ApexStore {
         return null;
       }
       ApexSObject first = groupRows.get(0);
-      return first == null ? null : first.get(item.field);
+      return resolveFieldValue(first, item.field);
     }
     return evaluateAggregate(item.aggregateFunction, item.field, item.countAll, groupRows);
   }
@@ -845,7 +861,7 @@ final class ApexStore {
       }
       long count = 0L;
       for (ApexSObject row : source) {
-        if (row != null && row.get(field) != null) {
+        if (resolveFieldValue(row, field) != null) {
           count += 1L;
         }
       }
@@ -875,7 +891,7 @@ final class ApexStore {
         if (row == null) {
           continue;
         }
-        Double numeric = toNumber(row.get(field));
+        Double numeric = toNumber(resolveFieldValue(row, field));
         if (numeric == null) {
           continue;
         }
@@ -898,7 +914,7 @@ final class ApexStore {
         if (row == null) {
           continue;
         }
-        Object value = row.get(field);
+        Object value = resolveFieldValue(row, field);
         if (value == null) {
           continue;
         }
@@ -949,7 +965,7 @@ final class ApexStore {
   }
 
   private static boolean matchesClause(ApexSObject row, WhereClause clause) {
-    Object value = row.get(clause.field);
+    Object value = resolveFieldValue(row, clause.field);
     return switch (clause.operator) {
       case "=" -> compareEquality(value, clause.literal);
       case "!=" -> !compareEquality(value, clause.literal);
@@ -1109,6 +1125,97 @@ final class ApexStore {
     } catch (PatternSyntaxException error) {
       return false;
     }
+  }
+
+  private static Object resolveFieldValue(ApexSObject row, String fieldPath) {
+    if (row == null || fieldPath == null || fieldPath.isBlank()) {
+      return null;
+    }
+
+    Object direct = row.get(fieldPath);
+    if (!fieldPath.contains(".")) {
+      return direct;
+    }
+    if (direct != null || row.hasField(fieldPath)) {
+      return direct;
+    }
+
+    ApexSObject current = row;
+    String[] segments = fieldPath.split("\\.");
+    for (int i = 0; i < segments.length; i += 1) {
+      String segment = segments[i] == null ? "" : segments[i].trim();
+      if (segment.isEmpty()) {
+        return null;
+      }
+
+      boolean last = i == segments.length - 1;
+      if (last) {
+        return current == null ? null : current.get(segment);
+      }
+      current = resolveRelationshipHop(current, segment);
+      if (current == null) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private static ApexSObject resolveRelationshipHop(ApexSObject row, String relationshipSegment) {
+    if (row == null || relationshipSegment == null || relationshipSegment.isBlank()) {
+      return null;
+    }
+
+    Object embedded = row.get(relationshipSegment);
+    if (embedded instanceof ApexSObject embeddedRow) {
+      return embeddedRow;
+    }
+    if (embedded instanceof String embeddedId && !embeddedId.isBlank()) {
+      ApexSObject related = findActiveRowById(embeddedId);
+      if (related != null) {
+        return related;
+      }
+    }
+
+    String referenceField = inferReferenceField(relationshipSegment);
+    if (referenceField == null) {
+      return null;
+    }
+    Object referenceValue = row.get(referenceField);
+    if (!(referenceValue instanceof String relatedId) || relatedId.isBlank()) {
+      return null;
+    }
+    return findActiveRowById(relatedId);
+  }
+
+  private static String inferReferenceField(String relationshipSegment) {
+    if (relationshipSegment == null || relationshipSegment.isBlank()) {
+      return null;
+    }
+    String normalized = relationshipSegment.trim();
+    if (normalized.length() > 3
+        && normalized.regionMatches(true, normalized.length() - 3, "__r", 0, 3)) {
+      return normalized.substring(0, normalized.length() - 3) + "__c";
+    }
+    return normalized + "Id";
+  }
+
+  private static ApexSObject findActiveRowById(String id) {
+    if (id == null || id.isBlank()) {
+      return null;
+    }
+    State state = STATE.get();
+    for (Map<String, ApexSObject> bucket : state.active.values()) {
+      for (Map.Entry<String, ApexSObject> entry : bucket.entrySet()) {
+        if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(id)) {
+          return entry.getValue();
+        }
+        ApexSObject row = entry.getValue();
+        if (row != null && row.id() != null && row.id().equalsIgnoreCase(id)) {
+          return row;
+        }
+      }
+    }
+    return null;
   }
 
   private static QuerySpec parseQuerySpec(String rawSoql) {
@@ -1316,7 +1423,7 @@ final class ApexStore {
     List<String> out = new ArrayList<>(terms.size());
     for (String term : terms) {
       String field = term == null ? "" : term.trim();
-      if (field.isEmpty() || !IDENTIFIER_PATTERN.matcher(field).matches()) {
+      if (field.isEmpty() || !FIELD_PATH_PATTERN.matcher(field).matches()) {
         throw new IllegalArgumentException("unsupported GROUP BY field: " + term + " in " + rawSoql);
       }
       if (!containsIgnoreCase(out, field)) {
@@ -1733,7 +1840,7 @@ final class ApexStore {
       return new HavingAggregateOperand(function, field, countAll);
     }
 
-    if (IDENTIFIER_PATTERN.matcher(normalized).matches()) {
+    if (FIELD_PATH_PATTERN.matcher(normalized).matches()) {
       int groupFieldIndex = indexOfIgnoreCase(groupByFields, normalized);
       if (groupFieldIndex < 0) {
         throw new IllegalArgumentException(

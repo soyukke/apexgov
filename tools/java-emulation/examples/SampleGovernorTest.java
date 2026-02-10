@@ -1053,6 +1053,72 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void soqlSupportsRelationshipFieldPaths() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    ApexSObject ownerAlice = ApexSObject.of("User").withId("005ALICE").set("Name", "Alice");
+    ApexSObject ownerBob = ApexSObject.of("User").withId("005BOB").set("Name", "Bob");
+    Database.insert(List.of(ownerAlice, ownerBob));
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Acme").set("OwnerId", "005ALICE"),
+            ApexSObject.of("Account").set("Name", "Beta").set("OwnerId", "005BOB"),
+            ApexSObject.of("Account").set("Name", "Cloud").set("OwnerId", "005ALICE")));
+
+    List<ApexSObject> aliceOwned =
+        Database.query("SELECT Name FROM Account WHERE Owner.Name = 'Alice' ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, aliceOwned.size(), "relationship path WHERE should resolve Owner.Name");
+    SystemAssert.assertEquals("Acme", aliceOwned.get(0).get("Name"), "Owner.Name filter row #1 mismatch");
+    SystemAssert.assertEquals("Cloud", aliceOwned.get(1).get("Name"), "Owner.Name filter row #2 mismatch");
+
+    List<ApexSObject> orderedByOwner =
+        Database.query("SELECT Name FROM Account ORDER BY Owner.Name ASC, Name ASC");
+    SystemAssert.assertEquals(3, orderedByOwner.size(), "ORDER BY relationship path should be supported");
+    SystemAssert.assertEquals("Acme", orderedByOwner.get(0).get("Name"), "ORDER BY Owner.Name row #1 mismatch");
+    SystemAssert.assertEquals("Cloud", orderedByOwner.get(1).get("Name"), "ORDER BY Owner.Name row #2 mismatch");
+    SystemAssert.assertEquals("Beta", orderedByOwner.get(2).get("Name"), "ORDER BY Owner.Name row #3 mismatch");
+
+    List<ApexSObject> groupedByOwner =
+        Database.query(
+            "SELECT Owner.Name ownerName, COUNT(Id) cnt "
+                + "FROM Account GROUP BY Owner.Name HAVING COUNT(Id) >= 1 ORDER BY ownerName ASC");
+    SystemAssert.assertEquals(2, groupedByOwner.size(), "GROUP BY Owner.Name should aggregate by resolved relation");
+    SystemAssert.assertEquals("Alice", groupedByOwner.get(0).get("ownerName"), "Owner group #1 label mismatch");
+    SystemAssert.assertEquals(2L, groupedByOwner.get(0).get("cnt"), "Owner group #1 count mismatch");
+    SystemAssert.assertEquals("Bob", groupedByOwner.get(1).get("ownerName"), "Owner group #2 label mismatch");
+    SystemAssert.assertEquals(1L, groupedByOwner.get(1).get("cnt"), "Owner group #2 count mismatch");
+
+    ApexSObject parentA = ApexSObject.of("Parent__c").withId("a00PARENTA").set("Name", "Parent-A");
+    ApexSObject parentB = ApexSObject.of("Parent__c").withId("a00PARENTB").set("Name", "Parent-B");
+    Database.insert(List.of(parentA, parentB));
+    Database.insert(
+        List.of(
+            ApexSObject.of("Child__c").set("Name", "Child-1").set("Parent__c", "a00PARENTA"),
+            ApexSObject.of("Child__c").set("Name", "Child-2").set("Parent__c", "a00PARENTA"),
+            ApexSObject.of("Child__c").set("Name", "Child-3").set("Parent__c", "a00PARENTB")));
+
+    List<ApexSObject> parentRows =
+        Database.query("SELECT Name FROM Child__c WHERE Parent__r.Name = 'Parent-A' ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, parentRows.size(), "custom relationship path WHERE should resolve Parent__r.Name");
+    SystemAssert.assertEquals("Child-1", parentRows.get(0).get("Name"), "Parent__r filter row #1 mismatch");
+    SystemAssert.assertEquals("Child-2", parentRows.get(1).get("Name"), "Parent__r filter row #2 mismatch");
+
+    List<ApexSObject> groupedByCustomRelation =
+        Database.query(
+            "SELECT Parent__r.Name parentName, COUNT(Id) cnt "
+                + "FROM Child__c GROUP BY Parent__r.Name HAVING Parent__r.Name != 'X' ORDER BY parentName ASC");
+    SystemAssert.assertEquals(2, groupedByCustomRelation.size(), "GROUP BY Parent__r.Name should be supported");
+    SystemAssert.assertEquals(
+        "Parent-A", groupedByCustomRelation.get(0).get("parentName"), "Parent group #1 label mismatch");
+    SystemAssert.assertEquals(2L, groupedByCustomRelation.get(0).get("cnt"), "Parent group #1 count mismatch");
+    SystemAssert.assertEquals(
+        "Parent-B", groupedByCustomRelation.get(1).get("parentName"), "Parent group #2 label mismatch");
+    SystemAssert.assertEquals(1L, groupedByCustomRelation.get(1).get("cnt"), "Parent group #2 count mismatch");
+  }
+
+  @Test
   public void customSObjectSchemaValidationAndBracketSelectWork() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();

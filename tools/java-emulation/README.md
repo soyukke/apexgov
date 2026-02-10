@@ -137,6 +137,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - aggregate select: `COUNT()`, `COUNT(field)`, `COUNT_DISTINCT(field)`, `SUM(field)`, `AVG(field)`, `MIN(field)`, `MAX(field)`（`AS alias` 対応）
 - optional `GROUP BY field[, ...]` + optional `HAVING`（`AND`/`OR`/`NOT` と `= != > >= < <=`）
   - `HAVING` は aggregate operand（例: `COUNT(Id)`）か `GROUP BY` に含まれる field を評価対象にできます
+- field path traversal: `Owner.Name`, `Parent__r.Name` のような relationship path を `SELECT`/`WHERE`/`GROUP BY`/`HAVING`/`ORDER BY` で利用可能
 - optional `ORDER BY field [ASC|DESC] [NULLS FIRST|LAST]` (comma-separated multi-key supported)
   - NULL sort default は `Database.setSoqlNullOrderDefault(...)` または `SOQL_NULL_ORDER_DEFAULT` で切替可能
     - `FIRST` (default), `LAST`, `DIRECTIONAL` (`ASC=NULLS FIRST`, `DESC=NULLS LAST`)
