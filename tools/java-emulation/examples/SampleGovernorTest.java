@@ -4,6 +4,7 @@ import apexemu.annotations.Test;
 import apexemu.runtime.ApexDb;
 import apexemu.runtime.Async;
 import apexemu.runtime.ApexSObject;
+import apexemu.runtime.ApexStrings;
 import apexemu.runtime.BatchContext;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
@@ -1355,6 +1356,51 @@ public final class SampleGovernorTest {
         "Beta", boundLocator.getRecords().get(0).get("Name"), "bound locator order mismatch");
     SystemAssert.assertEquals(
         "Gamma", boundLocator.getRecords().get(1).get("Name"), "bound locator order mismatch");
+  }
+
+  @Test
+  public void soqlIgnoresTrailingRowLockingModifiers() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "Locking"),
+            ApexSObject.of("Account").set("Name", "Another")));
+
+    List<ApexSObject> forUpdate =
+        Database.query("SELECT Id, Name FROM Account WHERE Name = 'Locking' FOR UPDATE");
+    SystemAssert.assertEquals(1, forUpdate.size(), "FOR UPDATE should be tolerated in emulation");
+
+    int allRowsCount =
+        Database.countQuery("SELECT count() FROM Account WHERE Name = 'Locking' ALL ROWS");
+    SystemAssert.assertEquals(1, allRowsCount, "ALL ROWS should be tolerated in countQuery");
+
+    List<ApexSObject> forViewRows =
+        Database.queryWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name = :name FOR VIEW", Map.of("name", "Locking"));
+    SystemAssert.assertEquals(1, forViewRows.size(), "FOR VIEW should be tolerated with binds");
+
+    Database.QueryLocator locator =
+        Database.getQueryLocatorWithBinds(
+            "SELECT Id, Name FROM Account WHERE Name = :name FOR REFERENCE",
+            Map.of("name", "Locking"));
+    SystemAssert.assertEquals(
+        1, locator.size(), "FOR REFERENCE should be tolerated in query locator with binds");
+  }
+
+  @Test
+  public void apexStringsHelpersSupportCommonApexPatterns() {
+    SystemAssert.assertTrue(ApexStrings.isBlank(" "), "isBlank should treat spaces as blank");
+    SystemAssert.assertTrue(ApexStrings.isNotBlank("Acme"), "isNotBlank should detect text");
+    SystemAssert.assertTrue(ApexStrings.isEmpty(""), "isEmpty should detect empty string");
+    SystemAssert.assertTrue(ApexStrings.isNotEmpty("x"), "isNotEmpty should detect non-empty");
+
+    String joined = ApexStrings.join(List.of("A", "B", "C"), ",");
+    SystemAssert.assertEquals("A,B,C", joined, "join should follow Apex list+separator order");
+
+    String escaped = ApexStrings.escapeSingleQuotes("O'Reilly");
+    SystemAssert.assertEquals("O\\'Reilly", escaped, "escapeSingleQuotes should backslash apostrophes");
   }
 
   @Test

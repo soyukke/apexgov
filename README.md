@@ -124,6 +124,7 @@ Batch は `QueryLocatorBatchable` で `QueryLocator` を scope 分割して `exe
 `apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
 `apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
 `Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）と `Database.getQueryLocator/getQueryLocatorWithBinds` にも対応しています。
+SOQL末尾の `FOR UPDATE` / `FOR VIEW` / `FOR REFERENCE` / `ALL ROWS` はローカルemulationでは無視して評価します。
 SOQL サブセットは `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET` にも対応しています。
 `WHERE` では date literal (`TODAY` / `LAST_N_DAYS:n` など) と unquoted ISO date/date-time literal も使えます。
 relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/HAVING` で使えます。
@@ -140,6 +141,7 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 現状は `@IsTest` の `@Test` 化に加え、メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティの骨組みも生成します。
 `System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
 `switch on / when`（literal列挙 + `when else`）は Java `switch` / `case ... ->` / `default ->` に変換します（型パターン `when Account a` などは未対応）。
+`String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` に変換します。
 `List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
 `new Map<Id, Account>(records)` や `new Map<Id, Account>(existingMap)` は `ApexCollections.toIdMap(...)` に変換します。
 `new Task(Subject='x', WhatId=...)` のような named-arg 風 SObject コンストラクタは `ApexSObject.of(...).set(...)` に変換します。

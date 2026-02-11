@@ -36,6 +36,14 @@ final class ApexStore {
   private static final Pattern WHERE_LIKE_PATTERN =
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+like\\s+(.+)$");
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
+  private static final Pattern TRAILING_FOR_UPDATE_PATTERN =
+      Pattern.compile("(?i)\\s+for\\s+update\\s*$");
+  private static final Pattern TRAILING_FOR_VIEW_PATTERN =
+      Pattern.compile("(?i)\\s+for\\s+view\\s*$");
+  private static final Pattern TRAILING_FOR_REFERENCE_PATTERN =
+      Pattern.compile("(?i)\\s+for\\s+reference\\s*$");
+  private static final Pattern TRAILING_ALL_ROWS_PATTERN =
+      Pattern.compile("(?i)\\s+all\\s+rows\\s*$");
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile(
           "(?i)^(" + FIELD_PATH_TEXT + ")(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
@@ -1703,7 +1711,22 @@ final class ApexStore {
     if (out.endsWith(";")) {
       out = out.substring(0, out.length() - 1).trim();
     }
+    out = stripTrailingSoqlModifier(out, TRAILING_FOR_UPDATE_PATTERN);
+    out = stripTrailingSoqlModifier(out, TRAILING_FOR_VIEW_PATTERN);
+    out = stripTrailingSoqlModifier(out, TRAILING_FOR_REFERENCE_PATTERN);
+    out = stripTrailingSoqlModifier(out, TRAILING_ALL_ROWS_PATTERN);
     return out;
+  }
+
+  private static String stripTrailingSoqlModifier(String soql, Pattern pattern) {
+    if (soql == null || soql.isBlank() || pattern == null) {
+      return soql;
+    }
+    Matcher matcher = pattern.matcher(soql);
+    if (!matcher.find()) {
+      return soql;
+    }
+    return soql.substring(0, matcher.start()).trim();
   }
 
   private static int nextClauseStart(int defaultEnd, int bodyStart, int... clauseStarts) {

@@ -607,6 +607,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try out.appendSlice(gpa, "import apexemu.annotations.Test;\n\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexSObject;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexCollections;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexStrings;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.Database;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.JSON;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
@@ -1726,8 +1727,12 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) a
     gpa.free(soql_converted);
     errdefer gpa.free(soql_api_converted);
 
-    const indexed_converted = try convertBracketIndexAccess(gpa, soql_api_converted);
+    const string_api_converted = try rewriteApexStringUtilityCalls(gpa, soql_api_converted);
     gpa.free(soql_api_converted);
+    errdefer gpa.free(string_api_converted);
+
+    const indexed_converted = try convertBracketIndexAccess(gpa, string_api_converted);
+    gpa.free(string_api_converted);
     errdefer gpa.free(indexed_converted);
 
     const ctor_converted = try convertInlineCollectionConstructors(gpa, indexed_converted);
@@ -2302,6 +2307,79 @@ fn rewriteDatabaseQueryStringConsumers(gpa: std.mem.Allocator, text: []const u8)
         replaced = true;
         i = close_paren;
         last_emit = close_paren + 1;
+        in_double = false;
+        escaped = false;
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteApexStringUtilityCalls(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    const method_names = [_][]const u8{
+        "isBlank",
+        "isNotBlank",
+        "isEmpty",
+        "isNotEmpty",
+        "join",
+        "escapeSingleQuotes",
+    };
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        if (!startsWithIgnoreCase(text[i..], "String.")) continue;
+        if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+
+        const method_start = i + "String.".len;
+        if (method_start >= text.len) continue;
+
+        var matched_method: ?[]const u8 = null;
+        for (method_names) |method_name| {
+            if (!startsWithIgnoreCase(text[method_start..], method_name)) continue;
+            const method_end = method_start + method_name.len;
+            if (method_end < text.len and isIdentifierChar(text[method_end])) continue;
+
+            var call_open = method_end;
+            while (call_open < text.len and std.ascii.isWhitespace(text[call_open])) : (call_open += 1) {}
+            if (call_open >= text.len or text[call_open] != '(') continue;
+
+            matched_method = method_name;
+            break;
+        }
+        if (matched_method == null) continue;
+
+        const method_end = method_start + matched_method.?.len;
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "ApexStrings.{s}", .{matched_method.?});
+        replaced = true;
+        i = method_end - 1;
+        last_emit = method_end;
         in_double = false;
         escaped = false;
     }
@@ -3523,6 +3601,28 @@ test "convertApexExpressionToJava rewrites database query-string consumers" {
         "Database.getQueryLocatorWithBinds(\"SELECT Id FROM Account WHERE Name IN :names\", binds)",
         locator_with_binds,
     );
+}
+
+test "convertApexExpressionToJava rewrites apex string utility calls" {
+    const gpa = std.testing.allocator;
+
+    const is_blank = try convertApexExpressionToJava(gpa, "String.isBlank(name)");
+    defer gpa.free(is_blank);
+    try std.testing.expectEqualStrings("ApexStrings.isBlank(name)", is_blank);
+
+    const join_call = try convertApexExpressionToJava(
+        gpa,
+        "String.join(new List<String>{'A', 'B'}, ',')",
+    );
+    defer gpa.free(join_call);
+    try std.testing.expectEqualStrings(
+        "ApexStrings.join(new ArrayList<String>(java.util.List.of(\"A\", \"B\")), \",\")",
+        join_call,
+    );
+
+    const escape_call = try convertApexExpressionToJava(gpa, "String.escapeSingleQuotes(lastName)");
+    defer gpa.free(escape_call);
+    try std.testing.expectEqualStrings("ApexStrings.escapeSingleQuotes(lastName)", escape_call);
 }
 
 test "parseConstructorSignature captures constructor params" {
