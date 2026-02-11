@@ -67,7 +67,7 @@
 | callee loop multiplier propagation | supported | 内部ループを乗算反映 |
 | overload resolution by arity | supported | 同名メソッド対応 |
 | overload resolution by argument type | partial | literal / `new` / ローカル型 / indexed element |
-| dynamic dispatch / interface polymorphism | planned | 未対応 |
+| dynamic dispatch / interface polymorphism | partial | typed receiver が `new ConcreteType()`（宣言時/再代入時）で具体型に束縛されるケースを解決 |
 
 ### Parser Model Limits
 

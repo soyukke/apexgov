@@ -1123,7 +1123,19 @@ fn applyLocalTypeUpdates(
         try bindType(arena_allocator, type_env, binding);
         return;
     }
+    if (parseForInitAssignedNewBinding(line)) |binding| {
+        try bindType(arena_allocator, type_env, binding);
+        return;
+    }
     if (parseForInitBinding(line)) |binding| {
+        try bindType(arena_allocator, type_env, binding);
+        return;
+    }
+    if (parseLocalDeclaredNewBinding(line)) |binding| {
+        try bindType(arena_allocator, type_env, binding);
+        return;
+    }
+    if (parseAssignmentNewBinding(line)) |binding| {
         try bindType(arena_allocator, type_env, binding);
         return;
     }
@@ -1156,6 +1168,99 @@ fn parseForInitBinding(line: []const u8) ?TypeBinding {
     const eq_idx = std.mem.indexOfScalar(u8, init, '=') orelse init.len;
     const left = std.mem.trim(u8, init[0..eq_idx], " \t");
     return parseTypedBinding(left);
+}
+
+fn parseForInitAssignedNewBinding(line: []const u8) ?TypeBinding {
+    if (!std.mem.startsWith(u8, line, "for(") and !std.mem.startsWith(u8, line, "for (")) return null;
+    const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return null;
+    const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return null;
+    if (close_idx <= open_idx) return null;
+    const inside = std.mem.trim(u8, line[(open_idx + 1)..close_idx], " \t");
+    if (std.mem.indexOfScalar(u8, inside, ':') != null) return null;
+    const semi_idx = std.mem.indexOfScalar(u8, inside, ';') orelse return null;
+    const init = std.mem.trim(u8, inside[0..semi_idx], " \t");
+    return parseDeclaredNewBinding(init);
+}
+
+fn parseLocalDeclaredNewBinding(line: []const u8) ?TypeBinding {
+    if (std.mem.startsWith(u8, line, "if(") or
+        std.mem.startsWith(u8, line, "if ") or
+        std.mem.startsWith(u8, line, "for(") or
+        std.mem.startsWith(u8, line, "for ") or
+        std.mem.startsWith(u8, line, "while(") or
+        std.mem.startsWith(u8, line, "while ") or
+        std.mem.startsWith(u8, line, "switch(") or
+        std.mem.startsWith(u8, line, "switch ") or
+        std.mem.startsWith(u8, line, "catch(") or
+        std.mem.startsWith(u8, line, "catch ") or
+        std.mem.startsWith(u8, line, "return") or
+        std.mem.startsWith(u8, line, "throw"))
+    {
+        return null;
+    }
+    return parseDeclaredNewBinding(line);
+}
+
+fn parseDeclaredNewBinding(line: []const u8) ?TypeBinding {
+    if (std.mem.indexOf(u8, line, "==") != null) return null;
+    const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const left = std.mem.trim(u8, line[0..eq_idx], " \t");
+    var right = std.mem.trim(u8, line[(eq_idx + 1)..], " \t");
+    right = trimTrailingDelimiter(right);
+    if (!std.mem.startsWith(u8, right, "new ")) return null;
+
+    const declared = parseTypedBinding(left) orelse return null;
+    const type_raw = extractTypeFromNewExpression(right[4..]) orelse return null;
+    return .{
+        .name = declared.name,
+        .type_raw = type_raw,
+    };
+}
+
+fn parseAssignmentNewBinding(line: []const u8) ?TypeBinding {
+    if (std.mem.indexOf(u8, line, "==") != null) return null;
+    if (std.mem.startsWith(u8, line, "if(") or
+        std.mem.startsWith(u8, line, "if ") or
+        std.mem.startsWith(u8, line, "for(") or
+        std.mem.startsWith(u8, line, "for ") or
+        std.mem.startsWith(u8, line, "while(") or
+        std.mem.startsWith(u8, line, "while ") or
+        std.mem.startsWith(u8, line, "switch(") or
+        std.mem.startsWith(u8, line, "switch ") or
+        std.mem.startsWith(u8, line, "catch(") or
+        std.mem.startsWith(u8, line, "catch ") or
+        std.mem.startsWith(u8, line, "return") or
+        std.mem.startsWith(u8, line, "throw") or
+        std.mem.startsWith(u8, line, "insert ") or
+        std.mem.startsWith(u8, line, "update ") or
+        std.mem.startsWith(u8, line, "delete ") or
+        std.mem.startsWith(u8, line, "upsert "))
+    {
+        return null;
+    }
+
+    const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const left = std.mem.trim(u8, line[0..eq_idx], " \t");
+    var right = std.mem.trim(u8, line[(eq_idx + 1)..], " \t");
+    right = trimTrailingDelimiter(right);
+    if (!std.mem.startsWith(u8, right, "new ")) return null;
+
+    const target = parseSimpleAssignmentTarget(left) orelse return null;
+    const type_raw = extractTypeFromNewExpression(right[4..]) orelse return null;
+    return .{
+        .name = target,
+        .type_raw = type_raw,
+    };
+}
+
+fn parseSimpleAssignmentTarget(left_raw: []const u8) ?[]const u8 {
+    const left = std.mem.trim(u8, left_raw, " \t");
+    if (left.len == 0) return null;
+    if (!isIdentStart(left[0])) return null;
+    for (left) |c| {
+        if (!isIdentChar(c)) return null;
+    }
+    return left;
 }
 
 fn parseLocalTypedBinding(line: []const u8) ?TypeBinding {
@@ -1432,6 +1537,7 @@ fn lineCallsMethod(
     if (containsQualifiedMethodCall(line, callee_owner, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
     if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
     if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name, callee_param_count, callee_param_signature, type_env)) return true;
+    if (containsTypedReceiverMethodCall(line, callee_owner, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
     return false;
 }
 
@@ -1512,6 +1618,96 @@ fn containsQualifiedMethodCall(
     }
 
     return false;
+}
+
+fn containsTypedReceiverMethodCall(
+    line: []const u8,
+    callee_owner: []const u8,
+    method_name: []const u8,
+    expected_param_count: u16,
+    expected_param_signature: []const u8,
+    type_env: *std.StringHashMap([]const u8),
+) bool {
+    if (callee_owner.len == 0 or method_name.len == 0) return false;
+
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, line, start, method_name)) |method_idx| {
+        const method_before_ok = method_idx == 0 or !isIdentChar(line[method_idx - 1]);
+        if (!method_before_ok) {
+            start = method_idx + method_name.len;
+            continue;
+        }
+
+        var dot_idx = method_idx;
+        while (dot_idx > 0 and (line[dot_idx - 1] == ' ' or line[dot_idx - 1] == '\t')) : (dot_idx -= 1) {}
+        if (dot_idx == 0 or line[dot_idx - 1] != '.') {
+            start = method_idx + method_name.len;
+            continue;
+        }
+
+        var receiver_end = dot_idx - 1;
+        while (receiver_end > 0 and (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1) {}
+        var receiver_start = receiver_end;
+        while (receiver_start > 0 and isIdentChar(line[receiver_start - 1])) : (receiver_start -= 1) {}
+        if (receiver_start == receiver_end) {
+            start = method_idx + method_name.len;
+            continue;
+        }
+        const receiver = line[receiver_start..receiver_end];
+
+        const bound_type = type_env.get(receiver) orelse {
+            start = method_idx + method_name.len;
+            continue;
+        };
+        if (!boundTypeMatchesOwner(bound_type, callee_owner)) {
+            start = method_idx + method_name.len;
+            continue;
+        }
+
+        var open_idx = method_idx + method_name.len;
+        while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
+        if (open_idx >= line.len or line[open_idx] != '(') {
+            start = method_idx + method_name.len;
+            continue;
+        }
+
+        const arg_count = countCallArguments(line, open_idx) orelse {
+            start = method_idx + method_name.len;
+            continue;
+        };
+        if (arg_count == expected_param_count and argumentsMatchParamSignature(line, open_idx, expected_param_signature, type_env)) {
+            return true;
+        }
+
+        start = method_idx + method_name.len;
+    }
+
+    return false;
+}
+
+fn boundTypeMatchesOwner(bound_type_raw: []const u8, owner: []const u8) bool {
+    const primary = extractPrimaryTypeName(bound_type_raw) orelse return false;
+    return std.mem.eql(u8, primary, owner);
+}
+
+fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, type_raw, " \t");
+    if (trimmed.len == 0) return null;
+
+    var end: usize = 0;
+    while (end < trimmed.len) : (end += 1) {
+        const c = trimmed[end];
+        if (c == '<' or c == '[') break;
+        if (!(isIdentChar(c) or c == '.')) break;
+    }
+    if (end == 0) return null;
+
+    const qualified = trimmed[0..end];
+    if (std.mem.lastIndexOfScalar(u8, qualified, '.')) |dot_idx| {
+        if (dot_idx + 1 >= qualified.len) return null;
+        return qualified[(dot_idx + 1)..];
+    }
+    return qualified;
 }
 
 fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
@@ -3269,6 +3465,67 @@ test "callee looped helper call multiplies transitive DML" {
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(dml.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
+}
+
+test "typed receiver call resolves when variable is bound to new concrete helper" {
+    const source =
+        \\public interface Updater {
+        \\    void apply(Account acc);
+        \\}
+        \\
+        \\public with sharing class DmlUpdater implements Updater {
+        \\    public void apply(Account acc) {
+        \\        update acc;
+        \\    }
+        \\}
+        \\
+        \\public with sharing class TypedReceiverDispatchService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        Updater updater = new DmlUpdater();
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            updater.apply(records[i]);
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "typed receiver reassignment to concrete helper is reflected in call resolution" {
+    const source =
+        \\public interface Updater {
+        \\    void apply(Account acc);
+        \\}
+        \\
+        \\public with sharing class DmlUpdater implements Updater {
+        \\    public void apply(Account acc) {
+        \\        update acc;
+        \\    }
+        \\}
+        \\
+        \\public with sharing class TypedReceiverReassignService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        Updater updater = null;
+        \\        updater = new DmlUpdater();
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            updater.apply(records[i]);
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
 test "overloaded methods use arity to avoid false positive" {
