@@ -149,7 +149,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 
 - `@IsTest` を `@Test` 化
 - メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティ骨組み生成
-- `System.assert*` を `SystemAssert.*`、`System.debug(...)` を `System.out.println(...)` に変換
+- `System.assert*` を `SystemAssert.*`、`Assert.*`/`System.Assert.*` を `ApexAssert.*`、`System.debug(...)` を `System.out.println(...)` に変換
 - `switch on / when` を Java `switch` / `case ... ->` / `default ->` に変換
 - `when Account acc` は `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式で変換
 - `record instanceof Account` は `"Account".equals(ApexSwitch.typeName(record))` に変換

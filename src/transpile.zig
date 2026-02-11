@@ -620,6 +620,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try out.appendSlice(gpa, "import apexemu.runtime.ApexCollections;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexSwitch;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexStrings;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexAssert;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.Database;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.JSON;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
@@ -1099,9 +1100,21 @@ fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
     }
 
     const head = std.mem.trim(u8, trimmed[0..open_paren], " \t");
-    if (!startsWithIgnoreCase(head, "System.")) return null;
+    var method_name: []const u8 = undefined;
+    var assert_target: enum { system, apex } = undefined;
+    if (startsWithIgnoreCase(head, "System.Assert.")) {
+        assert_target = .apex;
+        method_name = std.mem.trim(u8, head["System.Assert.".len..], " \t");
+    } else if (startsWithIgnoreCase(head, "Assert.")) {
+        assert_target = .apex;
+        method_name = std.mem.trim(u8, head["Assert.".len..], " \t");
+    } else if (startsWithIgnoreCase(head, "System.")) {
+        assert_target = .system;
+        method_name = std.mem.trim(u8, head["System.".len..], " \t");
+    } else {
+        return null;
+    }
 
-    const method_name = std.mem.trim(u8, head["System.".len..], " \t");
     if (method_name.len == 0) return null;
     if (std.mem.indexOfScalar(u8, method_name, '.')) |_| return null;
 
@@ -1118,37 +1131,71 @@ fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
         try converted.append(gpa, try convertApexExpressionToJava(gpa, arg));
     }
 
-    if (std.ascii.eqlIgnoreCase(method_name, "assert")) {
-        if (converted.items.len < 1 or converted.items.len > 2) return null;
-        return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertEquals")) {
-        if (converted.items.len < 2 or converted.items.len > 3) return null;
-        return try buildSystemAssertCall(gpa, "assertEquals", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertNotEquals")) {
-        if (converted.items.len < 2 or converted.items.len > 3) return null;
-        return try buildSystemAssertCall(gpa, "assertNotEquals", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertFalse")) {
-        if (converted.items.len < 1 or converted.items.len > 2) return null;
-        return try buildSystemAssertCall(gpa, "assertFalse", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertTrue")) {
-        if (converted.items.len < 1 or converted.items.len > 2) return null;
-        return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertNull")) {
-        if (converted.items.len < 1 or converted.items.len > 2) return null;
-        return try buildSystemAssertCall(gpa, "assertNull", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "assertNotNull")) {
-        if (converted.items.len < 1 or converted.items.len > 2) return null;
-        return try buildSystemAssertCall(gpa, "assertNotNull", converted.items);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
-        if (converted.items.len < 1 or converted.items.len > 1) return null;
-        return try buildSystemAssertCall(gpa, "fail", converted.items);
+    switch (assert_target) {
+        .system => {
+            if (std.ascii.eqlIgnoreCase(method_name, "assert")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertEquals")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                return try buildSystemAssertCall(gpa, "assertEquals", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertNotEquals")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                return try buildSystemAssertCall(gpa, "assertNotEquals", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertFalse")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildSystemAssertCall(gpa, "assertFalse", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertTrue")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildSystemAssertCall(gpa, "assertTrue", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertNull")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildSystemAssertCall(gpa, "assertNull", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "assertNotNull")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildSystemAssertCall(gpa, "assertNotNull", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
+                if (converted.items.len < 1 or converted.items.len > 1) return null;
+                return try buildSystemAssertCall(gpa, "fail", converted.items);
+            }
+        },
+        .apex => {
+            if (std.ascii.eqlIgnoreCase(method_name, "isTrue") or std.ascii.eqlIgnoreCase(method_name, "assertTrue")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildApexAssertCall(gpa, "isTrue", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isFalse") or std.ascii.eqlIgnoreCase(method_name, "assertFalse")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildApexAssertCall(gpa, "isFalse", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "areEqual") or std.ascii.eqlIgnoreCase(method_name, "assertEquals")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                return try buildApexAssertCall(gpa, "areEqual", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "areNotEqual") or std.ascii.eqlIgnoreCase(method_name, "assertNotEquals")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                return try buildApexAssertCall(gpa, "areNotEqual", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isNull") or std.ascii.eqlIgnoreCase(method_name, "assertNull")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildApexAssertCall(gpa, "isNull", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isNotNull") or std.ascii.eqlIgnoreCase(method_name, "assertNotNull")) {
+                if (converted.items.len < 1 or converted.items.len > 2) return null;
+                return try buildApexAssertCall(gpa, "isNotNull", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
+                if (converted.items.len > 1) return null;
+                return try buildApexAssertCall(gpa, "fail", converted.items);
+            }
+        },
     }
 
     return null;
@@ -1514,6 +1561,8 @@ fn normalizeScalarTypeName(raw: []const u8) []const u8 {
     if (std.ascii.eqlIgnoreCase(raw, "Database")) return "Database";
     if (std.ascii.eqlIgnoreCase(raw, "Schema")) return "Schema";
     if (std.ascii.eqlIgnoreCase(raw, "SystemAssert")) return "SystemAssert";
+    if (std.ascii.eqlIgnoreCase(raw, "Assert")) return "ApexAssert";
+    if (std.ascii.eqlIgnoreCase(raw, "ApexAssert")) return "ApexAssert";
 
     if (raw.len == 1 and std.ascii.isUpper(raw[0])) return "Object";
     if (std.ascii.isUpper(raw[0])) return "ApexSObject";
@@ -1757,10 +1806,19 @@ fn splitTopLevelWhitespaceExpressions(gpa: std.mem.Allocator, raw: []const u8) !
 }
 
 fn buildSystemAssertCall(gpa: std.mem.Allocator, method_name: []const u8, args: []const []const u8) ![]u8 {
+    return buildAssertCall(gpa, "SystemAssert", method_name, args);
+}
+
+fn buildApexAssertCall(gpa: std.mem.Allocator, method_name: []const u8, args: []const []const u8) ![]u8 {
+    return buildAssertCall(gpa, "ApexAssert", method_name, args);
+}
+
+fn buildAssertCall(gpa: std.mem.Allocator, class_name: []const u8, method_name: []const u8, args: []const []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
-    try out.appendSlice(gpa, "SystemAssert.");
+    try out.appendSlice(gpa, class_name);
+    try out.appendSlice(gpa, ".");
     try out.appendSlice(gpa, method_name);
     try out.appendSlice(gpa, "(");
     for (args, 0..) |arg, idx| {
@@ -3781,6 +3839,7 @@ test "renderJavaClass emits test annotation and method comment body" {
     try std.testing.expect(std.mem.indexOf(u8, output, "package generated;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "@Test") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "public static void firstMethod()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "import apexemu.runtime.ApexAssert;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "SystemAssert.assertEquals(1, 1);") != null);
 }
 
@@ -3814,6 +3873,34 @@ test "transpileAssertionLine converts System.assert overloads" {
 
     const non_assert = try transpileAssertionLine(gpa, "System.debug('noop');");
     try std.testing.expect(non_assert == null);
+}
+
+test "transpileAssertionLine converts Assert and System.Assert API" {
+    const gpa = std.testing.allocator;
+
+    const one = try transpileAssertionLine(gpa, "Assert.isTrue(total > 0, 'must be positive');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isTrue(total > 0, \"must be positive\");",
+        one.?,
+    );
+
+    const two = try transpileAssertionLine(gpa, "System.Assert.areEqual(1, actual, 'don''t fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.areEqual(1, actual, \"don't fail\");",
+        two.?,
+    );
+
+    const three = try transpileAssertionLine(gpa, "Assert.fail();");
+    defer if (three) |value| gpa.free(value);
+    try std.testing.expect(three != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.fail();",
+        three.?,
+    );
 }
 
 test "transpileSystemDebugLine converts to println and keeps last arg" {

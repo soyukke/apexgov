@@ -2,6 +2,7 @@ package samples;
 
 import apexemu.annotations.Test;
 import apexemu.runtime.ApexDb;
+import apexemu.runtime.ApexAssert;
 import apexemu.runtime.Async;
 import apexemu.runtime.ApexSObject;
 import apexemu.runtime.ApexStrings;
@@ -1495,6 +1496,26 @@ public final class SampleGovernorTest {
 
     String escaped = ApexStrings.escapeSingleQuotes("O'Reilly");
     SystemAssert.assertEquals("O\\'Reilly", escaped, "escapeSingleQuotes should backslash apostrophes");
+  }
+
+  @Test
+  public void apexAssertSupportsAssertClassStyleApis() {
+    ApexAssert.isTrue(true, "isTrue should pass");
+    ApexAssert.isFalse(false, "isFalse should pass");
+    ApexAssert.areEqual("A", "A", "areEqual should pass");
+    ApexAssert.areNotEqual("A", "B", "areNotEqual should pass");
+    ApexAssert.isNull(null, "isNull should pass");
+    ApexAssert.isNotNull("x", "isNotNull should pass");
+
+    boolean failed = false;
+    try {
+      ApexAssert.fail("forced failure");
+    } catch (AssertionError expected) {
+      failed = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("forced failure"), "fail should keep message");
+    }
+    SystemAssert.assertTrue(failed, "ApexAssert.fail should throw AssertionError");
   }
 
   @Test
