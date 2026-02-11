@@ -21,6 +21,7 @@
   - `TranspileSwitchService.cls`: `switch on / when` の transpile 検証例
   - `TranspileSwitchTypeService.cls`: `switch on SObject` + `when Account acc` 型分岐の transpile 検証例
   - `TranspileInstanceofService.cls`: `record instanceof Account` / 否定 / OR / `instanceof SObject` の transpile 検証例
+  - `TranspileDoWhileService.cls`: `do { ... } while (...)` の transpile 検証例
   - `TranspileStringService.cls`: `String.isBlank/join/escapeSingleQuotes` の transpile 検証例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
@@ -97,4 +98,5 @@ nix develop -c javac -d reports/apex-validation-transpile/classes \
 - `TranspileSwitchService.cls` の `switch on / when / when else` が Java `switch (...)` / `case ... ->` / `default ->` へ変換される
 - `TranspileSwitchTypeService.cls` の `when Account acc` / `when Contact con` が Java `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式へ変換される
 - `TranspileInstanceofService.cls` の SObject 型比較（否定/OR含む）が `ApexSwitch.typeName(...)` ベースへ変換され、`instanceof SObject` は `instanceof ApexSObject` へ変換される
+- `TranspileDoWhileService.cls` の `} while (records[i] instanceof Account);` が Java do-while + `ApexSwitch.typeName(...)` 形式へ変換される
 - `TranspileStringService.cls` の `String.isBlank/join/escapeSingleQuotes` が `ApexStrings.*` へ変換される

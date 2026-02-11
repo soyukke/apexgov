@@ -923,6 +923,9 @@ fn transpileControlFlowLineWithContext(
 ) !?[]u8 {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len == 0) return null;
+    if (isDoWhileTailLine(trimmed)) {
+        return try normalizeApexDoWhileTailLine(gpa, trimmed);
+    }
     if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) {
         return try gpa.dupe(u8, trimmed);
     }
@@ -2303,8 +2306,7 @@ fn rewriteApexInstanceofChecks(gpa: std.mem.Allocator, text: []const u8) anyerro
         while (lhs_end > 0 and std.ascii.isWhitespace(text[lhs_end - 1])) : (lhs_end -= 1) {}
         if (lhs_end == 0) continue;
 
-        var lhs_start = lhs_end;
-        while (lhs_start > 0 and !isInstanceofOperandBoundary(text[lhs_start - 1])) : (lhs_start -= 1) {}
+        const lhs_start = findInstanceofLhsStart(text, lhs_end) orelse continue;
         const lhs = std.mem.trim(u8, text[lhs_start..lhs_end], " \t");
         if (lhs.len == 0) continue;
 
@@ -2343,6 +2345,68 @@ fn isTypeNameTokenChar(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '.';
 }
 
+fn findInstanceofLhsStart(text: []const u8, lhs_end: usize) ?usize {
+    if (lhs_end == 0) return null;
+
+    var idx = lhs_end;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+
+    while (idx > 0) {
+        const ch = text[idx - 1];
+        switch (ch) {
+            ')' => {
+                paren_depth += 1;
+                idx -= 1;
+                continue;
+            },
+            ']' => {
+                bracket_depth += 1;
+                idx -= 1;
+                continue;
+            },
+            '}' => {
+                brace_depth += 1;
+                idx -= 1;
+                continue;
+            },
+            '(' => {
+                if (paren_depth > 0) {
+                    paren_depth -= 1;
+                    idx -= 1;
+                    continue;
+                }
+                break;
+            },
+            '[' => {
+                if (bracket_depth > 0) {
+                    bracket_depth -= 1;
+                    idx -= 1;
+                    continue;
+                }
+                break;
+            },
+            '{' => {
+                if (brace_depth > 0) {
+                    brace_depth -= 1;
+                    idx -= 1;
+                    continue;
+                }
+                break;
+            },
+            else => {},
+        }
+
+        if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and isInstanceofOperandBoundary(ch)) {
+            break;
+        }
+        idx -= 1;
+    }
+
+    return idx;
+}
+
 fn isInstanceofKeywordAt(text: []const u8, index: usize) bool {
     const keyword = "instanceof";
     if (index + keyword.len > text.len) return false;
@@ -2355,6 +2419,9 @@ fn isInstanceofKeywordAt(text: []const u8, index: usize) bool {
 fn isInstanceofOperandBoundary(ch: u8) bool {
     return std.ascii.isWhitespace(ch) or
         ch == '(' or
+        ch == ')' or
+        ch == '[' or
+        ch == ']' or
         ch == '{' or
         ch == '}' or
         ch == ',' or
@@ -3223,6 +3290,7 @@ fn startsWithWordIgnoreCase(haystack: []const u8, keyword: []const u8) bool {
 }
 
 fn isControlFlowLine(line: []const u8) bool {
+    if (isDoWhileTailLine(line)) return true;
     if (std.mem.eql(u8, line, "{") or std.mem.eql(u8, line, "}")) return true;
     const keywords = [_][]const u8{
         "if",       "else",    "for",    "while", "do",     "try",
@@ -3233,6 +3301,41 @@ fn isControlFlowLine(line: []const u8) bool {
         if (startsWithWordIgnoreCase(line, keyword)) return true;
     }
     return false;
+}
+
+fn isDoWhileTailLine(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len < 8 or trimmed[0] != '}') return false;
+
+    var rest = std.mem.trimLeft(u8, trimmed[1..], " \t");
+    if (!startsWithWordIgnoreCase(rest, "while")) return false;
+    rest = std.mem.trimLeft(u8, rest["while".len..], " \t");
+    if (rest.len == 0 or rest[0] != '(') return false;
+
+    const close = findMatchingParen(rest, 0) orelse return false;
+    const after = std.mem.trim(u8, rest[(close + 1)..], " \t");
+    return after.len == 0 or std.mem.eql(u8, after, ";");
+}
+
+fn normalizeApexDoWhileTailLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (!isDoWhileTailLine(trimmed)) return null;
+
+    var rest = std.mem.trimLeft(u8, trimmed[1..], " \t");
+    rest = std.mem.trimLeft(u8, rest["while".len..], " \t");
+    const close = findMatchingParen(rest, 0) orelse return null;
+
+    const condition_raw = std.mem.trim(u8, rest[1..close], " \t");
+    if (condition_raw.len == 0) return null;
+    const converted_condition = try convertApexExpressionToJava(gpa, condition_raw);
+    defer gpa.free(converted_condition);
+
+    const after = std.mem.trim(u8, rest[(close + 1)..], " \t");
+    const has_semicolon = std.mem.eql(u8, after, ";");
+    if (has_semicolon) {
+        return try std.fmt.allocPrint(gpa, "}} while ({s});", .{converted_condition});
+    }
+    return try std.fmt.allocPrint(gpa, "}} while ({s})", .{converted_condition});
 }
 
 fn indexOfSoqlBracketSelect(line: []const u8) ?usize {
@@ -3965,6 +4068,22 @@ test "transpileControlFlowLine rewrites sobject instanceof checks" {
     try std.testing.expectEqualStrings(
         "if (value instanceof CustomService) {",
         class_instanceof.?,
+    );
+
+    const do_header = try transpileControlFlowLine(gpa, "do {");
+    defer if (do_header) |value| gpa.free(value);
+    try std.testing.expect(do_header != null);
+    try std.testing.expectEqualStrings("do {", do_header.?);
+
+    const do_tail = try transpileControlFlowLine(
+        gpa,
+        "} while (records[i] instanceof Account);",
+    );
+    defer if (do_tail) |value| gpa.free(value);
+    try std.testing.expect(do_tail != null);
+    try std.testing.expectEqualStrings(
+        "} while (\"Account\".equals(ApexSwitch.typeName(records.get(i))));",
+        do_tail.?,
     );
 }
 
