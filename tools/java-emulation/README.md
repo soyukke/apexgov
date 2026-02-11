@@ -36,7 +36,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 
 - これは Apex VM の完全再現ではなく、ローカルのデバッグ/概算向けです。
 - `apexemu.runtime.ApexDb` と `apexemu.runtime.Limits` を使って負荷や回数を明示的に記録します。
-- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（best-effort / 手動移植前提、`System.assert*` は `SystemAssert.*`、`System.debug` は `System.out.println`。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティ、`switch on / when`（literal + `when else`）の Java `switch` 化、`String.isBlank/join/escapeSingleQuotes` などの `ApexStrings.*` 化、`List/Map/Set` 宣言・コンストラクタ・リテラル、`new Map<Id, SObject>(list/map/query)` の `ApexCollections.mapById/toIdMap` 化、named-arg 風 SObject コンストラクタ、単行/複数行 `[SELECT ...]`、`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る query literal 正規化、`insert/update/upsert/delete/undelete/merge` 変換に対応）。
+- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（best-effort / 手動移植前提、`System.assert*` は `SystemAssert.*`、`System.debug` は `System.out.println`。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティ、`switch on / when`（literal + `when else` + `when Account acc`）の Java `switch` 化、`record instanceof Account` の `"Account".equals(ApexSwitch.typeName(record))` への正規化、`String.isBlank/join/escapeSingleQuotes` などの `ApexStrings.*` 化、`List/Map/Set` 宣言・コンストラクタ・リテラル、`new Map<Id, SObject>(list/map/query)` の `ApexCollections.mapById/toIdMap` 化、named-arg 風 SObject コンストラクタ、単行/複数行 `[SELECT ...]`、`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る query literal 正規化、`insert/update/upsert/delete/undelete/merge` 変換に対応）。
 
 ## Assertion API
 

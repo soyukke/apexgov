@@ -140,7 +140,8 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 `apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
 現状は `@IsTest` の `@Test` 化に加え、メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティの骨組みも生成します。
 `System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
-`switch on / when`（literal列挙 + `when else`）は Java `switch` / `case ... ->` / `default ->` に変換します（型パターン `when Account a` などは未対応）。
+`switch on / when` は Java `switch` / `case ... ->` / `default ->` に変換します。`when Account acc` のような型分岐は `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式で変換します。
+`record instanceof Account` のような SObject 型チェックは `"Account".equals(ApexSwitch.typeName(record))` に変換します。
 `String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` に変換します。
 `List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
 `new Map<Id, Account>(records)` や `new Map<Id, Account>(existingMap)` は `ApexCollections.toIdMap(...)` に変換します。

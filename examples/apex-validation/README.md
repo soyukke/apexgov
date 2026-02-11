@@ -18,6 +18,8 @@
   - `TranspileMergeService.cls`: `merge` 文（index参照 / helper呼び出し / 複数duplicate）の transpile 検証例
   - `TranspileMapConstructorService.cls`: `new Map<Id, SObject>(list/map)` の transpile 検証例
   - `TranspileSwitchService.cls`: `switch on / when` の transpile 検証例
+  - `TranspileSwitchTypeService.cls`: `switch on SObject` + `when Account acc` 型分岐の transpile 検証例
+  - `TranspileInstanceofService.cls`: `record instanceof Account` の transpile 検証例
   - `TranspileStringService.cls`: `String.isBlank/join/escapeSingleQuotes` の transpile 検証例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
@@ -92,4 +94,6 @@ nix develop -c javac -d reports/apex-validation-transpile/classes \
 - `TranspileMergeService.cls` の `merge` 文が `Database.merge(...)` 呼び出しに変換される
 - `TranspileMapConstructorService.cls` の `new Map<Id, Account>(list/map)` が `ApexCollections.toIdMap(...)` へ変換される
 - `TranspileSwitchService.cls` の `switch on / when / when else` が Java `switch (...)` / `case ... ->` / `default ->` へ変換される
+- `TranspileSwitchTypeService.cls` の `when Account acc` / `when Contact con` が Java `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式へ変換される
+- `TranspileInstanceofService.cls` の `record instanceof Account` が `"Account".equals(ApexSwitch.typeName(record))` へ変換される
 - `TranspileStringService.cls` の `String.isBlank/join/escapeSingleQuotes` が `ApexStrings.*` へ変換される
