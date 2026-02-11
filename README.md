@@ -142,6 +142,7 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 `System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
 `switch on / when` は Java `switch` / `case ... ->` / `default ->` に変換します。`when Account acc` のような型分岐は `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式で変換します。
 `record instanceof Account` のような SObject 型チェックは `"Account".equals(ApexSwitch.typeName(record))` に変換します。
+`!(record instanceof Contact)` や `record instanceof A || record instanceof B` のような否定/複合式も同様に変換します（`instanceof SObject` は `instanceof ApexSObject` へ変換）。
 `String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` に変換します。
 `List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
 `new Map<Id, Account>(records)` や `new Map<Id, Account>(existingMap)` は `ApexCollections.toIdMap(...)` に変換します。

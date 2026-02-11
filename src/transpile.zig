@@ -2315,19 +2315,19 @@ fn rewriteApexInstanceofChecks(gpa: std.mem.Allocator, text: []const u8) anyerro
         var type_end = type_start;
         while (type_end < text.len and isTypeNameTokenChar(text[type_end])) : (type_end += 1) {}
         const type_name = std.mem.trim(u8, text[type_start..type_end], " \t");
-        if (type_name.len == 0 or !looksLikeTypeName(type_name)) continue;
-
-        const java_type = try convertApexType(gpa, type_name);
-        defer gpa.free(java_type);
-        if (!std.mem.eql(u8, java_type, "ApexSObject")) continue;
+        if (type_name.len == 0 or !looksLikeTypeName(type_name) or !isLikelySObjectTypeForInstanceof(type_name)) continue;
 
         try out.appendSlice(gpa, text[last_emit..lhs_start]);
-        try appendFmt(
-            gpa,
-            &out,
-            "\"{s}\".equals(ApexSwitch.typeName({s}))",
-            .{ type_name, lhs },
-        );
+        if (std.ascii.eqlIgnoreCase(type_name, "SObject") or std.ascii.eqlIgnoreCase(type_name, "ApexSObject")) {
+            try appendFmt(gpa, &out, "({s} instanceof ApexSObject)", .{lhs});
+        } else {
+            try appendFmt(
+                gpa,
+                &out,
+                "\"{s}\".equals(ApexSwitch.typeName({s}))",
+                .{ type_name, lhs },
+            );
+        }
 
         replaced = true;
         i = type_end - 1;
@@ -2373,6 +2373,56 @@ fn isInstanceofOperandBoundary(ch: u8) bool {
         ch == '>' or
         ch == '?' or
         ch == ':';
+}
+
+fn isLikelySObjectTypeForInstanceof(type_name: []const u8) bool {
+    const trimmed = std.mem.trim(u8, type_name, " \t");
+    if (trimmed.len == 0) return false;
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "SObject") or std.ascii.eqlIgnoreCase(trimmed, "ApexSObject")) {
+        return true;
+    }
+
+    if (endsWithIgnoreCase(trimmed, "__c") or
+        endsWithIgnoreCase(trimmed, "__mdt") or
+        endsWithIgnoreCase(trimmed, "__e") or
+        endsWithIgnoreCase(trimmed, "__x") or
+        endsWithIgnoreCase(trimmed, "__b") or
+        endsWithIgnoreCase(trimmed, "__kav"))
+    {
+        return true;
+    }
+
+    const standard_objects = [_][]const u8{
+        "Account",
+        "Contact",
+        "Lead",
+        "Opportunity",
+        "Case",
+        "Task",
+        "Event",
+        "User",
+        "Group",
+        "Campaign",
+        "Contract",
+        "Asset",
+        "Product2",
+        "Pricebook2",
+        "OpportunityLineItem",
+        "Order",
+        "OrderItem",
+        "Quote",
+        "QuoteLineItem",
+        "ContentDocument",
+        "ContentVersion",
+        "KnowledgeArticleVersion",
+    };
+
+    for (standard_objects) |name| {
+        if (std.ascii.eqlIgnoreCase(trimmed, name)) return true;
+    }
+
+    return false;
 }
 
 fn convertInlineSoqlQueries(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
@@ -3157,6 +3207,14 @@ fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return std.ascii.eqlIgnoreCase(haystack[0..needle.len], needle);
 }
 
+fn endsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    return std.ascii.eqlIgnoreCase(
+        haystack[haystack.len - needle.len ..],
+        needle,
+    );
+}
+
 fn startsWithWordIgnoreCase(haystack: []const u8, keyword: []const u8) bool {
     if (!startsWithIgnoreCase(haystack, keyword)) return false;
     if (haystack.len == keyword.len) return true;
@@ -3864,6 +3922,50 @@ test "transpileControlFlowLine rewrites sobject instanceof checks" {
         "if (value instanceof Integer) {",
         scalar_instanceof.?,
     );
+
+    const negated_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (!(record instanceof Contact)) {",
+    );
+    defer if (negated_instanceof) |value| gpa.free(value);
+    try std.testing.expect(negated_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (!(\"Contact\".equals(ApexSwitch.typeName(record)))) {",
+        negated_instanceof.?,
+    );
+
+    const multi_branch_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (record instanceof Account || record instanceof Contact) {",
+    );
+    defer if (multi_branch_instanceof) |value| gpa.free(value);
+    try std.testing.expect(multi_branch_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (\"Account\".equals(ApexSwitch.typeName(record)) || \"Contact\".equals(ApexSwitch.typeName(record))) {",
+        multi_branch_instanceof.?,
+    );
+
+    const generic_sobject_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (record instanceof SObject) {",
+    );
+    defer if (generic_sobject_instanceof) |value| gpa.free(value);
+    try std.testing.expect(generic_sobject_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if ((record instanceof ApexSObject)) {",
+        generic_sobject_instanceof.?,
+    );
+
+    const class_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (value instanceof CustomService) {",
+    );
+    defer if (class_instanceof) |value| gpa.free(value);
+    try std.testing.expect(class_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (value instanceof CustomService) {",
+        class_instanceof.?,
+    );
 }
 
 test "transpileSoqlLine supports list map and single-sobject declarations" {
@@ -4083,6 +4185,17 @@ test "transpileGenericStatementLine converts declarations assignments and calls"
     try std.testing.expectEqualStrings(
         "Boolean isAccount = \"Account\".equals(ApexSwitch.typeName(record));",
         instanceof_assign.?,
+    );
+
+    const negated_instanceof_assign = try transpileGenericStatementLine(
+        gpa,
+        "Boolean isNotContact = !(record instanceof Contact);",
+    );
+    defer if (negated_instanceof_assign) |value| gpa.free(value);
+    try std.testing.expect(negated_instanceof_assign != null);
+    try std.testing.expectEqualStrings(
+        "Boolean isNotContact = !(\"Contact\".equals(ApexSwitch.typeName(record)));",
+        negated_instanceof_assign.?,
     );
 }
 
