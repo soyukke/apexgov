@@ -6,7 +6,7 @@
 
 - Detect governor-risk code paths before deploy
 - Catch SOSL / Callout / Messaging operations inside loops with limit-aware warnings
-- Estimate loop upper bounds from guards (for example `if (n > 200) return`) and show likely limit exceed points
+- Estimate loop upper bounds from guards (for/while/do-while, for example `if (n > 200) return`) and show likely limit exceed points
 - Follow helper method call chains across files/classes to catch indirect SOQL/DML in loops
 - Multiply callee-side loop effects into governor estimates (for example nested helper loops)
 - Use method arity and inferred literal/new-expression/local variable types to reduce false positives on overloaded calls

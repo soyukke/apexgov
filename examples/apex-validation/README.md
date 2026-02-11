@@ -9,6 +9,7 @@
   - `BulkSafeService.cls`: バルク化済みのOK例
   - `GovernorRiskService.cls`: SOQL/DML in loop などのNG例
   - `GuardedLoopService.cls`: `if (n > 120) return;` で上限を与える例
+  - `DoWhileRiskService.cls`: `do { ... } while (i < n)` の上限推論 + DML検出例
   - `ExceededGuardService.cls`: `if (n > 200) return;` でもSOQL上限を超える例
   - `ElseIfGuardService.cls`: `} else if (n > 140) return;` 形式の上限ガード例
   - `CrossFileCallerService.cls` + `CrossFileDmlHelper.cls`: 別クラス呼び出し経由でDMLに到達する例
@@ -39,6 +40,7 @@ zig build run -- check examples/apex-validation/force-app --format text
 期待結果:
 - `GovernorRiskService.cls` に対して `AG002/AG003` を含むfindingが出る
 - `GuardedLoopService.cls` では `Loop upper bound <= 120` の警告が出る
+- `DoWhileRiskService.cls` でも `Loop upper bound <= 120` の `AG003` が出る
 - `ExceededGuardService.cls` では `Loop upper bound <= 200` の超過エラーが出る
 - `CrossFileCallerService.cls` では別クラス経由でも `AG003` が出る
 - `HelperChainService.cls` ではヘルパーチェーン経由でも `AG003` が出る

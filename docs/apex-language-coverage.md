@@ -46,7 +46,7 @@
 | `for (T x : collection)` | supported | `collection` の上限推論 |
 | `while (...)` | supported | 条件式から上限推論 |
 | `switch on / when` | partial | transpile は literal列挙 + `when else` に加え `when Account a` 形式を Java `switch (ApexSwitch.typeName(...))` へ変換。rangeパターン等は未対応 |
-| `do { ... } while (...)` | partial | transpile は `} while (...)` を Java do-while へ変換。静的上限推論は未対応 |
+| `do { ... } while (...)` | partial | transpile は `} while (...)` を Java do-while へ変換。check も tail 条件から上限推論（`do {` と `} while (...)` の対応付け）に対応 |
 | guard (`if (n > K) return/throw`) | supported | `>` / `>=` を上限として採用 |
 | guard with `&&` | supported | 各節が上限式なら採用 |
 | guard with `\|\|` | planned | 保守的に未採用 |

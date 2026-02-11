@@ -33,6 +33,11 @@ const LoopInfo = struct {
     max_iterations: ?u64,
 };
 
+const DoLoopStart = struct {
+    start_line: usize,
+    end_depth: i32,
+};
+
 const BoundUpdate = struct {
     name: []const u8,
     max: ?u64,
@@ -232,6 +237,7 @@ fn scanContent(
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
     var current_method: ?MethodScope = null;
+    var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
@@ -299,7 +305,7 @@ fn scanContent(
 
         try applyBoundUpdates(arena_allocator, &bounds, trimmed);
 
-        const loop_info = if (isLoopStart(trimmed)) inferLoopInfo(trimmed, &bounds) else null;
+        const loop_info = inferLoopInfoAtLine(trimmed, &bounds, &do_while_conditions, line_no);
         const loop_started = loop_info != null;
         const loop_level = loop_scopes.items.len;
         const in_loop = loop_started or loop_level > 0;
@@ -612,12 +618,15 @@ fn collectMethodDirectMetricsAndCalls(
 
     var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
+    var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
 
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
+    var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
 
     while (lines.next()) |raw| {
+        line_no += 1;
         const code_line = stripLineComment(raw);
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
         popClosedOwners(&owner_scopes, brace_depth);
@@ -657,7 +666,12 @@ fn collectMethodDirectMetricsAndCalls(
                     popClosedScopes(&method_loop_scopes, brace_depth);
                     try applyBoundUpdates(arena_allocator, &method_bounds, trimmed);
                     try applyLocalTypeUpdates(arena_allocator, &type_env, trimmed);
-                    const local_loop_info = if (isLoopStart(trimmed)) inferLoopInfo(trimmed, &method_bounds) else null;
+                    const local_loop_info = inferLoopInfoAtLine(
+                        trimmed,
+                        &method_bounds,
+                        &do_while_conditions,
+                        line_no,
+                    );
                     const local_loop_multiplier = effectiveLoopUpperBound(method_loop_scopes.items, local_loop_info) orelse 1;
 
                     const summary = findMethodSummaryByOwnerNameSignature(
@@ -2221,6 +2235,22 @@ fn inferLoopInfo(line: []const u8, bounds: *std.StringHashMap(Bound)) ?LoopInfo 
     return .{ .max_iterations = null };
 }
 
+fn inferLoopInfoAtLine(
+    line: []const u8,
+    bounds: *std.StringHashMap(Bound),
+    do_while_conditions: *std.AutoHashMap(usize, []const u8),
+    line_no: usize,
+) ?LoopInfo {
+    if (!isLoopStart(line)) return null;
+    if (isDoLoopStart(line)) {
+        const cond = do_while_conditions.get(line_no) orelse return .{ .max_iterations = null };
+        return .{
+            .max_iterations = inferConditionUpperBound(cond, bounds),
+        };
+    }
+    return inferLoopInfo(line, bounds);
+}
+
 fn inferConditionUpperBound(cond: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
     var best: ?u64 = null;
     var segments = std.mem.splitSequence(u8, cond, "&&");
@@ -2366,11 +2396,106 @@ fn stripLineComment(raw: []const u8) []const u8 {
     return raw[0..idx];
 }
 
+fn collectDoWhileStartConditions(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+) !std.AutoHashMap(usize, []const u8) {
+    var out = std.AutoHashMap(usize, []const u8).init(allocator);
+    errdefer out.deinit();
+
+    var do_stack: std.ArrayList(DoLoopStart) = .empty;
+    defer do_stack.deinit(allocator);
+
+    var brace_depth: i32 = 0;
+    var line_no: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        line_no += 1;
+        const code_line = stripLineComment(raw);
+        const trimmed = std.mem.trim(u8, code_line, " \t\r");
+
+        if (trimmed.len > 0) {
+            if (isDoLoopStart(trimmed) and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+                try do_stack.append(allocator, .{
+                    .start_line = line_no,
+                    .end_depth = brace_depth + 1,
+                });
+            }
+
+            if (try parseDoWhileTailCondition(allocator, trimmed)) |condition| {
+                errdefer allocator.free(condition);
+                if (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth == brace_depth) {
+                    const do_start = do_stack.pop().?;
+                    try out.put(do_start.start_line, condition);
+                } else {
+                    allocator.free(condition);
+                }
+            }
+        }
+
+        brace_depth = updateBraceDepth(brace_depth, code_line);
+        while (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth > brace_depth) {
+            _ = do_stack.pop();
+        }
+    }
+
+    return out;
+}
+
+fn isDoLoopStart(line: []const u8) bool {
+    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    if (!startsWithIgnoreCase(trimmed, "do")) return false;
+    if (trimmed.len == 2) return true;
+    const next = trimmed[2];
+    return next == ' ' or next == '\t' or next == '{';
+}
+
+fn parseDoWhileTailCondition(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len < 8 or trimmed[0] != '}') return null;
+
+    trimmed = std.mem.trimLeft(u8, trimmed[1..], " \t");
+    if (!startsWithIgnoreCase(trimmed, "while")) return null;
+    if (trimmed.len > "while".len) {
+        const next = trimmed["while".len];
+        if (!(next == ' ' or next == '\t' or next == '(')) return null;
+    }
+
+    var rest = std.mem.trimLeft(u8, trimmed["while".len..], " \t");
+    if (rest.len == 0 or rest[0] != '(') return null;
+
+    const close = findMatchingParen(rest, 0) orelse return null;
+    const after = std.mem.trim(u8, rest[(close + 1)..], " \t");
+    if (after.len > 0 and !std.mem.eql(u8, after, ";")) return null;
+
+    const cond = std.mem.trim(u8, rest[1..close], " \t");
+    if (cond.len == 0) return null;
+    return try allocator.dupe(u8, cond);
+}
+
+fn findMatchingParen(text: []const u8, open_index: usize) ?usize {
+    if (open_index >= text.len or text[open_index] != '(') return null;
+    var depth: i32 = 0;
+    var i: usize = open_index;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '(') {
+            depth += 1;
+        } else if (ch == ')') {
+            depth -= 1;
+            if (depth == 0) return i;
+            if (depth < 0) return null;
+        }
+    }
+    return null;
+}
+
 fn isLoopStart(line: []const u8) bool {
     return std.mem.startsWith(u8, line, "for(") or
         std.mem.startsWith(u8, line, "for (") or
         std.mem.startsWith(u8, line, "while(") or
-        std.mem.startsWith(u8, line, "while (");
+        std.mem.startsWith(u8, line, "while (") or
+        isDoLoopStart(line);
 }
 
 fn containsSoql(line: []const u8) bool {
@@ -2506,6 +2631,50 @@ test "for condition uses inferred variable bound" {
 
     const loop = inferLoopInfo("for (Integer i = 0; i < n; i++) {", &bounds) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(?u64, 120), loop.max_iterations);
+}
+
+test "collectDoWhileStartConditions links do line to tail condition" {
+    const source =
+        \\public with sharing class DoWhileMapService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer i = 0;
+        \\        Integer n = records.size();
+        \\        do {
+        \\            i += 1;
+        \\        } while (i < n);
+        \\    }
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var mapped = try collectDoWhileStartConditions(allocator, source);
+    const cond = mapped.get(5) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("i < n", cond);
+}
+
+test "do-while loop uses inferred guard bound for DML finding" {
+    const source =
+        \\public with sharing class DoWhileGuardService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 120) return;
+        \\        Integer i = 0;
+        \\        do {
+        \\            update records[i];
+        \\            i += 1;
+        \\        } while (i < n);
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
 test "cpu estimate helpers" {
