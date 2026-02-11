@@ -606,7 +606,9 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try appendFmt(gpa, &out, "package {s};\n\n", .{package_name});
     try out.appendSlice(gpa, "import apexemu.annotations.Test;\n\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexSObject;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexCollections;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.Database;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.JSON;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
     try out.appendSlice(gpa, "import java.util.ArrayList;\n");
     try out.appendSlice(gpa, "import java.util.LinkedHashMap;\n");
@@ -1079,6 +1081,15 @@ fn transpileGenericStatementLine(gpa: std.mem.Allocator, line: []const u8) !?[]u
                 if (rhs.len == 0) return null;
                 const converted_rhs = try convertApexExpressionToJava(gpa, rhs);
                 defer gpa.free(converted_rhs);
+                if (parseSObjectFieldLvalue(lhs)) |lvalue| {
+                    const converted_base = try convertApexExpressionToJava(gpa, lvalue.base_expr);
+                    defer gpa.free(converted_base);
+                    return try std.fmt.allocPrint(
+                        gpa,
+                        "{s}.set(\"{s}\", {s});",
+                        .{ converted_base, lvalue.field_name, converted_rhs },
+                    );
+                }
                 return try std.fmt.allocPrint(gpa, "{s} = {s};", .{ lhs, converted_rhs });
             }
         }
@@ -1170,7 +1181,7 @@ fn transpileCollectionInitializer(gpa: std.mem.Allocator, kind: CollectionKind, 
         const single = try convertApexExpressionToJava(gpa, args.items[0]);
         defer gpa.free(single);
         if (startsWithIgnoreCase(std.mem.trim(u8, single, " \t"), "Database.query(")) {
-            return try std.fmt.allocPrint(gpa, "new {s}<>()", .{impl_name});
+            return try std.fmt.allocPrint(gpa, "ApexCollections.mapById({s})", .{single});
         }
     }
 
@@ -1942,7 +1953,7 @@ fn convertSObjectFieldAccess(gpa: std.mem.Allocator, text: []const u8) anyerror!
         }
 
         try out.appendSlice(gpa, text[last_emit..i]);
-        try appendFmt(gpa, &out, ".get(\"{s}\")", .{member});
+        try appendFmt(gpa, &out, ".getAs(\"{s}\")", .{member});
         replaced = true;
         i = end - 1;
         last_emit = end;
@@ -2263,6 +2274,82 @@ fn splitTrailingIdentifierAtTopLevel(text: []const u8) ?TrailingIdentifierSplit 
         .head = head,
         .tail = tail,
     };
+}
+
+const SObjectFieldLvalue = struct {
+    base_expr: []const u8,
+    field_name: []const u8,
+};
+
+fn parseSObjectFieldLvalue(lhs: []const u8) ?SObjectFieldLvalue {
+    const trimmed = std.mem.trim(u8, lhs, " \t");
+    if (trimmed.len == 0) return null;
+
+    const dot_pos = findLastTopLevelDot(trimmed) orelse return null;
+    const base_expr = std.mem.trim(u8, trimmed[0..dot_pos], " \t");
+    const field_name = std.mem.trim(u8, trimmed[(dot_pos + 1)..], " \t");
+    if (base_expr.len == 0 or field_name.len == 0) return null;
+    if (!isSimpleIdentifier(field_name)) return null;
+    if (!isLikelySObjectFieldName(field_name)) return null;
+    if (std.ascii.eqlIgnoreCase(base_expr, "this") or std.ascii.eqlIgnoreCase(base_expr, "super")) return null;
+    return .{
+        .base_expr = base_expr,
+        .field_name = field_name,
+    };
+}
+
+fn findLastTopLevelDot(text: []const u8) ?usize {
+    var in_single = false;
+    var in_double = false;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var last_dot: ?usize = null;
+
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+
+        switch (ch) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '<' => angle_depth += 1,
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '.' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+                    last_dot = i;
+                }
+            },
+            else => {},
+        }
+    }
+    return last_dot;
 }
 
 fn nextNonSpace(text: []const u8, from: usize) usize {
@@ -2732,7 +2819,7 @@ test "transpileCollectionDeclarationLine converts list map set declarations" {
     defer if (map_from_query) |value| gpa.free(value);
     try std.testing.expect(map_from_query != null);
     try std.testing.expectEqualStrings(
-        "Map<String, ApexSObject> accountMap = new LinkedHashMap<>();",
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
         map_from_query.?,
     );
 
@@ -2743,7 +2830,7 @@ test "transpileCollectionDeclarationLine converts list map set declarations" {
     defer if (map_from_query_spaced) |value| gpa.free(value);
     try std.testing.expect(map_from_query_spaced != null);
     try std.testing.expectEqualStrings(
-        "Map<String, ApexSObject> accountMap = new LinkedHashMap<>();",
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
         map_from_query_spaced.?,
     );
 }
@@ -2784,7 +2871,7 @@ test "transpileExecutableLine prefers collection declaration rewrite for map que
     defer if (converted) |value| gpa.free(value);
     try std.testing.expect(converted != null);
     try std.testing.expectEqualStrings(
-        "Map<String, ApexSObject> accountMap = new LinkedHashMap<>();",
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
         converted.?,
     );
 }
@@ -2849,17 +2936,30 @@ test "transpileGenericStatementLine converts declarations assignments and calls"
     const assign = try transpileGenericStatementLine(gpa, "payload = records[0].Id;");
     defer if (assign) |value| gpa.free(value);
     try std.testing.expect(assign != null);
-    try std.testing.expectEqualStrings("payload = records.get(0).get(\"Id\");", assign.?);
+    try std.testing.expectEqualStrings("payload = records.get(0).getAs(\"Id\");", assign.?);
 
     const call = try transpileGenericStatementLine(gpa, "doWork(records[0].Id);");
     defer if (call) |value| gpa.free(value);
     try std.testing.expect(call != null);
-    try std.testing.expectEqualStrings("doWork(records.get(0).get(\"Id\"));", call.?);
+    try std.testing.expectEqualStrings("doWork(records.get(0).getAs(\"Id\"));", call.?);
 
     const plus_assign = try transpileGenericStatementLine(gpa, "payload += 'Contact: ' + records[0].LastName;");
     defer if (plus_assign) |value| gpa.free(value);
     try std.testing.expect(plus_assign != null);
-    try std.testing.expectEqualStrings("payload += \"Contact: \" + records.get(0).get(\"LastName\");", plus_assign.?);
+    try std.testing.expectEqualStrings("payload += \"Contact: \" + records.get(0).getAs(\"LastName\");", plus_assign.?);
+
+    const sobject_field_assign = try transpileGenericStatementLine(gpa, "acc.Name = records[0].Name;");
+    defer if (sobject_field_assign) |value| gpa.free(value);
+    try std.testing.expect(sobject_field_assign != null);
+    try std.testing.expectEqualStrings(
+        "acc.set(\"Name\", records.get(0).getAs(\"Name\"));",
+        sobject_field_assign.?,
+    );
+
+    const this_assign = try transpileGenericStatementLine(gpa, "this.Name = name;");
+    defer if (this_assign) |value| gpa.free(value);
+    try std.testing.expect(this_assign != null);
+    try std.testing.expectEqualStrings("this.Name = name;", this_assign.?);
 }
 
 test "transpileDmlLine supports upsert with external id hint" {
@@ -2893,7 +2993,7 @@ test "convertApexExpressionToJava converts collection literals and sobject const
     const sobject_ctor = try convertApexExpressionToJava(gpa, "new Task(Subject = 'Bulk', WhatId = records[0].Id)");
     defer gpa.free(sobject_ctor);
     try std.testing.expectEqualStrings(
-        "ApexSObject.of(\"Task\").set(\"Subject\", \"Bulk\").set(\"WhatId\", records.get(0).get(\"Id\"))",
+        "ApexSObject.of(\"Task\").set(\"Subject\", \"Bulk\").set(\"WhatId\", records.get(0).getAs(\"Id\"))",
         sobject_ctor,
     );
 
@@ -2903,7 +3003,7 @@ test "convertApexExpressionToJava converts collection literals and sobject const
     );
     defer gpa.free(nested_literal);
     try std.testing.expectEqualStrings(
-        "new ArrayList<ApexSObject>(java.util.List.of(ApexSObject.of(\"Task\").set(\"WhatId\", records.get(0).get(\"Id\"))))",
+        "new ArrayList<ApexSObject>(java.util.List.of(ApexSObject.of(\"Task\").set(\"WhatId\", records.get(0).getAs(\"Id\"))))",
         nested_literal,
     );
 }
@@ -2928,7 +3028,7 @@ test "collectLogicalStatements keeps multiline soql as one statement" {
     defer if (converted) |value| gpa.free(value);
     try std.testing.expect(converted != null);
     try std.testing.expectEqualStrings(
-        "Map<String, ApexSObject> accountMap = new LinkedHashMap<>();",
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
         converted.?,
     );
 }

@@ -59,6 +59,11 @@ public final class ApexSObject {
     return null;
   }
 
+  @SuppressWarnings("unchecked")
+  public <T> T getAs(String field) {
+    return (T) get(field);
+  }
+
   public boolean hasField(String field) {
     if (field == null) {
       return false;
@@ -82,6 +87,18 @@ public final class ApexSObject {
     ApexSObject out = ApexSObject.of(this.type);
     out.id = this.id;
     out.fields.putAll(this.fields);
+    return out;
+  }
+
+  public ApexSObject clone(
+      boolean preserveId,
+      boolean isDeepClone,
+      boolean preserveReadonlyTimestamps,
+      boolean preserveAutonumber) {
+    ApexSObject out = copy();
+    if (!preserveId) {
+      out.withId(null);
+    }
     return out;
   }
 }

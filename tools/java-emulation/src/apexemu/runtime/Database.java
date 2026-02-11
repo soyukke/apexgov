@@ -29,20 +29,63 @@ public final class Database {
     ensureSuccess(insert(records, true), "insert");
   }
 
+  public static void insert(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    insert(List.of(record));
+  }
+
   public static void update(Collection<ApexSObject> records) {
     ensureSuccess(update(records, true), "update");
+  }
+
+  public static void update(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    update(List.of(record));
   }
 
   public static void upsert(Collection<ApexSObject> records) {
     ensureSuccess(upsert(records, true), "upsert");
   }
 
+  public static void upsert(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    upsert(List.of(record));
+  }
+
+  public static void upsert(Collection<ApexSObject> records, String externalIdFieldName) {
+    upsert(records);
+  }
+
+  public static void upsert(ApexSObject record, String externalIdFieldName) {
+    upsert(record);
+  }
+
   public static void delete(Collection<ApexSObject> records) {
     ensureSuccess(delete(records, true), "delete");
   }
 
+  public static void delete(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    delete(List.of(record));
+  }
+
   public static void undelete(Collection<ApexSObject> records) {
     ensureSuccess(undelete(records, true), "undelete");
+  }
+
+  public static void undelete(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    undelete(List.of(record));
   }
 
   public static void merge(ApexSObject masterRecord, ApexSObject duplicateRecord) {
