@@ -14,6 +14,8 @@
   - `HelperChainService.cls`: ループ内ヘルパー呼び出し経由でDMLに到達する例
   - `NestedHelperMultiplierService.cls`: ヘルパー内ループ呼び出しでDML回数が乗算される例
   - `SameArityOverloadService.cls`: 同一arityオーバーロードを型で選別する例
+  - `TranspileQueryBindsService.cls`: `Database.countQueryWithBinds/getQueryLocatorWithBinds` の transpile 検証例
+  - `TranspileMergeService.cls`: `merge` 文（index参照 / helper呼び出し / 複数duplicate）の transpile 検証例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log
 - `baseline/profile-baseline.json`: 回帰比較用ベースライン
@@ -72,3 +74,16 @@ zig build run -- profile examples/apex-validation/logs \
 この場合:
 - 回帰メッセージは出る
 - exit code は `0`
+
+## 5) Transpile + Java compile smoke
+
+```bash
+./zig-out/bin/apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-validation-transpile --overwrite
+nix develop -c javac -d reports/apex-validation-transpile/classes \
+  $(find tools/java-emulation/src -name "*.java") \
+  $(find reports/apex-validation-transpile -name "*.java")
+```
+
+期待結果:
+- `TranspileQueryBindsService.cls` の `countQueryWithBinds/getQueryLocatorWithBinds` が query string 引数でJava化される
+- `TranspileMergeService.cls` の `merge` 文が `Database.merge(...)` 呼び出しに変換される

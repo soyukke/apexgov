@@ -941,10 +941,7 @@ fn transpileDmlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
         if (payload.len == 0) return null;
 
         if (std.ascii.eqlIgnoreCase(keyword, "merge")) {
-            var args = if (std.mem.indexOfScalar(u8, payload, ',') != null)
-                try splitCallArguments(gpa, payload)
-            else
-                try splitWhitespace(gpa, payload);
+            var args = try splitMergeArguments(gpa, payload);
             defer args.deinit(gpa);
             if (args.items.len < 2 or args.items.len > 3) return null;
 
@@ -1510,6 +1507,139 @@ fn splitCallArguments(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]
 
     const tail = std.mem.trim(u8, trimmed[start..], " \t");
     if (tail.len > 0) try out.append(gpa, tail);
+    return out;
+}
+
+fn splitMergeArguments(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
+    if (hasTopLevelComma(raw)) {
+        return splitCallArguments(gpa, raw);
+    }
+    return splitTopLevelWhitespaceExpressions(gpa, raw);
+}
+
+fn hasTopLevelComma(text: []const u8) bool {
+    var in_single = false;
+    var in_double = false;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+
+        switch (ch) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '<' => angle_depth += 1,
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            ',' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn splitTopLevelWhitespaceExpressions(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return out;
+
+    var in_single = false;
+    var in_double = false;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var token_start: ?usize = null;
+
+    var i: usize = 0;
+    while (i < trimmed.len) : (i += 1) {
+        const ch = trimmed[i];
+
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < trimmed.len and trimmed[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            if (token_start == null) token_start = i;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            if (token_start == null) token_start = i;
+            continue;
+        }
+
+        if (!in_single and !in_double) {
+            switch (ch) {
+                '(' => paren_depth += 1,
+                ')' => {
+                    if (paren_depth > 0) paren_depth -= 1;
+                },
+                '[' => bracket_depth += 1,
+                ']' => {
+                    if (bracket_depth > 0) bracket_depth -= 1;
+                },
+                '{' => brace_depth += 1,
+                '}' => {
+                    if (brace_depth > 0) brace_depth -= 1;
+                },
+                '<' => angle_depth += 1,
+                '>' => {
+                    if (angle_depth > 0) angle_depth -= 1;
+                },
+                else => {},
+            }
+        }
+
+        if (std.ascii.isWhitespace(ch) and !in_single and !in_double and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+            if (token_start) |start| {
+                const piece = std.mem.trim(u8, trimmed[start..i], " \t");
+                if (piece.len > 0) try out.append(gpa, piece);
+                token_start = null;
+            }
+            continue;
+        }
+
+        if (token_start == null) token_start = i;
+    }
+
+    if (token_start) |start| {
+        const tail = std.mem.trim(u8, trimmed[start..], " \t");
+        if (tail.len > 0) try out.append(gpa, tail);
+    }
     return out;
 }
 
@@ -3174,6 +3304,26 @@ test "convertApexExpressionToJava rewrites database query-string consumers" {
         "Database.queryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", binds)",
         with_binds,
     );
+
+    const count_with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.countQueryWithBinds([SELECT Id FROM Account WHERE Name = :name], binds)",
+    );
+    defer gpa.free(count_with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.countQueryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", binds)",
+        count_with_binds,
+    );
+
+    const locator_with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.getQueryLocatorWithBinds([SELECT Id FROM Account WHERE Name IN :names], binds)",
+    );
+    defer gpa.free(locator_with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.getQueryLocatorWithBinds(\"SELECT Id FROM Account WHERE Name IN :names\", binds)",
+        locator_with_binds,
+    );
 }
 
 test "parseConstructorSignature captures constructor params" {
@@ -3273,6 +3423,25 @@ test "transpileDmlLine supports upsert with external id hint and merge" {
     try std.testing.expectEqualStrings(
         "Database.merge(masterAccount, java.util.List.of(duplicateA, duplicateB));",
         merge_three.?,
+    );
+
+    const merge_indexed = try transpileDmlLine(gpa, "merge masterAccount duplicateAccounts[0];");
+    defer if (merge_indexed) |value| gpa.free(value);
+    try std.testing.expect(merge_indexed != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, duplicateAccounts.get(0));",
+        merge_indexed.?,
+    );
+
+    const merge_expr = try transpileDmlLine(
+        gpa,
+        "merge pickMaster(records, 0) pickDuplicate(records, 1);",
+    );
+    defer if (merge_expr) |value| gpa.free(value);
+    try std.testing.expect(merge_expr != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(pickMaster(records, 0), pickDuplicate(records, 1));",
+        merge_expr.?,
     );
 }
 
