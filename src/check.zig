@@ -243,6 +243,7 @@ fn scanContent(
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
     var current_method: ?MethodScope = null;
     var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
+    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
@@ -252,7 +253,7 @@ fn scanContent(
 
     var brace_depth: i32 = 0;
     var line_no: usize = 0;
-    var lines = std.mem.splitScalar(u8, content, '\n');
+    var lines = std.mem.splitScalar(u8, stripped_content, '\n');
 
     while (lines.next()) |raw| {
         line_no += 1;
@@ -260,7 +261,7 @@ fn scanContent(
         popClosedScopes(&loop_scopes, brace_depth);
         popClosedOwners(&owner_scopes, brace_depth);
 
-        const code_line = stripLineComment(raw);
+        const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
         var started_method = false;
         if (trimmed.len > 0) {
@@ -607,13 +608,14 @@ fn collectMethodNames(
     content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
 ) !void {
+    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(arena_allocator);
 
     var brace_depth: i32 = 0;
-    var lines = std.mem.splitScalar(u8, content, '\n');
+    var lines = std.mem.splitScalar(u8, stripped_content, '\n');
     while (lines.next()) |raw| {
-        const code_line = stripLineComment(raw);
+        const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
         popClosedOwners(&owner_scopes, brace_depth);
 
@@ -637,6 +639,7 @@ fn collectMethodDirectMetricsAndCalls(
     content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
 ) !void {
+    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(arena_allocator);
 
@@ -651,11 +654,11 @@ fn collectMethodDirectMetricsAndCalls(
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
     var line_no: usize = 0;
-    var lines = std.mem.splitScalar(u8, content, '\n');
+    var lines = std.mem.splitScalar(u8, stripped_content, '\n');
 
     while (lines.next()) |raw| {
         line_no += 1;
-        const code_line = stripLineComment(raw);
+        const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
         popClosedOwners(&owner_scopes, brace_depth);
 
@@ -2634,15 +2637,50 @@ fn countByte(buf: []const u8, needle: u8) usize {
     return count;
 }
 
-fn stripLineComment(raw: []const u8) []const u8 {
-    const idx = std.mem.indexOf(u8, raw, "//") orelse return raw;
-    return raw[0..idx];
+fn stripCommentsPreserveLines(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    var in_block = false;
+    while (i < content.len) {
+        if (in_block) {
+            if (i + 1 < content.len and content[i] == '*' and content[i + 1] == '/') {
+                in_block = false;
+                i += 2;
+                continue;
+            }
+            if (content[i] == '\n') {
+                try out.append(allocator, '\n');
+            }
+            i += 1;
+            continue;
+        }
+
+        if (i + 1 < content.len and content[i] == '/' and content[i + 1] == '*') {
+            in_block = true;
+            i += 2;
+            continue;
+        }
+
+        if (i + 1 < content.len and content[i] == '/' and content[i + 1] == '/') {
+            i += 2;
+            while (i < content.len and content[i] != '\n') : (i += 1) {}
+            continue;
+        }
+
+        try out.append(allocator, content[i]);
+        i += 1;
+    }
+
+    return try out.toOwnedSlice(allocator);
 }
 
 fn collectDoWhileStartConditions(
     allocator: std.mem.Allocator,
     content: []const u8,
 ) !std.AutoHashMap(usize, []const u8) {
+    const stripped_content = try stripCommentsPreserveLines(allocator, content);
     var out = std.AutoHashMap(usize, []const u8).init(allocator);
     errdefer out.deinit();
 
@@ -2652,10 +2690,10 @@ fn collectDoWhileStartConditions(
 
     var brace_depth: i32 = 0;
     var line_no: usize = 0;
-    var lines = std.mem.splitScalar(u8, content, '\n');
+    var lines = std.mem.splitScalar(u8, stripped_content, '\n');
     while (lines.next()) |raw| {
         line_no += 1;
-        const code_line = stripLineComment(raw);
+        const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
 
         if (trimmed.len > 0) {
@@ -2955,6 +2993,49 @@ test "do-while loop uses inferred guard bound for DML finding" {
         \\            update records[i];
         \\            i += 1;
         \\        } while (i < n);
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "block comment inside loop does not trigger DML finding" {
+    const source =
+        \\public with sharing class BlockCommentInlineService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 100) return;
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            /* update records[i]; */
+        \\            records[i].Name = records[i].Name;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+}
+
+test "multiline block comment is ignored while real DML is still detected" {
+    const source =
+        \\public with sharing class BlockCommentMultilineService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer n = records.size();
+        \\        if (n > 120) return;
+        \\        /*
+        \\            debug memo:
+        \\            update records[i];
+        \\        */
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
         \\    }
         \\}
     ;

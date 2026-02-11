@@ -75,7 +75,7 @@
 | --- | --- | --- |
 | line-based heuristic scan | partial | AST ではなく行解析中心 |
 | line comment stripping (`//`) | supported | あり |
-| block comment (`/* ... */`) | planned | 厳密対応なし |
+| block comment (`/* ... */`) | supported | 解析前に除去（改行維持で行番号の整合を確保） |
 | preprocessor / macro-like constructs | planned | 想定外 |
 
 ## Profile Coverage (`apexgov profile`)
