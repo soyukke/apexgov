@@ -1003,7 +1003,103 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) !
         try out.append(gpa, '"');
     }
 
+    const literal_converted = try out.toOwnedSlice(gpa);
+    defer gpa.free(literal_converted);
+    return convertInlineCollectionConstructors(gpa, literal_converted);
+}
+
+fn convertInlineCollectionConstructors(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+
+        if (!isNewKeywordAt(text, i)) continue;
+
+        var cursor = i + "new".len;
+        while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (cursor >= text.len or !isIdentifierChar(text[cursor])) continue;
+
+        const type_start = cursor;
+        while (cursor < text.len and isIdentifierChar(text[cursor])) : (cursor += 1) {}
+        const raw_type = text[type_start..cursor];
+        const kind = collectionKindFromName(raw_type) orelse continue;
+
+        while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (cursor >= text.len or text[cursor] != '<') continue;
+        const close_angle = findMatchingAngle(text, cursor) orelse continue;
+
+        const generic_raw = std.mem.trim(u8, text[(cursor + 1)..close_angle], " \t");
+        if (generic_raw.len == 0) continue;
+        const java_generic = try convertApexTypeList(gpa, generic_raw);
+        defer gpa.free(java_generic);
+
+        cursor = close_angle + 1;
+        while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (cursor >= text.len or text[cursor] != '(') continue;
+        const close_paren = findMatchingParen(text, cursor) orelse continue;
+
+        const args_raw = text[(cursor + 1)..close_paren];
+        const converted_args = try convertInlineCollectionConstructors(gpa, args_raw);
+        defer gpa.free(converted_args);
+
+        const impl_name = collectionImplName(kind);
+        const args_trimmed = std.mem.trim(u8, converted_args, " \t");
+        const replacement = if (args_trimmed.len == 0)
+            try std.fmt.allocPrint(gpa, "new {s}<{s}>()", .{ impl_name, java_generic })
+        else
+            try std.fmt.allocPrint(gpa, "new {s}<{s}>({s})", .{ impl_name, java_generic, converted_args });
+        defer gpa.free(replacement);
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, replacement);
+        replaced = true;
+
+        i = close_paren;
+        last_emit = close_paren + 1;
+        in_double = false;
+        escaped = false;
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn isNewKeywordAt(text: []const u8, pos: usize) bool {
+    if (pos + "new".len > text.len) return false;
+    if (!std.ascii.eqlIgnoreCase(text[pos .. pos + "new".len], "new")) return false;
+
+    const left_ok = pos == 0 or !isIdentifierChar(text[pos - 1]);
+    const right_idx = pos + "new".len;
+    const right_ok = right_idx == text.len or !isIdentifierChar(text[right_idx]);
+    return left_ok and right_ok;
 }
 
 fn appendEscapedJavaStringChar(gpa: std.mem.Allocator, out: *std.ArrayList(u8), ch: u8) !void {
@@ -1386,6 +1482,11 @@ test "transpileSystemDebugLine converts to println and keeps last arg" {
     defer if (two) |value| gpa.free(value);
     try std.testing.expect(two != null);
     try std.testing.expectEqualStrings("System.out.println(\"fail\");", two.?);
+
+    const three = try transpileSystemDebugLine(gpa, "System.debug(new List<Id>());");
+    defer if (three) |value| gpa.free(value);
+    try std.testing.expect(three != null);
+    try std.testing.expectEqualStrings("System.out.println(new ArrayList<String>());", three.?);
 }
 
 test "transpileCollectionDeclarationLine converts list map set declarations" {
@@ -1441,6 +1542,24 @@ test "transpileSoqlAndDmlAndControlLines" {
     defer if (close_brace) |value| gpa.free(value);
     try std.testing.expect(close_brace != null);
     try std.testing.expectEqualStrings("}", close_brace.?);
+
+    const return_with_new = try transpileControlFlowLine(gpa, "return new Map<Id, Account>();");
+    defer if (return_with_new) |value| gpa.free(value);
+    try std.testing.expect(return_with_new != null);
+    try std.testing.expectEqualStrings("return new LinkedHashMap<String, Account>();", return_with_new.?);
+}
+
+test "convertApexExpressionToJava converts nested inline collection constructors" {
+    const gpa = std.testing.allocator;
+    const converted = try convertApexExpressionToJava(
+        gpa,
+        "new Map<Id, Account>(new Map<Id, Account>())",
+    );
+    defer gpa.free(converted);
+    try std.testing.expectEqualStrings(
+        "new LinkedHashMap<String, Account>(new LinkedHashMap<String, Account>())",
+        converted,
+    );
 }
 
 test "renderJavaClass keeps inner block closing brace" {
