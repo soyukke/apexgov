@@ -492,7 +492,7 @@ fn convertMethodParameters(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
         try appendFmt(gpa, &out, "{s} {s}", .{ java_type, param_name });
     }
 
-    return out.toOwnedSlice(gpa);
+    return try out.toOwnedSlice(gpa);
 }
 
 fn transpileClassMemberLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
@@ -684,7 +684,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     }
 
     try out.appendSlice(gpa, "}\n");
-    return out.toOwnedSlice(gpa);
+    return try out.toOwnedSlice(gpa);
 }
 
 const NestingState = struct {
@@ -800,7 +800,7 @@ fn isControlBlockHeader(statement: []const u8) bool {
 
     const keywords = [_][]const u8{
         "if",  "else",  "for",     "while",  "do",
-        "try", "catch", "finally", "switch",
+        "try", "catch", "finally", "switch", "when",
     };
     for (keywords) |keyword| {
         if (startsWithWordIgnoreCase(trimmed, keyword)) return true;
@@ -815,7 +815,7 @@ fn looksLikeControlHeaderWithoutBrace(statement: []const u8) bool {
     if (std.mem.eql(u8, trimmed, "else")) return true;
 
     const keywords = [_][]const u8{
-        "if", "for", "while", "catch", "switch",
+        "if", "for", "while", "catch", "switch", "when",
     };
     for (keywords) |keyword| {
         if (startsWithWordIgnoreCase(trimmed, keyword)) return true;
@@ -843,8 +843,20 @@ fn transpileControlFlowLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
 
     if (!isControlFlowLine(trimmed)) return null;
 
+    if (startsWithWordIgnoreCase(trimmed, "when")) {
+        const converted_when = try convertApexExpressionToJava(gpa, trimmed);
+        defer gpa.free(converted_when);
+        return try normalizeApexWhenLine(gpa, converted_when);
+    }
+
     var converted = try convertApexExpressionToJava(gpa, trimmed);
     errdefer gpa.free(converted);
+
+    if (startsWithWordIgnoreCase(converted, "switch")) {
+        const switch_fixed = try normalizeApexSwitchHeader(gpa, converted);
+        gpa.free(converted);
+        converted = switch_fixed;
+    }
 
     if (startsWithWordIgnoreCase(converted, "for")) {
         const for_fixed = try normalizeForHeaderTypes(gpa, converted);
@@ -2868,8 +2880,9 @@ fn startsWithWordIgnoreCase(haystack: []const u8, keyword: []const u8) bool {
 fn isControlFlowLine(line: []const u8) bool {
     if (std.mem.eql(u8, line, "{") or std.mem.eql(u8, line, "}")) return true;
     const keywords = [_][]const u8{
-        "if",    "else",    "for",    "while",  "do",    "try",
-        "catch", "finally", "switch", "return", "break", "continue",
+        "if",       "else",    "for",    "while", "do",     "try",
+        "catch",    "finally", "switch", "when",  "return", "break",
+        "continue",
     };
     for (keywords) |keyword| {
         if (startsWithWordIgnoreCase(line, keyword)) return true;
@@ -2925,6 +2938,81 @@ fn normalizeForHeaderTypes(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
     }
 
     return gpa.dupe(u8, line);
+}
+
+fn normalizeApexSwitchHeader(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (!startsWithWordIgnoreCase(trimmed, "switch")) return gpa.dupe(u8, line);
+
+    var rest = std.mem.trimLeft(u8, trimmed["switch".len..], " \t");
+    if (rest.len == 0) return gpa.dupe(u8, line);
+    if (rest[0] == '(') return gpa.dupe(u8, line);
+    if (!startsWithWordIgnoreCase(rest, "on")) return gpa.dupe(u8, line);
+
+    rest = std.mem.trimLeft(u8, rest["on".len..], " \t");
+    if (rest.len == 0) return gpa.dupe(u8, line);
+
+    const has_block = rest[rest.len - 1] == '{';
+    const expr = if (has_block)
+        std.mem.trimRight(u8, rest[0 .. rest.len - 1], " \t")
+    else
+        std.mem.trim(u8, rest, " \t");
+    if (expr.len == 0) return gpa.dupe(u8, line);
+
+    if (has_block) {
+        return std.fmt.allocPrint(gpa, "switch ({s}) {{", .{expr});
+    }
+    return std.fmt.allocPrint(gpa, "switch ({s})", .{expr});
+}
+
+fn normalizeApexWhenLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (!startsWithWordIgnoreCase(trimmed, "when")) return null;
+
+    var rest = std.mem.trimLeft(u8, trimmed["when".len..], " \t");
+    if (rest.len == 0) return null;
+    const has_block = rest[rest.len - 1] == '{';
+    if (has_block) {
+        rest = std.mem.trimRight(u8, rest[0 .. rest.len - 1], " \t");
+        if (rest.len == 0) return null;
+    }
+
+    if (startsWithWordIgnoreCase(rest, "else")) {
+        const trailing = std.mem.trimLeft(u8, rest["else".len..], " \t");
+        if (trailing.len != 0) return null;
+        if (has_block) return try gpa.dupe(u8, "default -> {");
+        return try gpa.dupe(u8, "default ->");
+    }
+
+    var values = try splitCallArguments(gpa, rest);
+    defer values.deinit(gpa);
+    if (values.items.len == 0) return null;
+
+    var converted_values: std.ArrayList([]u8) = .empty;
+    defer {
+        for (converted_values.items) |value| gpa.free(value);
+        converted_values.deinit(gpa);
+    }
+
+    for (values.items) |value| {
+        if (std.mem.indexOf(u8, value, "..") != null) return null;
+        var ws_parts = try splitTopLevelWhitespaceExpressions(gpa, value);
+        defer ws_parts.deinit(gpa);
+        if (ws_parts.items.len > 1) return null;
+
+        try converted_values.append(gpa, try convertApexExpressionToJava(gpa, value));
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "case ");
+    for (converted_values.items, 0..) |value, idx| {
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, value);
+    }
+    try out.appendSlice(gpa, " ->");
+    if (has_block) try out.appendSlice(gpa, " {");
+    return try out.toOwnedSlice(gpa);
 }
 
 fn containsWordIgnoreCase(text: []const u8, word: []const u8) bool {
@@ -3298,6 +3386,28 @@ test "transpileSoqlAndDmlAndControlLines" {
     try std.testing.expectEqualStrings("return new LinkedHashMap<String, ApexSObject>();", return_with_new.?);
 }
 
+test "transpileControlFlowLine converts apex switch/when syntax" {
+    const gpa = std.testing.allocator;
+
+    const switch_header = try transpileControlFlowLine(gpa, "switch on stageName {");
+    defer if (switch_header) |value| gpa.free(value);
+    try std.testing.expect(switch_header != null);
+    try std.testing.expectEqualStrings("switch (stageName) {", switch_header.?);
+
+    const when_values = try transpileControlFlowLine(gpa, "when 'New', 'Working' {");
+    defer if (when_values) |value| gpa.free(value);
+    try std.testing.expect(when_values != null);
+    try std.testing.expectEqualStrings("case \"New\", \"Working\" -> {", when_values.?);
+
+    const when_else = try transpileControlFlowLine(gpa, "when else {");
+    defer if (when_else) |value| gpa.free(value);
+    try std.testing.expect(when_else != null);
+    try std.testing.expectEqualStrings("default -> {", when_else.?);
+
+    const unsupported_pattern = try transpileControlFlowLine(gpa, "when Account acc {");
+    try std.testing.expect(unsupported_pattern == null);
+}
+
 test "transpileSoqlLine supports list map and single-sobject declarations" {
     const gpa = std.testing.allocator;
 
@@ -3372,6 +3482,16 @@ test "convertApexExpressionToJava rewrites database query-string consumers" {
     try std.testing.expectEqualStrings(
         "Database.getQueryLocator(\"SELECT Id FROM Account\")",
         locator,
+    );
+
+    const count = try convertApexExpressionToJava(
+        gpa,
+        "Database.countQuery([SELECT Id FROM Account WHERE Name = :name])",
+    );
+    defer gpa.free(count);
+    try std.testing.expectEqualStrings(
+        "Database.countQuery(\"SELECT Id FROM Account WHERE Name = :name\")",
+        count,
     );
 
     const with_binds = try convertApexExpressionToJava(
