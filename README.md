@@ -137,10 +137,12 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 ## Apex-to-Java Transpile (Scaffold)
 
 `apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
-現状はメソッド本体をコメントとして埋め込み、`@IsTest` クラス/メソッドを `@Test` 付きメソッドに変換します。
-`System.assert*` 行は `SystemAssert.*` 呼び出しへ自動変換します。
-`System.debug(...)` は `System.out.println(...)` に変換します。
-`List/Map/Set` の基本宣言（`new List/Map/Set`）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) へ変換します。
+現状は `@IsTest` の `@Test` 化に加え、メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティの骨組みも生成します。
+`System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
+`List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
+`new Task(Subject='x', WhatId=...)` のような named-arg 風 SObject コンストラクタは `ApexSObject.of(...).set(...)` に変換します。
+`[SELECT ...]` は単行/複数行とも `Database.query(...)` に変換し、`insert/update/upsert/delete/undelete`（`upsert ... ExternalId__c` 含む）を `Database.*` 呼び出しへ変換します。
+未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.get("Id")` に変換します。
 
 ```bash
 zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated

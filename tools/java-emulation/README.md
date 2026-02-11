@@ -36,7 +36,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 
 - これは Apex VM の完全再現ではなく、ローカルのデバッグ/概算向けです。
 - `apexemu.runtime.ApexDb` と `apexemu.runtime.Limits` を使って負荷や回数を明示的に記録します。
-- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（best-effort / 手動移植前提、`System.assert*` は `SystemAssert.*`、`System.debug` は `System.out.println`、基本 `List/Map/Set` 宣言は Java collection へ変換）。
+- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（best-effort / 手動移植前提、`System.assert*` は `SystemAssert.*`、`System.debug` は `System.out.println`。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティ、`List/Map/Set` 宣言・コンストラクタ・リテラル、named-arg 風 SObject コンストラクタ、単行/複数行 `[SELECT ...]`、基本 DML 文の変換に対応）。
 
 ## Assertion API
 
