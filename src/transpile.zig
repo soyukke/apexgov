@@ -887,14 +887,44 @@ fn transpileSoqlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
             .{ left, java_query },
         );
     }
+
+    if (try parseCollectionDeclaration(gpa, left)) |decl| {
+        defer {
+            gpa.free(decl.java_type);
+            gpa.free(decl.variable_name);
+        }
+        if (decl.kind == .list) {
+            return try std.fmt.allocPrint(
+                gpa,
+                "{s} {s} = Database.query({s});",
+                .{ decl.java_type, decl.variable_name, java_query },
+            );
+        }
+        if (decl.kind == .map) {
+            return try std.fmt.allocPrint(
+                gpa,
+                "{s} {s} = ApexCollections.mapById(Database.query({s}));",
+                .{ decl.java_type, decl.variable_name, java_query },
+            );
+        }
+    }
+
+    if (try parseTypedVariableDeclaration(gpa, left, false)) |decl| {
+        defer {
+            gpa.free(decl.declaration_head);
+            gpa.free(decl.variable_name);
+            gpa.free(decl.java_type);
+        }
+        return try std.fmt.allocPrint(
+            gpa,
+            "{s} = ApexCollections.firstOrNull(Database.query({s}));",
+            .{ decl.declaration_head, java_query },
+        );
+    }
+
     const var_name = lastIdentifier(left) orelse return null;
     if (var_name.len == 0) return null;
-
-    return try std.fmt.allocPrint(
-        gpa,
-        "List<ApexSObject> {s} = Database.query({s});",
-        .{ var_name, java_query },
-    );
+    return try std.fmt.allocPrint(gpa, "List<ApexSObject> {s} = Database.query({s});", .{ var_name, java_query });
 }
 
 fn transpileDmlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
@@ -904,11 +934,37 @@ fn transpileDmlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
         trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
     }
 
-    const keywords = [_][]const u8{ "insert", "update", "upsert", "delete", "undelete" };
+    const keywords = [_][]const u8{ "insert", "update", "upsert", "delete", "undelete", "merge" };
     for (keywords) |keyword| {
         if (!startsWithWordIgnoreCase(trimmed, keyword)) continue;
         const payload = std.mem.trimLeft(u8, trimmed[keyword.len..], " \t");
         if (payload.len == 0) return null;
+
+        if (std.ascii.eqlIgnoreCase(keyword, "merge")) {
+            var args = if (std.mem.indexOfScalar(u8, payload, ',') != null)
+                try splitCallArguments(gpa, payload)
+            else
+                try splitWhitespace(gpa, payload);
+            defer args.deinit(gpa);
+            if (args.items.len < 2 or args.items.len > 3) return null;
+
+            const master = try convertApexExpressionToJava(gpa, args.items[0]);
+            defer gpa.free(master);
+            const dup1 = try convertApexExpressionToJava(gpa, args.items[1]);
+            defer gpa.free(dup1);
+
+            if (args.items.len == 2) {
+                return try std.fmt.allocPrint(gpa, "Database.merge({s}, {s});", .{ master, dup1 });
+            }
+
+            const dup2 = try convertApexExpressionToJava(gpa, args.items[2]);
+            defer gpa.free(dup2);
+            return try std.fmt.allocPrint(
+                gpa,
+                "Database.merge({s}, java.util.List.of({s}, {s}));",
+                .{ master, dup1, dup2 },
+            );
+        }
 
         if (std.ascii.eqlIgnoreCase(keyword, "upsert")) {
             if (splitTrailingIdentifierAtTopLevel(payload)) |split| {
@@ -1112,6 +1168,12 @@ const CollectionDeclaration = struct {
     variable_name: []u8,
 };
 
+const TypedVariableDeclaration = struct {
+    declaration_head: []u8,
+    variable_name: []u8,
+    java_type: []u8,
+};
+
 fn parseCollectionDeclaration(gpa: std.mem.Allocator, left: []const u8) !?CollectionDeclaration {
     var rest = std.mem.trim(u8, left, " \t");
     if (startsWithIgnoreCase(rest, "final ")) {
@@ -1141,6 +1203,58 @@ fn parseCollectionDeclaration(gpa: std.mem.Allocator, left: []const u8) !?Collec
         .kind = kind,
         .java_type = java_type,
         .variable_name = try gpa.dupe(u8, variable_name),
+    };
+}
+
+fn parseTypedVariableDeclaration(
+    gpa: std.mem.Allocator,
+    left: []const u8,
+    allow_visibility: bool,
+) !?TypedVariableDeclaration {
+    const trimmed = std.mem.trim(u8, left, " \t");
+    if (trimmed.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, trimmed, '.')) |_| return null;
+
+    var tokens = try splitWhitespace(gpa, trimmed);
+    defer tokens.deinit(gpa);
+    if (tokens.items.len < 2) return null;
+
+    const variable_name = tokens.items[tokens.items.len - 1];
+    if (!isSimpleIdentifier(variable_name)) return null;
+
+    var modifier_out: std.ArrayList(u8) = .empty;
+    defer modifier_out.deinit(gpa);
+
+    var type_index: usize = 0;
+    while (type_index + 1 < tokens.items.len and isDeclarationModifier(tokens.items[type_index], allow_visibility)) : (type_index += 1) {
+        if (modifier_out.items.len > 0) try modifier_out.append(gpa, ' ');
+        try modifier_out.appendSlice(gpa, normalizeDeclarationModifier(tokens.items[type_index]));
+    }
+    if (type_index >= tokens.items.len - 1) return null;
+
+    var type_raw_buf: std.ArrayList(u8) = .empty;
+    defer type_raw_buf.deinit(gpa);
+    for (tokens.items[type_index .. tokens.items.len - 1], 0..) |part, idx| {
+        if (idx != 0) try type_raw_buf.append(gpa, ' ');
+        try type_raw_buf.appendSlice(gpa, part);
+    }
+    const type_raw = try type_raw_buf.toOwnedSlice(gpa);
+    defer gpa.free(type_raw);
+    if (!looksLikeTypeName(type_raw)) return null;
+
+    const java_type = try convertApexType(gpa, type_raw);
+    errdefer gpa.free(java_type);
+
+    const declaration_head = if (modifier_out.items.len == 0)
+        try std.fmt.allocPrint(gpa, "{s} {s}", .{ java_type, variable_name })
+    else
+        try std.fmt.allocPrint(gpa, "{s} {s} {s}", .{ modifier_out.items, java_type, variable_name });
+    errdefer gpa.free(declaration_head);
+
+    return .{
+        .declaration_head = declaration_head,
+        .variable_name = try gpa.dupe(u8, variable_name),
+        .java_type = java_type,
     };
 }
 
@@ -1455,8 +1569,12 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) a
     gpa.free(literal_converted);
     errdefer gpa.free(soql_converted);
 
-    const indexed_converted = try convertBracketIndexAccess(gpa, soql_converted);
+    const soql_api_converted = try rewriteDatabaseQueryStringConsumers(gpa, soql_converted);
     gpa.free(soql_converted);
+    errdefer gpa.free(soql_api_converted);
+
+    const indexed_converted = try convertBracketIndexAccess(gpa, soql_api_converted);
+    gpa.free(soql_api_converted);
     errdefer gpa.free(indexed_converted);
 
     const ctor_converted = try convertInlineCollectionConstructors(gpa, indexed_converted);
@@ -1905,6 +2023,123 @@ fn convertInlineSoqlQueries(gpa: std.mem.Allocator, text: []const u8) anyerror![
     if (!replaced) return gpa.dupe(u8, text);
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDatabaseQueryStringConsumers(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        if (!startsWithIgnoreCase(text[i..], "Database.")) continue;
+
+        const method_candidates = [_][]const u8{
+            "getQueryLocator",
+            "countQuery",
+            "queryWithBinds",
+            "countQueryWithBinds",
+            "getQueryLocatorWithBinds",
+        };
+
+        const method_start = i + "Database.".len;
+        if (method_start >= text.len) continue;
+
+        var method_name: ?[]const u8 = null;
+        for (method_candidates) |candidate| {
+            if (!startsWithIgnoreCase(text[method_start..], candidate)) continue;
+            const boundary = method_start + candidate.len;
+            if (boundary < text.len and isIdentifierChar(text[boundary])) continue;
+            method_name = candidate;
+            break;
+        }
+        if (method_name == null) continue;
+
+        var cursor = method_start + method_name.?.len;
+        while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (cursor >= text.len or text[cursor] != '(') continue;
+        const close_paren = findMatchingParen(text, cursor) orelse continue;
+
+        const args_raw = std.mem.trim(u8, text[(cursor + 1)..close_paren], " \t");
+        if (args_raw.len == 0) continue;
+
+        var args = try splitCallArguments(gpa, args_raw);
+        defer args.deinit(gpa);
+        if (args.items.len == 0) continue;
+
+        const first_arg = std.mem.trim(u8, args.items[0], " \t");
+        const unwrapped_query = unwrapDatabaseQueryCall(first_arg) orelse continue;
+
+        const one_arg = std.ascii.eqlIgnoreCase(method_name.?, "getQueryLocator") or
+            std.ascii.eqlIgnoreCase(method_name.?, "countQuery");
+        if (one_arg and args.items.len != 1) continue;
+        if (!one_arg and args.items.len < 2) continue;
+
+        var replacement: std.ArrayList(u8) = .empty;
+        defer replacement.deinit(gpa);
+        try appendFmt(gpa, &replacement, "Database.{s}(", .{method_name.?});
+        try replacement.appendSlice(gpa, unwrapped_query);
+        if (!one_arg) {
+            for (args.items[1..]) |tail_arg| {
+                try replacement.appendSlice(gpa, ", ");
+                try replacement.appendSlice(gpa, tail_arg);
+            }
+        }
+        try replacement.append(gpa, ')');
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, replacement.items);
+        replaced = true;
+        i = close_paren;
+        last_emit = close_paren + 1;
+        in_double = false;
+        escaped = false;
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn unwrapDatabaseQueryCall(arg: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, arg, " \t");
+    if (!startsWithIgnoreCase(trimmed, "Database.query")) return null;
+
+    const method_end = "Database.query".len;
+    if (method_end < trimmed.len and isIdentifierChar(trimmed[method_end])) return null;
+
+    var cursor = method_end;
+    while (cursor < trimmed.len and std.ascii.isWhitespace(trimmed[cursor])) : (cursor += 1) {}
+    if (cursor >= trimmed.len or trimmed[cursor] != '(') return null;
+
+    const close_paren = findMatchingParen(trimmed, cursor) orelse return null;
+    const trailing = std.mem.trim(u8, trimmed[(close_paren + 1)..], " \t");
+    if (trailing.len != 0) return null;
+
+    const inner = std.mem.trim(u8, trimmed[(cursor + 1)..close_paren], " \t");
+    if (inner.len == 0) return null;
+    return inner;
 }
 
 fn convertSObjectFieldAccess(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
@@ -2864,6 +3099,34 @@ test "transpileSoqlAndDmlAndControlLines" {
     try std.testing.expectEqualStrings("return new LinkedHashMap<String, ApexSObject>();", return_with_new.?);
 }
 
+test "transpileSoqlLine supports list map and single-sobject declarations" {
+    const gpa = std.testing.allocator;
+
+    const list_decl = try transpileSoqlLine(gpa, "List<Account> rows = [SELECT Id, Name FROM Account LIMIT 10];");
+    defer if (list_decl) |value| gpa.free(value);
+    try std.testing.expect(list_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<ApexSObject> rows = Database.query(\"SELECT Id, Name FROM Account LIMIT 10\");",
+        list_decl.?,
+    );
+
+    const map_decl = try transpileSoqlLine(gpa, "Map<Id, Account> accountMap = [SELECT Id, Name FROM Account LIMIT 10];");
+    defer if (map_decl) |value| gpa.free(value);
+    try std.testing.expect(map_decl != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account LIMIT 10\"));",
+        map_decl.?,
+    );
+
+    const single_decl = try transpileSoqlLine(gpa, "Account acc = [SELECT Id, Name FROM Account LIMIT 1];");
+    defer if (single_decl) |value| gpa.free(value);
+    try std.testing.expect(single_decl != null);
+    try std.testing.expectEqualStrings(
+        "ApexSObject acc = ApexCollections.firstOrNull(Database.query(\"SELECT Id, Name FROM Account LIMIT 1\"));",
+        single_decl.?,
+    );
+}
+
 test "transpileExecutableLine prefers collection declaration rewrite for map query initializer" {
     const gpa = std.testing.allocator;
     const line = "Map<Id, Account> accountMap = new Map<Id, Account>([SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10]);";
@@ -2886,6 +3149,30 @@ test "convertApexExpressionToJava converts nested inline collection constructors
     try std.testing.expectEqualStrings(
         "new LinkedHashMap<String, ApexSObject>(new LinkedHashMap<String, ApexSObject>())",
         converted,
+    );
+}
+
+test "convertApexExpressionToJava rewrites database query-string consumers" {
+    const gpa = std.testing.allocator;
+
+    const locator = try convertApexExpressionToJava(
+        gpa,
+        "Database.getQueryLocator([SELECT Id FROM Account])",
+    );
+    defer gpa.free(locator);
+    try std.testing.expectEqualStrings(
+        "Database.getQueryLocator(\"SELECT Id FROM Account\")",
+        locator,
+    );
+
+    const with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.queryWithBinds([SELECT Id FROM Account WHERE Name = :name], binds)",
+    );
+    defer gpa.free(with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.queryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", binds)",
+        with_binds,
     );
 }
 
@@ -2962,7 +3249,7 @@ test "transpileGenericStatementLine converts declarations assignments and calls"
     try std.testing.expectEqualStrings("this.Name = name;", this_assign.?);
 }
 
-test "transpileDmlLine supports upsert with external id hint" {
+test "transpileDmlLine supports upsert with external id hint and merge" {
     const gpa = std.testing.allocator;
     const line = try transpileDmlLine(gpa, "upsert tasksToInsert External_Id__c;");
     defer if (line) |value| gpa.free(value);
@@ -2970,6 +3257,22 @@ test "transpileDmlLine supports upsert with external id hint" {
     try std.testing.expectEqualStrings(
         "Database.upsert(tasksToInsert); // external id field: External_Id__c",
         line.?,
+    );
+
+    const merge_two = try transpileDmlLine(gpa, "merge masterAccount duplicateAccount;");
+    defer if (merge_two) |value| gpa.free(value);
+    try std.testing.expect(merge_two != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, duplicateAccount);",
+        merge_two.?,
+    );
+
+    const merge_three = try transpileDmlLine(gpa, "merge masterAccount, duplicateA, duplicateB;");
+    defer if (merge_three) |value| gpa.free(value);
+    try std.testing.expect(merge_three != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, java.util.List.of(duplicateA, duplicateB));",
+        merge_three.?,
     );
 }
 

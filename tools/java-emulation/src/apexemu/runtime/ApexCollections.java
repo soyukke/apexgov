@@ -32,4 +32,11 @@ public final class ApexCollections {
     }
     return out;
   }
+
+  public static ApexSObject firstOrNull(List<ApexSObject> rows) {
+    if (rows == null || rows.isEmpty()) {
+      return null;
+    }
+    return rows.get(0);
+  }
 }
