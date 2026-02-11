@@ -1191,6 +1191,20 @@ fn transpileAssertionLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
                 if (converted.items.len < 1 or converted.items.len > 2) return null;
                 return try buildApexAssertCall(gpa, "isNotNull", converted.items);
             }
+            if (std.ascii.eqlIgnoreCase(method_name, "isInstanceOfType")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                const normalized_type_arg = try normalizeApexAssertTypeArg(gpa, converted.items[1]);
+                gpa.free(converted.items[1]);
+                converted.items[1] = normalized_type_arg;
+                return try buildApexAssertCall(gpa, "isInstanceOfType", converted.items);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isNotInstanceOfType")) {
+                if (converted.items.len < 2 or converted.items.len > 3) return null;
+                const normalized_type_arg = try normalizeApexAssertTypeArg(gpa, converted.items[1]);
+                gpa.free(converted.items[1]);
+                converted.items[1] = normalized_type_arg;
+                return try buildApexAssertCall(gpa, "isNotInstanceOfType", converted.items);
+            }
             if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
                 if (converted.items.len > 1) return null;
                 return try buildApexAssertCall(gpa, "fail", converted.items);
@@ -1811,6 +1825,34 @@ fn buildSystemAssertCall(gpa: std.mem.Allocator, method_name: []const u8, args: 
 
 fn buildApexAssertCall(gpa: std.mem.Allocator, method_name: []const u8, args: []const []const u8) ![]u8 {
     return buildAssertCall(gpa, "ApexAssert", method_name, args);
+}
+
+fn normalizeApexAssertTypeArg(gpa: std.mem.Allocator, raw_arg: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw_arg, " \t");
+    if (trimmed.len < 7) return try gpa.dupe(u8, raw_arg);
+    if (!std.mem.endsWith(u8, trimmed, ".class")) return try gpa.dupe(u8, raw_arg);
+
+    const type_expr = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - ".class".len], " \t");
+    const simple_name = extractSimpleTypeName(type_expr) orelse return try gpa.dupe(u8, raw_arg);
+    return try std.fmt.allocPrint(gpa, "\"{s}\"", .{simple_name});
+}
+
+fn extractSimpleTypeName(type_expr_raw: []const u8) ?[]const u8 {
+    const type_expr = std.mem.trim(u8, type_expr_raw, " \t");
+    if (type_expr.len == 0) return null;
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < type_expr.len) : (i += 1) {
+        const c = type_expr[i];
+        if (c == '.') {
+            start = i + 1;
+            continue;
+        }
+        if (!isIdentifierChar(c)) return null;
+    }
+    if (start >= type_expr.len) return null;
+    return type_expr[start..];
 }
 
 fn buildAssertCall(gpa: std.mem.Allocator, class_name: []const u8, method_name: []const u8, args: []const []const u8) ![]u8 {
@@ -3900,6 +3942,22 @@ test "transpileAssertionLine converts Assert and System.Assert API" {
     try std.testing.expectEqualStrings(
         "ApexAssert.fail();",
         three.?,
+    );
+
+    const four = try transpileAssertionLine(gpa, "Assert.isInstanceOfType(record, Account.class, 'expected account');");
+    defer if (four) |value| gpa.free(value);
+    try std.testing.expect(four != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isInstanceOfType(record, \"Account\", \"expected account\");",
+        four.?,
+    );
+
+    const five = try transpileAssertionLine(gpa, "System.Assert.isNotInstanceOfType(payload, Contact.class);");
+    defer if (five) |value| gpa.free(value);
+    try std.testing.expect(five != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isNotInstanceOfType(payload, \"Contact\");",
+        five.?,
     );
 }
 

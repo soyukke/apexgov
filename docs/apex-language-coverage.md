@@ -94,7 +94,7 @@
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `@Test` method discovery/execution | supported | 0引数メソッド実行 |
-| assertion API (`SystemAssert.*`, `ApexAssert.*`) | supported | `System.assert*` + `Assert.*` 相当（equals/null/bool/fail） |
+| assertion API (`SystemAssert.*`, `ApexAssert.*`) | supported | `System.assert*` + `Assert.*` 相当（equals/null/bool/fail/type-instance） |
 | failure location (`File.java:line`) | supported | 失敗時に表示 |
 | CPU/Heap threshold fail | supported | `--cpu-limit-ms` / `--heap-limit-bytes` |
 | `Limits.get*` API | supported | queries/dml/cpu/heap と limit 値を取得 |

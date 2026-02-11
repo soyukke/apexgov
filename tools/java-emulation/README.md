@@ -50,6 +50,18 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `assertNotNull(value, message)`
 - `fail(message)`
 
+`apexemu.runtime.ApexAssert` で `Assert.*` 相当の検証ができます。
+
+- `isTrue(condition[, message])`
+- `isFalse(condition[, message])`
+- `areEqual(expected, actual[, message])`
+- `areNotEqual(notExpected, actual[, message])`
+- `isNull(value[, message])`
+- `isNotNull(value[, message])`
+- `isInstanceOfType(instance, expectedType[, message])`
+- `isNotInstanceOfType(instance, notExpectedType[, message])`
+- `fail([message])`
+
 失敗時は `AssertionError` と、テスト側の位置情報（`File.java:line`）を出力します。
 
 ## Limits / Test API

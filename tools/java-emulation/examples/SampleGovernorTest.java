@@ -1506,6 +1506,12 @@ public final class SampleGovernorTest {
     ApexAssert.areNotEqual("A", "B", "areNotEqual should pass");
     ApexAssert.isNull(null, "isNull should pass");
     ApexAssert.isNotNull("x", "isNotNull should pass");
+    ApexAssert.isInstanceOfType("x", String.class, "String instance check should pass");
+    ApexAssert.isNotInstanceOfType("x", Integer.class, "negative class instance check should pass");
+
+    ApexSObject account = ApexSObject.of("Account").set("Name", "Acme");
+    ApexAssert.isInstanceOfType(account, "Account", "sobject type-name check should pass");
+    ApexAssert.isNotInstanceOfType(account, "Contact", "sobject negative type-name check should pass");
 
     boolean failed = false;
     try {
@@ -1516,6 +1522,28 @@ public final class SampleGovernorTest {
           expected.getMessage().contains("forced failure"), "fail should keep message");
     }
     SystemAssert.assertTrue(failed, "ApexAssert.fail should throw AssertionError");
+
+    boolean instanceFailed = false;
+    try {
+      ApexAssert.isInstanceOfType(account, "Contact", "expected failure");
+    } catch (AssertionError expected) {
+      instanceFailed = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("expected failure"),
+          "isInstanceOfType failure should keep message");
+    }
+    SystemAssert.assertTrue(instanceFailed, "isInstanceOfType mismatch should throw");
+
+    boolean notInstanceFailed = false;
+    try {
+      ApexAssert.isNotInstanceOfType(account, "Account", "expected failure");
+    } catch (AssertionError expected) {
+      notInstanceFailed = true;
+      SystemAssert.assertTrue(
+          expected.getMessage().contains("expected failure"),
+          "isNotInstanceOfType failure should keep message");
+    }
+    SystemAssert.assertTrue(notInstanceFailed, "isNotInstanceOfType mismatch should throw");
   }
 
   @Test

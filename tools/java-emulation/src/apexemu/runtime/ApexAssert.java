@@ -51,6 +51,38 @@ public final class ApexAssert {
     SystemAssert.assertNotNull(value, message);
   }
 
+  public static void isInstanceOfType(Object instance, Object expectedType) {
+    isInstanceOfType(instance, expectedType, null);
+  }
+
+  public static void isInstanceOfType(Object instance, Object expectedType, String message) {
+    if (!isInstanceMatch(instance, expectedType)) {
+      SystemAssert.fail(
+          defaultMessage(
+              "Expected instance of <" + describeExpectedType(expectedType) + "> but was <"
+                  + describeInstanceType(instance)
+                  + ">",
+              message));
+    }
+  }
+
+  public static void isNotInstanceOfType(Object instance, Object notExpectedType) {
+    isNotInstanceOfType(instance, notExpectedType, null);
+  }
+
+  public static void isNotInstanceOfType(Object instance, Object notExpectedType, String message) {
+    if (isInstanceMatch(instance, notExpectedType)) {
+      SystemAssert.fail(
+          defaultMessage(
+              "Expected value not to be instance of <"
+                  + describeExpectedType(notExpectedType)
+                  + "> but was <"
+                  + describeInstanceType(instance)
+                  + ">",
+              message));
+    }
+  }
+
   public static void fail() {
     fail("Assertion failed");
   }
@@ -65,5 +97,71 @@ public final class ApexAssert {
 
   public static void equalsLong(long expected, long actual, String message) {
     areEqual(expected, actual, message);
+  }
+
+  private static boolean isInstanceMatch(Object instance, Object expectedType) {
+    if (instance == null || expectedType == null) {
+      return false;
+    }
+
+    if (expectedType instanceof Class<?> expectedClass) {
+      if (expectedClass.isInstance(instance)) {
+        return true;
+      }
+      if (instance instanceof ApexSObject row) {
+        String simpleName = expectedClass.getSimpleName();
+        String canonicalName = expectedClass.getName();
+        return row.type().equalsIgnoreCase(simpleName) || row.type().equalsIgnoreCase(canonicalName);
+      }
+      return false;
+    }
+
+    final String expectedTypeName;
+    if (expectedType instanceof String raw) {
+      expectedTypeName = raw.trim();
+    } else if (expectedType instanceof ApexSObject rowType) {
+      expectedTypeName = rowType.type();
+    } else {
+      expectedTypeName = String.valueOf(expectedType).trim();
+    }
+    if (expectedTypeName.isEmpty()) {
+      return false;
+    }
+
+    if (instance instanceof ApexSObject row) {
+      return row.type().equalsIgnoreCase(expectedTypeName);
+    }
+
+    Class<?> actualClass = instance.getClass();
+    return actualClass.getSimpleName().equalsIgnoreCase(expectedTypeName)
+        || actualClass.getName().equalsIgnoreCase(expectedTypeName);
+  }
+
+  private static String describeExpectedType(Object expectedType) {
+    if (expectedType == null) {
+      return "null";
+    }
+    if (expectedType instanceof Class<?> clazz) {
+      return clazz.getName();
+    }
+    if (expectedType instanceof ApexSObject rowType) {
+      return rowType.type();
+    }
+    String text = String.valueOf(expectedType).trim();
+    return text.isEmpty() ? "unknown" : text;
+  }
+
+  private static String describeInstanceType(Object instance) {
+    if (instance == null) {
+      return "null";
+    }
+    if (instance instanceof ApexSObject row) {
+      return row.type();
+    }
+    return instance.getClass().getName();
+  }
+
+  private static String defaultMessage(String fallback, String message) {
+    return message == null || message.isBlank() ? fallback : message;
   }
 }
