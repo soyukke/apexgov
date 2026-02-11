@@ -140,6 +140,7 @@ relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/
 現状は `@IsTest` の `@Test` 化に加え、メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティの骨組みも生成します。
 `System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
 `List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
+`new Map<Id, Account>(records)` や `new Map<Id, Account>(existingMap)` は `ApexCollections.toIdMap(...)` に変換します。
 `new Task(Subject='x', WhatId=...)` のような named-arg 風 SObject コンストラクタは `ApexSObject.of(...).set(...)` に変換します。
 `[SELECT ...]` は単行/複数行とも `Database.query(...)` に変換し、単一SObjectへの代入は `ApexCollections.firstOrNull(Database.query(...))` に変換します。`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る `[SELECT ...]` は query string に正規化します。
 `insert/update/upsert/delete/undelete/merge`（`upsert ... ExternalId__c` 含む）は `Database.*` 呼び出しへ変換します。`merge` は `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2` を扱えます。未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.getAs("Id")` に変換します。

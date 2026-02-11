@@ -1102,7 +1102,7 @@ fn transpileCollectionDeclarationLine(gpa: std.mem.Allocator, line: []const u8) 
 
     if (right.len == 0) return null;
 
-    const maybe_init = try transpileCollectionInitializer(gpa, decl.kind, right);
+    const maybe_init = try transpileCollectionInitializer(gpa, decl.kind, decl.java_type, right);
     if (maybe_init) |initializer| {
         defer gpa.free(initializer);
         return try std.fmt.allocPrint(gpa, "{s} {s} = {s};", .{ decl.java_type, decl.variable_name, initializer });
@@ -1255,7 +1255,12 @@ fn parseTypedVariableDeclaration(
     };
 }
 
-fn transpileCollectionInitializer(gpa: std.mem.Allocator, kind: CollectionKind, right: []const u8) !?[]u8 {
+fn transpileCollectionInitializer(
+    gpa: std.mem.Allocator,
+    kind: CollectionKind,
+    java_type: []const u8,
+    right: []const u8,
+) !?[]u8 {
     var rest = std.mem.trim(u8, right, " \t");
     if (!startsWithIgnoreCase(rest, "new")) return null;
     rest = std.mem.trimLeft(u8, rest["new".len..], " \t");
@@ -1291,6 +1296,12 @@ fn transpileCollectionInitializer(gpa: std.mem.Allocator, kind: CollectionKind, 
     if (kind == .map and args.items.len == 1) {
         const single = try convertApexExpressionToJava(gpa, args.items[0]);
         defer gpa.free(single);
+        if (try isIdSObjectMapType(gpa, java_type)) {
+            if (startsWithIgnoreCase(std.mem.trim(u8, single, " \t"), "Database.query(")) {
+                return try std.fmt.allocPrint(gpa, "ApexCollections.mapById({s})", .{single});
+            }
+            return try std.fmt.allocPrint(gpa, "ApexCollections.toIdMap({s})", .{single});
+        }
         if (startsWithIgnoreCase(std.mem.trim(u8, single, " \t"), "Database.query(")) {
             return try std.fmt.allocPrint(gpa, "ApexCollections.mapById({s})", .{single});
         }
@@ -1838,16 +1849,34 @@ fn convertInlineCollectionConstructors(gpa: std.mem.Allocator, text: []const u8)
         const close_paren = findMatchingParen(text, cursor) orelse continue;
 
         const args_raw = text[(cursor + 1)..close_paren];
-        const converted_args = try convertInlineCollectionConstructors(gpa, args_raw);
-        defer gpa.free(converted_args);
+        var args = try splitCallArguments(gpa, args_raw);
+        defer args.deinit(gpa);
 
         const impl_name = collectionImplName(kind);
-        const args_trimmed = std.mem.trim(u8, converted_args, " \t");
-        const drop_query_arg = kind == .map and startsWithIgnoreCase(args_trimmed, "Database.query(");
-        const replacement = if (args_trimmed.len == 0 or drop_query_arg)
-            try std.fmt.allocPrint(gpa, "new {s}<{s}>()", .{ impl_name, java_generic })
-        else
-            try std.fmt.allocPrint(gpa, "new {s}<{s}>({s})", .{ impl_name, java_generic, converted_args });
+        var replacement: []u8 = undefined;
+        if (args.items.len == 0) {
+            replacement = try std.fmt.allocPrint(gpa, "new {s}<{s}>()", .{ impl_name, java_generic });
+        } else if (kind == .map and args.items.len == 1 and try isIdSObjectMapGeneric(gpa, java_generic)) {
+            const single = try convertApexExpressionToJava(gpa, args.items[0]);
+            defer gpa.free(single);
+            if (startsWithIgnoreCase(std.mem.trim(u8, single, " \t"), "Database.query(")) {
+                replacement = try std.fmt.allocPrint(gpa, "ApexCollections.mapById({s})", .{single});
+            } else {
+                replacement = try std.fmt.allocPrint(gpa, "ApexCollections.toIdMap({s})", .{single});
+            }
+        } else {
+            var rendered: std.ArrayList(u8) = .empty;
+            defer rendered.deinit(gpa);
+            try appendFmt(gpa, &rendered, "new {s}<{s}>(", .{ impl_name, java_generic });
+            for (args.items, 0..) |arg, idx| {
+                const converted = try convertApexExpressionToJava(gpa, arg);
+                defer gpa.free(converted);
+                if (idx != 0) try rendered.appendSlice(gpa, ", ");
+                try rendered.appendSlice(gpa, converted);
+            }
+            try rendered.append(gpa, ')');
+            replacement = try rendered.toOwnedSlice(gpa);
+        }
         defer gpa.free(replacement);
 
         try out.appendSlice(gpa, text[last_emit..i]);
@@ -1863,6 +1892,24 @@ fn convertInlineCollectionConstructors(gpa: std.mem.Allocator, text: []const u8)
     if (!replaced) return gpa.dupe(u8, text);
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn isIdSObjectMapType(gpa: std.mem.Allocator, java_type: []const u8) !bool {
+    const trimmed = std.mem.trim(u8, java_type, " \t");
+    if (!startsWithIgnoreCase(trimmed, "Map<")) return false;
+    const open = std.mem.indexOfScalar(u8, trimmed, '<') orelse return false;
+    const close = findMatchingAngle(trimmed, open) orelse return false;
+    const inner = std.mem.trim(u8, trimmed[(open + 1)..close], " \t");
+    return isIdSObjectMapGeneric(gpa, inner);
+}
+
+fn isIdSObjectMapGeneric(gpa: std.mem.Allocator, generic: []const u8) !bool {
+    var parts = try splitTypeArguments(gpa, generic);
+    defer parts.deinit(gpa);
+    if (parts.items.len != 2) return false;
+    const key = std.mem.trim(u8, parts.items[0], " \t");
+    const value = std.mem.trim(u8, parts.items[1], " \t");
+    return std.ascii.eqlIgnoreCase(key, "String") and std.ascii.eqlIgnoreCase(value, "ApexSObject");
 }
 
 fn convertInlineCollectionLiterals(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
@@ -3198,6 +3245,28 @@ test "transpileCollectionDeclarationLine converts list map set declarations" {
         "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
         map_from_query_spaced.?,
     );
+
+    const map_from_list = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>(records);",
+    );
+    defer if (map_from_list) |value| gpa.free(value);
+    try std.testing.expect(map_from_list != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.toIdMap(records);",
+        map_from_list.?,
+    );
+
+    const map_from_existing_map = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> copied = new Map<Id, Account>(existingMap);",
+    );
+    defer if (map_from_existing_map) |value| gpa.free(value);
+    try std.testing.expect(map_from_existing_map != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> copied = ApexCollections.toIdMap(existingMap);",
+        map_from_existing_map.?,
+    );
 }
 
 test "transpileSoqlAndDmlAndControlLines" {
@@ -3277,8 +3346,18 @@ test "convertApexExpressionToJava converts nested inline collection constructors
     );
     defer gpa.free(converted);
     try std.testing.expectEqualStrings(
-        "new LinkedHashMap<String, ApexSObject>(new LinkedHashMap<String, ApexSObject>())",
+        "ApexCollections.toIdMap(new LinkedHashMap<String, ApexSObject>())",
         converted,
+    );
+
+    const from_list = try convertApexExpressionToJava(
+        gpa,
+        "new Map<Id, Account>(records)",
+    );
+    defer gpa.free(from_list);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.toIdMap(records)",
+        from_list,
     );
 }
 
