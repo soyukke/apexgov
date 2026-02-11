@@ -33,6 +33,11 @@ const LoopInfo = struct {
     max_iterations: ?u64,
 };
 
+const PendingLoopScopeStart = struct {
+    expected_depth: i32,
+    max_iterations: ?u64,
+};
+
 const DoLoopStart = struct {
     start_line: usize,
     end_depth: i32,
@@ -241,6 +246,7 @@ fn scanContent(
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
+    var pending_loop_scope: ?PendingLoopScopeStart = null;
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(gpa);
 
@@ -291,6 +297,9 @@ fn scanContent(
             brace_depth = updateBraceDepth(brace_depth, code_line);
             popClosedScopes(&loop_scopes, brace_depth);
             popClosedOwners(&owner_scopes, brace_depth);
+            if (pending_loop_scope) |pending| {
+                if (brace_depth < pending.expected_depth) pending_loop_scope = null;
+            }
             if (current_method) |*scope| {
                 if (!scope.entered_body and brace_depth >= scope.end_depth) {
                     scope.entered_body = true;
@@ -301,6 +310,16 @@ fn scanContent(
                 }
             }
             continue;
+        }
+
+        if (pending_loop_scope) |pending| {
+            if (trimmed[0] == '{' and brace_depth == pending.expected_depth) {
+                try loop_scopes.append(gpa, .{
+                    .end_depth = brace_depth + 1,
+                    .max_iterations = pending.max_iterations,
+                });
+            }
+            pending_loop_scope = null;
         }
 
         try applyBoundUpdates(arena_allocator, &bounds, trimmed);
@@ -536,11 +555,19 @@ fn scanContent(
                 .end_depth = brace_depth + 1,
                 .max_iterations = loop_info.?.max_iterations,
             });
+        } else if (loop_started and isDoLoopStart(trimmed)) {
+            pending_loop_scope = .{
+                .expected_depth = brace_depth,
+                .max_iterations = loop_info.?.max_iterations,
+            };
         }
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
         popClosedScopes(&loop_scopes, brace_depth);
         popClosedOwners(&owner_scopes, brace_depth);
+        if (pending_loop_scope) |pending| {
+            if (brace_depth < pending.expected_depth) pending_loop_scope = null;
+        }
         if (current_method) |*scope| {
             if (!scope.entered_body and brace_depth >= scope.end_depth) {
                 scope.entered_body = true;
@@ -615,6 +642,7 @@ fn collectMethodDirectMetricsAndCalls(
 
     var method_loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer method_loop_scopes.deinit(arena_allocator);
+    var pending_method_loop_scope: ?PendingLoopScopeStart = null;
 
     var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
@@ -657,6 +685,7 @@ fn collectMethodDirectMetricsAndCalls(
                         .end_depth = brace_depth + 1,
                         .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
                     };
+                    pending_method_loop_scope = null;
                     started_method = true;
                 }
             }
@@ -664,6 +693,15 @@ fn collectMethodDirectMetricsAndCalls(
             if (!started_method) {
                 if (current_method) |scope| {
                     popClosedScopes(&method_loop_scopes, brace_depth);
+                    if (pending_method_loop_scope) |pending| {
+                        if (trimmed[0] == '{' and brace_depth == pending.expected_depth) {
+                            try method_loop_scopes.append(arena_allocator, .{
+                                .end_depth = brace_depth + 1,
+                                .max_iterations = pending.max_iterations,
+                            });
+                        }
+                        pending_method_loop_scope = null;
+                    }
                     try applyBoundUpdates(arena_allocator, &method_bounds, trimmed);
                     try applyLocalTypeUpdates(arena_allocator, &type_env, trimmed);
                     const local_loop_info = inferLoopInfoAtLine(
@@ -697,12 +735,20 @@ fn collectMethodDirectMetricsAndCalls(
                             .end_depth = brace_depth + 1,
                             .max_iterations = local_loop_info.?.max_iterations,
                         });
+                    } else if (local_loop_info != null and isDoLoopStart(trimmed)) {
+                        pending_method_loop_scope = .{
+                            .expected_depth = brace_depth,
+                            .max_iterations = local_loop_info.?.max_iterations,
+                        };
                     }
                 }
             }
         }
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
+        if (pending_method_loop_scope) |pending| {
+            if (brace_depth < pending.expected_depth) pending_method_loop_scope = null;
+        }
         if (current_method) |*scope| {
             popClosedScopes(&method_loop_scopes, brace_depth);
             if (!scope.entered_body and brace_depth >= scope.end_depth) {
@@ -711,6 +757,7 @@ fn collectMethodDirectMetricsAndCalls(
             if (scope.entered_body and brace_depth < scope.end_depth) {
                 current_method = null;
                 type_env = std.StringHashMap([]const u8).init(arena_allocator);
+                pending_method_loop_scope = null;
             }
         }
         popClosedOwners(&owner_scopes, brace_depth);
@@ -2405,6 +2452,7 @@ fn collectDoWhileStartConditions(
 
     var do_stack: std.ArrayList(DoLoopStart) = .empty;
     defer do_stack.deinit(allocator);
+    var pending_do_start: ?DoLoopStart = null;
 
     var brace_depth: i32 = 0;
     var line_no: usize = 0;
@@ -2415,11 +2463,27 @@ fn collectDoWhileStartConditions(
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
 
         if (trimmed.len > 0) {
-            if (isDoLoopStart(trimmed) and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
-                try do_stack.append(allocator, .{
-                    .start_line = line_no,
-                    .end_depth = brace_depth + 1,
-                });
+            if (isDoLoopStart(trimmed)) {
+                if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+                    try do_stack.append(allocator, .{
+                        .start_line = line_no,
+                        .end_depth = brace_depth + 1,
+                    });
+                    pending_do_start = null;
+                } else {
+                    pending_do_start = .{
+                        .start_line = line_no,
+                        .end_depth = brace_depth,
+                    };
+                }
+            } else if (pending_do_start) |pending| {
+                if (trimmed[0] == '{' and pending.end_depth == brace_depth) {
+                    try do_stack.append(allocator, .{
+                        .start_line = pending.start_line,
+                        .end_depth = brace_depth + 1,
+                    });
+                }
+                pending_do_start = null;
             }
 
             if (try parseDoWhileTailCondition(allocator, trimmed)) |condition| {
@@ -2434,6 +2498,11 @@ fn collectDoWhileStartConditions(
         }
 
         brace_depth = updateBraceDepth(brace_depth, code_line);
+        if (pending_do_start) |pending| {
+            if (brace_depth < pending.end_depth) {
+                pending_do_start = null;
+            }
+        }
         while (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth > brace_depth) {
             _ = do_stack.pop();
         }
@@ -2655,6 +2724,29 @@ test "collectDoWhileStartConditions links do line to tail condition" {
     try std.testing.expectEqualStrings("i < n", cond);
 }
 
+test "collectDoWhileStartConditions supports do on separate line from brace" {
+    const source =
+        \\public with sharing class DoWhileSplitMapService {
+        \\    public static void run(List<Account> records) {
+        \\        Integer i = 0;
+        \\        Integer n = records.size();
+        \\        do
+        \\        {
+        \\            i += 1;
+        \\        } while (i < n);
+        \\    }
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var mapped = try collectDoWhileStartConditions(allocator, source);
+    const cond = mapped.get(5) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("i < n", cond);
+}
+
 test "do-while loop uses inferred guard bound for DML finding" {
     const source =
         \\public with sharing class DoWhileGuardService {
@@ -2662,7 +2754,8 @@ test "do-while loop uses inferred guard bound for DML finding" {
         \\        Integer n = records.size();
         \\        if (n > 120) return;
         \\        Integer i = 0;
-        \\        do {
+        \\        do
+        \\        {
         \\            update records[i];
         \\            i += 1;
         \\        } while (i < n);

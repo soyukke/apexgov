@@ -6,7 +6,8 @@ public with sharing class TranspileDoWhileService {
 
         Integer i = 0;
         Integer matched = 0;
-        do {
+        do
+        {
             if (records[i] instanceof Account) {
                 matched += 1;
             }

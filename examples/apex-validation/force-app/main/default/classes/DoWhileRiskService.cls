@@ -4,7 +4,8 @@ public with sharing class DoWhileRiskService {
         if (n > 120) return;
 
         Integer i = 0;
-        do {
+        do
+        {
             update records[i];
             i += 1;
         } while (i < n);

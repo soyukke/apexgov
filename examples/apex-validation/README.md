@@ -9,7 +9,7 @@
   - `BulkSafeService.cls`: バルク化済みのOK例
   - `GovernorRiskService.cls`: SOQL/DML in loop などのNG例
   - `GuardedLoopService.cls`: `if (n > 120) return;` で上限を与える例
-  - `DoWhileRiskService.cls`: `do { ... } while (i < n)` の上限推論 + DML検出例
+  - `DoWhileRiskService.cls`: `do` / 次行 `{` / `} while (i < n)` 形式の上限推論 + DML検出例
   - `ExceededGuardService.cls`: `if (n > 200) return;` でもSOQL上限を超える例
   - `ElseIfGuardService.cls`: `} else if (n > 140) return;` 形式の上限ガード例
   - `CrossFileCallerService.cls` + `CrossFileDmlHelper.cls`: 別クラス呼び出し経由でDMLに到達する例
@@ -22,7 +22,7 @@
   - `TranspileSwitchService.cls`: `switch on / when` の transpile 検証例
   - `TranspileSwitchTypeService.cls`: `switch on SObject` + `when Account acc` 型分岐の transpile 検証例
   - `TranspileInstanceofService.cls`: `record instanceof Account` / 否定 / OR / `instanceof SObject` の transpile 検証例
-  - `TranspileDoWhileService.cls`: `do { ... } while (...)` の transpile 検証例
+  - `TranspileDoWhileService.cls`: `do` / 次行 `{` を含む `do-while` の transpile 検証例
   - `TranspileStringService.cls`: `String.isBlank/join/escapeSingleQuotes` の transpile 検証例
   - `AccountValidation.trigger`: 上記クラスを呼ぶトリガ
 - `logs/`: `profile` 検証用のDebug Log

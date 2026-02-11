@@ -116,40 +116,53 @@ CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 ```
 
-`apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest` も利用できます。
-`stopTest()` では `@Future` / Queueable / Batch / Schedulable の簡易flushも実行されます。
-Batch は `QueryLocatorBatchable` で `QueryLocator` を scope 分割して `execute(List<ApexSObject>)` 実行する経路も使えます。
-この経路の `start/execute/finish` はそれぞれ独立したLimitsコンテキストで動き、scopeごとにCPU/Heap判定されます。
-`BatchContext.getJobId()/getScopeIndex()/getTotalScopes()/getScopeSize()/getScopeRecordCount()/getPhase()` で batch 実行メタデータも参照できます。
-`apexemu.runtime.Trigger` で `before/after` の trigger コンテキストも再現できます。
-`apexemu.runtime.Database` + `ApexSObject` で in-memory CRUD（`merge` 含む）/ SOQLサブセットも使えます。
-`Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）と `Database.getQueryLocator/getQueryLocatorWithBinds` にも対応しています。
-SOQL末尾の `FOR UPDATE` / `FOR VIEW` / `FOR REFERENCE` / `ALL ROWS` はローカルemulationでは無視して評価します。
-SOQL サブセットは `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET` にも対応しています。
-`WHERE` では date literal (`TODAY` / `LAST_N_DAYS:n` など) と unquoted ISO date/date-time literal も使えます。
-relationship path (`Owner.Name`, `Parent__r.Name`) も `WHERE/ORDER BY/GROUP BY/HAVING` で使えます。
-`Database.setSavepoint()/rollback()` と `Database.*(records, allOrNone)` + `SaveResult`、`Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）も使えます。
-`apexemu.runtime.Schema` で custom object の required/type 検証も追加できます。
-`Trigger.onBefore*/onAfter*` を登録すると `Database` CRUD（`upsert` / `merge` 含む）実行時に trigger を自動発火できます。
-`merge` で related row が再親子付けされた場合は、関連オブジェクトの `before/after update` trigger も自動発火します。
+主な対応:
+
+- `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest`
+- `stopTest()` 時の `@Future` / Queueable / Batch / Schedulable 簡易 flush
+- `QueryLocatorBatchable` 経由の scope 分割 `execute(List<ApexSObject>)`
+- `start/execute/finish` を独立した Limits コンテキストで評価
+- `BatchContext.getJobId()/getScopeIndex()/getTotalScopes()/getScopeSize()/getScopeRecordCount()/getPhase()`
+- `apexemu.runtime.Trigger` による `before/after` trigger コンテキスト再現
+- `apexemu.runtime.Database` + `ApexSObject` による in-memory CRUD（`merge` 含む）/ SOQL サブセット
+- `Database.queryWithBinds/countQueryWithBinds`（`:name` bind、`IN :names` の collection bind）
+- `Database.getQueryLocator/getQueryLocatorWithBinds`
+- SOQL 末尾 `FOR UPDATE` / `FOR VIEW` / `FOR REFERENCE` / `ALL ROWS` を無視して評価
+- `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET`
+- date literal (`TODAY` / `LAST_N_DAYS:n` など) と unquoted ISO date/date-time literal
+- relationship path (`Owner.Name`, `Parent__r.Name`) の `WHERE/ORDER BY/GROUP BY/HAVING` 利用
+- `Database.setSavepoint()/rollback()`
+- `Database.*(records, allOrNone)` + `SaveResult`
+- `Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）
+- `apexemu.runtime.Schema` による custom object の required/type 検証
+- `Trigger.onBefore*/onAfter*` 登録時の `Database` CRUD（`upsert` / `merge` 含む）での自動発火
+- `merge` 時の related row 再親子付けで関連オブジェクト `before/after update` trigger も自動発火
 
 詳細は `tools/java-emulation/README.md` を参照してください。
 
 ## Apex-to-Java Transpile (Scaffold)
 
 `apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
-現状は `@IsTest` の `@Test` 化に加え、メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティの骨組みも生成します。
-`System.assert*` 行は `SystemAssert.*`、`System.debug(...)` は `System.out.println(...)` に変換します。
-`switch on / when` は Java `switch` / `case ... ->` / `default ->` に変換します。`when Account acc` のような型分岐は `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式で変換します。
-`record instanceof Account` のような SObject 型チェックは `"Account".equals(ApexSwitch.typeName(record))` に変換します。
-`!(record instanceof Contact)` や `record instanceof A || record instanceof B` のような否定/複合式も同様に変換します（`instanceof SObject` は `instanceof ApexSObject` へ変換）。
-`do { ... } while (...)` の末尾（`} while (...)`）も Java `do-while` 形式へ正規化します。
-`String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` に変換します。
-`List/Map/Set` の宣言・コンストラクタ・リテラル（`new List<T>{...}` など）は Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換します。
-`new Map<Id, Account>(records)` や `new Map<Id, Account>(existingMap)` は `ApexCollections.toIdMap(...)` に変換します。
-`new Task(Subject='x', WhatId=...)` のような named-arg 風 SObject コンストラクタは `ApexSObject.of(...).set(...)` に変換します。
-`[SELECT ...]` は単行/複数行とも `Database.query(...)` に変換し、単一SObjectへの代入は `ApexCollections.firstOrNull(Database.query(...))` に変換します。`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る `[SELECT ...]` は query string に正規化します。
-`insert/update/upsert/delete/undelete/merge`（`upsert ... ExternalId__c` 含む）は `Database.*` 呼び出しへ変換します。`merge` は `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2` を扱えます。未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.getAs("Id")` に変換します。
+
+主な変換:
+
+- `@IsTest` を `@Test` 化
+- メソッド署名（戻り値/引数/static）とコンストラクタ、クラスフィールド/`{ get; set; }` プロパティ骨組み生成
+- `System.assert*` を `SystemAssert.*`、`System.debug(...)` を `System.out.println(...)` に変換
+- `switch on / when` を Java `switch` / `case ... ->` / `default ->` に変換
+- `when Account acc` は `switch (ApexSwitch.typeName(...))` + `case "Account"` 形式で変換
+- `record instanceof Account` は `"Account".equals(ApexSwitch.typeName(record))` に変換
+- `!(record instanceof Contact)` や `record instanceof A || record instanceof B` の否定/複合式も変換（`instanceof SObject` は `instanceof ApexSObject`）
+- `do { ... } while (...)` の末尾（`} while (...)`）を Java `do-while` 形式へ正規化
+- `String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` を `ApexStrings.*` に変換
+- `List/Map/Set` 宣言・コンストラクタ・リテラル（`new List<T>{...}`）を Java collection (`ArrayList/LinkedHashMap/LinkedHashSet`) に変換
+- `new Map<Id, Account>(records)` / `new Map<Id, Account>(existingMap)` を `ApexCollections.toIdMap(...)` に変換
+- named-arg 風 SObject コンストラクタ（`new Task(Subject='x', WhatId=...)`）を `ApexSObject.of(...).set(...)` に変換
+- `[SELECT ...]`（単行/複数行）を `Database.query(...)` に変換し、単一SObject代入は `ApexCollections.firstOrNull(Database.query(...))` に変換
+- `Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る `[SELECT ...]` を query string に正規化
+- `insert/update/upsert/delete/undelete/merge`（`upsert ... ExternalId__c` 含む）を `Database.*` 呼び出しに変換
+- `merge` は `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2` を処理
+- 未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.getAs("Id")` に変換
 
 ```bash
 zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
