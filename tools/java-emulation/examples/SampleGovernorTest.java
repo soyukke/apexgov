@@ -1176,6 +1176,72 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void customSchemaSupportsMaxLengthAndPicklistConstraints() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Schema.object("Invoice__c")
+        .required("Name", Schema.FieldType.STRING)
+        .maxLength("Name", 8)
+        .requiredPicklist("Status__c", "Draft", "Paid")
+        .optionalPicklist("Region__c", "JP", "US")
+        .register();
+
+    Database.SaveResult[] valid =
+        Database.insert(
+            List.of(ApexSObject.of("Invoice__c").set("Name", "INV-1001").set("Status__c", "Draft")),
+            false);
+    SystemAssert.assertTrue(valid[0].isSuccess(), "valid row should pass schema constraints");
+
+    Database.SaveResult[] tooLong =
+        Database.insert(
+            List.of(ApexSObject.of("Invoice__c").set("Name", "INV-10001").set("Status__c", "Draft")),
+            false);
+    SystemAssert.assertFalse(tooLong[0].isSuccess(), "max length overflow should fail");
+    SystemAssert.assertEquals(
+        "STRING_TOO_LONG", tooLong[0].getErrors()[0].getStatusCode(), "max length status mismatch");
+    SystemAssert.assertEquals(
+        "Name", tooLong[0].getErrors()[0].getFields()[0], "max length error field mismatch");
+
+    Database.SaveResult[] invalidRequiredPicklist =
+        Database.insert(
+            List.of(ApexSObject.of("Invoice__c").set("Name", "INV-1002").set("Status__c", "Archived")),
+            false);
+    SystemAssert.assertFalse(
+        invalidRequiredPicklist[0].isSuccess(), "restricted required picklist should reject unknown value");
+    SystemAssert.assertEquals(
+        "INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST",
+        invalidRequiredPicklist[0].getErrors()[0].getStatusCode(),
+        "required picklist status mismatch");
+    SystemAssert.assertEquals(
+        "Status__c",
+        invalidRequiredPicklist[0].getErrors()[0].getFields()[0],
+        "required picklist field mismatch");
+
+    Database.SaveResult[] invalidOptionalPicklist =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-1003")
+                    .set("Status__c", "Paid")
+                    .set("Region__c", "EU")),
+            false);
+    SystemAssert.assertFalse(
+        invalidOptionalPicklist[0].isSuccess(), "restricted optional picklist should reject unknown value");
+    SystemAssert.assertEquals(
+        "INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST",
+        invalidOptionalPicklist[0].getErrors()[0].getStatusCode(),
+        "optional picklist status mismatch");
+    SystemAssert.assertEquals(
+        "Region__c",
+        invalidOptionalPicklist[0].getErrors()[0].getFields()[0],
+        "optional picklist field mismatch");
+
+    SystemAssert.assertEquals(
+        1, Database.countQuery("SELECT count() FROM Invoice__c"), "only valid row should be inserted");
+  }
+
+  @Test
   public void soqlSupportsInNotInAndLike() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
@@ -1206,6 +1272,34 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(2, likeRows.size(), "LIKE + AND query should return two rows");
     SystemAssert.assertEquals("Acme APAC", likeRows.get(0).get("Name"), "LIKE result ordering mismatch");
     SystemAssert.assertEquals("Acme Corp", likeRows.get(1).get("Name"), "LIKE result ordering mismatch");
+  }
+
+  @Test
+  public void soqlSupportsIsNullAndIsNotNull() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Account").set("Name", "A-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "B-Low").set("Score", 10),
+            ApexSObject.of("Account").set("Name", "C-Null").set("Score", null),
+            ApexSObject.of("Account").set("Name", "D-High").set("Score", 30)));
+
+    List<ApexSObject> nullRows =
+        Database.query("SELECT Id, Name FROM Account WHERE Score IS NULL ORDER BY Name ASC");
+    SystemAssert.assertEquals(2, nullRows.size(), "IS NULL should match null-valued rows");
+    SystemAssert.assertEquals("A-Null", nullRows.get(0).get("Name"), "IS NULL row #1 mismatch");
+    SystemAssert.assertEquals("C-Null", nullRows.get(1).get("Name"), "IS NULL row #2 mismatch");
+
+    int nonNullCount = Database.countQuery("SELECT count() FROM Account WHERE Score IS NOT NULL");
+    SystemAssert.assertEquals(2, nonNullCount, "IS NOT NULL should match non-null rows");
+
+    List<ApexSObject> unaryNotRows =
+        Database.query("SELECT Id, Name FROM Account WHERE NOT (Score IS NULL) ORDER BY Score DESC");
+    SystemAssert.assertEquals(2, unaryNotRows.size(), "NOT (IS NULL) should be supported");
+    SystemAssert.assertEquals("D-High", unaryNotRows.get(0).get("Name"), "NOT (IS NULL) row #1 mismatch");
+    SystemAssert.assertEquals("B-Low", unaryNotRows.get(1).get("Name"), "NOT (IS NULL) row #2 mismatch");
   }
 
   @Test

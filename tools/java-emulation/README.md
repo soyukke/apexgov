@@ -114,7 +114,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
     - `updatedRelatedIds` は安定ソート順（case-insensitive）で返却
   - `SaveResult.getErrors()` から `statusCode` / `message` / `fields` を参照可能
 - schema registry: `Schema.object(\"Custom__c\")...register()`
-  - registered object は required field / simple type validation を実施
+  - registered object は required field / simple type validation / `maxLength` / restricted picklist validation を実施
 - Query:
   - `query(soql)`, `countQuery(soql)`
   - `queryWithBinds(soql, binds)`, `countQueryWithBinds(soql, binds)`
@@ -131,7 +131,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - bracket style: `[SELECT ... FROM Object ...]`
 - optional `WHERE` with `AND` / `OR` of predicates (`AND` 優先)
 - unary `NOT (...)` predicate is supported (including compound forms like `NOT (A OR B)`)
-- supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`
+- supported operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN (...)`, `NOT IN (...)`, `LIKE`, `IS NULL`, `IS NOT NULL`
 - date literal subset: `TODAY`, `YESTERDAY`, `TOMORROW`, `LAST_N_DAYS:n`, `NEXT_N_DAYS:n`, `N_DAYS_AGO:n`
 - absolute date/date-time literal subset: unquoted ISO date/date-time (`2026-02-09`, `2026-02-09T12:34:56Z`)
 - `LIKE` は大文字小文字を区別せず、`\%` / `\_` でワイルドカードをエスケープ可能

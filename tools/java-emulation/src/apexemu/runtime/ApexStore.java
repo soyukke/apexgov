@@ -35,6 +35,8 @@ final class ApexStore {
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+(not\\s+in|in)\\s*\\((.*)\\)$");
   private static final Pattern WHERE_LIKE_PATTERN =
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+like\\s+(.+)$");
+  private static final Pattern WHERE_NULL_PATTERN =
+      Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+is\\s+(not\\s+)?null$");
   private static final Pattern ORDER_BY_KEYWORD = Pattern.compile("(?i)\\border\\s+by\\b");
   private static final Pattern TRAILING_FOR_UPDATE_PATTERN =
       Pattern.compile("(?i)\\s+for\\s+update\\s*$");
@@ -984,6 +986,8 @@ final class ApexStore {
       case "in" -> compareIn(value, clause.literal);
       case "not in" -> !compareIn(value, clause.literal);
       case "like" -> compareLike(value, clause.literal);
+      case "is null" -> value == null;
+      case "is not null" -> value != null;
       default -> false;
     };
   }
@@ -1968,13 +1972,21 @@ final class ApexStore {
       return new WhereClause(field, "like", literal);
     }
 
+    Matcher isNullMatcher = WHERE_NULL_PATTERN.matcher(normalized);
+    if (isNullMatcher.matches()) {
+      String field = isNullMatcher.group(1);
+      String negated = isNullMatcher.group(2);
+      String operator = negated == null ? "is null" : "is not null";
+      return new WhereClause(field, operator, null);
+    }
+
     Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
       return new WhereClause(whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
     }
 
     throw new IllegalArgumentException(
-        "only WHERE with AND/OR/NOT and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE) is supported: "
+        "only WHERE with AND/OR/NOT and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE, IS NULL, IS NOT NULL) is supported: "
             + rawSoql);
   }
 
@@ -2454,6 +2466,26 @@ final class ApexStore {
         throw new DmlFailure(
             "INVALID_TYPE_ON_FIELD_IN_RECORD",
             "invalid type for field " + field.name + ": expected " + field.type + " but got " + value.getClass().getSimpleName(),
+            new String[] {field.name});
+      }
+
+      validateFieldConstraints(field, value);
+    }
+  }
+
+  private static void validateFieldConstraints(Schema.FieldDefinition field, Object value) {
+    if (field.maxLength != null && value instanceof CharSequence text && text.length() > field.maxLength.intValue()) {
+      throw new DmlFailure(
+          "STRING_TOO_LONG",
+          "value too long for field " + field.name + ": max length " + field.maxLength,
+          new String[] {field.name});
+    }
+
+    if (!field.picklistValues.isEmpty()) {
+      if (!(value instanceof String text) || !field.picklistValues.contains(text)) {
+        throw new DmlFailure(
+            "INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST",
+            "invalid picklist value for field " + field.name + ": " + value,
             new String[] {field.name});
       }
     }

@@ -130,11 +130,12 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - SOQL 末尾 `FOR UPDATE` / `FOR VIEW` / `FOR REFERENCE` / `ALL ROWS` を無視して評価
 - `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET`
 - date literal (`TODAY` / `LAST_N_DAYS:n` など) と unquoted ISO date/date-time literal
+- `WHERE` の `IS NULL` / `IS NOT NULL`
 - relationship path (`Owner.Name`, `Parent__r.Name`) の `WHERE/ORDER BY/GROUP BY/HAVING` 利用
 - `Database.setSavepoint()/rollback()`
 - `Database.*(records, allOrNone)` + `SaveResult`
 - `Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）
-- `apexemu.runtime.Schema` による custom object の required/type 検証
+- `apexemu.runtime.Schema` による custom object の required/type/maxLength/restricted picklist 検証
 - `Trigger.onBefore*/onAfter*` 登録時の `Database` CRUD（`upsert` / `merge` 含む）での自動発火
 - `merge` 時の related row 再親子付けで関連オブジェクト `before/after update` trigger も自動発火
 

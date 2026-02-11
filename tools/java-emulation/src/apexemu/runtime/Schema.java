@@ -1,7 +1,9 @@
 package apexemu.runtime;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 public final class Schema {
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
@@ -60,6 +62,14 @@ public final class Schema {
       return define(field, type, false);
     }
 
+    public ObjectBuilder requiredPicklist(String field, String... values) {
+      return define(field, FieldType.STRING, true).picklist(field, values);
+    }
+
+    public ObjectBuilder optionalPicklist(String field, String... values) {
+      return define(field, FieldType.STRING, false).picklist(field, values);
+    }
+
     public ObjectBuilder define(String field, FieldType type, boolean required) {
       if (field == null || field.isBlank()) {
         throw new IllegalArgumentException("field cannot be blank");
@@ -68,8 +78,75 @@ public final class Schema {
         throw new IllegalArgumentException("field type cannot be null");
       }
       String canonical = field.trim();
-      fields.put(normalize(canonical), new FieldDefinition(canonical, type, required));
+      fields.put(
+          normalize(canonical), new FieldDefinition(canonical, type, required, null, Set.of()));
       return this;
+    }
+
+    public ObjectBuilder maxLength(String field, int maxLength) {
+      if (maxLength <= 0) {
+        throw new IllegalArgumentException("maxLength must be positive");
+      }
+      FieldDefinition existing = requireDefinedField(field);
+      if (existing.type != FieldType.STRING && existing.type != FieldType.ID) {
+        throw new IllegalArgumentException(
+            "maxLength can be applied only to STRING/ID fields: " + existing.name);
+      }
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              Integer.valueOf(maxLength),
+              existing.picklistValues));
+      return this;
+    }
+
+    public ObjectBuilder picklist(String field, String... values) {
+      FieldDefinition existing = requireDefinedField(field);
+      if (existing.type != FieldType.STRING) {
+        throw new IllegalArgumentException("picklist can be applied only to STRING fields: " + existing.name);
+      }
+      Set<String> picklistValues = normalizePicklist(values);
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              existing.maxLength,
+              picklistValues));
+      return this;
+    }
+
+    private FieldDefinition requireDefinedField(String field) {
+      if (field == null || field.isBlank()) {
+        throw new IllegalArgumentException("field cannot be blank");
+      }
+      String normalized = normalize(field.trim());
+      FieldDefinition existing = fields.get(normalized);
+      if (existing == null) {
+        throw new IllegalArgumentException("field must be defined before applying constraints: " + field);
+      }
+      return existing;
+    }
+
+    private static Set<String> normalizePicklist(String... values) {
+      if (values == null || values.length == 0) {
+        throw new IllegalArgumentException("picklist values cannot be empty");
+      }
+      Set<String> out = new LinkedHashSet<>();
+      for (String value : values) {
+        if (value == null || value.isBlank()) {
+          throw new IllegalArgumentException("picklist value cannot be blank");
+        }
+        out.add(value.trim());
+      }
+      if (out.isEmpty()) {
+        throw new IllegalArgumentException("picklist values cannot be empty");
+      }
+      return Set.copyOf(out);
     }
 
     public void register() {
@@ -98,11 +175,16 @@ public final class Schema {
     final String name;
     final FieldType type;
     final boolean required;
+    final Integer maxLength;
+    final Set<String> picklistValues;
 
-    FieldDefinition(String name, FieldType type, boolean required) {
+    FieldDefinition(
+        String name, FieldType type, boolean required, Integer maxLength, Set<String> picklistValues) {
       this.name = name;
       this.type = type;
       this.required = required;
+      this.maxLength = maxLength;
+      this.picklistValues = picklistValues == null ? Set.of() : picklistValues;
     }
   }
 
