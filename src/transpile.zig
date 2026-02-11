@@ -20,6 +20,9 @@ const ApexFile = struct {
 
 const ParsedMethod = struct {
     name: []u8,
+    java_return_type: []u8,
+    java_parameters: []u8,
+    is_static: bool,
     is_test: bool,
     body: []u8,
 };
@@ -34,10 +37,19 @@ const ParsedClass = struct {
         gpa.free(self.source_path);
         for (self.methods.items) |method| {
             gpa.free(method.name);
+            gpa.free(method.java_return_type);
+            gpa.free(method.java_parameters);
             gpa.free(method.body);
         }
         self.methods.deinit(gpa);
     }
+};
+
+const MethodSignature = struct {
+    name: []u8,
+    java_return_type: []u8,
+    java_parameters: []u8,
+    is_static: bool,
 };
 
 pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
@@ -154,7 +166,7 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
     var pending_test_annotation = false;
     var in_method = false;
     var brace_depth: i32 = 0;
-    var current_name: []u8 = undefined;
+    var current_signature: MethodSignature = undefined;
     var current_is_test = false;
     var current_body: std.ArrayList(u8) = .empty;
 
@@ -169,10 +181,10 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 continue;
             }
 
-            if (parseMethodName(trimmed, parsed.class_name)) |method_name| {
+            if (try parseMethodSignature(gpa, trimmed, parsed.class_name)) |signature| {
                 in_method = true;
                 brace_depth = braceDelta(line);
-                current_name = try gpa.dupe(u8, method_name);
+                current_signature = signature;
                 current_is_test = pending_test_annotation or class_is_test or containsWordIgnoreCase(trimmed, "testMethod");
                 current_body = .empty;
                 pending_test_annotation = false;
@@ -191,7 +203,10 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 if (brace_depth <= 0) {
                     const body = try current_body.toOwnedSlice(gpa);
                     try parsed.methods.append(gpa, .{
-                        .name = current_name,
+                        .name = current_signature.name,
+                        .java_return_type = current_signature.java_return_type,
+                        .java_parameters = current_signature.java_parameters,
+                        .is_static = current_signature.is_static,
                         .is_test = current_is_test,
                         .body = body,
                     });
@@ -213,7 +228,10 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
 
         const body = try current_body.toOwnedSlice(gpa);
         try parsed.methods.append(gpa, .{
-            .name = current_name,
+            .name = current_signature.name,
+            .java_return_type = current_signature.java_return_type,
+            .java_parameters = current_signature.java_parameters,
+            .is_static = current_signature.is_static,
             .is_test = current_is_test,
             .body = body,
         });
@@ -223,7 +241,10 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
     if (in_method) {
         const body = try current_body.toOwnedSlice(gpa);
         try parsed.methods.append(gpa, .{
-            .name = current_name,
+            .name = current_signature.name,
+            .java_return_type = current_signature.java_return_type,
+            .java_parameters = current_signature.java_parameters,
+            .is_static = current_signature.is_static,
             .is_test = current_is_test,
             .body = body,
         });
@@ -277,7 +298,7 @@ fn detectClassIsTest(content: []const u8) bool {
     return false;
 }
 
-fn parseMethodName(line: []const u8, class_name: []const u8) ?[]const u8 {
+fn parseMethodSignature(gpa: std.mem.Allocator, line: []const u8, class_name: []const u8) !?MethodSignature {
     if (line.len == 0) return null;
     if (!std.mem.containsAtLeast(u8, line, 1, "(")) return null;
     if (!std.mem.containsAtLeast(u8, line, 1, ")")) return null;
@@ -298,7 +319,85 @@ fn parseMethodName(line: []const u8, class_name: []const u8) ?[]const u8 {
     const candidate = lastIdentifier(prefix) orelse return null;
     if (isControlKeyword(candidate)) return null;
     if (std.mem.eql(u8, candidate, class_name)) return null;
-    return candidate;
+
+    var tokens = try splitWhitespace(gpa, prefix);
+    defer tokens.deinit(gpa);
+    if (tokens.items.len < 2) return null;
+
+    const name_token = tokens.items[tokens.items.len - 1];
+    if (!std.mem.eql(u8, name_token, candidate)) return null;
+    if (tokens.items.len < 2) return null;
+
+    const name_pos = std.mem.lastIndexOf(u8, prefix, candidate) orelse return null;
+    const before_name = std.mem.trimRight(u8, prefix[0..name_pos], " \t");
+    if (before_name.len == 0) return null;
+
+    var before_tokens = try splitWhitespace(gpa, before_name);
+    defer before_tokens.deinit(gpa);
+    if (before_tokens.items.len == 0) return null;
+
+    var return_raw: std.ArrayList(u8) = .empty;
+    errdefer return_raw.deinit(gpa);
+
+    var is_static = false;
+    for (before_tokens.items) |token| {
+        if (isMethodModifierToken(token)) {
+            if (std.ascii.eqlIgnoreCase(token, "static")) is_static = true;
+            continue;
+        }
+        if (return_raw.items.len != 0) try return_raw.append(gpa, ' ');
+        try return_raw.appendSlice(gpa, token);
+    }
+    if (return_raw.items.len == 0) return null;
+
+    const return_type_raw = try return_raw.toOwnedSlice(gpa);
+    defer gpa.free(return_type_raw);
+
+    const java_return_type = try convertApexType(gpa, return_type_raw);
+    errdefer gpa.free(java_return_type);
+
+    const close_paren = findMatchingParen(line, open_paren) orelse return null;
+    const param_segment = std.mem.trim(u8, line[(open_paren + 1)..close_paren], " \t");
+    const java_parameters = try convertMethodParameters(gpa, param_segment);
+    errdefer gpa.free(java_parameters);
+
+    return .{
+        .name = try gpa.dupe(u8, candidate),
+        .java_return_type = java_return_type,
+        .java_parameters = java_parameters,
+        .is_static = is_static,
+    };
+}
+
+fn convertMethodParameters(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return gpa.dupe(u8, "");
+
+    var params = try splitTypeArguments(gpa, trimmed);
+    defer params.deinit(gpa);
+    if (params.items.len == 0) return gpa.dupe(u8, "");
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    for (params.items, 0..) |param, idx| {
+        var part = std.mem.trim(u8, param, " \t");
+        if (part.len == 0) continue;
+        if (startsWithIgnoreCase(part, "final ")) {
+            part = std.mem.trimLeft(u8, part["final".len..], " \t");
+        }
+        const param_name = lastIdentifier(part) orelse continue;
+        const type_segment = std.mem.trimRight(u8, part[0..(part.len - param_name.len)], " \t");
+        if (type_segment.len == 0) continue;
+
+        const java_type = try convertApexType(gpa, type_segment);
+        defer gpa.free(java_type);
+
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try appendFmt(gpa, &out, "{s} {s}", .{ java_type, param_name });
+    }
+
+    return out.toOwnedSlice(gpa);
 }
 
 fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []const u8) ![]u8 {
@@ -310,6 +409,8 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 
     try appendFmt(gpa, &out, "package {s};\n\n", .{package_name});
     try out.appendSlice(gpa, "import apexemu.annotations.Test;\n\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexSObject;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Database;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
     try out.appendSlice(gpa, "import java.util.ArrayList;\n");
     try out.appendSlice(gpa, "import java.util.LinkedHashMap;\n");
@@ -336,15 +437,32 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
         if (method.is_test) {
             try out.appendSlice(gpa, "  @Test\n");
         }
-        try appendFmt(gpa, &out, "  public static void {s}() {{\n", .{emitted_name});
+        const static_prefix = if (method.is_static) "static " else "";
+        try appendFmt(
+            gpa,
+            &out,
+            "  public {s}{s} {s}({s}) {{\n",
+            .{ static_prefix, method.java_return_type, emitted_name, method.java_parameters },
+        );
         try out.appendSlice(gpa, "    // TODO(apex): method body is copied as comments and needs manual porting.\n");
 
-        var body_lines = std.mem.splitScalar(u8, method.body, '\n');
-        while (body_lines.next()) |body_line| {
+        var last_non_empty_line_idx: ?usize = null;
+        var scan_idx: usize = 0;
+        var body_scan = std.mem.splitScalar(u8, method.body, '\n');
+        while (body_scan.next()) |body_line| : (scan_idx += 1) {
             const clean = std.mem.trimRight(u8, body_line, "\r");
             const trimmed = std.mem.trim(u8, clean, " \t");
             if (trimmed.len == 0) continue;
-            if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) continue;
+            last_non_empty_line_idx = scan_idx;
+        }
+
+        var line_idx: usize = 0;
+        var body_lines = std.mem.splitScalar(u8, method.body, '\n');
+        while (body_lines.next()) |body_line| : (line_idx += 1) {
+            const clean = std.mem.trimRight(u8, body_line, "\r");
+            const trimmed = std.mem.trim(u8, clean, " \t");
+            if (trimmed.len == 0) continue;
+            if (last_non_empty_line_idx != null and line_idx == last_non_empty_line_idx.? and std.mem.eql(u8, trimmed, "}")) continue;
             if (try transpileExecutableLine(gpa, trimmed)) |statement| {
                 defer gpa.free(statement);
                 try appendFmt(gpa, &out, "    {s}\n", .{statement});
@@ -361,9 +479,87 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 }
 
 fn transpileExecutableLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    if (try transpileControlFlowLine(gpa, line)) |statement| return statement;
     if (try transpileAssertionLine(gpa, line)) |statement| return statement;
     if (try transpileSystemDebugLine(gpa, line)) |statement| return statement;
+    if (try transpileSoqlLine(gpa, line)) |statement| return statement;
+    if (try transpileDmlLine(gpa, line)) |statement| return statement;
     if (try transpileCollectionDeclarationLine(gpa, line)) |statement| return statement;
+    return null;
+}
+
+fn transpileControlFlowLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) {
+        return try gpa.dupe(u8, trimmed);
+    }
+
+    if (!isControlFlowLine(trimmed)) return null;
+
+    var converted = try convertApexExpressionToJava(gpa, trimmed);
+    errdefer gpa.free(converted);
+
+    if (startsWithWordIgnoreCase(converted, "for")) {
+        const for_fixed = try normalizeForHeaderTypes(gpa, converted);
+        gpa.free(converted);
+        converted = for_fixed;
+    }
+    return converted;
+}
+
+fn transpileSoqlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    }
+
+    const select_start = indexOfSoqlBracketSelect(trimmed) orelse return null;
+    const close_bracket = std.mem.lastIndexOfScalar(u8, trimmed, ']') orelse return null;
+    if (close_bracket <= select_start) return null;
+
+    const query_segment = std.mem.trim(u8, trimmed[(select_start + 1)..close_bracket], " \t");
+    if (!startsWithIgnoreCase(query_segment, "SELECT")) return null;
+    const java_query = try quoteJavaStringLiteral(gpa, query_segment);
+    defer gpa.free(java_query);
+
+    const prefix = std.mem.trim(u8, trimmed[0..select_start], " \t");
+    const suffix = std.mem.trim(u8, trimmed[(close_bracket + 1)..], " \t");
+    if (suffix.len != 0) return null;
+
+    if (prefix.len == 0) {
+        return try std.fmt.allocPrint(gpa, "Database.query({s});", .{java_query});
+    }
+
+    if (prefix[prefix.len - 1] != '=') return null;
+    const left = std.mem.trim(u8, prefix[0 .. prefix.len - 1], " \t");
+    const var_name = lastIdentifier(left) orelse return null;
+    if (var_name.len == 0) return null;
+
+    return try std.fmt.allocPrint(
+        gpa,
+        "List<ApexSObject> {s} = Database.query({s});",
+        .{ var_name, java_query },
+    );
+}
+
+fn transpileDmlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    var trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (trimmed[trimmed.len - 1] == ';') {
+        trimmed = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    }
+
+    const keywords = [_][]const u8{ "insert", "update", "upsert", "delete", "undelete" };
+    for (keywords) |keyword| {
+        if (!startsWithWordIgnoreCase(trimmed, keyword)) continue;
+        const payload = std.mem.trimLeft(u8, trimmed[keyword.len..], " \t");
+        if (payload.len == 0) return null;
+        const converted = try convertApexExpressionToJava(gpa, payload);
+        defer gpa.free(converted);
+        return try std.fmt.allocPrint(gpa, "Database.{s}({s});", .{ keyword, converted });
+    }
     return null;
 }
 
@@ -909,6 +1105,75 @@ fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return std.ascii.eqlIgnoreCase(haystack[0..needle.len], needle);
 }
 
+fn startsWithWordIgnoreCase(haystack: []const u8, keyword: []const u8) bool {
+    if (!startsWithIgnoreCase(haystack, keyword)) return false;
+    if (haystack.len == keyword.len) return true;
+    const next = haystack[keyword.len];
+    return std.ascii.isWhitespace(next) or next == '(';
+}
+
+fn isControlFlowLine(line: []const u8) bool {
+    if (std.mem.eql(u8, line, "{") or std.mem.eql(u8, line, "}")) return true;
+    const keywords = [_][]const u8{
+        "if",    "else",    "for",    "while",  "do",    "try",
+        "catch", "finally", "switch", "return", "break", "continue",
+    };
+    for (keywords) |keyword| {
+        if (startsWithWordIgnoreCase(line, keyword)) return true;
+    }
+    return false;
+}
+
+fn indexOfSoqlBracketSelect(line: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != '[') continue;
+        const tail = line[(i + 1)..];
+        const trimmed = std.mem.trimLeft(u8, tail, " \t");
+        if (startsWithIgnoreCase(trimmed, "SELECT")) return i;
+    }
+    return null;
+}
+
+fn quoteJavaStringLiteral(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    try out.append(gpa, '"');
+    for (raw) |ch| {
+        try appendEscapedJavaStringChar(gpa, &out, ch);
+    }
+    try out.append(gpa, '"');
+    return out.toOwnedSlice(gpa);
+}
+
+fn normalizeForHeaderTypes(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    const open_paren = std.mem.indexOfScalar(u8, line, '(') orelse return gpa.dupe(u8, line);
+    const close_paren = findMatchingParen(line, open_paren) orelse return gpa.dupe(u8, line);
+
+    const header = line[(open_paren + 1)..close_paren];
+    if (std.mem.indexOfScalar(u8, header, ':')) |colon_pos| {
+        const left = std.mem.trim(u8, header[0..colon_pos], " \t");
+        const right = std.mem.trim(u8, header[(colon_pos + 1)..], " \t");
+        const var_name = lastIdentifier(left) orelse return gpa.dupe(u8, line);
+        const type_segment = std.mem.trimRight(u8, left[0..(left.len - var_name.len)], " \t");
+        if (type_segment.len == 0) return gpa.dupe(u8, line);
+
+        const java_type = try convertApexType(gpa, type_segment);
+        defer gpa.free(java_type);
+
+        const prefix = line[0..(open_paren + 1)];
+        const suffix = line[close_paren..];
+        return std.fmt.allocPrint(
+            gpa,
+            "{s}{s} {s} : {s}{s}",
+            .{ prefix, java_type, var_name, right, suffix },
+        );
+    }
+
+    return gpa.dupe(u8, line);
+}
+
 fn containsWordIgnoreCase(text: []const u8, word: []const u8) bool {
     return indexOfWordIgnoreCase(text, word) != null;
 }
@@ -924,6 +1189,18 @@ fn indexOfWordIgnoreCase(text: []const u8, word: []const u8) ?usize {
         if (left_ok and right_ok) return i;
     }
     return null;
+}
+
+fn splitWhitespace(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList([]const u8) {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var it = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    while (it.next()) |token| {
+        if (token.len == 0) continue;
+        try out.append(gpa, token);
+    }
+    return out;
 }
 
 fn firstIdentifier(text: []const u8) ?[]const u8 {
@@ -969,6 +1246,21 @@ fn isControlKeyword(word: []const u8) bool {
         std.ascii.eqlIgnoreCase(word, "do");
 }
 
+fn isMethodModifierToken(token: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(token, "public") or
+        std.ascii.eqlIgnoreCase(token, "private") or
+        std.ascii.eqlIgnoreCase(token, "protected") or
+        std.ascii.eqlIgnoreCase(token, "global") or
+        std.ascii.eqlIgnoreCase(token, "static") or
+        std.ascii.eqlIgnoreCase(token, "final") or
+        std.ascii.eqlIgnoreCase(token, "virtual") or
+        std.ascii.eqlIgnoreCase(token, "override") or
+        std.ascii.eqlIgnoreCase(token, "abstract") or
+        std.ascii.eqlIgnoreCase(token, "testmethod") or
+        std.ascii.eqlIgnoreCase(token, "webservice") or
+        std.ascii.eqlIgnoreCase(token, "transient");
+}
+
 fn braceDelta(line: []const u8) i32 {
     var delta: i32 = 0;
     for (line) |ch| {
@@ -994,14 +1286,34 @@ fn isValidPackageName(name: []const u8) bool {
     return true;
 }
 
-test "parseMethodName ignores control statements and picks regular methods" {
-    try std.testing.expectEqualStrings(
-        "run",
-        parseMethodName("public static void run(List<Account> records) {", "Demo").?,
-    );
-    try std.testing.expect(parseMethodName("for (Integer i = 0; i < 10; i++) {", "Demo") == null);
-    try std.testing.expect(parseMethodName("if (records == null) {", "Demo") == null);
-    try std.testing.expect(parseMethodName("public Demo() {", "Demo") == null);
+test "parseMethodSignature preserves return type params and static" {
+    const gpa = std.testing.allocator;
+    const sig = (try parseMethodSignature(gpa, "public static List<Id> run(List<Account> records, Integer n) {", "Demo")).?;
+    defer {
+        gpa.free(sig.name);
+        gpa.free(sig.java_return_type);
+        gpa.free(sig.java_parameters);
+    }
+
+    try std.testing.expectEqualStrings("run", sig.name);
+    try std.testing.expectEqualStrings("List<String>", sig.java_return_type);
+    try std.testing.expectEqualStrings("List<Account> records, Integer n", sig.java_parameters);
+    try std.testing.expect(sig.is_static);
+
+    const sig_map = (try parseMethodSignature(gpa, "public static Map<Id, Account> build(List<Account> records) {", "Demo")).?;
+    defer {
+        gpa.free(sig_map.name);
+        gpa.free(sig_map.java_return_type);
+        gpa.free(sig_map.java_parameters);
+    }
+    try std.testing.expectEqualStrings("build", sig_map.name);
+    try std.testing.expectEqualStrings("Map<String, Account>", sig_map.java_return_type);
+    try std.testing.expectEqualStrings("List<Account> records", sig_map.java_parameters);
+    try std.testing.expect(sig_map.is_static);
+
+    try std.testing.expect((try parseMethodSignature(gpa, "for (Integer i = 0; i < 10; i++) {", "Demo")) == null);
+    try std.testing.expect((try parseMethodSignature(gpa, "if (records == null) {", "Demo")) == null);
+    try std.testing.expect((try parseMethodSignature(gpa, "public Demo() {", "Demo")) == null);
 }
 
 test "renderJavaClass emits test annotation and method comment body" {
@@ -1014,6 +1326,9 @@ test "renderJavaClass emits test annotation and method comment body" {
 
     try parsed.methods.append(gpa, .{
         .name = try gpa.dupe(u8, "firstMethod"),
+        .java_return_type = try gpa.dupe(u8, "void"),
+        .java_parameters = try gpa.dupe(u8, ""),
+        .is_static = true,
         .is_test = true,
         .body = try gpa.dupe(u8, "System.assertEquals(1, 1);\n"),
     });
@@ -1102,4 +1417,50 @@ test "transpileCollectionDeclarationLine converts list map set declarations" {
         "Set<String> accountIds = new LinkedHashSet<>();",
         set_line.?,
     );
+}
+
+test "transpileSoqlAndDmlAndControlLines" {
+    const gpa = std.testing.allocator;
+
+    const soql = try transpileSoqlLine(gpa, "List<Contact> contacts = [SELECT Id FROM Contact WHERE AccountId = :accId LIMIT 5];");
+    defer if (soql) |value| gpa.free(value);
+    try std.testing.expect(soql != null);
+    try std.testing.expect(std.mem.indexOf(u8, soql.?, "Database.query(") != null);
+
+    const dml = try transpileDmlLine(gpa, "insert contacts;");
+    defer if (dml) |value| gpa.free(value);
+    try std.testing.expect(dml != null);
+    try std.testing.expectEqualStrings("Database.insert(contacts);", dml.?);
+
+    const control = try transpileControlFlowLine(gpa, "for (Id accountId : accountIds) {");
+    defer if (control) |value| gpa.free(value);
+    try std.testing.expect(control != null);
+    try std.testing.expectEqualStrings("for (String accountId : accountIds) {", control.?);
+
+    const close_brace = try transpileControlFlowLine(gpa, "}");
+    defer if (close_brace) |value| gpa.free(value);
+    try std.testing.expect(close_brace != null);
+    try std.testing.expectEqualStrings("}", close_brace.?);
+}
+
+test "renderJavaClass keeps inner block closing brace" {
+    const gpa = std.testing.allocator;
+
+    const source =
+        \\public class Demo {
+        \\  public static void run() {
+        \\    if (true) {
+        \\      System.debug('x');
+        \\    }
+        \\  }
+        \\}
+    ;
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    const output = try renderJavaClass(gpa, parsed, "generated");
+    defer gpa.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "if (true) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "    }\n  }\n") != null);
 }
