@@ -94,9 +94,10 @@ fn writeProfileText(writer: *std.Io.Writer, profiles: []const model.ProfileResul
     for (profiles) |profile| {
         if (profile.anyExceeded()) violations += 1;
         try writer.print(
-            "- {s} [{s}] cpu={d}/{d} heap={d}/{d} {s}\n",
+            "- {s}#tx{d} [{s}] cpu={d}/{d} heap={d}/{d} {s}\n",
             .{
                 profile.source,
+                profile.transaction_index,
                 if (profile.is_async) "async" else "sync",
                 profile.cpu_ms,
                 profile.cpu_budget,
@@ -121,6 +122,7 @@ fn writeProfileJson(writer: *std.Io.Writer, profiles: []const model.ProfileResul
 
         try writer.writeAll("{\"source\":");
         try writeJsonString(writer, profile.source);
+        try writer.print(",\"transaction_index\":{d}", .{profile.transaction_index});
         try writer.writeAll(",\"label\":");
         try writeJsonString(writer, profile.label);
         try writer.writeAll(",\"mode\":");

@@ -55,6 +55,7 @@ pub const Finding = struct {
 pub const ProfileResult = struct {
     source: []const u8,
     label: []const u8,
+    transaction_index: u32,
     is_async: bool,
     cpu_ms: u32,
     heap_bytes: u64,

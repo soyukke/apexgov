@@ -1243,6 +1243,69 @@ public final class SampleGovernorTest {
   }
 
   @Test
+  public void customSchemaSupportsPrecisionAndLookupReferenceConstraints() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Schema.object("Account").required("Name", Schema.FieldType.STRING).register();
+    Schema.object("Invoice__c")
+        .required("Name", Schema.FieldType.STRING)
+        .required("Amount__c", Schema.FieldType.DECIMAL)
+        .precision("Amount__c", 6, 2)
+        .optional("Account__c", Schema.FieldType.ID)
+        .reference("Account__c", "Account")
+        .register();
+
+    Database.SaveResult[] invalidPrecision =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-PREC")
+                    .set("Amount__c", 12345.678)),
+            false);
+    SystemAssert.assertFalse(invalidPrecision[0].isSuccess(), "precision overflow should fail");
+    SystemAssert.assertEquals(
+        "NUMBER_OUTSIDE_VALID_RANGE",
+        invalidPrecision[0].getErrors()[0].getStatusCode(),
+        "precision status mismatch");
+    SystemAssert.assertEquals(
+        "Amount__c",
+        invalidPrecision[0].getErrors()[0].getFields()[0],
+        "precision field mismatch");
+
+    Database.SaveResult[] invalidReference =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-REF")
+                    .set("Amount__c", 99.99)
+                    .set("Account__c", "001NOREF000000001")),
+            false);
+    SystemAssert.assertFalse(invalidReference[0].isSuccess(), "lookup reference mismatch should fail");
+    SystemAssert.assertEquals(
+        "FIELD_INTEGRITY_EXCEPTION",
+        invalidReference[0].getErrors()[0].getStatusCode(),
+        "lookup status mismatch");
+    SystemAssert.assertEquals(
+        "Account__c",
+        invalidReference[0].getErrors()[0].getFields()[0],
+        "lookup field mismatch");
+
+    ApexSObject account = ApexSObject.of("Account").set("Name", "Ref-Account");
+    Database.insert(account);
+
+    Database.SaveResult[] valid =
+        Database.insert(
+            List.of(
+                ApexSObject.of("Invoice__c")
+                    .set("Name", "INV-OK")
+                    .set("Amount__c", 1234.56)
+                    .set("Account__c", account.id())),
+            false);
+    SystemAssert.assertTrue(valid[0].isSuccess(), "valid precision + lookup row should pass");
+  }
+
+  @Test
   public void soqlSupportsInNotInAndLike() {
     Database.clearInMemoryStore();
     Database.clearSchemaRegistry();
@@ -1273,6 +1336,52 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(2, likeRows.size(), "LIKE + AND query should return two rows");
     SystemAssert.assertEquals("Acme APAC", likeRows.get(0).get("Name"), "LIKE result ordering mismatch");
     SystemAssert.assertEquals("Acme Corp", likeRows.get(1).get("Name"), "LIKE result ordering mismatch");
+  }
+
+  @Test
+  public void soqlSupportsSemiJoinAndChildSubquery() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    ApexSObject accountA = ApexSObject.of("Account").set("Name", "Acme");
+    ApexSObject accountB = ApexSObject.of("Account").set("Name", "Beta");
+    ApexSObject accountC = ApexSObject.of("Account").set("Name", "Cloud");
+    Database.insert(List.of(accountA, accountB, accountC));
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("Contact").set("LastName", "Smith").set("AccountId", accountA.id()),
+            ApexSObject.of("Contact").set("LastName", "Stone").set("AccountId", accountA.id()),
+            ApexSObject.of("Contact").set("LastName", "Tanaka").set("AccountId", accountC.id())));
+
+    List<ApexSObject> semiJoinRows =
+        Database.query(
+            "SELECT Id, Name FROM Account "
+                + "WHERE Id IN (SELECT AccountId FROM Contact WHERE LastName LIKE 'S%') "
+                + "ORDER BY Name ASC");
+    SystemAssert.assertEquals(1, semiJoinRows.size(), "semi-join should filter parent rows");
+    SystemAssert.assertEquals("Acme", semiJoinRows.get(0).get("Name"), "semi-join row mismatch");
+
+    int notInCount =
+        Database.countQuery(
+            "SELECT count() FROM Account WHERE Id NOT IN (SELECT AccountId FROM Contact)");
+    SystemAssert.assertEquals(1, notInCount, "NOT IN semi-join should keep only unrelated parents");
+
+    List<ApexSObject> parentWithChildren =
+        Database.query(
+            "SELECT Id, Name, (SELECT Id, LastName FROM Contacts WHERE LastName LIKE 'S%' ORDER BY LastName ASC) "
+                + "FROM Account ORDER BY Name ASC");
+    SystemAssert.assertEquals(3, parentWithChildren.size(), "child subquery should keep parent cardinality");
+
+    @SuppressWarnings("unchecked")
+    List<ApexSObject> acmeChildren = (List<ApexSObject>) parentWithChildren.get(0).get("Contacts");
+    SystemAssert.assertEquals(2, acmeChildren.size(), "Acme should contain filtered child rows");
+    SystemAssert.assertEquals("Smith", acmeChildren.get(0).get("LastName"), "child sort mismatch");
+    SystemAssert.assertEquals("Stone", acmeChildren.get(1).get("LastName"), "child sort mismatch");
+
+    @SuppressWarnings("unchecked")
+    List<ApexSObject> betaChildren = (List<ApexSObject>) parentWithChildren.get(1).get("Contacts");
+    SystemAssert.assertEquals(0, betaChildren.size(), "Beta should have empty child rows");
   }
 
   @Test

@@ -79,7 +79,8 @@ public final class Schema {
       }
       String canonical = field.trim();
       fields.put(
-          normalize(canonical), new FieldDefinition(canonical, type, required, null, Set.of()));
+          normalize(canonical),
+          new FieldDefinition(canonical, type, required, null, Set.of(), null, null, null));
       return this;
     }
 
@@ -99,7 +100,10 @@ public final class Schema {
               existing.type,
               existing.required,
               Integer.valueOf(maxLength),
-              existing.picklistValues));
+              existing.picklistValues,
+              existing.precision,
+              existing.scale,
+              existing.referenceType));
       return this;
     }
 
@@ -116,7 +120,64 @@ public final class Schema {
               existing.type,
               existing.required,
               existing.maxLength,
-              picklistValues));
+              picklistValues,
+              existing.precision,
+              existing.scale,
+              existing.referenceType));
+      return this;
+    }
+
+    public ObjectBuilder precision(String field, int precision, int scale) {
+      if (precision <= 0) {
+        throw new IllegalArgumentException("precision must be positive");
+      }
+      if (scale < 0) {
+        throw new IllegalArgumentException("scale cannot be negative");
+      }
+      if (scale > precision) {
+        throw new IllegalArgumentException("scale cannot exceed precision");
+      }
+      FieldDefinition existing = requireDefinedField(field);
+      if (existing.type != FieldType.DECIMAL
+          && existing.type != FieldType.DOUBLE
+          && existing.type != FieldType.INTEGER
+          && existing.type != FieldType.LONG) {
+        throw new IllegalArgumentException(
+            "precision can be applied only to numeric fields: " + existing.name);
+      }
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              existing.maxLength,
+              existing.picklistValues,
+              Integer.valueOf(precision),
+              Integer.valueOf(scale),
+              existing.referenceType));
+      return this;
+    }
+
+    public ObjectBuilder reference(String field, String referenceType) {
+      if (referenceType == null || referenceType.isBlank()) {
+        throw new IllegalArgumentException("referenceType cannot be blank");
+      }
+      FieldDefinition existing = requireDefinedField(field);
+      if (existing.type != FieldType.ID) {
+        throw new IllegalArgumentException("reference can be applied only to ID fields: " + existing.name);
+      }
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              existing.maxLength,
+              existing.picklistValues,
+              existing.precision,
+              existing.scale,
+              referenceType.trim()));
       return this;
     }
 
@@ -177,14 +238,27 @@ public final class Schema {
     final boolean required;
     final Integer maxLength;
     final Set<String> picklistValues;
+    final Integer precision;
+    final Integer scale;
+    final String referenceType;
 
     FieldDefinition(
-        String name, FieldType type, boolean required, Integer maxLength, Set<String> picklistValues) {
+        String name,
+        FieldType type,
+        boolean required,
+        Integer maxLength,
+        Set<String> picklistValues,
+        Integer precision,
+        Integer scale,
+        String referenceType) {
       this.name = name;
       this.type = type;
       this.required = required;
       this.maxLength = maxLength;
       this.picklistValues = picklistValues == null ? Set.of() : picklistValues;
+      this.precision = precision;
+      this.scale = scale;
+      this.referenceType = referenceType;
     }
   }
 

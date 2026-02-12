@@ -5,12 +5,14 @@ pub const Options = struct {
     out_dir: []const u8,
     package_name: []const u8 = "generated",
     overwrite: bool = false,
+    strict: bool = false,
 };
 
 pub const Summary = struct {
     files_scanned: usize = 0,
     files_generated: usize = 0,
     methods_generated: usize = 0,
+    unsupported_statements: usize = 0,
 };
 
 const ApexFile = struct {
@@ -74,6 +76,11 @@ const ActiveSwitchContext = struct {
     mode: SwitchMode,
 };
 
+const RenderedClass = struct {
+    java: []u8,
+    unsupported_statements: usize,
+};
+
 pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
     if (opts.input_paths.len == 0) return error.MissingInputPath;
 
@@ -94,7 +101,11 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
         defer parsed.deinit(gpa);
 
         const rendered = try renderJavaClass(gpa, parsed, opts.package_name);
-        defer gpa.free(rendered);
+        defer gpa.free(rendered.java);
+
+        if (opts.strict and rendered.unsupported_statements > 0) {
+            return error.UnsupportedApexSyntax;
+        }
 
         const output_name = try std.fmt.allocPrint(gpa, "{s}.java", .{parsed.class_name});
         defer gpa.free(output_name);
@@ -106,10 +117,11 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
             return error.OutputAlreadyExists;
         }
 
-        try writeOutputFile(output_path, rendered);
+        try writeOutputFile(output_path, rendered.java);
 
         summary.files_generated += 1;
         summary.methods_generated += parsed.methods.items.len;
+        summary.unsupported_statements += rendered.unsupported_statements;
     }
 
     return summary;
@@ -607,9 +619,10 @@ fn transpileTypedDeclarationLine(gpa: std.mem.Allocator, line: []const u8, allow
     return try std.fmt.allocPrint(gpa, "{s} {s} {s} = {s};", .{ modifier_out.items, java_type, name, converted_rhs });
 }
 
-fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []const u8) ![]u8 {
+fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []const u8) !RenderedClass {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
+    var unsupported_statements: usize = 0;
 
     var method_name_counts = std.StringHashMap(usize).init(gpa);
     defer method_name_counts.deinit();
@@ -737,6 +750,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
                     }
                 }
             } else {
+                unsupported_statements += 1;
                 try appendFmt(gpa, &out, "    // {s}\n", .{trimmed});
             }
 
@@ -751,7 +765,10 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     }
 
     try out.appendSlice(gpa, "}\n");
-    return try out.toOwnedSlice(gpa);
+    return .{
+        .java = try out.toOwnedSlice(gpa),
+        .unsupported_statements = unsupported_statements,
+    };
 }
 
 const NestingState = struct {
@@ -3876,13 +3893,13 @@ test "renderJavaClass emits test annotation and method comment body" {
     });
 
     const output = try renderJavaClass(gpa, parsed, "generated");
-    defer gpa.free(output);
+    defer gpa.free(output.java);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "package generated;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "@Test") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "public static void firstMethod()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "import apexemu.runtime.ApexAssert;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "SystemAssert.assertEquals(1, 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "package generated;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "@Test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public static void firstMethod()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "import apexemu.runtime.ApexAssert;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "SystemAssert.assertEquals(1, 1);") != null);
 }
 
 test "detectClassIsTest catches annotation immediately before class" {
@@ -4569,6 +4586,86 @@ test "collectLogicalStatements keeps multiline soql as one statement" {
     );
 }
 
+test "run counts unsupported statements when strict is disabled" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\public class UnsupportedDemo {
+        \\  public static void run() {
+        \\    when Account acc {
+        \\      System.debug('x');
+        \\    }
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "UnsupportedDemo.cls", .data = source });
+    try tmp.dir.makePath("out");
+
+    const root = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path },
+    );
+    defer std.testing.allocator.free(root);
+    const out_dir = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ root, "out" },
+    );
+    defer std.testing.allocator.free(out_dir);
+
+    const inputs = [_][]const u8{root};
+    const summary = try run(std.testing.allocator, .{
+        .input_paths = &inputs,
+        .out_dir = out_dir,
+        .package_name = "generated",
+        .overwrite = true,
+        .strict = false,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files_generated);
+    try std.testing.expect(summary.unsupported_statements > 0);
+}
+
+test "run strict mode fails on unsupported statements" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\public class UnsupportedStrictDemo {
+        \\  public static void run() {
+        \\    when Account acc {
+        \\      System.debug('x');
+        \\    }
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "UnsupportedStrictDemo.cls", .data = source });
+    try tmp.dir.makePath("out");
+
+    const root = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path },
+    );
+    defer std.testing.allocator.free(root);
+    const out_dir = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ root, "out" },
+    );
+    defer std.testing.allocator.free(out_dir);
+
+    const inputs = [_][]const u8{root};
+    try std.testing.expectError(
+        error.UnsupportedApexSyntax,
+        run(std.testing.allocator, .{
+            .input_paths = &inputs,
+            .out_dir = out_dir,
+            .package_name = "generated",
+            .overwrite = true,
+            .strict = true,
+        }),
+    );
+}
+
 test "renderJavaClass keeps inner block closing brace" {
     const gpa = std.testing.allocator;
 
@@ -4585,8 +4682,8 @@ test "renderJavaClass keeps inner block closing brace" {
     defer parsed.deinit(gpa);
 
     const output = try renderJavaClass(gpa, parsed, "generated");
-    defer gpa.free(output);
+    defer gpa.free(output.java);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "if (true) {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "    }\n  }\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "if (true) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "    }\n  }\n") != null);
 }

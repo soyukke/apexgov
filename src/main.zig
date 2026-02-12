@@ -46,6 +46,7 @@ const EmulateTranspileOptions = struct {
     out_dir: []const u8 = "reports/apex-transpile",
     package_name: []const u8 = "generated",
     overwrite: bool = false,
+    strict: bool = false,
     input_paths: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *EmulateTranspileOptions, gpa: std.mem.Allocator) void {
@@ -260,15 +261,17 @@ fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         .out_dir = opts.out_dir,
         .package_name = opts.package_name,
         .overwrite = opts.overwrite,
+        .strict = opts.strict,
     });
 
     std.debug.print(
-        "transpile: generated {d} Java file(s) from {d} Apex class file(s) into {s} (methods: {d})\n",
+        "transpile: generated {d} Java file(s) from {d} Apex class file(s) into {s} (methods: {d}, unsupported: {d})\n",
         .{
             summary.files_generated,
             summary.files_scanned,
             opts.out_dir,
             summary.methods_generated,
+            summary.unsupported_statements,
         },
     );
     return 0;
@@ -628,6 +631,11 @@ fn parseEmulateTranspileOptions(gpa: std.mem.Allocator, args: []const []const u8
             i += 1;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--strict")) {
+            opts.strict = true;
+            i += 1;
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
 
         try opts.input_paths.append(gpa, arg);
@@ -754,7 +762,7 @@ fn printUsage() void {
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
         \\  apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
         \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
-        \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite]
+        \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
@@ -794,7 +802,7 @@ fn printEmulateHelp() void {
         \\  Mode 2: local @Test emulation
         \\    apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
         \\  Mode 3: Apex -> Java test scaffold transpile (best-effort)
-        \\    apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite]
+        \\    apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
         \\
     , .{});
 }
@@ -889,6 +897,7 @@ test "parseEmulateTranspileOptions parses flags and defaults" {
         "--package",
         "generated.demo",
         "--overwrite",
+        "--strict",
     };
 
     var opts = try parseEmulateTranspileOptions(gpa, args[0..]);
@@ -897,6 +906,7 @@ test "parseEmulateTranspileOptions parses flags and defaults" {
     try std.testing.expectEqualStrings("reports/apex-transpile-local", opts.out_dir);
     try std.testing.expectEqualStrings("generated.demo", opts.package_name);
     try std.testing.expectEqual(true, opts.overwrite);
+    try std.testing.expectEqual(true, opts.strict);
     try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
     try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
 }
@@ -906,6 +916,7 @@ test "parseEmulateTranspileOptions injects default input path" {
     var opts = try parseEmulateTranspileOptions(gpa, &.{});
     defer opts.deinit(gpa);
 
+    try std.testing.expectEqual(false, opts.strict);
     try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
     try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
 }

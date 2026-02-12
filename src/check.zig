@@ -132,6 +132,17 @@ const OwnerScope = struct {
     end_depth: i32,
 };
 
+const TypeRelations = struct {
+    extends_by_type: std.StringHashMap([]const u8),
+    interfaces_by_type: std.StringHashMap(std.ArrayListUnmanaged([]const u8)),
+};
+
+const TypeDecl = struct {
+    name: []const u8,
+    extends_name: ?[]const u8,
+    implements_raw: []const u8,
+};
+
 const ApexFile = struct {
     path: []const u8,
     content: []const u8,
@@ -152,7 +163,8 @@ pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: con
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var method_summaries = try buildMethodSummaries(arena_allocator, files.items);
+    var type_relations = try collectTypeRelations(arena_allocator, files.items);
+    var method_summaries = try buildMethodSummaries(arena_allocator, files.items, &type_relations);
 
     for (files.items) |file| {
         try scanContent(
@@ -161,6 +173,7 @@ pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: con
             file.content,
             cfg,
             &method_summaries,
+            &type_relations,
             &findings,
         );
     }
@@ -233,6 +246,7 @@ fn scanContent(
     content: []const u8,
     cfg: config.Config,
     method_summaries: *std.StringHashMap(MethodSummary),
+    type_relations: *const TypeRelations,
     findings: *std.ArrayList(model.Finding),
 ) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -331,7 +345,7 @@ fn scanContent(
         const in_loop = loop_started or loop_level > 0;
         const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
         const call_metrics = if (in_loop)
-            inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries)
+            inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries, type_relations)
         else
             MethodMetrics{};
 
@@ -581,14 +595,18 @@ fn scanContent(
     }
 }
 
-fn buildMethodSummaries(arena_allocator: std.mem.Allocator, files: []const ApexFile) !std.StringHashMap(MethodSummary) {
+fn buildMethodSummaries(
+    arena_allocator: std.mem.Allocator,
+    files: []const ApexFile,
+    type_relations: *const TypeRelations,
+) !std.StringHashMap(MethodSummary) {
     var summaries = std.StringHashMap(MethodSummary).init(arena_allocator);
 
     for (files) |file| {
         try collectMethodNames(arena_allocator, file.content, &summaries);
     }
     for (files) |file| {
-        try collectMethodDirectMetricsAndCalls(arena_allocator, file.content, &summaries);
+        try collectMethodDirectMetricsAndCalls(arena_allocator, file.content, &summaries, type_relations);
     }
 
     var keys: std.ArrayList([]const u8) = .empty;
@@ -601,6 +619,137 @@ fn buildMethodSummaries(arena_allocator: std.mem.Allocator, files: []const ApexF
     }
 
     return summaries;
+}
+
+fn collectTypeRelations(
+    arena_allocator: std.mem.Allocator,
+    files: []const ApexFile,
+) !TypeRelations {
+    var relations = TypeRelations{
+        .extends_by_type = std.StringHashMap([]const u8).init(arena_allocator),
+        .interfaces_by_type = std.StringHashMap(std.ArrayListUnmanaged([]const u8)).init(arena_allocator),
+    };
+
+    for (files) |file| {
+        try collectTypeRelationsFromContent(arena_allocator, file.content, &relations);
+    }
+
+    return relations;
+}
+
+fn collectTypeRelationsFromContent(
+    arena_allocator: std.mem.Allocator,
+    content: []const u8,
+    relations: *TypeRelations,
+) !void {
+    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
+    var lines = std.mem.splitScalar(u8, stripped_content, '\n');
+    while (lines.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r");
+        if (trimmed.len == 0) continue;
+        const decl = parseTypeDecl(trimmed) orelse continue;
+        try registerTypeDecl(arena_allocator, relations, decl);
+    }
+}
+
+fn parseTypeDecl(line: []const u8) ?TypeDecl {
+    const brace_idx = std.mem.indexOfScalar(u8, line, '{') orelse return null;
+    const header = std.mem.trimRight(u8, line[0..brace_idx], " \t");
+    if (header.len == 0) return null;
+
+    const class_idx = indexOfWordIgnoreCase(header, "class");
+    const interface_idx = indexOfWordIgnoreCase(header, "interface");
+    if (class_idx == null and interface_idx == null) return null;
+
+    const keyword_idx = if (class_idx == null)
+        interface_idx.?
+    else if (interface_idx == null)
+        class_idx.?
+    else
+        @min(class_idx.?, interface_idx.?);
+    const is_interface = interface_idx != null and interface_idx.? == keyword_idx;
+    const keyword_len: usize = if (is_interface) "interface".len else "class".len;
+
+    var after_keyword = std.mem.trimLeft(u8, header[(keyword_idx + keyword_len)..], " \t");
+    const name = extractLeadingIdentifier(after_keyword) orelse return null;
+    after_keyword = std.mem.trimLeft(u8, after_keyword[name.len..], " \t");
+
+    const extends_name = if (!is_interface) parseSingleTypeAfterKeyword(after_keyword, "extends") else null;
+    const interfaces_raw = if (is_interface)
+        sliceAfterKeyword(after_keyword, "extends") orelse ""
+    else
+        sliceAfterKeyword(after_keyword, "implements") orelse "";
+
+    return .{
+        .name = name,
+        .extends_name = extends_name,
+        .implements_raw = interfaces_raw,
+    };
+}
+
+fn parseSingleTypeAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u8 {
+    const rest = sliceAfterKeyword(line, keyword) orelse return null;
+    return extractLeadingIdentifier(rest);
+}
+
+fn sliceAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u8 {
+    const idx = indexOfWordIgnoreCase(line, keyword) orelse return null;
+    const after = std.mem.trimLeft(u8, line[(idx + keyword.len)..], " \t");
+    if (after.len == 0) return null;
+    return after;
+}
+
+fn indexOfWordIgnoreCase(text: []const u8, word: []const u8) ?usize {
+    if (word.len == 0 or text.len < word.len) return null;
+    var i: usize = 0;
+    while (i + word.len <= text.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(text[i .. i + word.len], word)) continue;
+        const left_ok = i == 0 or !isIdentChar(text[i - 1]);
+        const right_idx = i + word.len;
+        const right_ok = right_idx == text.len or !isIdentChar(text[right_idx]);
+        if (left_ok and right_ok) return i;
+    }
+    return null;
+}
+
+fn registerTypeDecl(
+    arena_allocator: std.mem.Allocator,
+    relations: *TypeRelations,
+    decl: TypeDecl,
+) !void {
+    if (decl.extends_name) |parent| {
+        const child_key = try arena_allocator.dupe(u8, decl.name);
+        const parent_copy = try arena_allocator.dupe(u8, parent);
+        try relations.extends_by_type.put(child_key, parent_copy);
+    }
+
+    if (decl.implements_raw.len == 0) return;
+    var interfaces = std.mem.splitScalar(u8, decl.implements_raw, ',');
+    while (interfaces.next()) |raw_iface| {
+        const iface = std.mem.trim(u8, raw_iface, " \t");
+        if (iface.len == 0) continue;
+        const iface_name = extractLeadingIdentifier(iface) orelse continue;
+        try registerInterfaceConstraint(arena_allocator, relations, decl.name, iface_name);
+    }
+}
+
+fn registerInterfaceConstraint(
+    arena_allocator: std.mem.Allocator,
+    relations: *TypeRelations,
+    type_name: []const u8,
+    interface_name: []const u8,
+) !void {
+    if (relations.interfaces_by_type.getPtr(type_name)) |list| {
+        for (list.items) |existing| {
+            if (std.mem.eql(u8, existing, interface_name)) return;
+        }
+        try list.append(arena_allocator, try arena_allocator.dupe(u8, interface_name));
+        return;
+    }
+
+    var list: std.ArrayListUnmanaged([]const u8) = .{};
+    try list.append(arena_allocator, try arena_allocator.dupe(u8, interface_name));
+    try relations.interfaces_by_type.put(try arena_allocator.dupe(u8, type_name), list);
 }
 
 fn collectMethodNames(
@@ -638,6 +787,7 @@ fn collectMethodDirectMetricsAndCalls(
     arena_allocator: std.mem.Allocator,
     content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
+    type_relations: *const TypeRelations,
 ) !void {
     const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
@@ -730,6 +880,7 @@ fn collectMethodDirectMetricsAndCalls(
                         scope.name,
                         trimmed,
                         &type_env,
+                        type_relations,
                         local_loop_multiplier,
                     );
 
@@ -1466,6 +1617,7 @@ fn recordCalledMethods(
     caller_name: []const u8,
     line: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
     multiplier: u64,
 ) !void {
     var it = summaries.iterator();
@@ -1481,6 +1633,7 @@ fn recordCalledMethods(
             callee.param_count,
             callee.param_signature,
             type_env,
+            type_relations,
         )) continue;
         try appendOrAccumulateCall(arena_allocator, calls, callee_key, multiplier);
     }
@@ -1509,6 +1662,7 @@ fn inferCalledMethodMetrics(
     current_owner: ?[]const u8,
     type_env: *std.StringHashMap([]const u8),
     summaries: *std.StringHashMap(MethodSummary),
+    type_relations: *const TypeRelations,
 ) MethodMetrics {
     var metrics: MethodMetrics = .{};
     var it = summaries.iterator();
@@ -1522,6 +1676,7 @@ fn inferCalledMethodMetrics(
             callee.param_count,
             callee.param_signature,
             type_env,
+            type_relations,
         )) continue;
         metrics.add(entry.value_ptr.total);
     }
@@ -1536,11 +1691,43 @@ fn lineCallsMethod(
     callee_param_count: u16,
     callee_param_signature: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
-    if (containsQualifiedMethodCall(line, callee_owner, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(line, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(line, "this", callee_name, callee_param_count, callee_param_signature, type_env)) return true;
-    if (containsTypedReceiverMethodCall(line, callee_owner, callee_name, callee_param_count, callee_param_signature, type_env)) return true;
+    if (containsQualifiedMethodCall(
+        line,
+        callee_owner,
+        callee_name,
+        callee_param_count,
+        callee_param_signature,
+        type_env,
+        type_relations,
+    )) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(
+        line,
+        callee_name,
+        callee_param_count,
+        callee_param_signature,
+        type_env,
+        type_relations,
+    )) return true;
+    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(
+        line,
+        "this",
+        callee_name,
+        callee_param_count,
+        callee_param_signature,
+        type_env,
+        type_relations,
+    )) return true;
+    if (containsTypedReceiverMethodCall(
+        line,
+        callee_owner,
+        callee_name,
+        callee_param_count,
+        callee_param_signature,
+        type_env,
+        type_relations,
+    )) return true;
     return false;
 }
 
@@ -1550,6 +1737,7 @@ fn containsBareMethodCall(
     expected_param_count: u16,
     expected_param_signature: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
     if (method_name.len == 0) return false;
 
@@ -1564,7 +1752,13 @@ fn containsBareMethodCall(
                 start = idx + method_name.len;
                 continue;
             };
-            if (arg_count == expected_param_count and argumentsMatchParamSignature(line, end, expected_param_signature, type_env)) return true;
+            if (arg_count == expected_param_count and argumentsMatchParamSignature(
+                line,
+                end,
+                expected_param_signature,
+                type_env,
+                type_relations,
+            )) return true;
         }
         start = idx + method_name.len;
     }
@@ -1578,6 +1772,7 @@ fn containsQualifiedMethodCall(
     expected_param_count: u16,
     expected_param_signature: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
     if (owner.len == 0 or method_name.len == 0) return false;
 
@@ -1614,7 +1809,13 @@ fn containsQualifiedMethodCall(
                 start = owner_idx + owner.len;
                 continue;
             };
-            if (arg_count == expected_param_count and argumentsMatchParamSignature(line, open_idx, expected_param_signature, type_env)) return true;
+            if (arg_count == expected_param_count and argumentsMatchParamSignature(
+                line,
+                open_idx,
+                expected_param_signature,
+                type_env,
+                type_relations,
+            )) return true;
         }
 
         start = owner_idx + owner.len;
@@ -1630,6 +1831,7 @@ fn containsTypedReceiverMethodCall(
     expected_param_count: u16,
     expected_param_signature: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
     if (callee_owner.len == 0 or method_name.len == 0) return false;
 
@@ -1662,7 +1864,7 @@ fn containsTypedReceiverMethodCall(
             start = method_idx + method_name.len;
             continue;
         };
-        if (!boundTypeMatchesOwner(bound_type, callee_owner)) {
+        if (!boundTypeMatchesOwner(bound_type, callee_owner, type_relations)) {
             start = method_idx + method_name.len;
             continue;
         }
@@ -1678,7 +1880,13 @@ fn containsTypedReceiverMethodCall(
             start = method_idx + method_name.len;
             continue;
         };
-        if (arg_count == expected_param_count and argumentsMatchParamSignature(line, open_idx, expected_param_signature, type_env)) {
+        if (arg_count == expected_param_count and argumentsMatchParamSignature(
+            line,
+            open_idx,
+            expected_param_signature,
+            type_env,
+            type_relations,
+        )) {
             return true;
         }
 
@@ -1688,9 +1896,13 @@ fn containsTypedReceiverMethodCall(
     return false;
 }
 
-fn boundTypeMatchesOwner(bound_type_raw: []const u8, owner: []const u8) bool {
+fn boundTypeMatchesOwner(
+    bound_type_raw: []const u8,
+    owner: []const u8,
+    type_relations: *const TypeRelations,
+) bool {
     const primary = extractPrimaryTypeName(bound_type_raw) orelse return false;
-    return std.mem.eql(u8, primary, owner);
+    return typeSatisfiesConstraint(owner, primary, type_relations);
 }
 
 fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
@@ -1711,6 +1923,40 @@ fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
         return qualified[(dot_idx + 1)..];
     }
     return qualified;
+}
+
+fn typeSatisfiesConstraint(
+    candidate_type: []const u8,
+    expected_type: []const u8,
+    type_relations: *const TypeRelations,
+) bool {
+    return typeSatisfiesConstraintDepth(candidate_type, expected_type, type_relations, 0);
+}
+
+fn typeSatisfiesConstraintDepth(
+    candidate_type: []const u8,
+    expected_type: []const u8,
+    type_relations: *const TypeRelations,
+    depth: u8,
+) bool {
+    if (depth > 24) return false;
+    if (std.mem.eql(u8, candidate_type, expected_type)) return true;
+
+    if (type_relations.extends_by_type.get(candidate_type)) |parent| {
+        if (typeSatisfiesConstraintDepth(parent, expected_type, type_relations, depth + 1)) {
+            return true;
+        }
+    }
+
+    if (type_relations.interfaces_by_type.get(candidate_type)) |interfaces| {
+        for (interfaces.items) |iface| {
+            if (typeSatisfiesConstraintDepth(iface, expected_type, type_relations, depth + 1)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
@@ -1808,6 +2054,7 @@ fn argumentsMatchParamSignature(
     open_paren_idx: usize,
     expected_signature: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
     if (open_paren_idx >= line.len or line[open_paren_idx] != '(') return false;
 
@@ -1849,7 +2096,7 @@ fn argumentsMatchParamSignature(
                         return expected_signature.len == 0 or (expected_iter.next() == null and expected_signature.len == 0);
                     }
                     const expected = expected_iter.next() orelse return false;
-                    if (!argumentExprMatchesType(segment, expected, type_env)) return false;
+                    if (!argumentExprMatchesType(segment, expected, type_env, type_relations)) return false;
                     return expected_iter.next() == null;
                 }
                 if (paren_depth > 0) paren_depth -= 1;
@@ -1876,7 +2123,7 @@ fn argumentsMatchParamSignature(
                 if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     const segment = std.mem.trim(u8, line[arg_start..i], " \t");
                     const expected = expected_iter.next() orelse return false;
-                    if (!argumentExprMatchesType(segment, expected, type_env)) return false;
+                    if (!argumentExprMatchesType(segment, expected, type_env, type_relations)) return false;
                     arg_start = i + 1;
                 }
             },
@@ -1891,6 +2138,7 @@ fn argumentExprMatchesType(
     expr_raw: []const u8,
     expected_type: []const u8,
     type_env: *std.StringHashMap([]const u8),
+    type_relations: *const TypeRelations,
 ) bool {
     const expr = std.mem.trim(u8, expr_raw, " \t");
     if (expr.len == 0) return false;
@@ -1912,7 +2160,7 @@ fn argumentExprMatchesType(
     }
     if (std.mem.startsWith(u8, expr, "new ")) {
         const type_raw = extractTypeFromNewExpression(expr[4..]) orelse return true;
-        return equalsCanonicalType(type_raw, expected_type);
+        return isTypeAssignable(type_raw, expected_type, type_relations);
     }
 
     if (extractRootIdentifier(expr)) |root| {
@@ -1920,12 +2168,12 @@ fn argumentExprMatchesType(
             if (isIndexedAccess(expr)) {
                 if (!isPureIndexedAccess(expr)) return true;
                 if (extractListElementType(bound_type)) |element_type| {
-                    return equalsCanonicalType(element_type, expected_type);
+                    return isTypeAssignable(element_type, expected_type, type_relations);
                 }
                 return false;
             }
             if (isSimpleIdentifier(expr)) {
-                return equalsCanonicalType(bound_type, expected_type);
+                return isTypeAssignable(bound_type, expected_type, type_relations);
             }
         }
     }
@@ -2015,6 +2263,24 @@ fn equalsCanonicalType(raw_type: []const u8, canonical_type: []const u8) bool {
     }
     while (raw_i < raw_type.len and std.ascii.isWhitespace(raw_type[raw_i])) : (raw_i += 1) {}
     return raw_i == raw_type.len and canon_i == canonical_type.len;
+}
+
+fn isTypeAssignable(
+    actual_type_raw: []const u8,
+    expected_type_raw: []const u8,
+    type_relations: *const TypeRelations,
+) bool {
+    if (equalsCanonicalType(actual_type_raw, expected_type_raw)) return true;
+    if (isGenericLikeType(actual_type_raw) or isGenericLikeType(expected_type_raw)) return false;
+
+    const actual_primary = extractPrimaryTypeName(actual_type_raw) orelse return false;
+    const expected_primary = extractPrimaryTypeName(expected_type_raw) orelse return false;
+    return typeSatisfiesConstraint(actual_primary, expected_primary, type_relations);
+}
+
+fn isGenericLikeType(type_raw: []const u8) bool {
+    return std.mem.indexOfScalar(u8, type_raw, '<') != null or
+        std.mem.indexOfScalar(u8, type_raw, '[') != null;
 }
 
 fn looksNumericLiteral(expr: []const u8) bool {
@@ -3598,6 +3864,40 @@ test "typed receiver reassignment to concrete helper is reflected in call resolu
         \\        for (Integer i = 0; i < records.size(); i++) {
         \\            updater.apply(records[i]);
         \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "dynamic dispatch resolves through interface-typed helper parameter" {
+    const source =
+        \\public interface Updater {
+        \\    void apply(Account acc);
+        \\}
+        \\
+        \\public with sharing class DmlUpdater implements Updater {
+        \\    public void apply(Account acc) {
+        \\        update acc;
+        \\    }
+        \\}
+        \\
+        \\public with sharing class InterfaceDispatchThroughParamService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        Updater updater = new DmlUpdater();
+        \\        for (Integer i = 0; i < records.size(); i++) {
+        \\            invoke(updater, records[i]);
+        \\        }
+        \\    }
+        \\
+        \\    private static void invoke(Updater updater, Account acc) {
+        \\        updater.apply(acc);
         \\    }
         \\}
     ;

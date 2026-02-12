@@ -21,6 +21,7 @@ pub const Regression = struct {
 const BaselineProfile = struct {
     source: []const u8 = "",
     label: []const u8 = "unknown",
+    transaction_index: u32 = 0,
     mode: []const u8 = "sync",
     cpu_ms: u32 = 0,
     heap_bytes: u64 = 0,
@@ -45,10 +46,7 @@ pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Confi
     errdefer model.deinitProfiles(gpa, &results);
 
     for (files.items) |path| {
-        const maybe_result = try parseLog(gpa, path, cfg);
-        if (maybe_result) |result| {
-            try results.append(gpa, result);
-        }
+        try parseLogTransactions(gpa, path, cfg, &results);
     }
 
     return results;
@@ -111,6 +109,7 @@ fn findBaseline(curr: model.ProfileResult, baseline_profiles: []const BaselinePr
 
     for (baseline_profiles) |baseline| {
         if (!std.ascii.eqlIgnoreCase(curr_mode, baseline.mode)) continue;
+        if (baseline.transaction_index != 0 and baseline.transaction_index != curr.transaction_index) continue;
 
         const baseline_label_known = !isUnknown(baseline.label);
         if (curr_label_known and baseline_label_known) {
@@ -163,57 +162,110 @@ fn collectLogsInDirectory(gpa: std.mem.Allocator, root: []const u8, files: *std.
     }
 }
 
-fn parseLog(gpa: std.mem.Allocator, path: []const u8, cfg: config.Config) !?model.ProfileResult {
+const TransactionMetrics = struct {
+    label: ?[]const u8 = null,
+    cpu_max: u32 = 0,
+    heap_max: u64 = 0,
+    saw_metric: bool = false,
+    is_async: bool = false,
+};
+
+fn parseLogTransactions(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    cfg: config.Config,
+    results: *std.ArrayList(model.ProfileResult),
+) !void {
     const content = try std.fs.cwd().readFileAlloc(gpa, path, 32 * 1024 * 1024);
     defer gpa.free(content);
 
-    var label: ?[]const u8 = null;
-    errdefer if (label) |value| gpa.free(value);
-
-    var cpu_max: u32 = 0;
-    var heap_max: u64 = 0;
-    var saw_metric = false;
-    var is_async = false;
+    var current = TransactionMetrics{};
+    var tx_started = false;
+    var tx_index: u32 = 0;
+    errdefer if (current.label) |value| gpa.free(value);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
 
-        if (label == null and std.mem.indexOf(u8, line, "CODE_UNIT_STARTED|") != null) {
-            label = try parseCodeUnitLabel(gpa, line);
+        if (isExecutionStartedLine(line)) {
+            if (tx_started) {
+                try appendTransactionResult(gpa, path, cfg, tx_index, &current, results);
+            }
+            tx_started = true;
+            tx_index = tx_index + 1;
+            current = .{};
+        } else if (!tx_started and lineMarksTransactionActivity(line)) {
+            tx_started = true;
+            tx_index = 1;
+            current = .{};
+        }
+
+        if (!tx_started) continue;
+
+        if (current.label == null and std.mem.indexOf(u8, line, "CODE_UNIT_STARTED|") != null) {
+            current.label = try parseCodeUnitLabel(gpa, line);
         }
         if (containsAsyncMarker(line)) {
-            is_async = true;
+            current.is_async = true;
         }
 
         if (parseLimitValue(line, "Maximum CPU time:")) |value| {
-            saw_metric = true;
+            current.saw_metric = true;
             const parsed: u32 = @intCast(@min(value, std.math.maxInt(u32)));
-            if (parsed > cpu_max) cpu_max = parsed;
+            if (parsed > current.cpu_max) current.cpu_max = parsed;
         }
         if (parseLimitValue(line, "Maximum heap size:")) |value| {
-            saw_metric = true;
-            if (value > heap_max) heap_max = value;
+            current.saw_metric = true;
+            if (value > current.heap_max) current.heap_max = value;
         }
     }
 
-    if (!saw_metric) return null;
-
-    if (label == null) {
-        label = try gpa.dupe(u8, "unknown");
+    if (tx_started) {
+        try appendTransactionResult(gpa, path, cfg, tx_index, &current, results);
     }
+}
 
-    const budget = if (is_async) cfg.budget_async else cfg.budget_sync;
-    return .{
+fn appendTransactionResult(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    cfg: config.Config,
+    tx_index: u32,
+    tx: *TransactionMetrics,
+    results: *std.ArrayList(model.ProfileResult),
+) !void {
+    defer {
+        if (tx.label) |value| gpa.free(value);
+        tx.* = .{};
+    }
+    if (!tx.saw_metric) return;
+
+    const label_source = tx.label orelse "unknown";
+    const label = try gpa.dupe(u8, label_source);
+    errdefer gpa.free(label);
+
+    const budget = if (tx.is_async) cfg.budget_async else cfg.budget_sync;
+    try results.append(gpa, .{
         .source = try gpa.dupe(u8, path),
-        .label = label.?,
-        .is_async = is_async,
-        .cpu_ms = cpu_max,
-        .heap_bytes = heap_max,
+        .label = label,
+        .transaction_index = tx_index,
+        .is_async = tx.is_async,
+        .cpu_ms = tx.cpu_max,
+        .heap_bytes = tx.heap_max,
         .cpu_budget = budget.cpu_ms,
         .heap_budget = budget.heap_bytes,
-    };
+    });
+}
+
+fn isExecutionStartedLine(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "EXECUTION_STARTED") != null;
+}
+
+fn lineMarksTransactionActivity(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "CODE_UNIT_STARTED|") != null or
+        parseLimitValue(line, "Maximum CPU time:") != null or
+        parseLimitValue(line, "Maximum heap size:") != null;
 }
 
 fn parseCodeUnitLabel(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
@@ -265,6 +317,49 @@ test "exceedsPercent compares with threshold" {
     try std.testing.expect(!exceedsPercent(0, 0, 15));
 }
 
+test "run splits multi-transaction log file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const log =
+        \\08:00:00.0 (1)|EXECUTION_STARTED
+        \\08:00:00.0 (2)|CODE_UNIT_STARTED|[EXTERNAL]|MyService.run
+        \\08:00:00.0 (3)|LIMIT_USAGE_FOR_NS|(default)|
+        \\  Number of SOQL queries: 1 out of 100
+        \\  Maximum CPU time: 1200 out of 10000
+        \\  Maximum heap size: 3500 out of 6000000
+        \\08:00:01.0 (4)|EXECUTION_FINISHED
+        \\08:05:00.0 (5)|EXECUTION_STARTED
+        \\08:05:00.0 (6)|CODE_UNIT_STARTED|[EXTERNAL]|MyQueue.execute
+        \\08:05:00.0 (7)|QUEUEABLE
+        \\08:05:00.0 (8)|LIMIT_USAGE_FOR_NS|(default)|
+        \\  Maximum CPU time: 4200 out of 60000
+        \\  Maximum heap size: 9100 out of 12000000
+        \\08:05:01.0 (9)|EXECUTION_FINISHED
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "multi.log", .data = log });
+
+    const log_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "multi.log" },
+    );
+    defer std.testing.allocator.free(log_path);
+
+    const inputs = [_][]const u8{log_path};
+    var profiles = try run(std.testing.allocator, &inputs, config.Config.defaults());
+    defer model.deinitProfiles(std.testing.allocator, &profiles);
+
+    try std.testing.expectEqual(@as(usize, 2), profiles.items.len);
+    try std.testing.expectEqual(@as(u32, 1), profiles.items[0].transaction_index);
+    try std.testing.expectEqual(@as(u32, 2), profiles.items[1].transaction_index);
+    try std.testing.expect(std.mem.eql(u8, profiles.items[0].label, "MyService.run"));
+    try std.testing.expect(std.mem.eql(u8, profiles.items[1].label, "MyQueue.execute"));
+    try std.testing.expectEqual(false, profiles.items[0].is_async);
+    try std.testing.expectEqual(true, profiles.items[1].is_async);
+    try std.testing.expectEqual(@as(u32, 1200), profiles.items[0].cpu_ms);
+    try std.testing.expectEqual(@as(u32, 4200), profiles.items[1].cpu_ms);
+}
+
 test "compareWithBaseline reports regression by label and mode" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -301,6 +396,7 @@ test "compareWithBaseline reports regression by label and mode" {
         .{
             .source = "sync.log",
             .label = "MyService.run",
+            .transaction_index = 1,
             .is_async = false,
             .cpu_ms = 1300,
             .heap_bytes = 2600,
@@ -310,6 +406,7 @@ test "compareWithBaseline reports regression by label and mode" {
         .{
             .source = "async.log",
             .label = "MyQueue.execute",
+            .transaction_index = 1,
             .is_async = true,
             .cpu_ms = 5200,
             .heap_bytes = 7100,
@@ -327,11 +424,67 @@ test "compareWithBaseline reports regression by label and mode" {
     try std.testing.expect(regressions.items[0].heap_regressed);
 }
 
+test "compareWithBaseline can disambiguate by transaction index" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const baseline_json =
+        \\{
+        \\  "profiles": [
+        \\    {
+        \\      "source": "tx.log",
+        \\      "label": "MyService.run",
+        \\      "transaction_index": 1,
+        \\      "mode": "sync",
+        \\      "cpu_ms": 1000,
+        \\      "heap_bytes": 2000
+        \\    },
+        \\    {
+        \\      "source": "tx.log",
+        \\      "label": "MyService.run",
+        \\      "transaction_index": 2,
+        \\      "mode": "sync",
+        \\      "cpu_ms": 2500,
+        \\      "heap_bytes": 4000
+        \\    }
+        \\  ]
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+
+    const baseline_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "baseline.json" },
+    );
+    defer std.testing.allocator.free(baseline_path);
+
+    const current = [_]model.ProfileResult{
+        .{
+            .source = "tx.log",
+            .label = "MyService.run",
+            .transaction_index = 2,
+            .is_async = false,
+            .cpu_ms = 3000,
+            .heap_bytes = 4300,
+            .cpu_budget = 8000,
+            .heap_budget = 5000000,
+        },
+    };
+
+    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    defer deinitRegressions(std.testing.allocator, &regressions);
+
+    try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
+    try std.testing.expectEqual(@as(u32, 3000), regressions.items[0].cpu_current);
+    try std.testing.expectEqual(@as(u32, 2500), regressions.items[0].cpu_baseline);
+}
+
 test "compareWithBaseline returns empty when baseline path is null" {
     const current = [_]model.ProfileResult{
         .{
             .source = "sync.log",
             .label = "Example.run",
+            .transaction_index = 1,
             .is_async = false,
             .cpu_ms = 1300,
             .heap_bytes = 2600,
@@ -374,6 +527,7 @@ test "compareWithBaseline matches by basename when label is unknown" {
         .{
             .source = "another/path/tx.log",
             .label = "unknown",
+            .transaction_index = 1,
             .is_async = false,
             .cpu_ms = 2500,
             .heap_bytes = 3400,

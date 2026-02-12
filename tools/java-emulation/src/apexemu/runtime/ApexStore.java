@@ -8,9 +8,11 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -162,11 +164,14 @@ final class ApexStore {
   }
 
   static List<ApexSObject> query(String soql) {
+    STATE.get().semiJoinCache.clear();
     QuerySpec spec = parseQuerySpec(soql);
     List<ApexSObject> all = scan(spec, false);
     List<ApexSObject> out = new ArrayList<>(all.size());
     for (ApexSObject row : all) {
-      out.add(row.copy());
+      ApexSObject projected = row.copy();
+      attachChildSubqueryRows(spec, row, projected);
+      out.add(projected);
     }
     Limits.addSoql(1);
     Limits.addHeapBytes(out.size() * 256L);
@@ -174,6 +179,7 @@ final class ApexStore {
   }
 
   static int countQuery(String soql) {
+    STATE.get().semiJoinCache.clear();
     QuerySpec spec = parseQuerySpec(soql);
     int count = scan(spec, true).size();
     Limits.addSoql(1);
@@ -859,7 +865,110 @@ final class ApexStore {
       ApexSObject first = groupRows.get(0);
       return resolveFieldValue(first, item.field);
     }
+    if (item.kind == SelectItemKind.CHILD_SUBQUERY) {
+      return List.of();
+    }
     return evaluateAggregate(item.aggregateFunction, item.field, item.countAll, groupRows);
+  }
+
+  private static void attachChildSubqueryRows(
+      QuerySpec spec, ApexSObject sourceRow, ApexSObject projectedRow) {
+    if (spec == null
+        || spec.selectSpec == null
+        || spec.selectSpec.items == null
+        || sourceRow == null
+        || projectedRow == null) {
+      return;
+    }
+    for (SelectItem item : spec.selectSpec.items) {
+      if (item.kind != SelectItemKind.CHILD_SUBQUERY || item.childSubquery == null) {
+        continue;
+      }
+      List<ApexSObject> childRows = executeChildSubqueryForParent(item.childSubquery, sourceRow);
+      projectedRow.set(item.outputName, childRows);
+    }
+  }
+
+  private static List<ApexSObject> executeChildSubqueryForParent(
+      ChildSubquerySpec childSubquery, ApexSObject parentRow) {
+    if (childSubquery == null || parentRow == null) {
+      return List.of();
+    }
+    String parentId = normalizeId(parentRow.id());
+    if (parentId == null) {
+      return List.of();
+    }
+
+    QuerySpec scoped =
+        withAdditionalWhere(
+            childSubquery.querySpec,
+            new WhereClause(childSubquery.parentLinkField, "=", parentId));
+    List<ApexSObject> scopedRows = scan(scoped, false);
+    if (!scopedRows.isEmpty()) {
+      return copyRows(scopedRows);
+    }
+
+    // Fallback: when relation->foreign-key inference misses, scan once and detect likely reference fields.
+    List<ApexSObject> allRows = scan(childSubquery.querySpec, false);
+    List<ApexSObject> fallback = new ArrayList<>();
+    for (ApexSObject child : allRows) {
+      if (matchesAnyReferenceField(child, parentId)) {
+        fallback.add(child);
+      }
+    }
+    return copyRows(applyOrderingAndPaging(childSubquery.querySpec, fallback, false));
+  }
+
+  private static QuerySpec withAdditionalWhere(QuerySpec spec, WhereClause additionalClause) {
+    if (spec == null || additionalClause == null) {
+      return spec;
+    }
+    WhereExpr additionalExpr = new WherePredicateExpr(additionalClause);
+    WhereExpr combined =
+        spec.whereExpr == null
+            ? additionalExpr
+            : new WhereLogicalExpr(LogicalOperator.AND, List.of(spec.whereExpr, additionalExpr));
+    return new QuerySpec(
+        spec.sobjectType,
+        spec.selectSpec,
+        combined,
+        spec.groupByFields,
+        spec.havingExpr,
+        spec.orderByKeys,
+        spec.limit,
+        spec.offset);
+  }
+
+  private static boolean matchesAnyReferenceField(ApexSObject row, String parentId) {
+    if (row == null || parentId == null || parentId.isBlank()) {
+      return false;
+    }
+    for (Map.Entry<String, Object> field : row.fields().entrySet()) {
+      String name = field.getKey();
+      if (name == null) {
+        continue;
+      }
+      boolean candidateName =
+          name.length() > 2 && (name.endsWith("Id") || name.endsWith("__c"));
+      if (!candidateName) {
+        continue;
+      }
+      if (compareEquality(field.getValue(), parentId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static List<ApexSObject> copyRows(List<ApexSObject> rows) {
+    if (rows == null || rows.isEmpty()) {
+      return List.of();
+    }
+    List<ApexSObject> out = new ArrayList<>(rows.size());
+    for (ApexSObject row : rows) {
+      out.add(row == null ? null : row.copy());
+    }
+    return out;
   }
 
   private static Object evaluateAggregate(
@@ -1112,6 +1221,9 @@ final class ApexStore {
 
   @SuppressWarnings("unchecked")
   private static boolean compareIn(Object value, Object whereLiteral) {
+    if (whereLiteral instanceof SemiJoinLiteral semiJoinLiteral) {
+      return compareInSemiJoin(value, semiJoinLiteral);
+    }
     if (!(whereLiteral instanceof List<?> literalList)) {
       return false;
     }
@@ -1121,6 +1233,34 @@ final class ApexStore {
       }
     }
     return false;
+  }
+
+  private static boolean compareInSemiJoin(Object value, SemiJoinLiteral semiJoinLiteral) {
+    if (semiJoinLiteral == null) {
+      return false;
+    }
+
+    State state = STATE.get();
+    List<Object> candidates = state.semiJoinCache.get(semiJoinLiteral);
+    if (candidates == null) {
+      candidates = evaluateSemiJoinValues(semiJoinLiteral);
+      state.semiJoinCache.put(semiJoinLiteral, candidates);
+    }
+    for (Object candidate : candidates) {
+      if (compareEquality(value, candidate)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static List<Object> evaluateSemiJoinValues(SemiJoinLiteral semiJoinLiteral) {
+    List<ApexSObject> rows = scan(semiJoinLiteral.querySpec, false);
+    List<Object> out = new ArrayList<>(rows.size());
+    for (ApexSObject row : rows) {
+      out.add(resolveFieldValue(row, semiJoinLiteral.selectedField));
+    }
+    return out;
   }
 
   private static boolean compareLike(Object value, Object whereLiteral) {
@@ -1230,21 +1370,45 @@ final class ApexStore {
     return null;
   }
 
+  private static ApexSObject findActiveRowByIdAndType(String id, String type) {
+    if (id == null || id.isBlank() || type == null || type.isBlank()) {
+      return null;
+    }
+    State state = STATE.get();
+    for (Map.Entry<String, Map<String, ApexSObject>> bucketEntry : state.active.entrySet()) {
+      String bucketType = bucketEntry.getKey();
+      if (bucketType == null || !bucketType.equalsIgnoreCase(type)) {
+        continue;
+      }
+      for (Map.Entry<String, ApexSObject> rowEntry : bucketEntry.getValue().entrySet()) {
+        if (rowEntry.getKey() != null && rowEntry.getKey().equalsIgnoreCase(id)) {
+          return rowEntry.getValue();
+        }
+        ApexSObject row = rowEntry.getValue();
+        if (row != null && row.id() != null && row.id().equalsIgnoreCase(id)) {
+          return row;
+        }
+      }
+    }
+    return null;
+  }
+
   private static QuerySpec parseQuerySpec(String rawSoql) {
     if (rawSoql == null || rawSoql.isBlank()) {
       throw new IllegalArgumentException("SOQL cannot be blank");
     }
 
     String soql = sanitize(rawSoql);
-    Matcher fromMatcher = FROM_PATTERN.matcher(soql);
+    String masked = maskNestedSoqlClauses(soql);
+    Matcher fromMatcher = FROM_PATTERN.matcher(masked);
     if (!fromMatcher.find()) {
       throw new IllegalArgumentException("SOQL must contain FROM <SObject>: " + rawSoql);
     }
     int fromStart = fromMatcher.start();
     String sobjectType = fromMatcher.group(1);
-    SelectSpec selectSpec = parseSelectSpec(soql.substring(0, fromStart).trim(), rawSoql);
+    SelectSpec selectSpec = parseSelectSpec(soql.substring(0, fromStart).trim(), rawSoql, sobjectType);
 
-    Matcher whereKeyword = WHERE_KEYWORD.matcher(soql);
+    Matcher whereKeyword = WHERE_KEYWORD.matcher(masked);
     int whereStart = -1;
     int whereEnd = -1;
     if (whereKeyword.find()) {
@@ -1252,7 +1416,7 @@ final class ApexStore {
       whereEnd = whereKeyword.end();
     }
 
-    Matcher groupByKeyword = GROUP_BY_KEYWORD.matcher(soql);
+    Matcher groupByKeyword = GROUP_BY_KEYWORD.matcher(masked);
     int groupByStart = -1;
     int groupByEnd = -1;
     if (groupByKeyword.find()) {
@@ -1260,7 +1424,7 @@ final class ApexStore {
       groupByEnd = groupByKeyword.end();
     }
 
-    Matcher havingKeyword = HAVING_KEYWORD.matcher(soql);
+    Matcher havingKeyword = HAVING_KEYWORD.matcher(masked);
     int havingStart = -1;
     int havingEnd = -1;
     if (havingKeyword.find()) {
@@ -1268,7 +1432,7 @@ final class ApexStore {
       havingEnd = havingKeyword.end();
     }
 
-    Matcher orderByKeyword = ORDER_BY_KEYWORD.matcher(soql);
+    Matcher orderByKeyword = ORDER_BY_KEYWORD.matcher(masked);
     int orderByStart = -1;
     int orderByEnd = -1;
     if (orderByKeyword.find()) {
@@ -1278,7 +1442,7 @@ final class ApexStore {
 
     int limit = 0;
     int limitStart = -1;
-    Matcher limitMatcher = LIMIT_PATTERN.matcher(soql);
+    Matcher limitMatcher = LIMIT_PATTERN.matcher(masked);
     if (limitMatcher.find()) {
       limitStart = limitMatcher.start();
       limit = Integer.parseInt(limitMatcher.group(1));
@@ -1286,7 +1450,7 @@ final class ApexStore {
 
     int offset = 0;
     int offsetStart = -1;
-    Matcher offsetMatcher = OFFSET_PATTERN.matcher(soql);
+    Matcher offsetMatcher = OFFSET_PATTERN.matcher(masked);
     if (offsetMatcher.find()) {
       offsetStart = offsetMatcher.start();
       offset = Integer.parseInt(offsetMatcher.group(1));
@@ -1357,7 +1521,7 @@ final class ApexStore {
         sobjectType, selectSpec, whereExpr, groupByFields, havingExpr, orderByKeys, limit, offset);
   }
 
-  private static SelectSpec parseSelectSpec(String selectExpr, String rawSoql) {
+  private static SelectSpec parseSelectSpec(String selectExpr, String rawSoql, String fromType) {
     if (selectExpr == null || selectExpr.isBlank()) {
       throw new IllegalArgumentException("SOQL must begin with SELECT: " + rawSoql);
     }
@@ -1377,6 +1541,12 @@ final class ApexStore {
     for (String term : terms) {
       String normalized = term == null ? "" : term.trim();
       if (normalized.isEmpty()) {
+        continue;
+      }
+
+      if (normalized.startsWith("(") && normalized.endsWith(")") && isTopLevelWrapped(normalized)) {
+        ChildSubquerySpec childSubquery = parseChildSubquerySpec(normalized, rawSoql, fromType);
+        items.add(SelectItem.childSubquery(childSubquery, normalized));
         continue;
       }
 
@@ -1426,6 +1596,77 @@ final class ApexStore {
     return new SelectSpec(items, hasAggregate);
   }
 
+  private static ChildSubquerySpec parseChildSubquerySpec(
+      String termText, String rawSoql, String parentType) {
+    String wrapped = termText == null ? "" : termText.trim();
+    if (!(wrapped.startsWith("(") && wrapped.endsWith(")") && isTopLevelWrapped(wrapped))) {
+      throw new IllegalArgumentException("child subquery must be wrapped in parentheses: " + rawSoql);
+    }
+
+    String inner = wrapped.substring(1, wrapped.length() - 1).trim();
+    if (!inner.regionMatches(true, 0, "select", 0, 6)) {
+      throw new IllegalArgumentException("unsupported SELECT term: " + termText + " in " + rawSoql);
+    }
+
+    QuerySpec rawSpec = parseQuerySpec(inner);
+    if (rawSpec.selectSpec == null || rawSpec.selectSpec.items == null || rawSpec.selectSpec.items.isEmpty()) {
+      throw new IllegalArgumentException("child subquery SELECT cannot be blank: " + rawSoql);
+    }
+    for (SelectItem item : rawSpec.selectSpec.items) {
+      if (item.kind == SelectItemKind.CHILD_SUBQUERY) {
+        throw new IllegalArgumentException("nested child subquery is not supported: " + rawSoql);
+      }
+    }
+
+    String relationshipName = rawSpec.sobjectType;
+    String childType = inferChildTypeFromRelationship(relationshipName);
+    if (childType == null || childType.isBlank()) {
+      throw new IllegalArgumentException("cannot infer child object type from relationship: " + relationshipName);
+    }
+
+    String parentLinkField = inferParentLinkField(parentType);
+    QuerySpec normalizedSpec =
+        new QuerySpec(
+            childType,
+            rawSpec.selectSpec,
+            rawSpec.whereExpr,
+            rawSpec.groupByFields,
+            rawSpec.havingExpr,
+            rawSpec.orderByKeys,
+            rawSpec.limit,
+            rawSpec.offset);
+    return new ChildSubquerySpec(relationshipName, normalizedSpec, parentLinkField);
+  }
+
+  private static String inferChildTypeFromRelationship(String relationshipName) {
+    if (relationshipName == null || relationshipName.isBlank()) {
+      return null;
+    }
+    String relation = relationshipName.trim();
+    if (relation.length() > 3 && relation.regionMatches(true, relation.length() - 3, "__r", 0, 3)) {
+      return relation.substring(0, relation.length() - 3) + "__c";
+    }
+    if (relation.length() > 3 && relation.regionMatches(true, relation.length() - 3, "ies", 0, 3)) {
+      return relation.substring(0, relation.length() - 3) + "y";
+    }
+    if (relation.length() > 1 && relation.endsWith("s")) {
+      return relation.substring(0, relation.length() - 1);
+    }
+    return relation;
+  }
+
+  private static String inferParentLinkField(String parentType) {
+    if (parentType == null || parentType.isBlank()) {
+      return null;
+    }
+    String normalized = parentType.trim();
+    if (normalized.length() > 3
+        && normalized.regionMatches(true, normalized.length() - 3, "__c", 0, 3)) {
+      return normalized;
+    }
+    return normalized + "Id";
+  }
+
   private static List<String> parseGroupByFields(String groupByExpr, String rawSoql) {
     if (groupByExpr == null || groupByExpr.isBlank()) {
       throw new IllegalArgumentException("GROUP BY expression cannot be blank: " + rawSoql);
@@ -1457,6 +1698,13 @@ final class ApexStore {
     List<String> groups = groupByFields == null ? List.of() : groupByFields;
     boolean hasAggregate = selectSpec.hasAggregate;
 
+    for (SelectItem item : selectSpec.items) {
+      if (item.kind == SelectItemKind.CHILD_SUBQUERY && (hasAggregate || !groups.isEmpty())) {
+        throw new IllegalArgumentException(
+            "child subquery cannot be combined with aggregate/GROUP BY query: " + rawSoql);
+      }
+    }
+
     if (groups.isEmpty() && hasAggregate) {
       for (SelectItem item : selectSpec.items) {
         if (item.kind == SelectItemKind.FIELD) {
@@ -1475,6 +1723,10 @@ final class ApexStore {
       if (item.kind == SelectItemKind.FIELD && !containsIgnoreCase(groups, item.field)) {
         throw new IllegalArgumentException(
             "selected field must appear in GROUP BY: " + item.field + " in " + rawSoql);
+      }
+      if (item.kind == SelectItemKind.CHILD_SUBQUERY) {
+        throw new IllegalArgumentException(
+            "child subquery cannot be used with GROUP BY: " + rawSoql);
       }
     }
   }
@@ -1722,6 +1974,71 @@ final class ApexStore {
     return out;
   }
 
+  private static String maskNestedSoqlClauses(String soql) {
+    if (soql == null || soql.isEmpty()) {
+      return soql;
+    }
+
+    StringBuilder out = new StringBuilder(soql.length());
+    int parenDepth = 0;
+    boolean inSingle = false;
+    boolean inDouble = false;
+
+    for (int i = 0; i < soql.length(); i += 1) {
+      char ch = soql.charAt(i);
+      if (inSingle) {
+        if (ch == '\'' && i + 1 < soql.length() && soql.charAt(i + 1) == '\'') {
+          out.append(' ');
+          out.append(' ');
+          i += 1;
+          continue;
+        }
+        if (ch == '\'') {
+          inSingle = false;
+        }
+        out.append(' ');
+        continue;
+      }
+      if (inDouble) {
+        if (ch == '"') {
+          inDouble = false;
+        }
+        out.append(' ');
+        continue;
+      }
+
+      if (ch == '\'') {
+        inSingle = true;
+        out.append(' ');
+        continue;
+      }
+      if (ch == '"') {
+        inDouble = true;
+        out.append(' ');
+        continue;
+      }
+      if (ch == '(') {
+        parenDepth += 1;
+        out.append(' ');
+        continue;
+      }
+      if (ch == ')') {
+        if (parenDepth > 0) {
+          parenDepth -= 1;
+        }
+        out.append(' ');
+        continue;
+      }
+
+      if (parenDepth > 0) {
+        out.append(' ');
+      } else {
+        out.append(ch);
+      }
+    }
+    return out.toString();
+  }
+
   private static String stripTrailingSoqlModifier(String soql, Pattern pattern) {
     if (soql == null || soql.isBlank() || pattern == null) {
       return soql;
@@ -1961,7 +2278,11 @@ final class ApexStore {
     if (inMatcher.matches()) {
       String field = inMatcher.group(1);
       String operator = inMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
-      List<Object> inValues = parseInLiteralList(inMatcher.group(3), rawSoql);
+      String inBody = inMatcher.group(3) == null ? "" : inMatcher.group(3).trim();
+      if (looksLikeSelectClause(inBody)) {
+        return new WhereClause(field, operator, parseSemiJoinLiteral(inBody, rawSoql));
+      }
+      List<Object> inValues = parseInLiteralList(inBody, rawSoql);
       return new WhereClause(field, operator, inValues);
     }
 
@@ -1988,6 +2309,33 @@ final class ApexStore {
     throw new IllegalArgumentException(
         "only WHERE with AND/OR/NOT and operators (=, !=, >, >=, <, <=, IN, NOT IN, LIKE, IS NULL, IS NOT NULL) is supported: "
             + rawSoql);
+  }
+
+  private static boolean looksLikeSelectClause(String text) {
+    if (text == null) {
+      return false;
+    }
+    String normalized = text.trim();
+    return normalized.length() >= 6 && normalized.regionMatches(true, 0, "select", 0, 6);
+  }
+
+  private static SemiJoinLiteral parseSemiJoinLiteral(String subqueryText, String rawSoql) {
+    QuerySpec subquery = parseQuerySpec(subqueryText);
+    if (subquery.selectSpec == null
+        || subquery.selectSpec.items == null
+        || subquery.selectSpec.items.size() != 1) {
+      throw new IllegalArgumentException("semi-join subquery must select exactly one field: " + rawSoql);
+    }
+    if (subquery.selectSpec.hasAggregate || (subquery.groupByFields != null && !subquery.groupByFields.isEmpty())) {
+      throw new IllegalArgumentException("semi-join subquery cannot use aggregate/GROUP BY: " + rawSoql);
+    }
+
+    SelectItem selected = subquery.selectSpec.items.get(0);
+    if (selected.kind != SelectItemKind.FIELD || selected.field == null || selected.field.isBlank()) {
+      throw new IllegalArgumentException("semi-join subquery must select a plain field: " + rawSoql);
+    }
+
+    return new SemiJoinLiteral(subquery, selected.field);
   }
 
   private static boolean startsWithLogicalNot(String text) {
@@ -2489,6 +2837,80 @@ final class ApexStore {
             new String[] {field.name});
       }
     }
+
+    if (field.precision != null || field.scale != null) {
+      validateNumericPrecisionScale(field, value);
+    }
+
+    if (field.referenceType != null && !field.referenceType.isBlank()) {
+      validateReferenceConstraint(field, value);
+    }
+  }
+
+  private static void validateNumericPrecisionScale(Schema.FieldDefinition field, Object value) {
+    BigDecimal decimal = toBigDecimal(value);
+    if (decimal == null) {
+      return;
+    }
+
+    int precision = field.precision == null ? Integer.MAX_VALUE : field.precision.intValue();
+    int scale = field.scale == null ? 0 : field.scale.intValue();
+
+    BigDecimal normalized = decimal.stripTrailingZeros();
+    if (normalized.scale() < 0) {
+      normalized = normalized.setScale(0);
+    }
+
+    int actualPrecision = normalized.precision();
+    int actualScale = Math.max(0, normalized.scale());
+    int allowedWholeDigits = Math.max(0, precision - scale);
+    int actualWholeDigits = Math.max(0, actualPrecision - actualScale);
+
+    if (actualPrecision > precision || actualScale > scale || actualWholeDigits > allowedWholeDigits) {
+      throw new DmlFailure(
+          "NUMBER_OUTSIDE_VALID_RANGE",
+          "value exceeds precision/scale for field "
+              + field.name
+              + ": precision="
+              + precision
+              + " scale="
+              + scale
+              + " value="
+              + value,
+          new String[] {field.name});
+    }
+  }
+
+  private static void validateReferenceConstraint(Schema.FieldDefinition field, Object value) {
+    if (!(value instanceof String referenceId) || referenceId.isBlank()) {
+      return;
+    }
+    ApexSObject related = findActiveRowByIdAndType(referenceId, field.referenceType);
+    if (related == null) {
+      throw new DmlFailure(
+          "FIELD_INTEGRITY_EXCEPTION",
+          "invalid reference for field " + field.name + ": " + referenceId,
+          new String[] {field.name});
+    }
+  }
+
+  private static BigDecimal toBigDecimal(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof BigDecimal decimal) {
+      return decimal;
+    }
+    if (value instanceof Integer intValue) {
+      return BigDecimal.valueOf(intValue.longValue());
+    }
+    if (value instanceof Long longValue) {
+      return BigDecimal.valueOf(longValue);
+    }
+    if (value instanceof Number number) {
+      return new BigDecimal(String.valueOf(number));
+    }
+    return null;
   }
 
   private static boolean isTypeCompatible(Schema.FieldType expected, Object value) {
@@ -2845,7 +3267,8 @@ final class ApexStore {
 
   private enum SelectItemKind {
     FIELD,
-    AGGREGATE
+    AGGREGATE,
+    CHILD_SUBQUERY
   }
 
   private enum AggregateFunction {
@@ -2863,9 +3286,10 @@ final class ApexStore {
       AggregateFunction aggregateFunction,
       boolean countAll,
       String outputName,
-      String sourceText) {
+      String sourceText,
+      ChildSubquerySpec childSubquery) {
     static SelectItem field(String field, String outputName, String sourceText) {
-      return new SelectItem(SelectItemKind.FIELD, field, null, false, outputName, sourceText);
+      return new SelectItem(SelectItemKind.FIELD, field, null, false, outputName, sourceText, null);
     }
 
     static SelectItem aggregate(
@@ -2875,7 +3299,16 @@ final class ApexStore {
         String outputName,
         String sourceText) {
       return new SelectItem(
-          SelectItemKind.AGGREGATE, field, function, countAll, outputName, sourceText);
+          SelectItemKind.AGGREGATE, field, function, countAll, outputName, sourceText, null);
+    }
+
+    static SelectItem childSubquery(ChildSubquerySpec childSubquery, String sourceText) {
+      String outputName =
+          childSubquery == null || childSubquery.relationName == null
+              ? "records"
+              : childSubquery.relationName;
+      return new SelectItem(
+          SelectItemKind.CHILD_SUBQUERY, null, null, false, outputName, sourceText, childSubquery);
     }
   }
 
@@ -2898,6 +3331,10 @@ final class ApexStore {
       List<OrderByKey> orderByKeys,
       int limit,
       int offset) {}
+
+  private record ChildSubquerySpec(String relationName, QuerySpec querySpec, String parentLinkField) {}
+
+  private record SemiJoinLiteral(QuerySpec querySpec, String selectedField) {}
 
   private record DateRangeLiteral(LocalDate startInclusive, LocalDate endInclusive) {
     DateRangeLiteral {
@@ -2945,6 +3382,7 @@ final class ApexStore {
   private static final class State {
     final Map<String, Map<String, ApexSObject>> active = new LinkedHashMap<>();
     final Map<String, Map<String, ApexSObject>> deleted = new LinkedHashMap<>();
+    final Map<SemiJoinLiteral, List<Object>> semiJoinCache = new IdentityHashMap<>();
     final List<SavepointSnapshot> savepoints = new ArrayList<>();
     long idSequence;
     long savepointSequence;

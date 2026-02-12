@@ -10,7 +10,9 @@
 - Follow helper method call chains across files/classes to catch indirect SOQL/DML in loops
 - Multiply callee-side loop effects into governor estimates (for example nested helper loops)
 - Use method arity and inferred literal/new-expression/local variable types to reduce false positives on overloaded calls
+- Resolve interface/inheritance based dynamic dispatch more accurately (`implements` / `extends`)
 - Track CPU/Heap budgets from Apex Debug Logs in CI
+- Split multi-transaction debug logs per transaction and compare regressions transaction-by-transaction
 - Emit machine-readable reports (`json`, `sarif`) for pipelines
 
 ## Commands
@@ -46,6 +48,7 @@ zig build run -- emulate java
 zig build run -- emulate java reports/java-calibration-local --iterations 80000 --nix
 zig build run -- emulate test tools/java-emulation/examples --out reports/java-emulation --nix
 zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
+zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated --strict
 ```
 
 ## Configuration
@@ -135,9 +138,10 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `Database.setSavepoint()/rollback()`
 - `Database.*(records, allOrNone)` + `SaveResult`
 - `Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）
-- `apexemu.runtime.Schema` による custom object の required/type/maxLength/restricted picklist 検証
+- `apexemu.runtime.Schema` による custom object の required/type/maxLength/restricted picklist/precision(scale)/lookup reference 検証
 - `Trigger.onBefore*/onAfter*` 登録時の `Database` CRUD（`upsert` / `merge` 含む）での自動発火
 - `merge` 時の related row 再親子付けで関連オブジェクト `before/after update` trigger も自動発火
+- SOQL semi-join (`WHERE Id IN (SELECT ...)` / `NOT IN`) と child subquery (`SELECT ..., (SELECT ... FROM Contacts)`) のサブセット対応
 
 詳細は `tools/java-emulation/README.md` を参照してください。
 
@@ -164,9 +168,11 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `insert/update/upsert/delete/undelete/merge`（`upsert ... ExternalId__c` 含む）を `Database.*` 呼び出しに変換
 - `merge` は `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2` を処理
 - 未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.getAs("Id")` に変換
+- `--strict` 指定時は未変換行（comment fallback）が 1 件でもあると失敗終了
 
 ```bash
 zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
+zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated --strict
 ```
 
 ## License
