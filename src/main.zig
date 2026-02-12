@@ -643,9 +643,19 @@ fn parseEmulateTranspileOptions(gpa: std.mem.Allocator, args: []const []const u8
     }
 
     if (opts.input_paths.items.len == 0) {
-        try opts.input_paths.append(gpa, "force-app/main/default/classes");
+        try opts.input_paths.append(gpa, defaultTranspileInputPath());
     }
     return opts;
+}
+
+fn defaultTranspileInputPath() []const u8 {
+    const preferred = "force-app/main/default/classes";
+    if (pathExists(preferred)) return preferred;
+
+    const fixture = "examples/apex-validation/force-app/main/default/classes";
+    if (pathExists(fixture)) return fixture;
+
+    return preferred;
 }
 
 fn optionValue(arg: []const u8, name: []const u8) ?[]const u8 {
@@ -770,7 +780,7 @@ fn printUsage() void {
         \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
         \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
         \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --nix
-        \\  apexgov emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
+        \\  apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
         \\
     , .{});
 }
@@ -918,5 +928,5 @@ test "parseEmulateTranspileOptions injects default input path" {
 
     try std.testing.expectEqual(false, opts.strict);
     try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
-    try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
+    try std.testing.expectEqualStrings(defaultTranspileInputPath(), opts.input_paths.items[0]);
 }

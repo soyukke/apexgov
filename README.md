@@ -47,8 +47,8 @@ Java系の補助エミュレーション機能です。
 zig build run -- emulate java
 zig build run -- emulate java reports/java-calibration-local --iterations 80000 --nix
 zig build run -- emulate test tools/java-emulation/examples --out reports/java-emulation --nix
-zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
-zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated --strict
+zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
+zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated --strict
 ```
 
 ## Configuration
@@ -171,9 +171,11 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `--strict` 指定時は未変換行（comment fallback）が 1 件でもあると失敗終了
 
 ```bash
-zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated
-zig build run -- emulate transpile force-app/main/default/classes --out reports/apex-transpile --package generated --strict
+zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
+zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated --strict
 ```
+
+`[APEX_PATHS...]` を省略した場合は、`force-app/main/default/classes` が存在すればそれを、無ければこのリポジトリの検証 fixture (`examples/apex-validation/...`) を自動利用します。
 
 ## License
 
