@@ -40,6 +40,7 @@ const EmulateTestOptions = struct {
     cpu_limit_ms: ?u64 = null,
     heap_limit_bytes: ?u64 = null,
     use_nix: bool = false,
+    best_effort: bool = false,
 };
 
 const EmulateTranspileOptions = struct {
@@ -237,6 +238,9 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     if (opts.out_dir) |out_dir| {
         try child_args.append(gpa, "--out-dir");
         try child_args.append(gpa, out_dir);
+    }
+    if (opts.best_effort) {
+        try child_args.append(gpa, "--best-effort");
     }
 
     var child = std.process.Child.init(child_args.items, gpa);
@@ -554,6 +558,11 @@ fn parseEmulateTestOptions(args: []const []const u8) !EmulateTestOptions {
             i += 1;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--best-effort")) {
+            opts.best_effort = true;
+            i += 1;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--out")) {
             i += 1;
             if (i >= args.len) return error.MissingOptionValue;
@@ -793,7 +802,7 @@ fn printUsage() void {
         \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif] [--out FILE] [--severity-threshold info|warning|error|none]
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
         \\  apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
-        \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
+        \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--best-effort] [--nix]
         \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
         \\
         \\Examples:
@@ -801,7 +810,7 @@ fn printUsage() void {
         \\  apexgov profile artifacts/logs --config apexgov.toml --format json --out reports/profile.json
         \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
         \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
-        \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --nix
+        \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --best-effort --nix
         \\  apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
         \\
     , .{});
@@ -832,7 +841,7 @@ fn printEmulateHelp() void {
         \\  Mode 1: CPU calibration
         \\    apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
         \\  Mode 2: local @Test emulation
-        \\    apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--nix]
+        \\    apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--best-effort] [--nix]
         \\  Mode 3: Apex -> Java test scaffold transpile (best-effort)
         \\    apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
         \\
@@ -903,6 +912,7 @@ test "parseEmulateTestOptions parses flags and positional values" {
         "--cpu-limit-ms",
         "8500",
         "--heap-limit-bytes=5500000",
+        "--best-effort",
         "--nix",
     };
 
@@ -913,6 +923,7 @@ test "parseEmulateTestOptions parses flags and positional values" {
     try std.testing.expectEqualStrings("reports/java-emulation-local", opts.out_dir.?);
     try std.testing.expectEqual(@as(?u64, 8500), opts.cpu_limit_ms);
     try std.testing.expectEqual(@as(?u64, 5500000), opts.heap_limit_bytes);
+    try std.testing.expectEqual(true, opts.best_effort);
     try std.testing.expectEqual(true, opts.use_nix);
 }
 

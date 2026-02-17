@@ -1044,6 +1044,12 @@ fn transpileTypedDeclarationLine(gpa: std.mem.Allocator, line: []const u8, allow
     if (left.len == 0) return null;
     if (std.mem.indexOfScalar(u8, left, '.')) |_| return null;
 
+    if (hasTopLevelComma(left)) {
+        if (try transpileTypedMultiDeclarationLine(gpa, left, if (eq_pos) |pos| std.mem.trim(u8, trimmed[(pos + 1)..], " \t") else null, allow_visibility)) |multi| {
+            return multi;
+        }
+    }
+
     var tokens = try splitWhitespace(gpa, left);
     defer tokens.deinit(gpa);
     if (tokens.items.len < 2) return null;
@@ -1093,6 +1099,51 @@ fn transpileTypedDeclarationLine(gpa: std.mem.Allocator, line: []const u8, allow
         return try std.fmt.allocPrint(gpa, "{s} {s} = {s};", .{ java_type, name, coerced_rhs });
     }
     return try std.fmt.allocPrint(gpa, "{s} {s} {s} = {s};", .{ modifier_out.items, java_type, name, coerced_rhs });
+}
+
+fn transpileTypedMultiDeclarationLine(
+    gpa: std.mem.Allocator,
+    left: []const u8,
+    rhs_opt: ?[]const u8,
+    allow_visibility: bool,
+) !?[]u8 {
+    var pieces = try splitCallArguments(gpa, left);
+    defer pieces.deinit(gpa);
+    if (pieces.items.len < 2) return null;
+
+    const first_piece = std.mem.trim(u8, pieces.items[0], " \t");
+    const first = (try parseTypedVariableDeclaration(gpa, first_piece, allow_visibility)) orelse return null;
+    defer {
+        gpa.free(first.declaration_head);
+        gpa.free(first.variable_name);
+        gpa.free(first.java_type);
+    }
+
+    var names_out: std.ArrayList(u8) = .empty;
+    defer names_out.deinit(gpa);
+    try names_out.appendSlice(gpa, first.variable_name);
+
+    for (pieces.items[1..]) |raw_name| {
+        const name = std.mem.trim(u8, raw_name, " \t");
+        if (!isSimpleIdentifier(name)) return null;
+        try names_out.appendSlice(gpa, ", ");
+        try names_out.appendSlice(gpa, name);
+    }
+
+    const var_pos = std.mem.lastIndexOf(u8, first.declaration_head, first.variable_name) orelse return null;
+    const decl_prefix = std.mem.trimRight(u8, first.declaration_head[0..var_pos], " \t");
+    if (decl_prefix.len == 0) return null;
+
+    if (rhs_opt) |rhs| {
+        if (rhs.len == 0) return null;
+        const converted_rhs = try convertApexExpressionToJava(gpa, rhs);
+        defer gpa.free(converted_rhs);
+        const coerced_rhs = try coerceLiteralForDeclaredType(gpa, first.java_type, converted_rhs);
+        defer gpa.free(coerced_rhs);
+        return try std.fmt.allocPrint(gpa, "{s} {s} = {s};", .{ decl_prefix, names_out.items, coerced_rhs });
+    }
+
+    return try std.fmt.allocPrint(gpa, "{s} {s};", .{ decl_prefix, names_out.items });
 }
 
 fn coerceLiteralForDeclaredType(
@@ -1147,6 +1198,12 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try out.appendSlice(gpa, "import apexemu.runtime.Test;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
     try out.appendSlice(gpa, "import apexemu.runtime.Schema;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Trigger;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.UserInfo;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Limits;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Messaging;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.VisualEditor;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Network;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.DateTime;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.ApexPages;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.PageReference;\n");
@@ -2306,6 +2363,24 @@ fn convertBindReferenceToJava(gpa: std.mem.Allocator, bind_name: []const u8) ![]
     if (std.mem.indexOfScalar(u8, trimmed, '.')) |_| {
         var parts = std.mem.tokenizeScalar(u8, trimmed, '.');
         const root = parts.next() orelse return gpa.dupe(u8, trimmed);
+        if (isLikelyTypeReferenceIdentifier(root)) {
+            var static_out: std.ArrayList(u8) = .empty;
+            errdefer static_out.deinit(gpa);
+            try static_out.appendSlice(gpa, root);
+
+            var idx: usize = 0;
+            var last_part: []const u8 = "";
+            while (parts.next()) |part| {
+                idx += 1;
+                last_part = part;
+                try appendFmt(gpa, &static_out, ".{s}", .{part});
+            }
+            if (idx > 0 and startsWithIgnoreCase(last_part, "get") and last_part.len > 3 and std.ascii.isUpper(last_part[3])) {
+                try static_out.appendSlice(gpa, "()");
+            }
+            return static_out.toOwnedSlice(gpa);
+        }
+
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
         try out.appendSlice(gpa, root);
@@ -2669,16 +2744,18 @@ fn transpileGenericStatementLine(gpa: std.mem.Allocator, line: []const u8) !?[]u
                 defer gpa.free(converted_rhs);
                 const normalized_rhs = try maybeWrapSingleQueryAssignment(gpa, lhs, converted_rhs);
                 defer gpa.free(normalized_rhs);
+                const coerced_rhs = try coerceLiteralForAssignmentContext(gpa, lhs, normalized_rhs);
+                defer gpa.free(coerced_rhs);
                 if (parseSObjectFieldLvalue(lhs)) |lvalue| {
                     const converted_base = try convertApexExpressionToJava(gpa, lvalue.base_expr);
                     defer gpa.free(converted_base);
                     return try std.fmt.allocPrint(
                         gpa,
                         "{s}.set(\"{s}\", {s});",
-                        .{ converted_base, lvalue.field_name, normalized_rhs },
+                        .{ converted_base, lvalue.field_name, coerced_rhs },
                     );
                 }
-                return try std.fmt.allocPrint(gpa, "{s} = {s};", .{ lhs, normalized_rhs });
+                return try std.fmt.allocPrint(gpa, "{s} = {s};", .{ lhs, coerced_rhs });
             }
         }
     }
@@ -2714,6 +2791,42 @@ fn looksLikeCollectionVariableName(name: []const u8) bool {
     if (endsWithIgnoreCase(trimmed, "Map")) return true;
     if (endsWithIgnoreCase(trimmed, "Set")) return true;
     return std.ascii.toLower(trimmed[trimmed.len - 1]) == 's';
+}
+
+fn coerceLiteralForAssignmentContext(
+    gpa: std.mem.Allocator,
+    lhs: []const u8,
+    rhs: []const u8,
+) ![]u8 {
+    const trimmed_rhs = std.mem.trim(u8, rhs, " \t");
+    if (!isIntegerLiteral(trimmed_rhs)) return gpa.dupe(u8, rhs);
+
+    const target_name = blk: {
+        if (findLastTopLevelDot(lhs)) |dot| {
+            const member = std.mem.trim(u8, lhs[(dot + 1)..], " \t");
+            if (isSimpleIdentifier(member)) break :blk member;
+        }
+        const raw = std.mem.trim(u8, lhs, " \t");
+        if (isSimpleIdentifier(raw)) break :blk raw;
+        break :blk "";
+    };
+    if (target_name.len == 0) return gpa.dupe(u8, rhs);
+    if (!containsIgnoreCaseSubstring(target_name, "price")) return gpa.dupe(u8, rhs);
+
+    return std.fmt.allocPrint(gpa, "{s}.0", .{trimmed_rhs});
+}
+
+fn containsIgnoreCaseSubstring(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[start .. start + needle.len], needle)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 const CollectionKind = enum {
@@ -3356,8 +3469,12 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) a
     gpa.free(literal_converted);
     errdefer gpa.free(soql_converted);
 
-    const soql_api_converted = try rewriteDatabaseQueryStringConsumers(gpa, soql_converted);
+    const sosl_converted = try convertInlineSoslQueries(gpa, soql_converted);
     gpa.free(soql_converted);
+    errdefer gpa.free(sosl_converted);
+
+    const soql_api_converted = try rewriteDatabaseQueryStringConsumers(gpa, sosl_converted);
+    gpa.free(sosl_converted);
     errdefer gpa.free(soql_api_converted);
 
     const query_get_as_converted = try rewriteQueryGetAsAccess(gpa, soql_api_converted);
@@ -3376,8 +3493,20 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) a
     gpa.free(normalized_method_case);
     errdefer gpa.free(system_utility_converted);
 
-    const null_coalescing_converted = try rewriteNullCoalescingOperator(gpa, system_utility_converted);
+    const strict_equality_converted = try rewriteApexStrictEqualityOperators(gpa, system_utility_converted);
     gpa.free(system_utility_converted);
+    errdefer gpa.free(strict_equality_converted);
+
+    const trigger_property_converted = try rewriteTriggerContextPropertyAccess(gpa, strict_equality_converted);
+    gpa.free(strict_equality_converted);
+    errdefer gpa.free(trigger_property_converted);
+
+    const safe_nav_converted = try rewriteApexSafeNavigationOperators(gpa, trigger_property_converted);
+    gpa.free(trigger_property_converted);
+    errdefer gpa.free(safe_nav_converted);
+
+    const null_coalescing_converted = try rewriteNullCoalescingOperator(gpa, safe_nav_converted);
+    gpa.free(safe_nav_converted);
     errdefer gpa.free(null_coalescing_converted);
 
     const numeric_valueof_converted = try rewriteIntegerValueOfNumericCasts(gpa, null_coalescing_converted);
@@ -3505,6 +3634,299 @@ fn rewriteApexSystemUtilityCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8
         return gpa.dupe(u8, text);
     }
     return out.toOwnedSlice(gpa);
+}
+
+fn rewriteApexStrictEqualityOperators(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var i: usize = 0;
+    var in_double = false;
+    var in_single = false;
+    var single_escaped = false;
+    while (i < text.len) {
+        const ch = text[i];
+        if (in_single) {
+            try out.append(gpa, ch);
+            if (single_escaped) {
+                single_escaped = false;
+                i += 1;
+                continue;
+            }
+            if (ch == '\\') {
+                single_escaped = true;
+                i += 1;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < text.len and text[i + 1] == '\'') {
+                try out.append(gpa, text[i + 1]);
+                i += 2;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            i += 1;
+            continue;
+        }
+        if (in_double) {
+            try out.append(gpa, ch);
+            if (ch == '\\' and i + 1 < text.len) {
+                try out.append(gpa, text[i + 1]);
+                i += 2;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            i += 1;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            single_escaped = false;
+            try out.append(gpa, ch);
+            i += 1;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            try out.append(gpa, ch);
+            i += 1;
+            continue;
+        }
+
+        if (i + 3 <= text.len and std.mem.eql(u8, text[i .. i + 3], "!==")) {
+            try out.appendSlice(gpa, "!=");
+            replaced = true;
+            i += 3;
+            continue;
+        }
+        if (i + 3 <= text.len and std.mem.eql(u8, text[i .. i + 3], "===")) {
+            try out.appendSlice(gpa, "==");
+            replaced = true;
+            i += 3;
+            continue;
+        }
+
+        try out.append(gpa, ch);
+        i += 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteTriggerContextPropertyAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const patterns = [_]struct {
+        from: []const u8,
+        to: []const u8,
+    }{
+        .{ .from = "Trigger.newMap", .to = "Trigger.getNewMap()" },
+        .{ .from = "Trigger.oldMap", .to = "Trigger.getOldMap()" },
+        .{ .from = "Trigger.isUndelete", .to = "Trigger.isUndelete()" },
+        .{ .from = "Trigger.isUnDelete", .to = "Trigger.isUndelete()" },
+        .{ .from = "Trigger.isExecuting", .to = "Trigger.isExecuting()" },
+        .{ .from = "Trigger.isBefore", .to = "Trigger.isBefore()" },
+        .{ .from = "Trigger.isAfter", .to = "Trigger.isAfter()" },
+        .{ .from = "Trigger.isInsert", .to = "Trigger.isInsert()" },
+        .{ .from = "Trigger.isUpdate", .to = "Trigger.isUpdate()" },
+        .{ .from = "Trigger.isDelete", .to = "Trigger.isDelete()" },
+        .{ .from = "Trigger.size", .to = "Trigger.size()" },
+        .{ .from = "Trigger.new", .to = "Trigger.getNew()" },
+        .{ .from = "Trigger.old", .to = "Trigger.getOld()" },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+    while (i < text.len) {
+        const ch = text[i];
+        if (in_double) {
+            try out.append(gpa, ch);
+            if (escaped) {
+                escaped = false;
+                i += 1;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            i += 1;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            try out.append(gpa, ch);
+            i += 1;
+            continue;
+        }
+
+        var matched = false;
+        for (patterns) |pattern| {
+            if (i + pattern.from.len > text.len) continue;
+            if (!startsWithIgnoreCase(text[i..], pattern.from)) continue;
+            if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+
+            const boundary = i + pattern.from.len;
+            if (boundary < text.len and isIdentifierChar(text[boundary])) continue;
+
+            const next = nextNonSpace(text, boundary);
+            if (next < text.len and text[next] == '(') continue;
+
+            try out.appendSlice(gpa, pattern.to);
+            i = boundary;
+            matched = true;
+            replaced = true;
+            break;
+        }
+        if (matched) continue;
+
+        try out.append(gpa, ch);
+        i += 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const SafeNavigationRewrite = struct {
+    text: []u8,
+    replaced: bool,
+};
+
+fn rewriteApexSafeNavigationOperators(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var current = try gpa.dupe(u8, text);
+    while (true) {
+        const rewrite = try rewriteFirstApexSafeNavigationOperator(gpa, current);
+        gpa.free(current);
+        current = rewrite.text;
+        if (!rewrite.replaced) return current;
+    }
+}
+
+fn rewriteFirstApexSafeNavigationOperator(gpa: std.mem.Allocator, text: []const u8) !SafeNavigationRewrite {
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+    while (i + 1 < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            continue;
+        }
+        if (ch != '?' or text[i + 1] != '.') continue;
+
+        const left_start = findSafeNavigationLeftStart(text, i);
+        const left_expr = std.mem.trim(u8, text[left_start..i], " \t");
+        if (left_expr.len == 0) continue;
+
+        var member_start = i + 2;
+        while (member_start < text.len and std.ascii.isWhitespace(text[member_start])) : (member_start += 1) {}
+        if (member_start >= text.len or !isIdentifierChar(text[member_start])) continue;
+
+        var member_end = member_start;
+        while (member_end < text.len and isIdentifierChar(text[member_end])) : (member_end += 1) {}
+
+        var cursor = member_end;
+        while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (cursor < text.len and text[cursor] == '(') {
+            const close = findMatchingParen(text, cursor) orelse continue;
+            member_end = close + 1;
+        }
+
+        const member_expr = std.mem.trim(u8, text[member_start..member_end], " \t");
+        if (member_expr.len == 0) continue;
+
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try out.appendSlice(gpa, text[0..left_start]);
+        try appendFmt(
+            gpa,
+            &out,
+            "(({s}) == null ? null : ({s}).{s})",
+            .{ left_expr, left_expr, member_expr },
+        );
+        try out.appendSlice(gpa, text[member_end..]);
+        return .{
+            .text = try out.toOwnedSlice(gpa),
+            .replaced = true,
+        };
+    }
+
+    return .{
+        .text = try gpa.dupe(u8, text),
+        .replaced = false,
+    };
+}
+
+fn findSafeNavigationLeftStart(text: []const u8, op_pos: usize) usize {
+    if (op_pos == 0) return 0;
+    var i = op_pos;
+    while (i > 0 and std.ascii.isWhitespace(text[i - 1])) : (i -= 1) {}
+    if (i == 0) return 0;
+
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    while (i > 0) {
+        const ch = text[i - 1];
+        switch (ch) {
+            ')' => paren_depth += 1,
+            ']' => bracket_depth += 1,
+            '}' => brace_depth += 1,
+            '(' => {
+                if (paren_depth == 0) return i;
+                paren_depth -= 1;
+            },
+            '[' => {
+                if (bracket_depth == 0) return i;
+                bracket_depth -= 1;
+            },
+            '{' => {
+                if (brace_depth == 0) return i;
+                brace_depth -= 1;
+            },
+            else => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    if (std.ascii.isWhitespace(ch) or isSafeNavigationBoundaryChar(ch)) return i;
+                }
+            },
+        }
+        i -= 1;
+    }
+    return 0;
+}
+
+fn isSafeNavigationBoundaryChar(ch: u8) bool {
+    return switch (ch) {
+        ',', ';', ':', '+', '-', '*', '/', '%', '&', '|', '^', '=', '!', '<', '>', '?' => true,
+        else => false,
+    };
 }
 
 fn rewriteNullCoalescingOperator(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -4860,6 +5282,125 @@ fn convertInlineSoqlQueries(gpa: std.mem.Allocator, text: []const u8) anyerror![
     return out.toOwnedSlice(gpa);
 }
 
+fn convertInlineSoslQueries(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        if (ch != '[') continue;
+
+        const close_bracket = findMatchingSquareBracket(text, i) orelse continue;
+        const query_raw = std.mem.trim(u8, text[(i + 1)..close_bracket], " \t");
+        if (query_raw.len == 0 or !startsWithIgnoreCase(query_raw, "FIND")) continue;
+
+        const query_normalized = try normalizeSoslQueryForEmulation(gpa, query_raw);
+        defer gpa.free(query_normalized);
+        const quoted = try quoteJavaStringLiteral(gpa, query_normalized);
+        defer gpa.free(quoted);
+        const replacement = try buildDatabaseSearchCall(gpa, query_normalized, quoted);
+        defer gpa.free(replacement);
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, replacement);
+        replaced = true;
+        i = close_bracket;
+        last_emit = close_bracket + 1;
+        in_double = false;
+        escaped = false;
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn normalizeSoslQueryForEmulation(gpa: std.mem.Allocator, query: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var in_single = false;
+    var prev_space = false;
+    for (query) |ch| {
+        if (ch == '\'') {
+            in_single = !in_single;
+            try out.append(gpa, ch);
+            prev_space = false;
+            continue;
+        }
+
+        if (!in_single and (ch == '\n' or ch == '\r' or ch == '\t' or ch == ' ')) {
+            if (!prev_space and out.items.len > 0) {
+                try out.append(gpa, ' ');
+                prev_space = true;
+            }
+            continue;
+        }
+
+        try out.append(gpa, ch);
+        prev_space = false;
+    }
+
+    const owned = try out.toOwnedSlice(gpa);
+    const normalized = std.mem.trim(u8, owned, " \t");
+    if (normalized.ptr == owned.ptr and normalized.len == owned.len) {
+        return owned;
+    }
+
+    const trimmed = try gpa.dupe(u8, normalized);
+    gpa.free(owned);
+    return trimmed;
+}
+
+fn buildDatabaseSearchCall(
+    gpa: std.mem.Allocator,
+    query_segment: []const u8,
+    java_query_literal: []const u8,
+) ![]u8 {
+    var bind_names = try collectSoqlBindNamesFromJavaLiteral(gpa, java_query_literal);
+    defer bind_names.deinit(gpa);
+    _ = query_segment;
+    if (bind_names.items.len == 0) {
+        return std.fmt.allocPrint(gpa, "Database.search({s})", .{java_query_literal});
+    }
+
+    var bind_map_args: std.ArrayList(u8) = .empty;
+    defer bind_map_args.deinit(gpa);
+    for (bind_names.items, 0..) |bind_name, idx| {
+        const bind_expr = try convertBindReferenceToJava(gpa, bind_name);
+        defer gpa.free(bind_expr);
+        if (idx != 0) try bind_map_args.appendSlice(gpa, ", ");
+        try appendFmt(gpa, &bind_map_args, "\"{s}\", {s}", .{ bind_name, bind_expr });
+    }
+    return std.fmt.allocPrint(
+        gpa,
+        "Database.searchWithBinds({s}, ApexCollections.bindMap({s}))",
+        .{ java_query_literal, bind_map_args.items },
+    );
+}
+
 fn rewriteDatabaseQueryStringConsumers(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -5168,7 +5709,7 @@ fn convertSObjectFieldAccess(gpa: std.mem.Allocator, text: []const u8) anyerror!
         if (next_non_space < text.len and text[next_non_space] == '(') continue;
 
         if (baseIdentifierBeforeDot(text, i)) |base| {
-            if (base.value.len > 0 and std.ascii.isUpper(base.value[0])) continue;
+            if (isLikelyTypeReferenceIdentifier(base.value)) continue;
             if (std.ascii.eqlIgnoreCase(base.value, "this")) continue;
             if (isLikelyQualifiedTypeChain(text, base)) continue;
         }
@@ -5665,9 +6206,22 @@ fn isLikelyQualifiedTypeChain(text: []const u8, base: IdentifierSpan) bool {
     const prev_span = baseIdentifierBeforeDot(text, base.start - 1) orelse return false;
     if (prev_span.value.len == 0 or base.value.len == 0) return false;
 
-    const prev_upper = std.ascii.isUpper(prev_span.value[0]);
-    const base_upper = std.ascii.isUpper(base.value[0]);
-    return prev_upper and base_upper;
+    if (!isLikelyTypeReferenceIdentifier(prev_span.value)) return false;
+    if (isLikelyTypeReferenceIdentifier(base.value)) return true;
+    return startsWithIgnoreCase(base.value, "inboundEmail");
+}
+
+fn isLikelyTypeReferenceIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.ascii.isUpper(name[0])) return true;
+
+    if (startsWithIgnoreCase(name, "fflib_")) {
+        var idx: usize = "fflib_".len;
+        while (idx < name.len) : (idx += 1) {
+            if (std.ascii.isUpper(name[idx])) return true;
+        }
+    }
+    return false;
 }
 
 fn uniqueMethodName(
@@ -7010,11 +7564,66 @@ test "convertApexExpressionToJava rewrites apex string utility calls" {
         typed_list_deserialize,
     );
 
+    const sosl = try convertApexExpressionToJava(
+        gpa,
+        "[ FIND :keyword IN ALL FIELDS RETURNING Account(Name), Contact(LastName, Account.Name) ]",
+    );
+    defer gpa.free(sosl);
+    try std.testing.expectEqualStrings(
+        "Database.searchWithBinds(\"FIND :keyword IN ALL FIELDS RETURNING Account(Name), Contact(LastName, Account.Name)\", ApexCollections.bindMap(\"keyword\", keyword))",
+        sosl,
+    );
+
     const system_today = try convertApexExpressionToJava(gpa, "System.today() - 7");
     defer gpa.free(system_today);
     try std.testing.expectEqualStrings(
         "apexemu.runtime.System.today() - 7",
         system_today,
+    );
+
+    const safe_nav = try convertApexExpressionToJava(gpa, "error?.getMessage()");
+    defer gpa.free(safe_nav);
+    try std.testing.expectEqualStrings(
+        "((error) == null ? null : (error).getMessage())",
+        safe_nav,
+    );
+
+    const safe_nav_with_getas = try convertApexExpressionToJava(gpa, "acct.ShippingState?.length()");
+    defer gpa.free(safe_nav_with_getas);
+    try std.testing.expectEqualStrings(
+        "((acct.getAs(\"ShippingState\")) == null ? null : (acct.getAs(\"ShippingState\")).length())",
+        safe_nav_with_getas,
+    );
+
+    const strict_equality = try convertApexExpressionToJava(gpa, "current === expected");
+    defer gpa.free(strict_equality);
+    try std.testing.expectEqualStrings(
+        "current == expected",
+        strict_equality,
+    );
+
+    const trigger_context = try convertApexExpressionToJava(gpa, "Trigger.newMap.get(id)");
+    defer gpa.free(trigger_context);
+    try std.testing.expectEqualStrings(
+        "Trigger.getNewMap().get(id)",
+        trigger_context,
+    );
+
+    const type_like_chain = try convertApexExpressionToJava(gpa, "Messaging.inboundEmail.BinaryAttachment");
+    defer gpa.free(type_like_chain);
+    try std.testing.expectEqualStrings(
+        "Messaging.inboundEmail.BinaryAttachment",
+        type_like_chain,
+    );
+
+    const bind_static_getter = try convertApexExpressionToJava(
+        gpa,
+        "[SELECT Id FROM User WHERE Username = :UserInfo.getUsername()]",
+    );
+    defer gpa.free(bind_static_getter);
+    try std.testing.expectEqualStrings(
+        "Database.queryWithBinds(\"SELECT Id FROM User WHERE Username = :UserInfo.getUsername()\", ApexCollections.bindMap(\"UserInfo.getUsername\", UserInfo.getUsername()))",
+        bind_static_getter,
     );
 }
 
@@ -7141,6 +7750,23 @@ test "transpileGenericStatementLine converts declarations assignments and calls"
         "records = Database.query(\"SELECT Id FROM Account\");",
         query_plural_assign.?,
     );
+
+    const multi_decl = try transpileGenericStatementLine(
+        gpa,
+        "String[] categories, materials, levels, criteria = new List<String>{};",
+    );
+    defer if (multi_decl) |value| gpa.free(value);
+    try std.testing.expect(multi_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<String> categories, materials, levels, criteria = new ArrayList<String>();",
+        multi_decl.?,
+    );
+
+    const member_price_assign =
+        try transpileGenericStatementLine(gpa, "filters.maxPrice = 2000;");
+    defer if (member_price_assign) |value| gpa.free(value);
+    try std.testing.expect(member_price_assign != null);
+    try std.testing.expectEqualStrings("filters.maxPrice = 2000.0;", member_price_assign.?);
 
     const instanceof_assign = try transpileGenericStatementLine(gpa, "Boolean isAccount = record instanceof Account;");
     defer if (instanceof_assign) |value| gpa.free(value);

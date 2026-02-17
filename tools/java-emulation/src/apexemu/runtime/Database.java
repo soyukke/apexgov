@@ -169,6 +169,15 @@ public final class Database {
     return ApexStore.countQueryWithBinds(soql, bindVariables);
   }
 
+  public static List<List<ApexSObject>> search(String sosl) {
+    return ApexStore.search(sosl);
+  }
+
+  public static List<List<ApexSObject>> searchWithBinds(
+      String sosl, Map<String, Object> bindVariables) {
+    return ApexStore.searchWithBinds(sosl, bindVariables);
+  }
+
   public static QueryLocator getQueryLocator(String soql) {
     return new QueryLocator(query(soql));
   }

@@ -7,6 +7,8 @@ import java.util.Map;
 public final class Test {
   private static final ThreadLocal<Map<Class<?>, Object>> MOCKS =
       ThreadLocal.withInitial(HashMap::new);
+  private static final ThreadLocal<List<String>> FIXED_SEARCH_RESULTS =
+      ThreadLocal.withInitial(List::of);
 
   private Test() {}
 
@@ -72,8 +74,17 @@ public final class Test {
     MOCKS.get().put(mockType, mockImpl);
   }
 
+  public static void setFixedSearchResults(List<String> recordIds) {
+    if (recordIds == null || recordIds.isEmpty()) {
+      FIXED_SEARCH_RESULTS.set(List.of());
+      return;
+    }
+    FIXED_SEARCH_RESULTS.set(List.copyOf(recordIds));
+  }
+
   public static void clearMocks() {
     MOCKS.get().clear();
+    FIXED_SEARCH_RESULTS.set(List.of());
   }
 
   static <T> T getMock(Class<T> mockType) {
@@ -85,5 +96,9 @@ public final class Test {
       return null;
     }
     return mockType.cast(value);
+  }
+
+  static List<String> getFixedSearchResults() {
+    return FIXED_SEARCH_RESULTS.get();
   }
 }

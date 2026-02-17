@@ -74,6 +74,8 @@ final class ApexStore {
           "(?i)^(count_distinct|count|sum|avg|min|max)\\s*\\(\\s*(\\*|"
               + FIELD_PATH_TEXT
               + ")?\\s*\\)$");
+  private static final Pattern SOSL_PATTERN =
+      Pattern.compile("(?is)^find\\s+(.+?)\\s+in\\s+(all|name)\\s+fields\\s+returning\\s+(.+)$");
   private static final Pattern RELATIVE_N_DAYS_LITERAL_PATTERN =
       Pattern.compile("(?i)^(last_n_days|next_n_days|n_days_ago):(\\d+)$");
   private static final Clock SOQL_CLOCK = Clock.systemUTC();
@@ -292,6 +294,54 @@ final class ApexStore {
 
   static int countQueryWithBinds(String soql, Map<String, Object> bindVariables) {
     return countQuery(applyBindVariables(soql, bindVariables));
+  }
+
+  static List<List<ApexSObject>> search(String sosl) {
+    SoslSpec spec = parseSoslSpec(sosl);
+    State state = STATE.get();
+    List<List<ApexSObject>> out = new ArrayList<>(spec.returningTypes.size());
+
+    List<String> fixedSearchResults = Test.getFixedSearchResults();
+    if (fixedSearchResults != null && !fixedSearchResults.isEmpty()) {
+      for (String typeName : spec.returningTypes) {
+        List<ApexSObject> groupRows = new ArrayList<>();
+        for (String rowId : fixedSearchResults) {
+          if (rowId == null || rowId.isBlank()) {
+            continue;
+          }
+          ApexSObject row = findActiveRowByIdAndType(rowId, typeName);
+          if (row != null) {
+            groupRows.add(row.copy());
+          }
+        }
+        out.add(groupRows);
+      }
+      Limits.addSoql(1);
+      Limits.addHeapBytes((long) fixedSearchResults.size() * 256L);
+      return out;
+    }
+
+    for (String typeName : spec.returningTypes) {
+      List<ApexSObject> groupRows = new ArrayList<>();
+      Map<String, ApexSObject> bucket = findBucketByType(state.active, typeName);
+      if (bucket != null && !bucket.isEmpty()) {
+        for (ApexSObject row : bucket.values()) {
+          if (!matchesSoslTerm(row, spec.term, spec.nameFieldsOnly)) {
+            continue;
+          }
+          groupRows.add(row.copy());
+        }
+      }
+      out.add(groupRows);
+    }
+
+    Limits.addSoql(1);
+    Limits.addHeapBytes((long) out.stream().mapToInt(List::size).sum() * 256L);
+    return out;
+  }
+
+  static List<List<ApexSObject>> searchWithBinds(String sosl, Map<String, Object> bindVariables) {
+    return search(applyBindVariables(sosl, bindVariables));
   }
 
   private static Database.SaveResult[] apply(
@@ -1559,6 +1609,111 @@ final class ApexStore {
       }
     }
     return null;
+  }
+
+  private static SoslSpec parseSoslSpec(String rawSosl) {
+    if (rawSosl == null || rawSosl.isBlank()) {
+      throw new IllegalArgumentException("SOSL cannot be blank");
+    }
+    String sosl = sanitize(rawSosl);
+    Matcher matcher = SOSL_PATTERN.matcher(sosl);
+    if (!matcher.matches()) {
+      throw new IllegalArgumentException("unsupported SOSL syntax: " + rawSosl);
+    }
+
+    String term = extractSoslSearchTerm(matcher.group(1));
+    boolean nameFieldsOnly = matcher.group(2) != null && matcher.group(2).equalsIgnoreCase("name");
+    List<String> returningTypes = parseSoslReturningTypes(matcher.group(3), rawSosl);
+    return new SoslSpec(term, nameFieldsOnly, returningTypes);
+  }
+
+  private static String extractSoslSearchTerm(String rawTerm) {
+    if (rawTerm == null) {
+      return "";
+    }
+    String term = rawTerm.trim();
+    if (term.length() >= 2) {
+      char first = term.charAt(0);
+      char last = term.charAt(term.length() - 1);
+      if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
+        term = term.substring(1, term.length() - 1);
+      }
+    }
+    return term.replace("''", "'");
+  }
+
+  private static List<String> parseSoslReturningTypes(String rawReturning, String rawSosl) {
+    if (rawReturning == null || rawReturning.isBlank()) {
+      throw new IllegalArgumentException("SOSL RETURNING must not be empty: " + rawSosl);
+    }
+    List<String> segments = splitByComma(rawReturning.trim());
+    List<String> out = new ArrayList<>();
+    for (String segment : segments) {
+      String item = segment == null ? "" : segment.trim();
+      if (item.isEmpty()) {
+        continue;
+      }
+      int openParen = item.indexOf('(');
+      String typeName = openParen >= 0 ? item.substring(0, openParen).trim() : item;
+      if (!typeName.isEmpty()) {
+        out.add(typeName);
+      }
+    }
+    if (out.isEmpty()) {
+      throw new IllegalArgumentException("SOSL RETURNING must include at least one type: " + rawSosl);
+    }
+    return out;
+  }
+
+  private static boolean matchesSoslTerm(ApexSObject row, String rawTerm, boolean nameFieldsOnly) {
+    if (row == null) {
+      return false;
+    }
+    String term = normalizeSoslMatchToken(rawTerm);
+    if (term.isEmpty()) {
+      return true;
+    }
+
+    if (nameFieldsOnly) {
+      Object nameValue = row.get("Name");
+      if (valueMatchesSoslTerm(nameValue, term)) {
+        return true;
+      }
+    }
+
+    for (Map.Entry<String, Object> entry : row.fields().entrySet()) {
+      String fieldName = entry.getKey();
+      if (fieldName == null || fieldName.isBlank()) {
+        continue;
+      }
+      if (nameFieldsOnly) {
+        String normalizedField = fieldName.trim().toLowerCase();
+        if (!normalizedField.contains("name")) {
+          continue;
+        }
+      }
+      if (valueMatchesSoslTerm(entry.getValue(), term)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static String normalizeSoslMatchToken(String rawTerm) {
+    if (rawTerm == null) {
+      return "";
+    }
+    return rawTerm.replace("*", "").trim().toLowerCase();
+  }
+
+  private static boolean valueMatchesSoslTerm(Object value, String normalizedTerm) {
+    if (value == null || normalizedTerm == null || normalizedTerm.isEmpty()) {
+      return false;
+    }
+    if (!(value instanceof String text)) {
+      return false;
+    }
+    return text.toLowerCase().contains(normalizedTerm);
   }
 
   private static QuerySpec parseQuerySpec(String rawSoql) {
@@ -3713,6 +3868,12 @@ final class ApexStore {
       List<OrderByKey> orderByKeys,
       int limit,
       int offset) {}
+
+  private record SoslSpec(String term, boolean nameFieldsOnly, List<String> returningTypes) {
+    SoslSpec {
+      returningTypes = returningTypes == null ? List.of() : List.copyOf(returningTypes);
+    }
+  }
 
   private record ChildSubquerySpec(String relationName, QuerySpec querySpec, String parentLinkField) {}
 

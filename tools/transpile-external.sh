@@ -18,6 +18,9 @@ options:
   --ref REF        git ref for git URL source (branch/tag/commit)
   --package NAME   Java package for transpile output (default: generated)
   --out-root DIR   output root directory (default: reports/apex-transpile-external)
+  --run-tests      run `emulate test` after transpile
+  --best-effort    pass `--best-effort` when --run-tests is enabled
+  --nix            pass `--nix` when running emulate test
   --strict         fail when unsupported statements exist
   -h, --help       show this help
 
@@ -48,6 +51,9 @@ ref=""
 package_name="generated"
 out_root="$default_out_root"
 strict=false
+run_tests=false
+best_effort=false
+use_nix=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -85,6 +91,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --strict)
       strict=true
+      shift
+      ;;
+    --run-tests)
+      run_tests=true
+      shift
+      ;;
+    --best-effort)
+      best_effort=true
+      shift
+      ;;
+    --nix)
+      use_nix=true
       shift
       ;;
     -h|--help)
@@ -182,3 +200,21 @@ echo "transpile target: $target_path"
 echo "output dir: $out_dir"
 echo "apex files: $cls_count"
 "${cmd[@]}"
+
+if [[ "$run_tests" == "true" ]]; then
+  test_out="$out_dir/test"
+  test_cmd=(
+    zig build run -- emulate test
+    "$out_dir"
+    --out "$test_out"
+  )
+  if [[ "$best_effort" == "true" ]]; then
+    test_cmd+=(--best-effort)
+  fi
+  if [[ "$use_nix" == "true" ]]; then
+    test_cmd+=(--nix)
+  fi
+
+  echo "test output dir: $test_out"
+  "${test_cmd[@]}"
+fi

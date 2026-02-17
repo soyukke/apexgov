@@ -112,6 +112,12 @@ PRで機能追加する場合は、実装・テストと同時にこのカバレ
   /path/to/your/sfdx-project \
   --subpath force-app/main/default/classes \
   --strict
+
+# transpile 後にローカル emulation test まで実行
+./tools/transpile-external.sh \
+  /path/to/your/sfdx-project \
+  --subpath force-app/main/default/classes \
+  --run-tests --best-effort --nix
 ```
 
 - キャッシュ/取得先: `.local-fixtures/apex/repos/`（`.gitignore` 済み）
@@ -151,9 +157,13 @@ zig build run -- emulate java --nix
 
 ```bash
 zig build run -- emulate test --nix
+zig build run -- emulate test reports/apex-transpile-external/my-repo --best-effort --nix
 CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 ```
+
+- `--best-effort` を付けると、`javac` で解決できないソースを段階的にスキップし、実行可能な `@Test` を先に実行します。
+- スキップされたソースは `OUT_DIR/compile-failures.txt` に出力されます。
 
 主な対応:
 
