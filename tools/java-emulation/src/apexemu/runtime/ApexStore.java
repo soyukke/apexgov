@@ -88,17 +88,86 @@ final class ApexStore {
 
   private static State seededState() {
     State state = new State();
-    seedProfile(state, "00e000000000001", "Minimum Access - Salesforce");
-    seedProfile(state, "00e000000000002", "System Administrator");
+    seedProfile(
+        state,
+        "00e000000000001",
+        "Minimum Access - Salesforce",
+        "Standard",
+        Boolean.FALSE,
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedProfile(
+        state,
+        "00e000000000002",
+        "System Administrator",
+        "Standard",
+        Boolean.TRUE,
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedPermissionSet(state, "0PS000000000001", "dreamhouse");
+    seedStaticResource(
+        state,
+        "081000000000001",
+        "sample_data_brokers",
+        "[{\"Broker_Id__c\":1,\"Name\":\"Broker One\",\"Title__c\":\"Senior Broker\"}]");
+    seedStaticResource(
+        state,
+        "081000000000002",
+        "sample_data_properties",
+        "[{\"Name\":\"Property One\",\"Address__c\":\"1 Main St\",\"City__c\":\"Cambridge\",\"State__c\":\"MA\",\"Price__c\":500000,\"Beds__c\":3,\"Baths__c\":2}]");
+    seedStaticResource(
+        state,
+        "081000000000003",
+        "sample_data_contacts",
+        "[{\"FirstName\":\"Alice\",\"LastName\":\"Example\",\"Email\":\"alice@example.com\"}]");
     return state;
   }
 
-  private static void seedProfile(State state, String id, String name) {
+  private static void seedProfile(
+      State state,
+      String id,
+      String name,
+      String userType,
+      Boolean permissionsPrivacyDataAccess,
+      Boolean permissionsSubmitMacrosAllowed,
+      Boolean permissionsMassInlineEdit) {
+    if (state == null || id == null || id.isBlank() || name == null || name.isBlank() || userType == null) {
+      return;
+    }
+    ApexSObject profile =
+        ApexSObject.of("Profile")
+            .withId(id)
+            .set("Name", name)
+            .set("UserType", userType)
+            .set("PermissionsPrivacyDataAccess", permissionsPrivacyDataAccess)
+            .set("PermissionsSubmitMacrosAllowed", permissionsSubmitMacrosAllowed)
+            .set("PermissionsMassInlineEdit", permissionsMassInlineEdit);
+    state.active.computeIfAbsent("Profile", ignored -> new LinkedHashMap<>()).put(id, profile);
+  }
+
+  private static void seedPermissionSet(State state, String id, String name) {
     if (state == null || id == null || id.isBlank() || name == null || name.isBlank()) {
       return;
     }
-    ApexSObject profile = ApexSObject.of("Profile").withId(id).set("Name", name);
-    state.active.computeIfAbsent("Profile", ignored -> new LinkedHashMap<>()).put(id, profile);
+    ApexSObject permissionSet = ApexSObject.of("PermissionSet").withId(id).set("Name", name);
+    state.active.computeIfAbsent("PermissionSet", ignored -> new LinkedHashMap<>()).put(id, permissionSet);
+  }
+
+  private static void seedStaticResource(State state, String id, String name, String body) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || name == null
+        || name.isBlank()
+        || body == null) {
+      return;
+    }
+    ApexSObject resource =
+        ApexSObject.of("StaticResource")
+            .withId(id)
+            .set("Name", name)
+            .set("Body", body);
+    state.active.computeIfAbsent("StaticResource", ignored -> new LinkedHashMap<>()).put(id, resource);
   }
 
   static void setSoqlNullOrderDefault(Database.NullOrderDefault mode) {
@@ -373,6 +442,10 @@ final class ApexStore {
 
     if (hasIdCollision(state, stored.type(), id)) {
       throw new IllegalArgumentException("duplicate id for insert: " + stored.type() + "#" + id);
+    }
+
+    if (isType(stored.type(), "ContentVersion")) {
+      ensureContentVersionDocumentLinkage(state, stored, record, id);
     }
 
     Map<String, ApexSObject> bucket = state.active.computeIfAbsent(stored.type(), ignored -> new LinkedHashMap<>());
@@ -741,7 +814,7 @@ final class ApexStore {
 
   private static List<ApexSObject> scan(QuerySpec spec, boolean countOnly) {
     State state = STATE.get();
-    Map<String, ApexSObject> bucket = state.active.get(spec.sobjectType);
+    Map<String, ApexSObject> bucket = findBucketByType(state.active, spec.sobjectType);
     boolean aggregateQuery = isAggregateQuery(spec);
     if (bucket == null || bucket.isEmpty()) {
       if (!countOnly && aggregateQuery && (spec.groupByFields == null || spec.groupByFields.isEmpty())) {
@@ -2873,6 +2946,8 @@ final class ApexStore {
   }
 
   private static void validateForInsert(State state, ApexSObject record) {
+    validateCustomInsertConstraints(record);
+
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
       return;
@@ -2889,6 +2964,89 @@ final class ApexStore {
       }
     }
     validateUniqueFields(state, record, definition, null);
+  }
+
+  private static void validateCustomInsertConstraints(ApexSObject record) {
+    if (record == null || record.type() == null || record.type().isBlank()) {
+      return;
+    }
+    if (isType(record.type(), "ContentVersion")) {
+      Object versionData = record.get("VersionData");
+      if (!(versionData instanceof byte[] bytes) || bytes.length == 0) {
+        throw new IllegalArgumentException("content version requires non-empty VersionData");
+      }
+      if (isBlankValue(record.get("Title"))) {
+        throw new IllegalArgumentException("content version requires Title");
+      }
+      if (isBlankValue(record.get("PathOnClient"))) {
+        throw new IllegalArgumentException("content version requires PathOnClient");
+      }
+      return;
+    }
+    if (isType(record.type(), "ContentDocumentLink")) {
+      Object linkedEntityId = record.get("LinkedEntityId");
+      String linkedEntityText = linkedEntityId == null ? null : String.valueOf(linkedEntityId).trim();
+      if (linkedEntityText == null || linkedEntityText.isEmpty()) {
+        throw new IllegalArgumentException("content document link requires LinkedEntityId");
+      }
+      if (findActiveRowById(linkedEntityText) == null) {
+        throw new IllegalArgumentException("invalid LinkedEntityId: " + linkedEntityText);
+      }
+
+      Object contentDocumentId = record.get("ContentDocumentId");
+      String contentDocumentText =
+          contentDocumentId == null ? null : String.valueOf(contentDocumentId).trim();
+      if (contentDocumentText == null || contentDocumentText.isEmpty()) {
+        throw new IllegalArgumentException("content document link requires ContentDocumentId");
+      }
+      if (findActiveRowByIdAndType(contentDocumentText, "ContentDocument") == null) {
+        throw new IllegalArgumentException("invalid ContentDocumentId: " + contentDocumentText);
+      }
+    }
+  }
+
+  private static void ensureContentVersionDocumentLinkage(
+      State state, ApexSObject stored, ApexSObject inputRecord, String contentVersionId) {
+    if (state == null || stored == null || contentVersionId == null || contentVersionId.isBlank()) {
+      return;
+    }
+
+    String contentDocumentId = null;
+    Object existingContentDocumentId = stored.get("ContentDocumentId");
+    if (existingContentDocumentId != null) {
+      String text = String.valueOf(existingContentDocumentId).trim();
+      if (!text.isEmpty()) {
+        contentDocumentId = text;
+      }
+    }
+    if (contentDocumentId == null) {
+      contentDocumentId = nextId(state, "ContentDocument");
+      stored.set("ContentDocumentId", contentDocumentId);
+      if (inputRecord != null) {
+        inputRecord.set("ContentDocumentId", contentDocumentId);
+      }
+    }
+    stored.set("IsLatest", Boolean.TRUE);
+    if (inputRecord != null) {
+      inputRecord.set("IsLatest", Boolean.TRUE);
+    }
+
+    Map<String, ApexSObject> bucket =
+        state.active.computeIfAbsent("ContentDocument", ignored -> new LinkedHashMap<>());
+    ApexSObject document = bucket.get(contentDocumentId);
+    if (document == null) {
+      document = ApexSObject.of("ContentDocument").withId(contentDocumentId);
+    }
+    Object title = stored.get("Title");
+    if (!isBlankValue(title)) {
+      document.set("Title", title);
+    }
+    String fileType = inferFileType(stored.get("PathOnClient"));
+    if (fileType != null) {
+      document.set("FileType", fileType);
+    }
+    document.set("LatestPublishedVersionId", contentVersionId);
+    bucket.put(contentDocumentId, document);
   }
 
   private static void validateForUpdate(State state, ApexSObject record) {
@@ -3101,11 +3259,11 @@ final class ApexStore {
   }
 
   private static boolean hasIdCollision(State state, String type, String id) {
-    Map<String, ApexSObject> activeBucket = state.active.get(type);
+    Map<String, ApexSObject> activeBucket = findBucketByType(state.active, type);
     if (activeBucket != null && activeBucket.containsKey(id)) {
       return true;
     }
-    Map<String, ApexSObject> deletedBucket = state.deleted.get(type);
+    Map<String, ApexSObject> deletedBucket = findBucketByType(state.deleted, type);
     return deletedBucket != null && deletedBucket.containsKey(id);
   }
 
@@ -3118,6 +3276,62 @@ final class ApexStore {
       return null;
     }
     return trimmed;
+  }
+
+  private static Map<String, ApexSObject> findBucketByType(
+      Map<String, Map<String, ApexSObject>> buckets, String type) {
+    if (buckets == null || buckets.isEmpty() || type == null || type.isBlank()) {
+      return null;
+    }
+    Map<String, ApexSObject> direct = buckets.get(type);
+    if (direct != null) {
+      return direct;
+    }
+    for (Map.Entry<String, Map<String, ApexSObject>> entry : buckets.entrySet()) {
+      if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(type)) {
+        return entry.getValue();
+      }
+    }
+    return null;
+  }
+
+  private static boolean isType(String actualType, String expectedType) {
+    if (actualType == null || expectedType == null) {
+      return false;
+    }
+    return actualType.equalsIgnoreCase(expectedType);
+  }
+
+  private static boolean isBlankValue(Object value) {
+    if (value == null) {
+      return true;
+    }
+    if (value instanceof String text) {
+      return text.isBlank();
+    }
+    return false;
+  }
+
+  private static String inferFileType(Object pathOnClient) {
+    if (!(pathOnClient instanceof String path) || path.isBlank()) {
+      return null;
+    }
+    String normalized = path.trim().toLowerCase();
+    int dot = normalized.lastIndexOf('.');
+    if (dot < 0 || dot == normalized.length() - 1) {
+      return null;
+    }
+    String ext = normalized.substring(dot + 1);
+    if (ext.equals("jpg") || ext.equals("jpeg")) {
+      return "JPG";
+    }
+    if (ext.equals("png")) {
+      return "PNG";
+    }
+    if (ext.equals("gif")) {
+      return "GIF";
+    }
+    return ext.toUpperCase();
   }
 
   private static Database.SaveResult success(String id) {
