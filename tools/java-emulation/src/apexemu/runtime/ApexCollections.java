@@ -69,6 +69,25 @@ public final class ApexCollections {
     return rows.get(0);
   }
 
+  public static Map<String, Object> bindMap(Object... keyValuePairs) {
+    Map<String, Object> out = new LinkedHashMap<>();
+    if (keyValuePairs == null || keyValuePairs.length == 0) {
+      return out;
+    }
+    if (keyValuePairs.length % 2 != 0) {
+      throw new IllegalArgumentException("bindMap requires an even number of key/value arguments");
+    }
+    for (int i = 0; i < keyValuePairs.length; i += 2) {
+      Object keyRaw = keyValuePairs[i];
+      if (keyRaw == null) {
+        continue;
+      }
+      String key = String.valueOf(keyRaw);
+      out.put(key, keyValuePairs[i + 1]);
+    }
+    return out;
+  }
+
   private static ApexSObject asSObject(Object value) {
     if (value instanceof ApexSObject row) {
       return row;

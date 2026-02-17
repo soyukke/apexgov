@@ -36,6 +36,10 @@ public final class Test {
     return true;
   }
 
+  public static void setCurrentPage(PageReference pageReference) {
+    ApexPages.setCurrentPage(pageReference);
+  }
+
   public static void runAs(ApexSObject user, Runnable work) {
     if (user == null) {
       throw new IllegalArgumentException("runAs user cannot be null");
@@ -47,7 +51,7 @@ public final class Test {
     if (userId == null || userId.isBlank()) {
       throw new IllegalArgumentException("runAs user must have Id");
     }
-    UserContext.runAs(userId, work);
+    UserContext.runAs(userId, () -> Schema.runAs(user, work));
   }
 
   public static List<ApexSObject> loadData(String sobjectType, String csvPath) {

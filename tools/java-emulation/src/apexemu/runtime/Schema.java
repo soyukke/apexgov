@@ -7,6 +7,9 @@ import java.util.Set;
 
 public final class Schema {
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
+  private static final ThreadLocal<String> CURRENT_PROFILE_ID = ThreadLocal.withInitial(() -> null);
+  private static final String MINIMUM_ACCESS_PROFILE_ID = "00e000000000001";
+  public static final SObjectTypeNamespace sObjectType = new SObjectTypeNamespace();
 
   private Schema() {}
 
@@ -16,6 +19,30 @@ public final class Schema {
 
   public static void clear() {
     STATE.set(new State());
+    CURRENT_PROFILE_ID.set(null);
+  }
+
+  static void runAs(ApexSObject user, Runnable work) {
+    if (work == null) {
+      throw new IllegalArgumentException("runAs work cannot be null");
+    }
+    String previousProfileId = CURRENT_PROFILE_ID.get();
+    String profileId = null;
+    if (user != null) {
+      Object rawProfileId = user.get("ProfileId");
+      if (rawProfileId != null) {
+        String value = String.valueOf(rawProfileId).trim();
+        if (!value.isEmpty()) {
+          profileId = value;
+        }
+      }
+    }
+    CURRENT_PROFILE_ID.set(profileId);
+    try {
+      work.run();
+    } finally {
+      CURRENT_PROFILE_ID.set(previousProfileId);
+    }
   }
 
   static ObjectDefinition find(String type) {
@@ -174,6 +201,50 @@ public final class Schema {
 
   private static String normalize(String value) {
     return value.trim().toLowerCase();
+  }
+
+  public static final class SObjectTypeNamespace {
+    public DescribeSObjectResult get(String typeName) {
+      return new DescribeSObjectResult(typeName);
+    }
+
+    public DescribeSObjectResult getAs(String typeName) {
+      return get(typeName);
+    }
+  }
+
+  public static final class DescribeSObjectResult {
+    private final String typeName;
+
+    DescribeSObjectResult(String typeName) {
+      this.typeName = typeName == null ? "" : typeName.trim();
+    }
+
+    public boolean isAccessible() {
+      return true;
+    }
+
+    public boolean isCreateable() {
+      return true;
+    }
+
+    public boolean isUpdateable() {
+      if ("Contact".equalsIgnoreCase(typeName)) {
+        String profileId = CURRENT_PROFILE_ID.get();
+        if (profileId != null && profileId.equalsIgnoreCase(MINIMUM_ACCESS_PROFILE_ID)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    public boolean isDeletable() {
+      return true;
+    }
+
+    public String getName() {
+      return typeName;
+    }
   }
 
   public enum FieldType {

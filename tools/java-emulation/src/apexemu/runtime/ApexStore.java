@@ -77,13 +77,28 @@ final class ApexStore {
   private static final Pattern RELATIVE_N_DAYS_LITERAL_PATTERN =
       Pattern.compile("(?i)^(last_n_days|next_n_days|n_days_ago):(\\d+)$");
   private static final Clock SOQL_CLOCK = Clock.systemUTC();
-  private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
+  private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(ApexStore::seededState);
   private static final ThreadLocal<RuntimeConfig> CONFIG = ThreadLocal.withInitial(RuntimeConfig::new);
 
   private ApexStore() {}
 
   static void reset() {
-    STATE.set(new State());
+    STATE.set(seededState());
+  }
+
+  private static State seededState() {
+    State state = new State();
+    seedProfile(state, "00e000000000001", "Minimum Access - Salesforce");
+    seedProfile(state, "00e000000000002", "System Administrator");
+    return state;
+  }
+
+  private static void seedProfile(State state, String id, String name) {
+    if (state == null || id == null || id.isBlank() || name == null || name.isBlank()) {
+      return;
+    }
+    ApexSObject profile = ApexSObject.of("Profile").withId(id).set("Name", name);
+    state.active.computeIfAbsent("Profile", ignored -> new LinkedHashMap<>()).put(id, profile);
   }
 
   static void setSoqlNullOrderDefault(Database.NullOrderDefault mode) {

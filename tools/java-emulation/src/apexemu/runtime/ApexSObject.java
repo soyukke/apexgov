@@ -40,7 +40,17 @@ public final class ApexSObject {
     if (field == null || field.isBlank()) {
       throw new IllegalArgumentException("field cannot be blank");
     }
-    fields.put(field.trim(), value);
+    String normalizedField = field.trim();
+    if (normalizedField.equalsIgnoreCase("id")) {
+      if (value == null) {
+        this.id = null;
+      } else {
+        String nextId = String.valueOf(value).trim();
+        this.id = nextId.isEmpty() ? null : nextId;
+      }
+      return this;
+    }
+    fields.put(normalizedField, value);
     return this;
   }
 
@@ -54,6 +64,16 @@ public final class ApexSObject {
     for (Map.Entry<String, Object> entry : fields.entrySet()) {
       if (entry.getKey().equalsIgnoreCase(field)) {
         return entry.getValue();
+      }
+    }
+    if (field.equalsIgnoreCase("name")) {
+      Object firstName = get("FirstName");
+      Object lastName = get("LastName");
+      String firstText = firstName == null ? "" : String.valueOf(firstName).trim();
+      String lastText = lastName == null ? "" : String.valueOf(lastName).trim();
+      String joined = (firstText + " " + lastText).trim();
+      if (!joined.isEmpty()) {
+        return joined;
       }
     }
     return null;
