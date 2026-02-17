@@ -25,6 +25,149 @@ public final class Schema {
     return STATE.get().definitions.get(normalize(type));
   }
 
+  static ChildRelationship resolveChildRelationship(String parentType, String relationshipName) {
+    if (parentType == null || parentType.isBlank() || relationshipName == null || relationshipName.isBlank()) {
+      return null;
+    }
+
+    String normalizedParent = normalize(parentType);
+    String normalizedRelationship = normalize(relationshipName);
+    ChildRelationship match = null;
+
+    for (ObjectDefinition definition : STATE.get().definitions.values()) {
+      if (definition == null || definition.fields == null || definition.fields.isEmpty()) {
+        continue;
+      }
+      for (FieldDefinition field : definition.fields.values()) {
+        if (field == null || field.referenceType == null || field.referenceType.isBlank()) {
+          continue;
+        }
+        if (!normalize(field.referenceType).equals(normalizedParent)) {
+          continue;
+        }
+        if (!matchesRelationshipName(definition.type, field, normalizedRelationship)) {
+          continue;
+        }
+
+        ChildRelationship candidate = new ChildRelationship(definition.type, field.name);
+        if (match == null) {
+          match = candidate;
+        } else if (!sameRelationship(match, candidate)) {
+          return null;
+        }
+      }
+    }
+
+    return match;
+  }
+
+  static String resolveReferenceField(String rowType, String relationshipSegment) {
+    ObjectDefinition definition = find(rowType);
+    if (definition == null || relationshipSegment == null || relationshipSegment.isBlank()) {
+      return null;
+    }
+    String normalizedSegment = normalize(relationshipSegment);
+    String resolved = null;
+
+    for (FieldDefinition field : definition.fields.values()) {
+      if (field == null || field.referenceType == null || field.referenceType.isBlank()) {
+        continue;
+      }
+      if (!matchesReferenceSegment(field, normalizedSegment)) {
+        continue;
+      }
+      if (resolved != null && !resolved.equalsIgnoreCase(field.name)) {
+        return null;
+      }
+      resolved = field.name;
+    }
+    return resolved;
+  }
+
+  private static boolean matchesRelationshipName(
+      String childType, FieldDefinition field, String normalizedRelationship) {
+    if (field.childRelationshipName != null
+        && !field.childRelationshipName.isBlank()
+        && normalize(field.childRelationshipName).equals(normalizedRelationship)) {
+      return true;
+    }
+
+    if (childType != null && !childType.isBlank()) {
+      String normalizedChildType = normalize(childType);
+      if (normalizedChildType.equals(normalizedRelationship)) {
+        return true;
+      }
+
+      String plural = pluralizeTypeName(childType);
+      if (plural != null && !plural.isBlank() && normalize(plural).equals(normalizedRelationship)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean matchesReferenceSegment(FieldDefinition field, String normalizedSegment) {
+    if (field == null || normalizedSegment == null || normalizedSegment.isBlank()) {
+      return false;
+    }
+
+    String fieldName = field.name;
+    if (fieldName != null && !fieldName.isBlank()) {
+      if (fieldName.length() > 3 && fieldName.regionMatches(true, fieldName.length() - 3, "__c", 0, 3)) {
+        String customRelationship = fieldName.substring(0, fieldName.length() - 3) + "__r";
+        if (normalize(customRelationship).equals(normalizedSegment)) {
+          return true;
+        }
+      }
+      if (fieldName.length() > 2 && fieldName.regionMatches(true, fieldName.length() - 2, "Id", 0, 2)) {
+        String standardRelationship = fieldName.substring(0, fieldName.length() - 2);
+        if (normalize(standardRelationship).equals(normalizedSegment)) {
+          return true;
+        }
+      }
+    }
+
+    if (field.referenceType != null && !field.referenceType.isBlank()) {
+      String normalizedReferenceType = normalize(field.referenceType);
+      if (normalizedReferenceType.equals(normalizedSegment)) {
+        return true;
+      }
+      if (field.referenceType.length() > 3
+          && field.referenceType.regionMatches(true, field.referenceType.length() - 3, "__c", 0, 3)) {
+        String customRelationship = field.referenceType.substring(0, field.referenceType.length() - 3) + "__r";
+        if (normalize(customRelationship).equals(normalizedSegment)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private static String pluralizeTypeName(String type) {
+    if (type == null || type.isBlank()) {
+      return null;
+    }
+    String trimmed = type.trim();
+    if (trimmed.length() > 3 && trimmed.regionMatches(true, trimmed.length() - 3, "__c", 0, 3)) {
+      return trimmed.substring(0, trimmed.length() - 3) + "__r";
+    }
+    if (trimmed.length() > 1 && trimmed.endsWith("y")) {
+      return trimmed.substring(0, trimmed.length() - 1) + "ies";
+    }
+    if (trimmed.endsWith("s")) {
+      return trimmed;
+    }
+    return trimmed + "s";
+  }
+
+  private static boolean sameRelationship(ChildRelationship left, ChildRelationship right) {
+    if (left == null || right == null) {
+      return false;
+    }
+    return left.childType.equalsIgnoreCase(right.childType)
+        && left.parentLinkField.equalsIgnoreCase(right.parentLinkField);
+  }
+
   private static void register(ObjectDefinition definition) {
     STATE.get().definitions.put(normalize(definition.type), definition);
   }
@@ -80,7 +223,8 @@ public final class Schema {
       String canonical = field.trim();
       fields.put(
           normalize(canonical),
-          new FieldDefinition(canonical, type, required, null, Set.of(), null, null, null));
+          new FieldDefinition(
+              canonical, type, required, null, Set.of(), null, null, null, false, false, null));
       return this;
     }
 
@@ -103,7 +247,10 @@ public final class Schema {
               existing.picklistValues,
               existing.precision,
               existing.scale,
-              existing.referenceType));
+              existing.referenceType,
+              existing.unique,
+              existing.externalId,
+              existing.childRelationshipName));
       return this;
     }
 
@@ -123,7 +270,10 @@ public final class Schema {
               picklistValues,
               existing.precision,
               existing.scale,
-              existing.referenceType));
+              existing.referenceType,
+              existing.unique,
+              existing.externalId,
+              existing.childRelationshipName));
       return this;
     }
 
@@ -155,11 +305,18 @@ public final class Schema {
               existing.picklistValues,
               Integer.valueOf(precision),
               Integer.valueOf(scale),
-              existing.referenceType));
+              existing.referenceType,
+              existing.unique,
+              existing.externalId,
+              existing.childRelationshipName));
       return this;
     }
 
     public ObjectBuilder reference(String field, String referenceType) {
+      return reference(field, referenceType, null);
+    }
+
+    public ObjectBuilder reference(String field, String referenceType, String childRelationshipName) {
       if (referenceType == null || referenceType.isBlank()) {
         throw new IllegalArgumentException("referenceType cannot be blank");
       }
@@ -177,7 +334,51 @@ public final class Schema {
               existing.picklistValues,
               existing.precision,
               existing.scale,
-              referenceType.trim()));
+              referenceType.trim(),
+              existing.unique,
+              existing.externalId,
+              normalizeBlank(childRelationshipName)));
+      return this;
+    }
+
+    public ObjectBuilder unique(String field) {
+      FieldDefinition existing = requireDefinedField(field);
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              existing.maxLength,
+              existing.picklistValues,
+              existing.precision,
+              existing.scale,
+              existing.referenceType,
+              true,
+              existing.externalId,
+              existing.childRelationshipName));
+      return this;
+    }
+
+    public ObjectBuilder externalId(String field) {
+      FieldDefinition existing = requireDefinedField(field);
+      if (!supportsExternalIdType(existing.type)) {
+        throw new IllegalArgumentException("externalId is not supported for field type: " + existing.type);
+      }
+      fields.put(
+          normalize(existing.name),
+          new FieldDefinition(
+              existing.name,
+              existing.type,
+              existing.required,
+              existing.maxLength,
+              existing.picklistValues,
+              existing.precision,
+              existing.scale,
+              existing.referenceType,
+              existing.unique,
+              true,
+              existing.childRelationshipName));
       return this;
     }
 
@@ -208,6 +409,22 @@ public final class Schema {
         throw new IllegalArgumentException("picklist values cannot be empty");
       }
       return Set.copyOf(out);
+    }
+
+    private static boolean supportsExternalIdType(FieldType type) {
+      return type == FieldType.STRING
+          || type == FieldType.ID
+          || type == FieldType.INTEGER
+          || type == FieldType.LONG
+          || type == FieldType.DECIMAL
+          || type == FieldType.DOUBLE;
+    }
+
+    private static String normalizeBlank(String value) {
+      if (value == null || value.isBlank()) {
+        return null;
+      }
+      return value.trim();
     }
 
     public void register() {
@@ -241,6 +458,9 @@ public final class Schema {
     final Integer precision;
     final Integer scale;
     final String referenceType;
+    final boolean unique;
+    final boolean externalId;
+    final String childRelationshipName;
 
     FieldDefinition(
         String name,
@@ -250,7 +470,10 @@ public final class Schema {
         Set<String> picklistValues,
         Integer precision,
         Integer scale,
-        String referenceType) {
+        String referenceType,
+        boolean unique,
+        boolean externalId,
+        String childRelationshipName) {
       this.name = name;
       this.type = type;
       this.required = required;
@@ -259,6 +482,19 @@ public final class Schema {
       this.precision = precision;
       this.scale = scale;
       this.referenceType = referenceType;
+      this.unique = unique;
+      this.externalId = externalId;
+      this.childRelationshipName = childRelationshipName;
+    }
+  }
+
+  static final class ChildRelationship {
+    final String childType;
+    final String parentLinkField;
+
+    ChildRelationship(String childType, String parentLinkField) {
+      this.childType = childType;
+      this.parentLinkField = parentLinkField;
     }
   }
 

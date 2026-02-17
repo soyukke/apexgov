@@ -1,0 +1,16 @@
+# Format:
+#   <source>|<subpath>
+#
+# - `source`:
+#     git URL or local path accepted by `tools/transpile-external.sh`
+# - `subpath` (optional):
+#     Apex classes directory (for example `force-app/main/default/classes`)
+#
+# Lines beginning with `#` are comments.
+# Empty lines are ignored.
+
+# Example public repo
+https://example.com/your-apex-repo.git|force-app/main/default/classes
+
+# Example local SFDX project
+/absolute/path/to/your-sfdx-project|force-app/main/default/classes

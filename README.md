@@ -96,6 +96,42 @@ PRで機能追加する場合は、実装・テストと同時にこのカバレ
 `examples/apex-validation` に、`check/profile` の再現用Apexプロジェクトとログを置いています。  
 手順は `examples/apex-validation/README.md` を参照してください。
 
+## External Apex validation (git-ignored)
+
+実プロジェクトに近いApexコードで検証するために、git管理外の入力を使って transpile 検証できます。  
+`./tools/transpile-external.sh` は git URL かローカルパスを受け取り、`emulate transpile` を実行します。
+
+```bash
+# public repo から取得して検証（clone先は .local-fixtures/ 配下）
+./tools/transpile-external.sh \
+  https://example.com/your-apex-repo.git \
+  --subpath force-app/main/default/classes
+
+# ローカルのSFDXプロジェクトを strict で検証
+./tools/transpile-external.sh \
+  /path/to/your/sfdx-project \
+  --subpath force-app/main/default/classes \
+  --strict
+```
+
+- キャッシュ/取得先: `.local-fixtures/apex/repos/`（`.gitignore` 済み）
+- 出力先: `reports/apex-transpile-external/<label>/`
+
+## Periodic Transpile Check (just)
+
+複数リポジトリの定期点検は、git管理外のローカル targets ファイルで管理します。
+
+```bash
+cp tools/periodic-targets.example.txt .local-fixtures/periodic-targets.txt
+# .local-fixtures/periodic-targets.txt を編集して対象を設定
+just periodic-transpile
+just periodic-transpile-strict
+```
+
+- 既定の targets ファイル: `.local-fixtures/periodic-targets.txt`（git管理外）
+- 環境変数 `APEXGOV_PERIODIC_TARGETS_FILE` で別ファイル指定可能
+- 出力先: `reports/apex-transpile-periodic/<timestamp>/`
+
 ## Java Calibration
 
 `tools/java-calibration` に、CPU係数の相対生成ツールがあります。
@@ -122,6 +158,9 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 主な対応:
 
 - `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest`
+- `Test.runAs(...)` / `UserInfo.getUserId()` のローカル実行コンテキスト切り替え
+- `Test.loadData(sobjectType, csvPath)` による CSV fixture の取り込み
+- `Test.setMock(...)` + `Http.send` / `WebServiceCallout.invoke` mock 実行
 - `stopTest()` 時の `@Future` / Queueable / Batch / Schedulable 簡易 flush
 - `QueryLocatorBatchable` 経由の scope 分割 `execute(List<ApexSObject>)`
 - `start/execute/finish` を独立した Limits コンテキストで評価
@@ -138,10 +177,10 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `Database.setSavepoint()/rollback()`
 - `Database.*(records, allOrNone)` + `SaveResult`
 - `Database.merge(master, duplicates, allOrNone)` + `MergeResult`（related reparent ids 含む）
-- `apexemu.runtime.Schema` による custom object の required/type/maxLength/restricted picklist/precision(scale)/lookup reference 検証
+- `apexemu.runtime.Schema` による custom object の required/type/maxLength/restricted picklist/precision(scale)/lookup reference/unique/externalId 検証
 - `Trigger.onBefore*/onAfter*` 登録時の `Database` CRUD（`upsert` / `merge` 含む）での自動発火
 - `merge` 時の related row 再親子付けで関連オブジェクト `before/after update` trigger も自動発火
-- SOQL semi-join (`WHERE Id IN (SELECT ...)` / `NOT IN`) と child subquery (`SELECT ..., (SELECT ... FROM Contacts)`) のサブセット対応
+- SOQL semi-join (`WHERE Id IN (SELECT ...)` / `NOT IN`) と child subquery (`SELECT ..., (SELECT ... FROM Contacts)`) のサブセット対応（schema metadata の relationship 名解決を優先）
 
 詳細は `tools/java-emulation/README.md` を参照してください。
 
@@ -168,7 +207,8 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `insert/update/upsert/delete/undelete/merge`（`upsert ... ExternalId__c` 含む）を `Database.*` 呼び出しに変換
 - `merge` は `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2` を処理
 - 未解決型は `ApexSObject` にフォールバックし、`record.Id` などの SObject 風フィールド参照は `record.getAs("Id")` に変換
-- `--strict` 指定時は未変換行（comment fallback）が 1 件でもあると失敗終了
+- 未変換行（comment fallback）は `file:line [method] reason: statement` 形式で出力
+- `--strict` 指定時は未変換行が 1 件でもあると終了コード 1 で失敗
 
 ```bash
 zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated

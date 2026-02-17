@@ -256,13 +256,14 @@ fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var opts = try parseEmulateTranspileOptions(gpa, args);
     defer opts.deinit(gpa);
 
-    const summary = try apexgov.transpile.run(gpa, .{
+    var summary = try apexgov.transpile.run(gpa, .{
         .input_paths = opts.input_paths.items,
         .out_dir = opts.out_dir,
         .package_name = opts.package_name,
         .overwrite = opts.overwrite,
-        .strict = opts.strict,
+        .strict = false,
     });
+    defer summary.deinit(gpa);
 
     std.debug.print(
         "transpile: generated {d} Java file(s) from {d} Apex class file(s) into {s} (methods: {d}, unsupported: {d})\n",
@@ -274,6 +275,27 @@ fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
             summary.unsupported_statements,
         },
     );
+
+    if (summary.unsupported_examples.items.len > 0) {
+        std.debug.print("unsupported details (first {d}):\n", .{summary.unsupported_examples.items.len});
+        for (summary.unsupported_examples.items) |entry| {
+            std.debug.print(
+                "  - {s}:{d} [{s}] {s}: {s}\n",
+                .{
+                    entry.source_path,
+                    entry.line_no,
+                    entry.method_name,
+                    entry.reason,
+                    entry.statement,
+                },
+            );
+        }
+    }
+
+    if (opts.strict and summary.unsupported_statements > 0) {
+        std.debug.print("transpile: strict mode failed due to unsupported statements.\n", .{});
+        return 1;
+    }
     return 0;
 }
 

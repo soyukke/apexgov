@@ -8,11 +8,29 @@ pub const Options = struct {
     strict: bool = false,
 };
 
+pub const UnsupportedDiagnostic = struct {
+    source_path: []u8,
+    method_name: []u8,
+    line_no: usize,
+    reason: []const u8,
+    statement: []u8,
+};
+
 pub const Summary = struct {
     files_scanned: usize = 0,
     files_generated: usize = 0,
     methods_generated: usize = 0,
     unsupported_statements: usize = 0,
+    unsupported_examples: std.ArrayList(UnsupportedDiagnostic) = .empty,
+
+    pub fn deinit(self: *Summary, gpa: std.mem.Allocator) void {
+        for (self.unsupported_examples.items) |entry| {
+            gpa.free(entry.source_path);
+            gpa.free(entry.method_name);
+            gpa.free(entry.statement);
+        }
+        self.unsupported_examples.deinit(gpa);
+    }
 };
 
 const ApexFile = struct {
@@ -28,6 +46,7 @@ const ParsedMethod = struct {
     is_constructor: bool,
     is_test: bool,
     body: []u8,
+    start_line: usize,
 };
 
 const ParsedField = struct {
@@ -76,9 +95,25 @@ const ActiveSwitchContext = struct {
     mode: SwitchMode,
 };
 
+const UnsupportedLine = struct {
+    method_name: []const u8,
+    source_line: usize,
+    reason: []const u8,
+    statement: []u8,
+};
+
 const RenderedClass = struct {
     java: []u8,
     unsupported_statements: usize,
+    unsupported_lines: std.ArrayList(UnsupportedLine) = .empty,
+
+    fn deinit(self: *RenderedClass, gpa: std.mem.Allocator) void {
+        gpa.free(self.java);
+        for (self.unsupported_lines.items) |line| {
+            gpa.free(line.statement);
+        }
+        self.unsupported_lines.deinit(gpa);
+    }
 };
 
 pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
@@ -95,13 +130,14 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
     var summary = Summary{
         .files_scanned = files.items.len,
     };
+    errdefer summary.deinit(gpa);
 
     for (files.items) |file| {
         var parsed = try parseApexClass(gpa, file.path, file.content);
         defer parsed.deinit(gpa);
 
-        const rendered = try renderJavaClass(gpa, parsed, opts.package_name);
-        defer gpa.free(rendered.java);
+        var rendered = try renderJavaClass(gpa, parsed, opts.package_name);
+        defer rendered.deinit(gpa);
 
         if (opts.strict and rendered.unsupported_statements > 0) {
             return error.UnsupportedApexSyntax;
@@ -122,6 +158,30 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
         summary.files_generated += 1;
         summary.methods_generated += parsed.methods.items.len;
         summary.unsupported_statements += rendered.unsupported_statements;
+        for (rendered.unsupported_lines.items) |line| {
+            if (summary.unsupported_examples.items.len >= 64) break;
+
+            const source_copy = try gpa.dupe(u8, parsed.source_path);
+            errdefer gpa.free(source_copy);
+            const method_copy = try gpa.dupe(u8, line.method_name);
+            errdefer {
+                gpa.free(source_copy);
+                gpa.free(method_copy);
+            }
+            const statement_copy = try gpa.dupe(u8, line.statement);
+            errdefer {
+                gpa.free(source_copy);
+                gpa.free(method_copy);
+                gpa.free(statement_copy);
+            }
+            try summary.unsupported_examples.append(gpa, .{
+                .source_path = source_copy,
+                .method_name = method_copy,
+                .line_no = line.source_line,
+                .reason = line.reason,
+                .statement = statement_copy,
+            });
+        }
     }
 
     return summary;
@@ -202,86 +262,117 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
     var brace_depth: i32 = 0;
     var current_signature: MethodSignature = undefined;
     var current_is_test = false;
+    var current_body_base_line: usize = 0;
     var current_body: std.ArrayList(u8) = .empty;
+    var pending_signature: std.ArrayList(u8) = .empty;
+    var line_buffer: std.ArrayList(u8) = .empty;
+    var in_block_comment = false;
+    defer pending_signature.deinit(gpa);
+    defer line_buffer.deinit(gpa);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
+    var line_no: usize = 0;
     while (lines.next()) |raw_line| {
+        line_no += 1;
         const line = std.mem.trimRight(u8, raw_line, "\r");
-        const trimmed = std.mem.trim(u8, line, " \t");
+        const code_only = try stripApexCommentsFromLine(
+            gpa,
+            line,
+            &in_block_comment,
+            &line_buffer,
+        );
+        const trimmed = std.mem.trim(u8, code_only, " \t");
 
         if (!in_method) {
+            if (pending_signature.items.len > 0) {
+                if (trimmed.len == 0) continue;
+                if (pending_signature.items.len > 0) try pending_signature.append(gpa, ' ');
+                try pending_signature.appendSlice(gpa, trimmed);
+                const signature_candidate = std.mem.trim(u8, pending_signature.items, " \t");
+
+                if (try parseMethodSignature(gpa, signature_candidate, parsed.class_name)) |signature| {
+                    in_method = try beginMethodFromSignature(
+                        gpa,
+                        &parsed,
+                        signature,
+                        signature_candidate,
+                        code_only,
+                        line_no,
+                        class_is_test,
+                        &pending_test_annotation,
+                        &current_signature,
+                        &current_is_test,
+                        &current_body_base_line,
+                        &current_body,
+                        &brace_depth,
+                    );
+                    pending_signature.clearRetainingCapacity();
+                    continue;
+                }
+                if (try parseConstructorSignature(gpa, signature_candidate, parsed.class_name)) |signature| {
+                    in_method = try beginMethodFromSignature(
+                        gpa,
+                        &parsed,
+                        signature,
+                        signature_candidate,
+                        code_only,
+                        line_no,
+                        class_is_test,
+                        &pending_test_annotation,
+                        &current_signature,
+                        &current_is_test,
+                        &current_body_base_line,
+                        &current_body,
+                        &brace_depth,
+                    );
+                    pending_signature.clearRetainingCapacity();
+                    continue;
+                }
+
+                if (std.mem.indexOfScalar(u8, signature_candidate, '{') == null) continue;
+                pending_signature.clearRetainingCapacity();
+            }
+
             if (isIsTestAnnotation(trimmed)) {
                 pending_test_annotation = true;
                 continue;
             }
 
             if (try parseMethodSignature(gpa, trimmed, parsed.class_name)) |signature| {
-                in_method = true;
-                brace_depth = braceDelta(line);
-                current_signature = signature;
-                current_is_test = pending_test_annotation or class_is_test or containsWordIgnoreCase(trimmed, "testMethod");
-                current_body = .empty;
-                pending_test_annotation = false;
-
-                if (std.mem.indexOfScalar(u8, line, '{')) |brace_idx| {
-                    var tail = std.mem.trim(u8, line[(brace_idx + 1)..], " \t");
-                    if (tail.len > 0 and tail[tail.len - 1] == '}') {
-                        tail = std.mem.trimRight(u8, tail[0 .. tail.len - 1], " \t");
-                    }
-                    if (tail.len > 0) {
-                        try current_body.appendSlice(gpa, tail);
-                        try current_body.append(gpa, '\n');
-                    }
-                }
-
-                if (brace_depth <= 0) {
-                    const body = try current_body.toOwnedSlice(gpa);
-                    try parsed.methods.append(gpa, .{
-                        .name = current_signature.name,
-                        .java_return_type = current_signature.java_return_type,
-                        .java_parameters = current_signature.java_parameters,
-                        .is_static = current_signature.is_static,
-                        .is_constructor = current_signature.is_constructor,
-                        .is_test = current_is_test,
-                        .body = body,
-                    });
-                    in_method = false;
-                }
+                in_method = try beginMethodFromSignature(
+                    gpa,
+                    &parsed,
+                    signature,
+                    trimmed,
+                    code_only,
+                    line_no,
+                    class_is_test,
+                    &pending_test_annotation,
+                    &current_signature,
+                    &current_is_test,
+                    &current_body_base_line,
+                    &current_body,
+                    &brace_depth,
+                );
                 continue;
             }
 
             if (try parseConstructorSignature(gpa, trimmed, parsed.class_name)) |signature| {
-                in_method = true;
-                brace_depth = braceDelta(line);
-                current_signature = signature;
-                current_is_test = pending_test_annotation or class_is_test or containsWordIgnoreCase(trimmed, "testMethod");
-                current_body = .empty;
-                pending_test_annotation = false;
-
-                if (std.mem.indexOfScalar(u8, line, '{')) |brace_idx| {
-                    var tail = std.mem.trim(u8, line[(brace_idx + 1)..], " \t");
-                    if (tail.len > 0 and tail[tail.len - 1] == '}') {
-                        tail = std.mem.trimRight(u8, tail[0 .. tail.len - 1], " \t");
-                    }
-                    if (tail.len > 0) {
-                        try current_body.appendSlice(gpa, tail);
-                        try current_body.append(gpa, '\n');
-                    }
-                }
-
-                if (brace_depth <= 0) {
-                    const body = try current_body.toOwnedSlice(gpa);
-                    try parsed.methods.append(gpa, .{
-                        .name = current_signature.name,
-                        .java_return_type = current_signature.java_return_type,
-                        .java_parameters = current_signature.java_parameters,
-                        .is_static = current_signature.is_static,
-                        .is_constructor = current_signature.is_constructor,
-                        .is_test = current_is_test,
-                        .body = body,
-                    });
-                    in_method = false;
-                }
+                in_method = try beginMethodFromSignature(
+                    gpa,
+                    &parsed,
+                    signature,
+                    trimmed,
+                    code_only,
+                    line_no,
+                    class_is_test,
+                    &pending_test_annotation,
+                    &current_signature,
+                    &current_is_test,
+                    &current_body_base_line,
+                    &current_body,
+                    &brace_depth,
+                );
                 continue;
             }
 
@@ -291,15 +382,21 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 continue;
             }
 
+            if (shouldStartMethodSignatureBuffer(trimmed, parsed.class_name)) {
+                pending_signature.clearRetainingCapacity();
+                try pending_signature.appendSlice(gpa, trimmed);
+                continue;
+            }
+
             if (trimmed.len > 0 and trimmed[0] != '@') {
                 pending_test_annotation = false;
             }
             continue;
         }
 
-        try current_body.appendSlice(gpa, line);
+        try current_body.appendSlice(gpa, code_only);
         try current_body.append(gpa, '\n');
-        brace_depth += braceDelta(line);
+        brace_depth += braceDelta(code_only);
         if (brace_depth > 0) continue;
 
         const body = try current_body.toOwnedSlice(gpa);
@@ -311,6 +408,7 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
             .is_constructor = current_signature.is_constructor,
             .is_test = current_is_test,
             .body = body,
+            .start_line = current_body_base_line,
         });
         in_method = false;
     }
@@ -325,10 +423,85 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
             .is_constructor = current_signature.is_constructor,
             .is_test = current_is_test,
             .body = body,
+            .start_line = current_body_base_line,
         });
     }
 
     return parsed;
+}
+
+fn beginMethodFromSignature(
+    gpa: std.mem.Allocator,
+    parsed: *ParsedClass,
+    signature: MethodSignature,
+    signature_source: []const u8,
+    line: []const u8,
+    line_no: usize,
+    class_is_test: bool,
+    pending_test_annotation: *bool,
+    current_signature: *MethodSignature,
+    current_is_test: *bool,
+    current_body_base_line: *usize,
+    current_body: *std.ArrayList(u8),
+    brace_depth: *i32,
+) !bool {
+    brace_depth.* = braceDelta(line);
+    current_signature.* = signature;
+    current_is_test.* = pending_test_annotation.* or class_is_test or containsWordIgnoreCase(signature_source, "testMethod");
+    current_body_base_line.* = line_no + 1;
+    current_body.* = .empty;
+    pending_test_annotation.* = false;
+
+    if (std.mem.indexOfScalar(u8, line, '{')) |brace_idx| {
+        var tail = std.mem.trim(u8, line[(brace_idx + 1)..], " \t");
+        if (tail.len > 0 and tail[tail.len - 1] == '}') {
+            tail = std.mem.trimRight(u8, tail[0 .. tail.len - 1], " \t");
+        }
+        if (tail.len > 0) {
+            current_body_base_line.* = line_no;
+            try current_body.appendSlice(gpa, tail);
+            try current_body.append(gpa, '\n');
+        }
+    }
+
+    if (brace_depth.* <= 0) {
+        const body = try current_body.toOwnedSlice(gpa);
+        try parsed.methods.append(gpa, .{
+            .name = current_signature.name,
+            .java_return_type = current_signature.java_return_type,
+            .java_parameters = current_signature.java_parameters,
+            .is_static = current_signature.is_static,
+            .is_constructor = current_signature.is_constructor,
+            .is_test = current_is_test.*,
+            .body = body,
+            .start_line = current_body_base_line.*,
+        });
+        return false;
+    }
+    return true;
+}
+
+fn shouldStartMethodSignatureBuffer(line: []const u8, class_name: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') != null) return false;
+    if (std.mem.indexOfScalar(u8, trimmed, '(') == null) return false;
+    if (std.mem.indexOfScalar(u8, trimmed, ';') != null) return false;
+    if (containsWordIgnoreCase(trimmed, "class")) return false;
+
+    const open_paren = std.mem.indexOfScalar(u8, trimmed, '(') orelse return false;
+    if (std.mem.indexOfScalar(u8, trimmed[0..open_paren], '=')) |_| return false;
+    const prefix = std.mem.trim(u8, trimmed[0..open_paren], " \t");
+    if (prefix.len == 0) return false;
+
+    if (firstIdentifier(prefix)) |first| {
+        if (isControlKeyword(first)) return false;
+    }
+
+    const candidate = lastIdentifier(prefix) orelse return false;
+    if (isControlKeyword(candidate)) return false;
+    _ = class_name;
+    return true;
 }
 
 fn parseClassName(gpa: std.mem.Allocator, source_path: []const u8, content: []const u8) ![]u8 {
@@ -623,6 +796,11 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var unsupported_statements: usize = 0;
+    var unsupported_lines: std.ArrayList(UnsupportedLine) = .empty;
+    errdefer {
+        for (unsupported_lines.items) |line| gpa.free(line.statement);
+        unsupported_lines.deinit(gpa);
+    }
 
     var method_name_counts = std.StringHashMap(usize).init(gpa);
     defer method_name_counts.deinit();
@@ -691,7 +869,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
 
         var statements = try collectLogicalStatements(gpa, method.body);
         defer {
-            for (statements.items) |statement| gpa.free(statement);
+            for (statements.items) |statement| gpa.free(statement.text);
             statements.deinit(gpa);
         }
 
@@ -705,8 +883,8 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
             switch_stack.deinit(gpa);
         }
 
-        for (statements.items, 0..) |raw_stmt, idx| {
-            const trimmed = std.mem.trim(u8, raw_stmt, " \t");
+        for (statements.items, 0..) |statement, idx| {
+            const trimmed = std.mem.trim(u8, statement.text, " \t");
             if (trimmed.len == 0) continue;
             if (idx == statements.items.len - 1 and std.mem.eql(u8, trimmed, "}")) continue;
 
@@ -752,6 +930,12 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
             } else {
                 unsupported_statements += 1;
                 try appendFmt(gpa, &out, "    // {s}\n", .{trimmed});
+                try unsupported_lines.append(gpa, .{
+                    .method_name = method.name,
+                    .source_line = method.start_line + statement.line_offset,
+                    .reason = inferUnsupportedReason(trimmed),
+                    .statement = try gpa.dupe(u8, trimmed),
+                });
             }
 
             brace_depth += braceDelta(trimmed);
@@ -768,6 +952,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     return .{
         .java = try out.toOwnedSlice(gpa),
         .unsupported_statements = unsupported_statements,
+        .unsupported_lines = unsupported_lines,
     };
 }
 
@@ -780,38 +965,325 @@ const NestingState = struct {
     escaped: bool = false,
 };
 
-fn collectLogicalStatements(gpa: std.mem.Allocator, body: []const u8) !std.ArrayList([]u8) {
-    var statements: std.ArrayList([]u8) = .empty;
+const LogicalStatement = struct {
+    text: []u8,
+    line_offset: usize,
+};
+
+fn collectLogicalStatements(gpa: std.mem.Allocator, body: []const u8) !std.ArrayList(LogicalStatement) {
+    var statements: std.ArrayList(LogicalStatement) = .empty;
     errdefer {
-        for (statements.items) |statement| gpa.free(statement);
+        for (statements.items) |statement| gpa.free(statement.text);
         statements.deinit(gpa);
     }
 
     var pending: std.ArrayList(u8) = .empty;
     defer pending.deinit(gpa);
+    var pending_line_offset: usize = 0;
+    var line_buffer: std.ArrayList(u8) = .empty;
+    defer line_buffer.deinit(gpa);
+    var in_block_comment = false;
 
     var lines = std.mem.splitScalar(u8, body, '\n');
+    var line_offset: usize = 0;
     while (lines.next()) |raw_line| {
         const clean = std.mem.trimRight(u8, raw_line, "\r");
-        const trimmed = std.mem.trim(u8, clean, " \t");
-        if (trimmed.len == 0) continue;
+        const code_only = try stripApexCommentsFromLine(
+            gpa,
+            clean,
+            &in_block_comment,
+            &line_buffer,
+        );
+        const trimmed = std.mem.trim(u8, code_only, " \t");
+        if (trimmed.len == 0) {
+            line_offset += 1;
+            continue;
+        }
 
-        if (pending.items.len > 0) try pending.append(gpa, ' ');
+        if (pending.items.len == 0) {
+            pending_line_offset = line_offset;
+        } else {
+            try pending.append(gpa, ' ');
+        }
         try pending.appendSlice(gpa, trimmed);
 
         const current = std.mem.trim(u8, pending.items, " \t");
-        if (!shouldFlushLogicalStatement(current)) continue;
+        if (!shouldFlushLogicalStatement(current)) {
+            line_offset += 1;
+            continue;
+        }
 
-        try statements.append(gpa, try gpa.dupe(u8, current));
+        try appendLogicalStatement(gpa, &statements, current, pending_line_offset);
         pending.clearRetainingCapacity();
+        line_offset += 1;
     }
 
     const tail = std.mem.trim(u8, pending.items, " \t");
     if (tail.len > 0) {
-        try statements.append(gpa, try gpa.dupe(u8, tail));
+        try appendLogicalStatement(gpa, &statements, tail, pending_line_offset);
     }
 
     return statements;
+}
+
+fn appendLogicalStatement(
+    gpa: std.mem.Allocator,
+    statements: *std.ArrayList(LogicalStatement),
+    raw_statement: []const u8,
+    line_offset: usize,
+) !void {
+    const trimmed = std.mem.trim(u8, raw_statement, " \t");
+    if (trimmed.len == 0) return;
+
+    var chunks = try splitTopLevelSemicolonChunks(gpa, trimmed);
+    defer {
+        for (chunks.items) |chunk| gpa.free(chunk);
+        chunks.deinit(gpa);
+    }
+
+    for (chunks.items) |chunk| {
+        try appendLogicalChunk(gpa, statements, chunk, line_offset);
+    }
+}
+
+fn appendLogicalChunk(
+    gpa: std.mem.Allocator,
+    statements: *std.ArrayList(LogicalStatement),
+    raw_chunk: []const u8,
+    line_offset: usize,
+) !void {
+    var rest = std.mem.trim(u8, raw_chunk, " \t");
+    if (rest.len == 0) return;
+
+    // Keep Apex do-while tails as one statement: `} while (cond);`
+    if (isDoWhileTailLine(rest)) {
+        try statements.append(gpa, .{
+            .text = try gpa.dupe(u8, rest),
+            .line_offset = line_offset,
+        });
+        return;
+    }
+
+    while (rest.len > 0 and rest[0] == '}') {
+        try statements.append(gpa, .{
+            .text = try gpa.dupe(u8, "}"),
+            .line_offset = line_offset,
+        });
+        rest = std.mem.trimLeft(u8, rest[1..], " \t");
+        if (rest.len == 0) return;
+        if (isDoWhileTailLine(rest)) {
+            try statements.append(gpa, .{
+                .text = try gpa.dupe(u8, rest),
+                .line_offset = line_offset,
+            });
+            return;
+        }
+    }
+
+    if (try splitInlineBlockHeader(gpa, rest)) |split| {
+        defer {
+            gpa.free(split.head);
+            gpa.free(split.tail);
+        }
+        try appendLogicalChunk(gpa, statements, split.head, line_offset);
+        try appendLogicalChunk(gpa, statements, split.tail, line_offset);
+        return;
+    }
+
+    try statements.append(gpa, .{
+        .text = try gpa.dupe(u8, rest),
+        .line_offset = line_offset,
+    });
+}
+
+fn splitTopLevelSemicolonChunks(
+    gpa: std.mem.Allocator,
+    statement: []const u8,
+) !std.ArrayList([]u8) {
+    var chunks: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (chunks.items) |chunk| gpa.free(chunk);
+        chunks.deinit(gpa);
+    }
+
+    var state = NestingState{};
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < statement.len) : (i += 1) {
+        const ch = statement[i];
+
+        if (state.in_double) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '"') state.in_double = false;
+            continue;
+        }
+
+        if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < statement.len and statement[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') state.in_single = false;
+            continue;
+        }
+
+        switch (ch) {
+            '"' => state.in_double = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
+            '(' => state.paren += 1,
+            ')' => {
+                if (state.paren > 0) state.paren -= 1;
+            },
+            '[' => state.bracket += 1,
+            ']' => {
+                if (state.bracket > 0) state.bracket -= 1;
+            },
+            ';' => {
+                if (state.paren == 0 and state.bracket == 0) {
+                    const piece = std.mem.trim(u8, statement[start .. i + 1], " \t");
+                    if (piece.len > 0) {
+                        try chunks.append(gpa, try gpa.dupe(u8, piece));
+                    }
+                    start = i + 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const tail = std.mem.trim(u8, statement[start..], " \t");
+    if (tail.len > 0) {
+        try chunks.append(gpa, try gpa.dupe(u8, tail));
+    }
+    return chunks;
+}
+
+const InlineBlockHeaderSplit = struct {
+    head: []u8,
+    tail: []u8,
+};
+
+fn splitInlineBlockHeader(gpa: std.mem.Allocator, statement: []const u8) !?InlineBlockHeaderSplit {
+    var state = NestingState{};
+    var i: usize = 0;
+    while (i < statement.len) : (i += 1) {
+        const ch = statement[i];
+
+        if (state.in_double) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '"') state.in_double = false;
+            continue;
+        }
+
+        if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < statement.len and statement[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') state.in_single = false;
+            continue;
+        }
+
+        switch (ch) {
+            '"' => state.in_double = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
+            '(' => state.paren += 1,
+            ')' => {
+                if (state.paren > 0) state.paren -= 1;
+            },
+            '[' => state.bracket += 1,
+            ']' => {
+                if (state.bracket > 0) state.bracket -= 1;
+            },
+            '{' => {
+                if (state.paren != 0 or state.bracket != 0) continue;
+
+                const before = std.mem.trim(u8, statement[0..i], " \t");
+                if (!shouldSplitInlineBlockHeader(before)) return null;
+
+                const after = std.mem.trim(u8, statement[(i + 1)..], " \t");
+                if (after.len == 0) return null;
+
+                return .{
+                    .head = try gpa.dupe(u8, std.mem.trim(u8, statement[0 .. i + 1], " \t")),
+                    .tail = try gpa.dupe(u8, after),
+                };
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn shouldSplitInlineBlockHeader(before_open_brace: []const u8) bool {
+    if (before_open_brace.len == 0) return false;
+
+    const control_headers = [_][]const u8{
+        "if", "else", "for", "while", "do", "try", "catch", "finally", "switch", "when",
+    };
+    for (control_headers) |keyword| {
+        if (startsWithWordIgnoreCase(before_open_brace, keyword)) return true;
+    }
+
+    if (startsWithIgnoreCase(before_open_brace, "System.runAs") and
+        before_open_brace[before_open_brace.len - 1] == ')')
+    {
+        return true;
+    }
+
+    return false;
+}
+
+fn inferUnsupportedReason(statement: []const u8) []const u8 {
+    if (startsWithWordIgnoreCase(statement, "when")) {
+        return "pattern `when` outside switch context is unsupported";
+    }
+    if (startsWithWordIgnoreCase(statement, "try") or
+        startsWithWordIgnoreCase(statement, "catch") or
+        startsWithWordIgnoreCase(statement, "finally"))
+    {
+        return "try/catch/finally is not transpiled yet";
+    }
+    if (std.mem.indexOf(u8, statement, "->") != null) {
+        return "lambda expression is not transpiled yet";
+    }
+    return "no transpile rule matched";
 }
 
 fn shouldFlushLogicalStatement(statement: []const u8) bool {
@@ -826,7 +1298,77 @@ fn shouldFlushLogicalStatement(statement: []const u8) bool {
 
     const last = statement[statement.len - 1];
     if (last == ';' or last == '{' or last == '}') return true;
-    return true;
+    return false;
+}
+
+fn stripApexCommentsFromLine(
+    allocator: std.mem.Allocator,
+    line: []const u8,
+    in_block_comment: *bool,
+    out: *std.ArrayList(u8),
+) ![]const u8 {
+    out.clearRetainingCapacity();
+
+    var i: usize = 0;
+    var in_single = false;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < line.len) {
+        if (in_block_comment.*) {
+            if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '/') {
+                in_block_comment.* = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        const ch = line[i];
+        if (!in_single and !in_double and i + 1 < line.len and ch == '/') {
+            const next = line[i + 1];
+            if (next == '/') break;
+            if (next == '*') {
+                in_block_comment.* = true;
+                i += 2;
+                continue;
+            }
+        }
+
+        try out.append(allocator, ch);
+
+        if (in_single) {
+            if (ch == '\'' and !escaped) {
+                in_single = false;
+            }
+            escaped = ch == '\\' and !escaped;
+            i += 1;
+            continue;
+        }
+
+        if (in_double) {
+            if (ch == '"' and !escaped) {
+                in_double = false;
+            }
+            escaped = ch == '\\' and !escaped;
+            i += 1;
+            continue;
+        }
+
+        if (ch == '\'') {
+            in_single = true;
+            escaped = false;
+        } else if (ch == '"') {
+            in_double = true;
+            escaped = false;
+        } else {
+            escaped = false;
+        }
+        i += 1;
+    }
+
+    return out.items;
 }
 
 fn scanNestingState(text: []const u8) NestingState {
@@ -848,6 +1390,14 @@ fn scanNestingState(text: []const u8) NestingState {
             continue;
         }
         if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
             if (ch == '\'' and i + 1 < text.len and text[i + 1] == '\'') {
                 i += 1;
                 continue;
@@ -858,7 +1408,10 @@ fn scanNestingState(text: []const u8) NestingState {
 
         switch (ch) {
             '"' => state.in_double = true,
-            '\'' => state.in_single = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
             '(' => state.paren += 1,
             ')' => {
                 if (state.paren > 0) state.paren -= 1;
@@ -947,6 +1500,9 @@ fn transpileControlFlowLineWithContext(
     if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) {
         return try gpa.dupe(u8, trimmed);
     }
+    if (try transpileScopedInvocationBlockHeader(gpa, trimmed)) |statement| {
+        return statement;
+    }
 
     if (!isControlFlowLine(trimmed)) return null;
 
@@ -972,6 +1528,20 @@ fn transpileControlFlowLineWithContext(
         converted = for_fixed;
     }
     return converted;
+}
+
+fn transpileScopedInvocationBlockHeader(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '{') return null;
+
+    const head = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    if (head.len == 0) return null;
+    if (!startsWithIgnoreCase(head, "System.runAs")) return null;
+    if (head[head.len - 1] != ')') return null;
+
+    const converted_head = try convertApexExpressionToJava(gpa, head);
+    defer gpa.free(converted_head);
+    return try std.fmt.allocPrint(gpa, "{{ // Apex scoped block: {s}", .{converted_head});
 }
 
 fn transpileSoqlLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
@@ -3403,7 +3973,7 @@ fn startsWithWordIgnoreCase(haystack: []const u8, keyword: []const u8) bool {
     if (!startsWithIgnoreCase(haystack, keyword)) return false;
     if (haystack.len == keyword.len) return true;
     const next = haystack[keyword.len];
-    return std.ascii.isWhitespace(next) or next == '(';
+    return !isIdentifierChar(next);
 }
 
 fn isControlFlowLine(line: []const u8) bool {
@@ -3657,11 +4227,11 @@ fn parseSwitchSubjectExpression(line: []const u8) ?[]const u8 {
 
 fn detectSwitchMode(
     gpa: std.mem.Allocator,
-    statements: []const []u8,
+    statements: []const LogicalStatement,
     start_idx: usize,
 ) !SwitchMode {
     if (start_idx >= statements.len) return .value;
-    const start_stmt = std.mem.trim(u8, statements[start_idx], " \t");
+    const start_stmt = std.mem.trim(u8, statements[start_idx].text, " \t");
     if (!startsWithWordIgnoreCase(start_stmt, "switch")) return .value;
 
     var depth = braceDelta(start_stmt);
@@ -3669,7 +4239,7 @@ fn detectSwitchMode(
 
     var i = start_idx + 1;
     while (i < statements.len and depth > 0) : (i += 1) {
-        const stmt = std.mem.trim(u8, statements[i], " \t");
+        const stmt = std.mem.trim(u8, statements[i].text, " \t");
         if (depth == 1 and startsWithWordIgnoreCase(stmt, "when")) {
             var rest = std.mem.trimLeft(u8, stmt["when".len..], " \t");
             if (rest.len > 0 and rest[rest.len - 1] == '{') {
@@ -3874,6 +4444,73 @@ test "parseMethodSignature preserves return type params and static" {
     try std.testing.expect((try parseMethodSignature(gpa, "public Demo() {", "Demo")) == null);
 }
 
+test "parseApexClass captures multiline method and constructor signatures" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class MultiLineSignatureDemo {
+        \\  @IsTest
+        \\  public static void run(
+        \\      List<Account> records,
+        \\      Integer limit
+        \\  )
+        \\  {
+        \\    System.debug(records);
+        \\  }
+        \\
+        \\  public MultiLineSignatureDemo(
+        \\      Integer n
+        \\  )
+        \\  {
+        \\    System.debug(n);
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "MultiLineSignatureDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("run", parsed.methods.items[0].name);
+    try std.testing.expect(parsed.methods.items[0].is_test);
+    try std.testing.expectEqualStrings("List<ApexSObject> records, Integer limit", parsed.methods.items[0].java_parameters);
+    try std.testing.expect(parsed.methods.items[0].start_line > 0);
+
+    try std.testing.expect(parsed.methods.items[1].is_constructor);
+    try std.testing.expectEqualStrings("MultiLineSignatureDemo", parsed.methods.items[1].name);
+    try std.testing.expectEqualStrings("Integer n", parsed.methods.items[1].java_parameters);
+
+    var rendered = try renderJavaClass(gpa, parsed, "generated");
+    defer rendered.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "public static void run(List<ApexSObject> records, Integer limit)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "public MultiLineSignatureDemo(Integer n)") != null);
+}
+
+test "parseApexClass ignores comment lines that look like signatures before enum" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class RestClient {
+        \\  /**
+        \\   * Keyword (DML) note should not be parsed as method signature.
+        \\   */
+        \\  public enum HttpVerb {
+        \\    GET,
+        \\    POST,
+        \\    DEL
+        \\  }
+        \\
+        \\  public static void ping() {
+        \\    System.debug('ok');
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "RestClient.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("ping", parsed.methods.items[0].name);
+}
+
 test "renderJavaClass emits test annotation and method comment body" {
     const gpa = std.testing.allocator;
     var parsed = ParsedClass{
@@ -3890,10 +4527,11 @@ test "renderJavaClass emits test annotation and method comment body" {
         .is_constructor = false,
         .is_test = true,
         .body = try gpa.dupe(u8, "System.assertEquals(1, 1);\n"),
+        .start_line = 1,
     });
 
-    const output = try renderJavaClass(gpa, parsed, "generated");
-    defer gpa.free(output.java);
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
 
     try std.testing.expect(std.mem.indexOf(u8, output.java, "package generated;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.java, "@Test") != null);
@@ -4573,15 +5211,169 @@ test "collectLogicalStatements keeps multiline soql as one statement" {
     ;
     var statements = try collectLogicalStatements(gpa, body);
     defer {
-        for (statements.items) |line| gpa.free(line);
+        for (statements.items) |line| gpa.free(line.text);
         statements.deinit(gpa);
     }
     try std.testing.expectEqual(@as(usize, 1), statements.items.len);
-    const converted = try transpileExecutableLine(gpa, statements.items[0]);
+    const converted = try transpileExecutableLine(gpa, statements.items[0].text);
     defer if (converted) |value| gpa.free(value);
     try std.testing.expect(converted != null);
     try std.testing.expectEqualStrings(
         "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
+        converted.?,
+    );
+}
+
+test "collectLogicalStatements keeps multiline assignment with string concatenation" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\String queryString =
+        \\  'SELECT Id, Name ' +
+        \\  'FROM Account ' +
+        \\  'WHERE Name LIKE \'Acme%\'';
+    ;
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 1), statements.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, statements.items[0].text, "String queryString =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, statements.items[0].text, "'FROM Account '") != null);
+}
+
+test "collectLogicalStatements strips block and line comments" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\// leading comment
+        \\String a = 'x'; // trailing comment
+        \\/* block
+        \\ * comment
+        \\ */
+        \\String b = "http://example.invalid";
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 2), statements.items.len);
+    try std.testing.expectEqualStrings("String a = 'x';", statements.items[0].text);
+    try std.testing.expectEqualStrings("String b = \"http://example.invalid\";", statements.items[1].text);
+}
+
+test "collectLogicalStatements splits leading brace from else/catch lines" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\if (ok) {
+        \\  doWork();
+        \\} else { return; }
+        \\try {
+        \\  risky();
+        \\} catch (Exception e) { handle(e); }
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 12), statements.items.len);
+    try std.testing.expectEqualStrings("if (ok) {", statements.items[0].text);
+    try std.testing.expectEqualStrings("doWork();", statements.items[1].text);
+    try std.testing.expectEqualStrings("}", statements.items[2].text);
+    try std.testing.expectEqualStrings("else {", statements.items[3].text);
+    try std.testing.expectEqualStrings("return;", statements.items[4].text);
+    try std.testing.expectEqualStrings("}", statements.items[5].text);
+    try std.testing.expectEqualStrings("try {", statements.items[6].text);
+    try std.testing.expectEqualStrings("risky();", statements.items[7].text);
+    try std.testing.expectEqualStrings("}", statements.items[8].text);
+    try std.testing.expectEqualStrings("catch (Exception e) {", statements.items[9].text);
+    try std.testing.expectEqualStrings("handle(e);", statements.items[10].text);
+    try std.testing.expectEqualStrings("}", statements.items[11].text);
+}
+
+test "collectLogicalStatements splits compact one-line runAs try/catch blocks" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\System.runAs(u1) { Test.startTest(); try { run(); } catch (Exception e) { handle(e); } Test.stopTest(); }
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 10), statements.items.len);
+    try std.testing.expectEqualStrings("System.runAs(u1) {", statements.items[0].text);
+    try std.testing.expectEqualStrings("Test.startTest();", statements.items[1].text);
+    try std.testing.expectEqualStrings("try {", statements.items[2].text);
+    try std.testing.expectEqualStrings("run();", statements.items[3].text);
+    try std.testing.expectEqualStrings("}", statements.items[4].text);
+    try std.testing.expectEqualStrings("catch (Exception e) {", statements.items[5].text);
+    try std.testing.expectEqualStrings("handle(e);", statements.items[6].text);
+    try std.testing.expectEqualStrings("}", statements.items[7].text);
+    try std.testing.expectEqualStrings("Test.stopTest();", statements.items[8].text);
+    try std.testing.expectEqualStrings("}", statements.items[9].text);
+}
+
+test "collectLogicalStatements handles escaped apostrophe in compact string literals" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\System.assert(true, 'doesn\'t fail'); System.debug('ok');
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), statements.items.len);
+    try std.testing.expectEqualStrings(
+        "System.assert(true, 'doesn\\'t fail');",
+        statements.items[0].text,
+    );
+    try std.testing.expectEqualStrings("System.debug('ok');", statements.items[1].text);
+}
+
+test "collectLogicalStatements keeps do-while tail together" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\do {
+        \\  i++;
+        \\} while (i < 3);
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), statements.items.len);
+    try std.testing.expectEqualStrings("do {", statements.items[0].text);
+    try std.testing.expectEqualStrings("i++;", statements.items[1].text);
+    try std.testing.expectEqualStrings("} while (i < 3);", statements.items[2].text);
+}
+
+test "startsWithWordIgnoreCase accepts punctuation boundaries" {
+    try std.testing.expect(startsWithWordIgnoreCase("else{", "else"));
+    try std.testing.expect(startsWithWordIgnoreCase("try{", "try"));
+    try std.testing.expect(!startsWithWordIgnoreCase("elseif", "else"));
+}
+
+test "transpileControlFlowLine converts System.runAs scoped block header" {
+    const gpa = std.testing.allocator;
+    const converted = try transpileControlFlowLine(gpa, "System.runAs(testUser) {");
+    defer if (converted) |value| gpa.free(value);
+
+    try std.testing.expect(converted != null);
+    try std.testing.expectEqualStrings(
+        "{ // Apex scoped block: System.runAs(testUser)",
         converted.?,
     );
 }
@@ -4614,16 +5406,20 @@ test "run counts unsupported statements when strict is disabled" {
     defer std.testing.allocator.free(out_dir);
 
     const inputs = [_][]const u8{root};
-    const summary = try run(std.testing.allocator, .{
+    var summary = try run(std.testing.allocator, .{
         .input_paths = &inputs,
         .out_dir = out_dir,
         .package_name = "generated",
         .overwrite = true,
         .strict = false,
     });
+    defer summary.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), summary.files_generated);
     try std.testing.expect(summary.unsupported_statements > 0);
+    try std.testing.expect(summary.unsupported_examples.items.len > 0);
+    try std.testing.expect(summary.unsupported_examples.items[0].line_no > 0);
+    try std.testing.expect(summary.unsupported_examples.items[0].reason.len > 0);
 }
 
 test "run strict mode fails on unsupported statements" {
@@ -4681,8 +5477,8 @@ test "renderJavaClass keeps inner block closing brace" {
     var parsed = try parseApexClass(gpa, "Demo.cls", source);
     defer parsed.deinit(gpa);
 
-    const output = try renderJavaClass(gpa, parsed, "generated");
-    defer gpa.free(output.java);
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
 
     try std.testing.expect(std.mem.indexOf(u8, output.java, "if (true) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.java, "    }\n  }\n") != null);

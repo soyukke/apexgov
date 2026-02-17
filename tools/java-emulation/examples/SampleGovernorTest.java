@@ -13,6 +13,8 @@ import apexemu.runtime.QueryLocatorBatchable;
 import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
 import apexemu.runtime.Trigger;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -1972,6 +1974,132 @@ public final class SampleGovernorTest {
         ApexSObject.of("Account").withId(rows.get(0).id()).set("Name", "A-Merged"),
         ApexSObject.of("Account").withId(rows.get(1).id()));
     SystemAssert.assertEquals(6, Limits.getDmlStatements(), "merge should count as one statement");
+  }
+
+  @Test
+  public void schemaExternalIdUpsertAndUniqueConstraintWork() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Schema.object("Account")
+        .required("Name", Schema.FieldType.STRING)
+        .optional("ExternalKey__c", Schema.FieldType.STRING)
+        .externalId("ExternalKey__c")
+        .unique("ExternalKey__c")
+        .register();
+
+    Database.insert(List.of(ApexSObject.of("Account").set("Name", "Seed").set("ExternalKey__c", "EXT-1")));
+
+    Database.SaveResult[] upsertExisting =
+        Database.upsert(
+            List.of(ApexSObject.of("Account").set("Name", "Seed-Updated").set("ExternalKey__c", "EXT-1")),
+            "ExternalKey__c",
+            true);
+    SystemAssert.assertEquals(1, upsertExisting.length, "upsert(existing) result size mismatch");
+    SystemAssert.assertTrue(upsertExisting[0].isSuccess(), "external-id upsert should update existing row");
+    SystemAssert.assertEquals(
+        1,
+        Database.countQuery("SELECT count() FROM Account WHERE Name = 'Seed-Updated'"),
+        "external-id upsert should update existing row");
+    SystemAssert.assertEquals(
+        1, Database.countQuery("SELECT count() FROM Account"), "external-id update should keep single row");
+
+    Database.SaveResult[] upsertInsert =
+        Database.upsert(
+            List.of(ApexSObject.of("Account").set("Name", "Second").set("ExternalKey__c", "EXT-2")),
+            "ExternalKey__c",
+            true);
+    SystemAssert.assertTrue(upsertInsert[0].isSuccess(), "external-id upsert should insert new row");
+    SystemAssert.assertEquals(
+        2, Database.countQuery("SELECT count() FROM Account"), "second external-id should insert a new row");
+
+    Database.SaveResult[] duplicate =
+        Database.insert(
+            List.of(ApexSObject.of("Account").set("Name", "Dup").set("ExternalKey__c", "EXT-2")),
+            false);
+    SystemAssert.assertFalse(duplicate[0].isSuccess(), "unique external-id should reject duplicates");
+    SystemAssert.assertEquals(
+        "DUPLICATE_VALUE",
+        duplicate[0].getErrors()[0].getStatusCode(),
+        "duplicate status should be DUPLICATE_VALUE");
+  }
+
+  @Test
+  public void childSubqueryUsesSchemaRelationshipMetadata() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    Schema.object("Account").required("Name", Schema.FieldType.STRING).register();
+    Schema.object("Invoice__c")
+        .required("Name", Schema.FieldType.STRING)
+        .optional("Account__c", Schema.FieldType.ID)
+        .reference("Account__c", "Account", "Invoices__r")
+        .register();
+
+    ApexSObject account = ApexSObject.of("Account").set("Name", "Acme");
+    Database.insert(account);
+    Database.insert(
+        List.of(
+            ApexSObject.of("Invoice__c").set("Name", "INV-001").set("Account__c", account.id()),
+            ApexSObject.of("Invoice__c").set("Name", "INV-002").set("Account__c", account.id())));
+
+    List<ApexSObject> rows =
+        Database.query(
+            "SELECT Id, Name, (SELECT Id, Name FROM Invoices__r ORDER BY Name ASC) "
+                + "FROM Account WHERE Id = '"
+                + account.id()
+                + "'");
+    SystemAssert.assertEquals(1, rows.size(), "parent row count mismatch");
+    @SuppressWarnings("unchecked")
+    List<ApexSObject> invoices = (List<ApexSObject>) rows.get(0).get("Invoices__r");
+    SystemAssert.assertEquals(2, invoices.size(), "schema relationship child query should resolve");
+    SystemAssert.assertEquals("INV-001", invoices.get(0).get("Name"), "child row ordering mismatch");
+    SystemAssert.assertEquals("INV-002", invoices.get(1).get("Name"), "child row ordering mismatch");
+  }
+
+  @Test
+  public void runAsLoadDataAndHttpMockWorkLocally() throws Exception {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+    apexemu.runtime.Test.clearMocks();
+
+    ApexSObject user = ApexSObject.of("User").withId("005TESTUSER00001");
+    String before = apexemu.runtime.UserInfo.getUserId();
+    apexemu.runtime.Test.runAs(
+        user,
+        () ->
+            SystemAssert.assertEquals(
+                "005TESTUSER00001", apexemu.runtime.UserInfo.getUserId(), "runAs should switch user context"));
+    SystemAssert.assertEquals(before, apexemu.runtime.UserInfo.getUserId(), "runAs should restore user context");
+
+    Schema.object("Invoice__c").required("Name", Schema.FieldType.STRING).register();
+    Path csv = Files.createTempFile("apexemu-load-data-", ".csv");
+    Files.writeString(csv, "Name\nINV-CSV-1\nINV-CSV-2\n");
+    List<ApexSObject> loaded = apexemu.runtime.Test.loadData("Invoice__c", csv.toString());
+    SystemAssert.assertEquals(2, loaded.size(), "loadData should insert two rows");
+    SystemAssert.assertTrue(loaded.get(0).id() != null, "loadData should assign Id");
+    SystemAssert.assertEquals(
+        2, Database.countQuery("SELECT count() FROM Invoice__c"), "loadData should persist inserted rows");
+
+    apexemu.runtime.Test.setMock(
+        apexemu.runtime.HttpCalloutMock.class,
+        request -> {
+          apexemu.runtime.HttpResponse response = new apexemu.runtime.HttpResponse();
+          response.setStatusCode(201);
+          response.setBody("mock-ok");
+          response.setHeader("x-mock", "yes");
+          return response;
+        });
+    apexemu.runtime.Http http = new apexemu.runtime.Http();
+    apexemu.runtime.HttpRequest request = new apexemu.runtime.HttpRequest();
+    request.setEndpoint("https://example.invalid/mock");
+    request.setMethod("POST");
+    request.setBody("{\"x\":1}");
+    apexemu.runtime.HttpResponse response = http.send(request);
+    SystemAssert.assertEquals(201, response.getStatusCode(), "http mock status mismatch");
+    SystemAssert.assertEquals("mock-ok", response.getBody(), "http mock body mismatch");
+    SystemAssert.assertEquals("yes", response.getHeader("x-mock"), "http mock header mismatch");
+    SystemAssert.assertEquals(1, Limits.getCallouts(), "callout count should increase by send()");
   }
 
   private static final class FutureWorker {

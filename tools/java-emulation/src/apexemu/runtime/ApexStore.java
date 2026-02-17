@@ -103,7 +103,23 @@ final class ApexStore {
   }
 
   static Database.SaveResult[] upsert(Collection<ApexSObject> records, boolean allOrNone) {
-    return apply(records, allOrNone, DmlVerb.UPSERT, ApexStore::upsertOne);
+    return upsert(records, allOrNone, null);
+  }
+
+  static Database.SaveResult[] upsert(
+      Collection<ApexSObject> records, boolean allOrNone, String externalIdFieldName) {
+    List<ApexSObject> normalized = normalize(records);
+    if (normalized.isEmpty()) {
+      return new Database.SaveResult[0];
+    }
+
+    State state = STATE.get();
+    Limits.addDml(1);
+    String externalField = normalizeExternalIdFieldName(externalIdFieldName);
+    if (allOrNone) {
+      return applyUpsertAllOrNone(state, normalized, externalField);
+    }
+    return applyUpsertPartial(state, normalized, externalField);
   }
 
   static Database.SaveResult[] delete(Collection<ApexSObject> records, boolean allOrNone) {
@@ -204,23 +220,17 @@ final class ApexStore {
     State state = STATE.get();
     Limits.addDml(1);
 
-    if (verb == DmlVerb.UPSERT) {
-      if (allOrNone) {
-        return applyUpsertAllOrNone(state, normalized);
-      }
-      return applyUpsertPartial(state, normalized);
-    }
-
     if (allOrNone) {
       return applyAllOrNoneWithTrigger(state, normalized, verb, operation);
     }
     return applyPartialWithTrigger(state, normalized, verb, operation);
   }
 
-  private static Database.SaveResult[] applyUpsertAllOrNone(State state, List<ApexSObject> normalized) {
+  private static Database.SaveResult[] applyUpsertAllOrNone(
+      State state, List<ApexSObject> normalized, String externalIdFieldName) {
     StateSnapshot original = snapshotOf(state);
     try {
-      List<UpsertPlanRow> plan = planUpsertRows(state, normalized);
+      List<UpsertPlanRow> plan = planUpsertRows(state, normalized, externalIdFieldName);
 
       List<ApexSObject> insertNew = upsertPlanNewRows(plan, UpsertPath.INSERT);
       List<ApexSObject> updateNew = upsertPlanNewRows(plan, UpsertPath.UPDATE);
@@ -250,12 +260,13 @@ final class ApexStore {
     }
   }
 
-  private static Database.SaveResult[] applyUpsertPartial(State state, List<ApexSObject> normalized) {
+  private static Database.SaveResult[] applyUpsertPartial(
+      State state, List<ApexSObject> normalized, String externalIdFieldName) {
     Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
     for (int i = 0; i < normalized.size(); i += 1) {
       ApexSObject record = normalized.get(i);
       try {
-        UpsertPath path = resolveUpsertPath(state, record);
+        UpsertPath path = resolveUpsertPath(state, record, externalIdFieldName);
         if (path == UpsertPath.UPDATE) {
           List<ApexSObject> singleRecord = List.of(record);
           List<ApexSObject> oldRows = List.of(snapshotActiveRow(state, record, "upsert"));
@@ -335,7 +346,7 @@ final class ApexStore {
 
   private static String insertOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
-    validateForInsert(record);
+    validateForInsert(state, record);
     ApexSObject stored = record.copy();
 
     String id = normalizeId(stored.id());
@@ -356,7 +367,7 @@ final class ApexStore {
 
   private static String updateOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
-    validateForUpdate(record);
+    validateForUpdate(state, record);
     String id = requireId(record, "update");
 
     Map<String, ApexSObject> bucket = state.active.get(record.type());
@@ -374,16 +385,20 @@ final class ApexStore {
 
   private static String upsertOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
-    return resolveUpsertPath(state, record) == UpsertPath.UPDATE
+    return resolveUpsertPath(state, record, null) == UpsertPath.UPDATE
         ? updateOne(state, record)
         : insertOne(state, record);
   }
 
-  private static UpsertPath resolveUpsertPath(State state, ApexSObject raw) {
+  private static UpsertPath resolveUpsertPath(
+      State state, ApexSObject raw, String externalIdFieldName) {
     ApexSObject record = requireRecord(raw);
     String id = normalizeId(record.id());
     if (id == null) {
-      return UpsertPath.INSERT;
+      if (externalIdFieldName == null || externalIdFieldName.isBlank()) {
+        return UpsertPath.INSERT;
+      }
+      return resolveUpsertPathByExternalId(state, record, externalIdFieldName);
     }
     Map<String, ApexSObject> bucket = state.active.get(record.type());
     if (bucket != null && bucket.containsKey(id)) {
@@ -392,11 +407,72 @@ final class ApexStore {
     return UpsertPath.INSERT;
   }
 
-  private static List<UpsertPlanRow> planUpsertRows(State state, List<ApexSObject> normalized) {
+  private static String normalizeExternalIdFieldName(String fieldName) {
+    if (fieldName == null || fieldName.isBlank()) {
+      return null;
+    }
+    return fieldName.trim();
+  }
+
+  private static UpsertPath resolveUpsertPathByExternalId(
+      State state, ApexSObject record, String externalIdFieldName) {
+    String fieldName = normalizeExternalIdFieldName(externalIdFieldName);
+    if (fieldName == null) {
+      return UpsertPath.INSERT;
+    }
+
+    Schema.ObjectDefinition definition = Schema.find(record.type());
+    if (definition == null) {
+      throw new DmlFailure(
+          "INVALID_FIELD_FOR_INSERT_UPDATE",
+          "external id field is not defined in schema: " + fieldName,
+          new String[] {fieldName});
+    }
+    Schema.FieldDefinition field = definition.field(fieldName);
+    if (field == null) {
+      throw new DmlFailure(
+          "INVALID_FIELD_FOR_INSERT_UPDATE",
+          "external id field is not defined in schema: " + fieldName,
+          new String[] {fieldName});
+    }
+    if (!field.externalId && !field.unique) {
+      throw new DmlFailure(
+          "INVALID_FIELD_FOR_INSERT_UPDATE",
+          "field is not marked as externalId/unique: " + fieldName,
+          new String[] {field.name});
+    }
+
+    Object externalValue = record.get(field.name);
+    if (externalValue == null) {
+      return UpsertPath.INSERT;
+    }
+
+    List<ApexSObject> matches =
+        findRowsByFieldValue(state, record.type(), field.name, externalValue, null);
+    if (matches.isEmpty()) {
+      return UpsertPath.INSERT;
+    }
+    if (matches.size() > 1) {
+      throw new DmlFailure(
+          "DUPLICATE_VALUE",
+          "duplicate external id value for field " + field.name + ": " + externalValue,
+          new String[] {field.name});
+    }
+
+    ApexSObject matched = matches.get(0);
+    if (matched != null && matched.id() != null && !matched.id().isBlank()) {
+      record.withId(matched.id());
+      return UpsertPath.UPDATE;
+    }
+    return UpsertPath.INSERT;
+  }
+
+  private static List<UpsertPlanRow> planUpsertRows(
+      State state, List<ApexSObject> normalized, String externalIdFieldName) {
     List<UpsertPlanRow> plan = new ArrayList<>(normalized.size());
     for (int i = 0; i < normalized.size(); i += 1) {
       ApexSObject record = requireRecord(normalized.get(i));
-      UpsertPath path = resolveUpsertPath(state, record);
+      UpsertPath path = resolveUpsertPath(state, record, externalIdFieldName);
       ApexSObject oldSnapshot =
           path == UpsertPath.UPDATE ? snapshotActiveRow(state, record, "upsert") : null;
       plan.add(new UpsertPlanRow(i, record, path, oldSnapshot));
@@ -460,7 +536,7 @@ final class ApexStore {
   private static Database.MergeResult mergeOne(
       State state, ApexSObject rawMaster, List<ApexSObject> rawDuplicates) {
     ApexSObject master = requireRecord(rawMaster);
-    validateForUpdate(master);
+    validateForUpdate(state, master);
     String masterId = requireId(master, "merge");
     ApexSObject masterOld = snapshotActiveRow(state, master, "merge");
     MergePlan plan = planMerge(state, master, masterId, rawDuplicates);
@@ -1328,7 +1404,7 @@ final class ApexStore {
       }
     }
 
-    String referenceField = inferReferenceField(relationshipSegment);
+    String referenceField = inferReferenceField(row.type(), relationshipSegment);
     if (referenceField == null) {
       return null;
     }
@@ -1339,9 +1415,13 @@ final class ApexStore {
     return findActiveRowById(relatedId);
   }
 
-  private static String inferReferenceField(String relationshipSegment) {
+  private static String inferReferenceField(String rowType, String relationshipSegment) {
     if (relationshipSegment == null || relationshipSegment.isBlank()) {
       return null;
+    }
+    String schemaField = Schema.resolveReferenceField(rowType, relationshipSegment);
+    if (schemaField != null && !schemaField.isBlank()) {
+      return schemaField;
     }
     String normalized = relationshipSegment.trim();
     if (normalized.length() > 3
@@ -1619,12 +1699,24 @@ final class ApexStore {
     }
 
     String relationshipName = rawSpec.sobjectType;
-    String childType = inferChildTypeFromRelationship(relationshipName);
+    String childType = null;
+    String parentLinkField = null;
+    Schema.ChildRelationship schemaRelationship =
+        Schema.resolveChildRelationship(parentType, relationshipName);
+    if (schemaRelationship != null) {
+      childType = schemaRelationship.childType;
+      parentLinkField = schemaRelationship.parentLinkField;
+    }
+    if (childType == null || childType.isBlank()) {
+      childType = inferChildTypeFromRelationship(relationshipName);
+    }
     if (childType == null || childType.isBlank()) {
       throw new IllegalArgumentException("cannot infer child object type from relationship: " + relationshipName);
     }
+    if (parentLinkField == null || parentLinkField.isBlank()) {
+      parentLinkField = inferParentLinkField(parentType);
+    }
 
-    String parentLinkField = inferParentLinkField(parentType);
     QuerySpec normalizedSpec =
         new QuerySpec(
             childType,
@@ -2765,7 +2857,7 @@ final class ApexStore {
     return record;
   }
 
-  private static void validateForInsert(ApexSObject record) {
+  private static void validateForInsert(State state, ApexSObject record) {
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
       return;
@@ -2781,14 +2873,16 @@ final class ApexStore {
             "REQUIRED_FIELD_MISSING", "required field missing: " + field.name, new String[] {field.name});
       }
     }
+    validateUniqueFields(state, record, definition, null);
   }
 
-  private static void validateForUpdate(ApexSObject record) {
+  private static void validateForUpdate(State state, ApexSObject record) {
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
       return;
     }
     validateDefinedFields(record, definition);
+    validateUniqueFields(state, record, definition, normalizeId(record.id()));
   }
 
   private static void validateDefinedFields(ApexSObject record, Schema.ObjectDefinition definition) {
@@ -2892,6 +2986,65 @@ final class ApexStore {
           "invalid reference for field " + field.name + ": " + referenceId,
           new String[] {field.name});
     }
+  }
+
+  private static void validateUniqueFields(
+      State state, ApexSObject record, Schema.ObjectDefinition definition, String selfId) {
+    if (state == null || record == null || definition == null) {
+      return;
+    }
+    for (Schema.FieldDefinition field : definition.fields.values()) {
+      if (field == null || (!field.unique && !field.externalId)) {
+        continue;
+      }
+
+      Object value = record.get(field.name);
+      if (value == null) {
+        continue;
+      }
+      List<ApexSObject> conflicts = findRowsByFieldValue(state, record.type(), field.name, value, selfId);
+      if (conflicts.isEmpty()) {
+        continue;
+      }
+
+      throw new DmlFailure(
+          "DUPLICATE_VALUE",
+          "duplicate value for field " + field.name + ": " + value,
+          new String[] {field.name});
+    }
+  }
+
+  private static List<ApexSObject> findRowsByFieldValue(
+      State state, String type, String fieldName, Object value, String excludeId) {
+    if (state == null || type == null || type.isBlank() || fieldName == null || fieldName.isBlank()) {
+      return List.of();
+    }
+    Map<String, ApexSObject> bucket = state.active.get(type);
+    if (bucket == null || bucket.isEmpty()) {
+      return List.of();
+    }
+
+    List<ApexSObject> matches = new ArrayList<>();
+    for (Map.Entry<String, ApexSObject> entry : bucket.entrySet()) {
+      String rowId = normalizeId(entry.getKey());
+      if (excludeId != null && rowId != null && rowId.equalsIgnoreCase(excludeId)) {
+        continue;
+      }
+
+      ApexSObject row = entry.getValue();
+      if (row == null) {
+        continue;
+      }
+      if (excludeId != null && row.id() != null && row.id().equalsIgnoreCase(excludeId)) {
+        continue;
+      }
+
+      Object rowValue = row.get(fieldName);
+      if (compareEquality(rowValue, value)) {
+        matches.add(row);
+      }
+    }
+    return matches;
   }
 
   private static BigDecimal toBigDecimal(Object value) {

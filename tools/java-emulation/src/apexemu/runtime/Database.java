@@ -59,11 +59,14 @@ public final class Database {
   }
 
   public static void upsert(Collection<ApexSObject> records, String externalIdFieldName) {
-    upsert(records);
+    ensureSuccess(upsert(records, externalIdFieldName, true), "upsert");
   }
 
   public static void upsert(ApexSObject record, String externalIdFieldName) {
-    upsert(record);
+    if (record == null) {
+      return;
+    }
+    upsert(List.of(record), externalIdFieldName);
   }
 
   public static void delete(Collection<ApexSObject> records) {
@@ -106,6 +109,19 @@ public final class Database {
 
   public static SaveResult[] upsert(Collection<ApexSObject> records, boolean allOrNone) {
     return ApexStore.upsert(records, allOrNone);
+  }
+
+  public static SaveResult[] upsert(
+      Collection<ApexSObject> records, String externalIdFieldName, boolean allOrNone) {
+    return ApexStore.upsert(records, allOrNone, externalIdFieldName);
+  }
+
+  public static SaveResult[] upsert(
+      ApexSObject record, String externalIdFieldName, boolean allOrNone) {
+    if (record == null) {
+      return new SaveResult[0];
+    }
+    return upsert(List.of(record), externalIdFieldName, allOrNone);
   }
 
   public static SaveResult[] delete(Collection<ApexSObject> records, boolean allOrNone) {

@@ -3,6 +3,7 @@ package apexemu.runtime;
 public final class Limits {
   private static final int QUERY_LIMIT = 100;
   private static final int DML_LIMIT = 150;
+  private static final int CALLOUT_LIMIT = 100;
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private Limits() {}
@@ -28,6 +29,7 @@ public final class Limits {
     state.windowStartNs = java.lang.System.nanoTime();
     state.windowStartSoqlCount = state.soqlCount;
     state.windowStartDmlCount = state.dmlCount;
+    state.windowStartCalloutCount = state.calloutCount;
     state.windowStartHeapBytes = state.heapBytes;
     state.windowStartUsedHeapBytes = usedHeapBytes();
   }
@@ -41,6 +43,7 @@ public final class Limits {
     state.windowCpuMs = elapsedMs(state.windowStartNs, java.lang.System.nanoTime());
     state.windowSoqlCount = Math.max(0, state.soqlCount - state.windowStartSoqlCount);
     state.windowDmlCount = Math.max(0, state.dmlCount - state.windowStartDmlCount);
+    state.windowCalloutCount = Math.max(0, state.calloutCount - state.windowStartCalloutCount);
 
     long trackedHeapDelta = Math.max(0L, state.heapBytes - state.windowStartHeapBytes);
     long actualHeapDelta = Math.max(0L, usedHeapBytes() - state.windowStartUsedHeapBytes);
@@ -68,12 +71,30 @@ public final class Limits {
     STATE.get().heapBytes += bytes;
   }
 
+  public static void addCallout(int count) {
+    if (count <= 0) {
+      return;
+    }
+    STATE.get().calloutCount += count;
+  }
+
   public static int getQueries() {
     return snapshot().soqlCount();
   }
 
   public static int getDmlStatements() {
     return snapshot().dmlCount();
+  }
+
+  public static int getCallouts() {
+    State state = STATE.get();
+    if (state.windowEnabled) {
+      if (state.windowClosed) {
+        return state.windowCalloutCount;
+      }
+      return Math.max(0, state.calloutCount - state.windowStartCalloutCount);
+    }
+    return state.calloutCount;
   }
 
   public static long getCpuTime() {
@@ -90,6 +111,10 @@ public final class Limits {
 
   public static int getLimitDmlStatements() {
     return DML_LIMIT;
+  }
+
+  public static int getLimitCallouts() {
+    return CALLOUT_LIMIT;
   }
 
   public static int getLimitCpuTime() {
@@ -178,6 +203,7 @@ public final class Limits {
   private static final class State {
     int soqlCount;
     int dmlCount;
+    int calloutCount;
     long heapBytes;
     long cpuLimitMs = 10_000L;
     long heapLimitBytes = 6_000_000L;
@@ -189,12 +215,14 @@ public final class Limits {
     long windowStartNs;
     int windowStartSoqlCount;
     int windowStartDmlCount;
+    int windowStartCalloutCount;
     long windowStartHeapBytes;
     long windowStartUsedHeapBytes;
 
     long windowCpuMs;
     int windowSoqlCount;
     int windowDmlCount;
+    int windowCalloutCount;
     long windowHeapBytes;
   }
 

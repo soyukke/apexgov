@@ -2545,6 +2545,9 @@ fn applyBoundUpdates(
     if (parseQueryLimitBound(line)) |update| {
         try setBound(arena_allocator, bounds, update);
     }
+    if (parseDerivedAssignmentBound(bounds, line)) |update| {
+        try setBound(arena_allocator, bounds, update);
+    }
     try applyGuardBounds(arena_allocator, bounds, line);
 }
 
@@ -2639,6 +2642,27 @@ fn parseQueryLimitBound(line: []const u8) ?BoundUpdate {
     };
 }
 
+fn parseDerivedAssignmentBound(bounds: *std.StringHashMap(Bound), line: []const u8) ?BoundUpdate {
+    if (std.mem.startsWith(u8, line, "if")) return null;
+    if (std.mem.startsWith(u8, line, "for")) return null;
+    if (std.mem.startsWith(u8, line, "while")) return null;
+    if (std.mem.indexOf(u8, line, "==") != null) return null;
+
+    const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const left = std.mem.trim(u8, line[0..eq_idx], " \t");
+    var right = std.mem.trim(u8, line[(eq_idx + 1)..], " \t");
+    right = trimTrailingSemicolon(right);
+    if (right.len == 0 or right[0] == '[') return null;
+
+    const max = inferExpressionUpperBound(right, bounds) orelse return null;
+    const name = extractLastIdentifier(left) orelse return null;
+    return .{
+        .name = name,
+        .max = max,
+        .origin = .alias,
+    };
+}
+
 fn applyGuardBounds(
     arena_allocator: std.mem.Allocator,
     bounds: *std.StringHashMap(Bound),
@@ -2646,7 +2670,6 @@ fn applyGuardBounds(
 ) !void {
     const if_idx = indexOfIfKeyword(line) orelse return;
     if (!containsExitStatement(line)) return;
-    if (std.mem.indexOf(u8, line, "||") != null) return;
 
     const scoped = line[if_idx..];
     const open_idx = std.mem.indexOfScalar(u8, scoped, '(') orelse return;
@@ -2654,6 +2677,21 @@ fn applyGuardBounds(
     if (close_idx <= open_idx) return;
 
     const condition = std.mem.trim(u8, scoped[(open_idx + 1)..close_idx], " \t");
+    if (condition.len == 0) return;
+
+    if (std.mem.indexOf(u8, condition, "||")) |_| {
+        try applyGuardBoundsForOr(arena_allocator, bounds, condition);
+        return;
+    }
+
+    try applyGuardBoundsForAnd(arena_allocator, bounds, condition);
+}
+
+fn applyGuardBoundsForAnd(
+    arena_allocator: std.mem.Allocator,
+    bounds: *std.StringHashMap(Bound),
+    condition: []const u8,
+) !void {
     var has_any_bound = false;
     var validate_segments = std.mem.splitSequence(u8, condition, "&&");
     while (validate_segments.next()) |segment_raw| {
@@ -2669,6 +2707,20 @@ fn applyGuardBounds(
         const segment = std.mem.trim(u8, segment_raw, " \t");
         if (segment.len == 0) continue;
         const update = parseGuardUpperBound(segment) orelse unreachable;
+        try setBound(arena_allocator, bounds, update);
+    }
+}
+
+fn applyGuardBoundsForOr(
+    arena_allocator: std.mem.Allocator,
+    bounds: *std.StringHashMap(Bound),
+    condition: []const u8,
+) !void {
+    var segments = std.mem.splitSequence(u8, condition, "||");
+    while (segments.next()) |segment_raw| {
+        const segment = std.mem.trim(u8, segment_raw, " \t()");
+        if (segment.len == 0) continue;
+        const update = parseGuardUpperBound(segment) orelse continue;
         try setBound(arena_allocator, bounds, update);
     }
 }
@@ -2785,17 +2837,7 @@ fn parseConditionUpperCandidate(segment: []const u8, bounds: *std.StringHashMap(
 fn parseConditionOp(segment: []const u8, op: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
     const op_idx = std.mem.indexOf(u8, segment, op) orelse return null;
     const rhs_raw = std.mem.trim(u8, segment[(op_idx + op.len)..], " \t");
-
-    if (parseLeadingUnsigned(rhs_raw)) |literal| return literal;
-
-    if (parseMathMinLiteral(rhs_raw)) |literal| return literal;
-
-    if (std.mem.lastIndexOf(u8, rhs_raw, ".size()")) |size_idx| {
-        const collection = std.mem.trim(u8, rhs_raw[0..size_idx], " \t");
-        return inferCollectionUpperBound(collection, bounds);
-    }
-
-    return lookupBoundMax(bounds, rhs_raw);
+    return inferExpressionUpperBound(rhs_raw, bounds);
 }
 
 fn parseMathMinLiteral(expr: []const u8) ?u64 {
@@ -2803,6 +2845,73 @@ fn parseMathMinLiteral(expr: []const u8) ?u64 {
     const comma_idx = std.mem.lastIndexOfScalar(u8, expr, ',') orelse return null;
     const right = std.mem.trim(u8, expr[(comma_idx + 1)..], " \t)");
     return parseLeadingUnsigned(right);
+}
+
+fn inferExpressionUpperBound(expr_raw: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
+    var expr = std.mem.trim(u8, expr_raw, " \t");
+    expr = trimTrailingSemicolon(expr);
+    if (expr.len == 0) return null;
+
+    if (parseLeadingUnsigned(expr)) |literal| return literal;
+    if (parseMathMinUpperBound(expr, bounds)) |value| return value;
+    return parseAddSubUpperBound(expr, bounds);
+}
+
+fn parseMathMinUpperBound(expr: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
+    const min_idx = indexOfCaseInsensitive(expr, "math.min(") orelse return null;
+    if (min_idx != 0) return null;
+    const open_idx = std.mem.indexOfScalar(u8, expr, '(') orelse return null;
+    const close_idx = std.mem.lastIndexOfScalar(u8, expr, ')') orelse return null;
+    if (close_idx <= open_idx) return null;
+
+    const inside = std.mem.trim(u8, expr[(open_idx + 1)..close_idx], " \t");
+    var parts = std.mem.splitScalar(u8, inside, ',');
+    const left_raw = std.mem.trim(u8, parts.next() orelse return null, " \t");
+    const right_raw = std.mem.trim(u8, parts.next() orelse return null, " \t");
+    if (parts.next() != null) return null;
+
+    const left_max = inferExpressionUpperBound(left_raw, bounds) orelse return null;
+    const right_max = inferExpressionUpperBound(right_raw, bounds) orelse return null;
+    return @min(left_max, right_max);
+}
+
+fn parseAddSubUpperBound(expr: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
+    var i: usize = 0;
+    var total: ?u64 = null;
+    var next_is_add = true;
+    while (i < expr.len) {
+        while (i < expr.len and (expr[i] == ' ' or expr[i] == '\t')) : (i += 1) {}
+        if (i >= expr.len) break;
+
+        const term_start = i;
+        while (i < expr.len and expr[i] != '+' and expr[i] != '-') : (i += 1) {}
+        const term_raw = std.mem.trim(u8, expr[term_start..i], " \t");
+        if (term_raw.len == 0) return null;
+
+        const term_max = inferSimpleExpressionTermUpperBound(term_raw, bounds) orelse return null;
+        if (total == null) {
+            total = term_max;
+        } else if (next_is_add) {
+            total = satAdd(total.?, term_max);
+        } else {
+            total = if (total.? > term_max) total.? - term_max else 0;
+        }
+
+        if (i < expr.len) {
+            next_is_add = expr[i] == '+';
+            i += 1;
+        }
+    }
+    return total;
+}
+
+fn inferSimpleExpressionTermUpperBound(term: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
+    if (parseLeadingUnsigned(term)) |literal| return literal;
+    if (std.mem.lastIndexOf(u8, term, ".size()")) |size_idx| {
+        const collection = std.mem.trim(u8, term[0..size_idx], " \t");
+        return inferCollectionUpperBound(collection, bounds);
+    }
+    return lookupBoundMax(bounds, term);
 }
 
 fn inferCollectionUpperBound(expr_raw: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
@@ -2873,6 +2982,14 @@ fn parseLeadingUnsigned(raw: []const u8) ?u64 {
 fn trimTrailingDelimiter(raw: []const u8) []const u8 {
     var out = std.mem.trim(u8, raw, " \t");
     while (out.len > 0 and (out[out.len - 1] == ';' or out[out.len - 1] == ')')) {
+        out = std.mem.trimRight(u8, out[0 .. out.len - 1], " \t");
+    }
+    return out;
+}
+
+fn trimTrailingSemicolon(raw: []const u8) []const u8 {
+    var out = std.mem.trim(u8, raw, " \t");
+    while (out.len > 0 and out[out.len - 1] == ';') {
         out = std.mem.trimRight(u8, out[0 .. out.len - 1], " \t");
     }
     return out;
@@ -3535,6 +3652,46 @@ test "guard with non-bound conjunct is ignored for safety" {
 
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "dynamic/unknown") != null);
+}
+
+test "guard with OR still constrains bounded variable" {
+    const source =
+        \\public with sharing class OrGuardService {
+        \\    public static void run(List<Account> records, Boolean bypass) {
+        \\        Integer n = records.size();
+        \\        if (n > 120 || bypass) return;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
+}
+
+test "assignment arithmetic upper bound is inferred from aliases" {
+    const source =
+        \\public with sharing class ArithmeticAliasBoundService {
+        \\    public static void run(List<Account> records) {
+        \\        if (records.size() > 120) return;
+        \\        Integer n = records.size() - 1;
+        \\        for (Integer i = 0; i < n; i++) {
+        \\            update records[i];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 119") != null);
 }
 
 test "math min loop bound is used" {

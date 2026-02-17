@@ -25,3 +25,6 @@ tmp/
 
 # Nix
 result
+
+# Local external Apex fixtures (git-ignored validation inputs)
+.local-fixtures/
