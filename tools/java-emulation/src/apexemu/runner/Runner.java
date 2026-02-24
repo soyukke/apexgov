@@ -1,10 +1,12 @@
 package apexemu.runner;
 
 import apexemu.annotations.Test;
+import apexemu.annotations.TestSetup;
 import apexemu.runtime.Async;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
 import apexemu.runtime.Limits.Snapshot;
+import apexemu.runtime.SystemAssert;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -37,7 +39,7 @@ public final class Runner {
     for (String className : classNames) {
       Class<?> klass;
       try {
-        klass = Class.forName(className, true, loader);
+        klass = Class.forName(className, false, loader);
       } catch (Throwable error) {
         results.add(TestResult.loadError(className, shortMessage(error)));
         continue;
@@ -45,13 +47,22 @@ public final class Runner {
 
       Method[] methods = klass.getDeclaredMethods();
       Arrays.sort(methods, Comparator.comparing(Method::getName));
+      List<String> testSetupMethods = new ArrayList<>();
+      List<String> testMethods = new ArrayList<>();
       for (Method method : methods) {
-        if (!method.isAnnotationPresent(Test.class)) {
-          continue;
+        if (method.isAnnotationPresent(TestSetup.class)) {
+          testSetupMethods.add(method.getName());
         }
-        results.add(runTest(config, klass, method));
+        if (method.isAnnotationPresent(Test.class)) {
+          testMethods.add(method.getName());
+        }
+      }
+      for (String methodName : testMethods) {
+        results.add(runTest(config, className, testSetupMethods, methodName));
       }
     }
+
+    closeQuietly(loader);
 
     if (results.isEmpty()) {
       System.out.println("no tests found (@Test).");
@@ -79,10 +90,25 @@ public final class Runner {
     return failed == 0 ? 0 : 1;
   }
 
-  private static TestResult runTest(Config config, Class<?> klass, Method method) {
+  private static TestResult runTest(
+      Config config, String className, List<String> testSetupMethodNames, String methodName) {
+    URLClassLoader loader = null;
+    Class<?> klass;
+    Method method;
+    List<Method> testSetupMethods;
+    try {
+      loader = new URLClassLoader(new URL[] {toUrl(config.classesDir)});
+      klass = Class.forName(className, true, loader);
+      method = klass.getDeclaredMethod(methodName);
+      testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
+    } catch (Throwable error) {
+      closeQuietly(loader);
+      return TestResult.loadError(className, shortMessage(error));
+    }
+
     if (method.getParameterCount() != 0) {
-      return TestResult.invalidSignature(
-          klass.getName(), method.getName(), "@Test methods must have zero arguments");
+      closeQuietly(loader);
+      return TestResult.invalidSignature(className, methodName, "@Test methods must have zero arguments");
     }
 
     Object target = null;
@@ -99,8 +125,10 @@ public final class Runner {
     Database.setSoqlNullOrderDefault(config.soqlNullOrderDefault);
     Limits.reset();
     Limits.configure(config.cpuLimitMs, config.heapLimitBytes);
+    apexemu.runtime.Test.clearMocks();
 
     try {
+      executeTestSetupMethods(klass, testSetupMethods);
       if (!Modifier.isStatic(method.getModifiers())) {
         Constructor<?> ctor = klass.getDeclaredConstructor();
         ctor.setAccessible(true);
@@ -135,15 +163,64 @@ public final class Runner {
       }
     }
 
+    List<SystemAssert.AssertionEntry> assertions = SystemAssert.drainLog();
+
+    closeQuietly(loader);
     return new TestResult(
-        klass.getName(), method.getName(), failure == null, cpuMs, heapBytes, soqlCount, dmlCount, shortMessage(failure));
+        className, methodName, failure == null, cpuMs, heapBytes, soqlCount, dmlCount, shortMessage(failure), assertions);
+  }
+
+  private static List<Method> resolveMethodsByName(Class<?> klass, List<String> methodNames)
+      throws NoSuchMethodException {
+    List<Method> out = new ArrayList<>();
+    if (klass == null || methodNames == null || methodNames.isEmpty()) {
+      return out;
+    }
+    for (String methodName : methodNames) {
+      if (methodName == null || methodName.isBlank()) {
+        continue;
+      }
+      out.add(klass.getDeclaredMethod(methodName));
+    }
+    return out;
+  }
+
+  private static void closeQuietly(URLClassLoader loader) {
+    if (loader == null) {
+      return;
+    }
+    try {
+      loader.close();
+    } catch (IOException ignored) {
+      // no-op
+    }
+  }
+
+  private static void executeTestSetupMethods(Class<?> klass, List<Method> testSetupMethods)
+      throws ReflectiveOperationException {
+    if (testSetupMethods == null || testSetupMethods.isEmpty()) {
+      return;
+    }
+    for (Method method : testSetupMethods) {
+      if (method.getParameterCount() != 0
+          || !Modifier.isStatic(method.getModifiers())
+          || method.getReturnType() != Void.TYPE) {
+        throw new IllegalArgumentException(
+            "@TestSetup methods must be static void with zero arguments: "
+                + klass.getName()
+                + "#"
+                + method.getName());
+      }
+      method.setAccessible(true);
+      method.invoke(null);
+    }
   }
 
   private static void printResult(TestResult result) {
     String state = result.passed ? "PASS" : "FAIL";
     System.out.printf(
-        "[%s] %s#%s cpu=%dms heap=%dB soql=%d dml=%d%n",
-        state, result.className, result.methodName, result.cpuMs, result.heapBytes, result.soqlCount, result.dmlCount);
+        "[%s] %s#%s cpu=%dms heap=%dB soql=%d dml=%d assertions=%d%n",
+        state, result.className, result.methodName, result.cpuMs, result.heapBytes, result.soqlCount, result.dmlCount, result.assertions.size());
     if (!result.passed && result.failure != null && !result.failure.isBlank()) {
       System.out.println("      " + result.failure);
     }
@@ -200,11 +277,32 @@ public final class Runner {
       sb.append("      \"dml_count\": ").append(result.dmlCount).append(",\n");
       sb.append("      \"failure\": ");
       if (result.failure == null) {
-        sb.append("null\n");
+        sb.append("null");
       } else {
         appendJsonString(sb, result.failure);
+      }
+      sb.append(",\n");
+      sb.append("      \"assertions\": [\n");
+      for (int j = 0; j < result.assertions.size(); j += 1) {
+        SystemAssert.AssertionEntry entry = result.assertions.get(j);
+        sb.append("        {\"method\": ");
+        appendJsonString(sb, entry.method());
+        sb.append(", \"detail\": ");
+        appendJsonString(sb, entry.detail());
+        sb.append(", \"passed\": ").append(entry.passed());
+        sb.append(", \"location\": ");
+        if (entry.location() == null) {
+          sb.append("null");
+        } else {
+          appendJsonString(sb, entry.location());
+        }
+        sb.append("}");
+        if (j + 1 < result.assertions.size()) {
+          sb.append(",");
+        }
         sb.append("\n");
       }
+      sb.append("      ]\n");
       sb.append("    }");
       if (i + 1 < results.size()) {
         sb.append(",");
@@ -307,14 +405,15 @@ public final class Runner {
       long heapBytes,
       int soqlCount,
       int dmlCount,
-      String failure) {
+      String failure,
+      List<SystemAssert.AssertionEntry> assertions) {
 
     static TestResult loadError(String className, String message) {
-      return new TestResult(className, "<load>", false, 0L, 0L, 0, 0, message);
+      return new TestResult(className, "<load>", false, 0L, 0L, 0, 0, message, List.of());
     }
 
     static TestResult invalidSignature(String className, String methodName, String message) {
-      return new TestResult(className, methodName, false, 0L, 0L, 0, 0, message);
+      return new TestResult(className, methodName, false, 0L, 0L, 0, 0, message, List.of());
     }
   }
 

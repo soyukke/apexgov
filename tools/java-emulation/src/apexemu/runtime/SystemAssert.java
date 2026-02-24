@@ -1,15 +1,52 @@
 package apexemu.runtime;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 public final class SystemAssert {
   private SystemAssert() {}
+
+  public record AssertionEntry(String method, String detail, boolean passed, String location) {}
+
+  private static final ThreadLocal<List<AssertionEntry>> LOG = ThreadLocal.withInitial(ArrayList::new);
+
+  public static List<AssertionEntry> drainLog() {
+    List<AssertionEntry> entries = new ArrayList<>(LOG.get());
+    LOG.get().clear();
+    return entries;
+  }
+
+  private static void log(String method, String detail, boolean passed) {
+    LOG.get().add(new AssertionEntry(method, detail, passed, callerLocation()));
+  }
+
+  private static String callerLocation() {
+    StackTraceElement[] trace = Thread.currentThread().getStackTrace();
+    for (StackTraceElement frame : trace) {
+      String className = frame.getClassName();
+      if (className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun.")) {
+        continue;
+      }
+      if (className.startsWith("apexemu.runner.") || className.startsWith("apexemu.runtime.")) {
+        continue;
+      }
+      String fileName = frame.getFileName();
+      int line = frame.getLineNumber();
+      if (fileName != null && line > 0) {
+        return fileName + ":" + line;
+      }
+      return frame.toString();
+    }
+    return null;
+  }
 
   public static void assertTrue(boolean value) {
     assertTrue(value, null);
   }
 
   public static void assertTrue(boolean value, String message) {
+    log("assertTrue", "Expected true", value);
     if (!value) {
       fail(defaultMessage("Expected true", message));
     }
@@ -20,6 +57,7 @@ public final class SystemAssert {
   }
 
   public static void assertFalse(boolean value, String message) {
+    log("assertFalse", "Expected false", !value);
     if (value) {
       fail(defaultMessage("Expected false", message));
     }
@@ -30,7 +68,9 @@ public final class SystemAssert {
   }
 
   public static void assertEquals(Object expected, Object actual, String message) {
-    if (!Objects.equals(expected, actual)) {
+    boolean passed = Objects.equals(expected, actual);
+    log("assertEquals", "Expected <" + String.valueOf(expected) + "> == <" + String.valueOf(actual) + ">", passed);
+    if (!passed) {
       fail(
           defaultMessage(
               "Expected <" + String.valueOf(expected) + "> but was <" + String.valueOf(actual) + ">",
@@ -43,7 +83,9 @@ public final class SystemAssert {
   }
 
   public static void assertNotEquals(Object expected, Object actual, String message) {
-    if (Objects.equals(expected, actual)) {
+    boolean passed = !Objects.equals(expected, actual);
+    log("assertNotEquals", "Expected <" + String.valueOf(expected) + "> != <" + String.valueOf(actual) + ">", passed);
+    if (!passed) {
       fail(defaultMessage("Values should not be equal: <" + String.valueOf(actual) + ">", message));
     }
   }
@@ -53,7 +95,9 @@ public final class SystemAssert {
   }
 
   public static void assertNull(Object value, String message) {
-    if (value != null) {
+    boolean passed = (value == null);
+    log("assertNull", "Expected null, got <" + String.valueOf(value) + ">", passed);
+    if (!passed) {
       fail(defaultMessage("Expected null but was <" + String.valueOf(value) + ">", message));
     }
   }
@@ -63,12 +107,15 @@ public final class SystemAssert {
   }
 
   public static void assertNotNull(Object value, String message) {
-    if (value == null) {
+    boolean passed = (value != null);
+    log("assertNotNull", "Expected non-null", passed);
+    if (!passed) {
       fail(defaultMessage("Expected non-null value", message));
     }
   }
 
   public static void fail(String message) {
+    log("fail", message == null ? "Assertion failed" : message, false);
     throw new AssertionError(message == null || message.isBlank() ? "Assertion failed" : message);
   }
 
