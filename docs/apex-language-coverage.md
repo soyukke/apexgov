@@ -94,12 +94,13 @@
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `@Test` method discovery/execution | supported | 0引数メソッド実行 |
-| assertion API (`SystemAssert.*`, `ApexAssert.*`) | supported | `System.assert*` + `Assert.*` 相当（equals/null/bool/fail/type-instance） |
+| `@TestSetup` execution | supported | 各 `@Test` 実行前に static void 0引数メソッドを実行 |
+| assertion API (`SystemAssert.*`, `ApexAssert.*`) | supported | `System.assert*` + `Assert.*` 相当（equals/null/bool/fail/type-instance、実装interface/親class配下のnested interface名での instance 判定を含む） |
 | failure location (`File.java:line`) | supported | 失敗時に表示 |
 | CPU/Heap threshold fail | supported | `--cpu-limit-ms` / `--heap-limit-bytes` |
 | `Limits.get*` API | supported | queries/dml/callouts/cpu/heap と limit 値を取得 |
 | `Test.startTest()/stopTest()` | supported | start/stop 窓での計測に切り替え |
-| `Test.runAs(...)` | partial | `UserInfo.getUserId()` の実行コンテキスト切替をローカル再現 |
+| `Test.runAs(...)` | partial | `UserInfo.getUserId()/getUsername()/getUserName()/getProfileId()` と `Schema` profile context の切替をローカル再現（権限モデル全体の完全再現は対象外） |
 | `Test.loadData(...)` | partial | ローカルCSVを読み込み `Database.insert` まで実行（簡易CSV parser） |
 | `Test.setMock(...)` + callout mock | partial | `Http.send` / `WebServiceCallout.invoke` を mock 実装へ委譲 |
 | async flush at `stopTest()` | supported | `@Future`, Queueable, Batchable, Schedulable を順次実行（Batchable は `QueryLocatorBatchable` の scope 分割実行にも対応、`start/execute/finish` を fresh Limits で実行し scopeごとにCPU/Heap判定） |
@@ -111,8 +112,46 @@
 | schema registry (custom object validation) | partial | `Schema.object(...).register()` で required/type + `maxLength` / restricted picklist (`requiredPicklist` / `optionalPicklist`) / numeric `precision(scale)` / ID `reference(...)` lookup整合 + `unique(...)` / `externalId(...)` 重複検証 |
 | SOQL subset query | partial | `FROM` / `[SELECT ...]`, relationship field path (`Owner.Name`, `Parent__r.Name`), `WHERE` (`AND`/`OR`/unary `NOT` with grouped expression, `= != > >= < <=`, `IN`, `NOT IN`, `LIKE` with escape, `IS NULL`, `IS NOT NULL`, semi-join `IN (SELECT ...)` / `NOT IN (SELECT ...)`), date literals (`TODAY/YESTERDAY/TOMORROW/LAST_N_DAYS/NEXT_N_DAYS/N_DAYS_AGO`) + unquoted ISO date/date-time literals, aggregate select (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`), child subquery（schema `reference(field, type, childRelationshipName)` を優先して relation解決）, `GROUP BY`, `HAVING` (`AND`/`OR`/`NOT` over aggregate/group fields), `ORDER BY` multi-key + `NULLS FIRST/LAST` (default mode configurable: `FIRST`/`LAST`/`DIRECTIONAL`), `LIMIT`, `OFFSET`, trailing `FOR UPDATE` / `ALL ROWS` (ignored clause), `queryWithBinds/countQueryWithBinds` (`:name`, scalar + collection bind), `getQueryLocator/getQueryLocatorWithBinds` |
 | SOQL/DML counters | partial | `ApexDb` と `Database` API の呼び出しベース |
-| Apex-to-Java transpile scaffold (`emulate transpile`) | partial | `.cls` を Java 骨組みに変換し、`@IsTest` を `@Test` 化。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティを出力。`System.assert*`→`SystemAssert.*`、`Assert.*`/`System.Assert.*`→`ApexAssert.*`、`System.debug`→`System.out.println`。`switch on / when`（literal列挙 + `when else` + `when Account a`）は Java `switch` へ変換。`record instanceof Account` のような SObject 型チェックは `"Account".equals(ApexSwitch.typeName(record))` に正規化し、否定/複合式（`!(...)`, `A || B`）と `instanceof SObject`（`instanceof ApexSObject`）も対応。`do { ... } while (...)` の末尾 `} while (...)` も Java do-while へ正規化。`String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` へ変換。`List/Map/Set` 宣言・コンストラクタ・リテラルを Java collection 化。`new Map<Id, SObject>(list/map/query)` は `ApexCollections.mapById/toIdMap` に変換。named-arg 風 SObject コンストラクタ（`new Task(Subject=...)`）を `ApexSObject.of(...).set(...)` 化。単行/複数行 `[SELECT ...]` を `Database.query(...)` 化し、単一SObject代入は `ApexCollections.firstOrNull(...)` を使用。`Database.getQueryLocator/countQuery/queryWithBinds/countQueryWithBinds/getQueryLocatorWithBinds` 系に渡る `[SELECT ...]` は query string に正規化。`insert/update/upsert/delete/undelete/merge` を `Database.*` 化（`upsert ... ExternalId__c` は comment で保持、`merge` は `master+dup(1-2件)` 形式）。未解決型は `ApexSObject` にフォールバック、`record.Id` 等は `record.getAs("Id")` に変換。unsupported 行は `file:line + reason` で出力し、`--strict` 時は終了コード1で失敗。 |
+| Apex-to-Java transpile scaffold (`emulate transpile`) | partial | `.cls` を Java 骨組みに変換し、`@IsTest` を `@Test` 化。`fflib_SObjectDomain.triggerHandler(...)` 形式の `.trigger` は `apex-triggers.txt` manifest に落として runner が自動登録。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティを出力。`System.assert*`→`SystemAssert.*`、`Assert.*`/`System.Assert.*`→`ApexAssert.*`、`System.debug`→`System.out.println`。`switch on / when`（literal列挙 + `when else` + `when Account a`）は Java `switch` へ変換。`record instanceof Account` のような SObject 型チェックは `"Account".equals(ApexSwitch.typeName(record))` に正規化し、否定/複合式（`!(...)`, `A || B`）と `instanceof SObject`（`instanceof ApexSObject`）も対応。`do { ... } while (...)` の末尾 `} while (...)` も Java do-while へ正規化。`String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` は `ApexStrings.*` へ変換。`List/Map/Set` 宣言・コンストラクタ・リテラルを Java collection 化。`new Map<Id, SObject>(list/map/query)` は `ApexCollections.mapById/toIdMap` に変換。named-arg 風 SObject コンストラクタ（`new Task(Subject=...)`）を `ApexSObject.of(...).set(...)` 化。単行/複数行 `[SELECT ...]` を `Database.query(...)` 化し、単一SObject代入は `ApexCollections.firstOrNull(...)` を使用。`Database.getQueryLocator/countQuery/queryWithBinds/countQueryWithBinds/getQueryLocatorWithBinds` 系に渡る `[SELECT ...]` は query string に正規化。`insert/update/upsert/delete/undelete/merge` を `Database.*` 化（`upsert ... ExternalId__c` は comment で保持、`merge` は `master+dup(1-2件)` 形式）。未解決型は `ApexSObject` にフォールバック、`record.Id` 等は `record.getAs("Id")` に変換。unsupported 行は `file:line + reason` で出力し、`--strict` 時は終了コード1で失敗。 |
 | Apex VM semantic parity | planned | 完全再現は対象外 |
+
+### External Compatibility Snapshot (2026-03-07)
+
+- Fixture: `.local-fixtures/apex/repos/apex-recipes` (`force-app`)
+- Command:
+  - `./tools/transpile-external.sh <repo> --subpath force-app --out-root reports/apex-transpile-external --run-tests`
+- Result (non-best-effort):
+  - transpile: `139/139` classes generated, `unsupported=0`
+  - emulate test: `total=322 passed=322 failed=0`
+  - test discovery parity: generated `@Test` annotation count `322`, executed `322` (no skip)
+  - `compile-fallbacks.txt` / `compile-failures.txt`: not generated
+
+- Fixture: `.local-fixtures/apex/repos/fflib-apex-mocks` (`sfdx-source/apex-mocks`)
+- Command:
+  - `./tools/transpile-external.sh <repo> --subpath sfdx-source/apex-mocks --out-root reports/apex-transpile-external --run-tests`
+- Result (non-best-effort):
+  - transpile: `38/38` classes generated, `unsupported=0`
+  - emulate test: `total=471 passed=471 failed=0`
+  - `compile-fallbacks.txt` / `compile-failures.txt`: not generated
+
+- Fixture: composite `.local-fixtures/apex/repos/fflib-apex-common` + `.local-fixtures/apex/repos/fflib-apex-mocks`
+- Command:
+  - `zig build run -- emulate transpile <common main> <common test> <mocks main> --out reports/apex-transpile-composite/fflib-apex-common-with-mocks --package generated --overwrite`
+  - `zig build run -- emulate test reports/apex-transpile-composite/fflib-apex-common-with-mocks --out reports/apex-transpile-composite/fflib-apex-common-with-mocks/test --register-standard-schema`
+- Result (non-best-effort):
+  - transpile: `55/55` classes generated, `unsupported=0`
+  - emulate test: `total=158 passed=158 failed=0`
+  - `compile-fallbacks.txt` / `compile-failures.txt`: not generated
+
+- Fixture: composite `.local-fixtures/apex/repos/fflib-apex-common-samplecode` + `.local-fixtures/apex/repos/fflib-apex-common` + `.local-fixtures/apex/repos/fflib-apex-mocks`
+- Command:
+  - `zig build run -- emulate transpile <samplecode main/test/triggers> <common main> <mocks main> --out reports/apex-transpile-composite/fflib-apex-common-samplecode-with-deps --package generated --overwrite`
+  - `zig build run -- emulate test reports/apex-transpile-composite/fflib-apex-common-samplecode-with-deps --out reports/apex-transpile-composite/fflib-apex-common-samplecode-with-deps/test --register-standard-schema`
+- Result (non-best-effort):
+  - transpile: `97/97` classes generated, `unsupported=0`
+  - emulate test: `total=16 passed=16 failed=0`
+  - generated `apex-triggers.txt` auto-registration manifest consumed by runner
+  - `compile-fallbacks.txt` / `compile-failures.txt`: not generated
 
 ## Maintenance Rules
 

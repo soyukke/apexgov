@@ -2,7 +2,6 @@ package apexemu.runtime;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 public final class SystemAssert {
   private SystemAssert() {}
@@ -52,6 +51,10 @@ public final class SystemAssert {
     }
   }
 
+  public static void assertTrue(boolean expected, boolean actual) {
+    assertEquals(expected, actual, null);
+  }
+
   public static void assertFalse(boolean value) {
     assertFalse(value, null);
   }
@@ -68,7 +71,7 @@ public final class SystemAssert {
   }
 
   public static void assertEquals(Object expected, Object actual, String message) {
-    boolean passed = Objects.equals(expected, actual);
+    boolean passed = ApexEquals.eq(expected, actual);
     log("assertEquals", "Expected <" + String.valueOf(expected) + "> == <" + String.valueOf(actual) + ">", passed);
     if (!passed) {
       fail(
@@ -83,7 +86,7 @@ public final class SystemAssert {
   }
 
   public static void assertNotEquals(Object expected, Object actual, String message) {
-    boolean passed = !Objects.equals(expected, actual);
+    boolean passed = ApexEquals.ne(expected, actual);
     log("assertNotEquals", "Expected <" + String.valueOf(expected) + "> != <" + String.valueOf(actual) + ">", passed);
     if (!passed) {
       fail(defaultMessage("Values should not be equal: <" + String.valueOf(actual) + ">", message));

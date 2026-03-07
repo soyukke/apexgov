@@ -4,6 +4,24 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cache_root="$repo_root/.local-fixtures/apex/repos"
 default_out_root="$repo_root/reports/apex-transpile-external"
+nix_bin=""
+
+if command -v nix >/dev/null 2>&1; then
+  nix_bin="$(command -v nix)"
+elif [[ -x /nix/var/nix/profiles/default/bin/nix ]]; then
+  nix_bin="/nix/var/nix/profiles/default/bin/nix"
+  export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+fi
+
+if ! command -v zig >/dev/null 2>&1; then
+  if [[ -n "$nix_bin" && "${APEXGOV_IN_NIX_DEV:-}" != "1" ]]; then
+    echo "zig not found on PATH; re-running inside nix develop"
+    export APEXGOV_IN_NIX_DEV=1
+    exec "$nix_bin" develop -c "$0" "$@"
+  fi
+  echo "zig not found on PATH. Run under nix develop or install zig." >&2
+  exit 127
+fi
 
 usage() {
   cat <<'USAGE'
@@ -183,6 +201,9 @@ if [[ "$cls_count" == "0" ]]; then
 fi
 
 out_dir="$out_root/$label"
+# Avoid stale Java artifacts from previous runs (e.g. renamed/removed sources)
+# because emulate transpile only overwrites generated targets.
+rm -rf "$out_dir"
 mkdir -p "$out_dir"
 
 cmd=(
@@ -211,6 +232,8 @@ if [[ "$run_tests" == "true" ]]; then
   if [[ "$best_effort" == "true" ]]; then
     test_cmd+=(--best-effort)
   fi
+  # External tests don't define their own Schema so register standard defaults
+  test_cmd+=(--register-standard-schema)
   if [[ "$use_nix" == "true" ]]; then
     test_cmd+=(--nix)
   fi

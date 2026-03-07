@@ -89,6 +89,13 @@ Apex言語対応カバレッジは次で管理します。
 
 - `docs/apex-language-coverage.md`
 
+2026-03-07 時点の non-best-effort snapshot は次を通過しています。
+
+- `apex-recipes`: `322/322`
+- `fflib-apex-mocks`: `471/471`
+- `fflib-apex-common + fflib-apex-mocks`: `158/158`
+- `fflib-apex-common-samplecode + fflib-apex-common + fflib-apex-mocks`: `16/16`
+
 PRで機能追加する場合は、実装・テストと同時にこのカバレッジ表も更新してください。
 
 ## Local validation fixtures
@@ -114,6 +121,12 @@ PRで機能追加する場合は、実装・テストと同時にこのカバレ
   --strict
 
 # transpile 後にローカル emulation test まで実行
+./tools/transpile-external.sh \
+  /path/to/your/sfdx-project \
+  --subpath force-app/main/default/classes \
+  --run-tests --nix
+
+# unresolved source がある場合のみ best-effort で段階実行
 ./tools/transpile-external.sh \
   /path/to/your/sfdx-project \
   --subpath force-app/main/default/classes \
@@ -157,18 +170,21 @@ zig build run -- emulate java --nix
 
 ```bash
 zig build run -- emulate test --nix
+zig build run -- emulate test reports/apex-transpile-external/my-repo --nix
+# unresolved source がある場合のみ
 zig build run -- emulate test reports/apex-transpile-external/my-repo --best-effort --nix
 CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
 SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 ```
 
-- `--best-effort` を付けると、`javac` で解決できないソースを段階的にスキップし、実行可能な `@Test` を先に実行します。
-- スキップされたソースは `OUT_DIR/compile-failures.txt` に出力されます。
+- `--best-effort` を付けると、`javac` で解決できないソースを段階的に placeholder stub に置き換えて、実行可能な `@Test` を先に実行します（元ソースは変更しません）。
+- placeholder 化されたソースは `OUT_DIR/compile-fallbacks.txt` に出力されます。
+- それでもコンパイル不能なソースが残る場合は `OUT_DIR/compile-failures.txt` に出力されます。
 
 主な対応:
 
 - `apexemu.runtime.Limits` の `get*` API と `apexemu.runtime.Test.startTest/stopTest`
-- `Test.runAs(...)` / `UserInfo.getUserId()` のローカル実行コンテキスト切り替え
+- `Test.runAs(...)` / `UserInfo.getUserId()/getUsername()/getUserName()/getProfileId()` のローカル実行コンテキスト切り替え（`Schema` profile context 含む）
 - `Test.loadData(sobjectType, csvPath)` による CSV fixture の取り込み
 - `Test.setMock(...)` + `Http.send` / `WebServiceCallout.invoke` mock 実行
 - `stopTest()` 時の `@Future` / Queueable / Batch / Schedulable 簡易 flush
@@ -196,7 +212,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 
 ## Apex-to-Java Transpile (Scaffold)
 
-`apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（best-effort）。
+`apexgov emulate transpile` は Apex `.cls` から Java クラス骨組みを自動生成します（scaffold 生成）。
 
 主な変換:
 

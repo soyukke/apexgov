@@ -2,12 +2,19 @@ package apexemu.runtime;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public final class JSON {
+  private static final DateTimeFormatter ISO_MILLIS_UTC =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
+
   private JSON() {}
 
   public static String serialize(Object value) {
@@ -16,6 +23,12 @@ public final class JSON {
     }
     if (value instanceof String s) {
       return "\"" + escape(s) + "\"";
+    }
+    if (value instanceof DateTime datetime) {
+      return "\"" + escape(formatDateTime(datetime)) + "\"";
+    }
+    if (value instanceof Date date) {
+      return "\"" + escape(String.valueOf(date)) + "\"";
     }
     if (value instanceof Number || value instanceof Boolean) {
       return String.valueOf(value);
@@ -33,7 +46,23 @@ public final class JSON {
       out.append("}");
       return out.toString();
     }
+    if (value instanceof Map<?, ?> map) {
+      return serializeMap(map);
+    }
+    if (value instanceof Iterable<?> iterable) {
+      return serializeIterable(iterable);
+    }
+    if (value.getClass().isArray()) {
+      return serializeArray(value);
+    }
+    if (!value.getClass().getName().startsWith("java.")) {
+      return serializeReflective(value);
+    }
     return "\"" + escape(String.valueOf(value)) + "\"";
+  }
+
+  public static String serialize(Object value, Boolean suppressApexObjectNulls) {
+    return serialize(value);
   }
 
   public static String serializePretty(Object value) {
@@ -41,58 +70,219 @@ public final class JSON {
   }
 
   public static <T> T deserialize(String payload, Class<T> clazz) {
-    if (clazz == null) {
+    try {
+      if (clazz == null) {
+        return null;
+      }
+      if (clazz == String.class) {
+        return clazz.cast(payload);
+      }
+      if (clazz == List.class) {
+        return clazz.cast(deserializeList(payload, ApexSObject.class));
+      }
+
+      Object parsed = parseJson(payload);
+      if (parsed == null) {
+        return null;
+      }
+      if (clazz.isInstance(parsed)) {
+        return clazz.cast(parsed);
+      }
+      if (parsed instanceof Map<?, ?> map) {
+        Map<String, Object> objectMap = castMap(map);
+        Object mapped;
+        if (ApexSObject.class.isAssignableFrom(clazz)) {
+          mapped = mapToTypedApexSObject(objectMap, clazz);
+        } else {
+          mapped = mapToObject(objectMap, clazz);
+        }
+        return clazz.cast(mapped);
+      }
+      throw new UnsupportedOperationException(
+          "deserialize cannot coerce JSON payload into " + clazz.getSimpleName());
+    } catch (RuntimeException error) {
+      throw asJsonException(error);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> T deserialize(String payload, System.Type type) {
+    if (type == null) {
       return null;
     }
-    if (clazz == String.class) {
-      return clazz.cast(payload);
+    String typeName = type.getName();
+    if (typeName == null || typeName.isBlank()) {
+      return (T) deserializeUntyped(payload);
     }
-    if (clazz == List.class) {
-      return clazz.cast(deserializeList(payload, ApexSObject.class));
+    String normalizedType = typeName.trim();
+    if (normalizedType.equalsIgnoreCase("List")
+        || normalizedType.regionMatches(true, 0, "List<", 0, "List<".length())) {
+      return (T) deserializeList(payload, ApexSObject.class);
     }
 
-    Object parsed = parseJson(payload);
-    if (parsed == null) {
-      return null;
+    if (containsSObjectType(normalizedType)) {
+      try {
+        return (T) deserializeSObjectPayload(payload, normalizedType);
+      } catch (RuntimeException error) {
+        throw asJsonException(error);
+      }
     }
-    if (clazz.isInstance(parsed)) {
-      return clazz.cast(parsed);
+
+    ClassLoader cl = Thread.currentThread().getContextClassLoader();
+    if (cl == null) {
+      cl = JSON.class.getClassLoader();
     }
-    if (parsed instanceof Map<?, ?> map) {
-      Object mapped = mapToObject(castMap(map), clazz);
-      return clazz.cast(mapped);
+    String[] candidates =
+        new String[] {normalizedType, "generated." + normalizedType, "apexemu.runtime." + normalizedType};
+    for (String candidate : candidates) {
+      try {
+        Class<?> klass = Class.forName(candidate, true, cl);
+        return (T) deserialize(payload, (Class<Object>) klass);
+      } catch (ClassNotFoundException ignored) {
+        // try next candidate
+      }
     }
-    throw new UnsupportedOperationException(
-        "deserialize cannot coerce JSON payload into " + clazz.getSimpleName());
+    Class<?> resolvedType = resolveTypeClass(type);
+    if (resolvedType != null) {
+      return (T) deserialize(payload, (Class<Object>) resolvedType);
+    }
+    try {
+      return (T) deserializeSObjectPayload(payload, normalizedType);
+    } catch (RuntimeException error) {
+      throw asJsonException(error);
+    }
   }
 
   public static <T> List<T> deserializeList(String payload, Class<T> elementClass) {
-    Object parsed = parseJson(payload);
-    if (!(parsed instanceof List<?> rawList)) {
-      throw new IllegalArgumentException("JSON payload is not a list");
+    if (payload == null || payload.isBlank()) {
+      throw new JSONException("Argument cannot be null.");
     }
+    try {
+      Object parsed = parseJson(payload);
+      if (!(parsed instanceof List<?> rawList)) {
+        throw new JSONException("JSON payload is not a list");
+      }
 
-    List<T> out = new ArrayList<>(rawList.size());
-    for (Object raw : rawList) {
-      out.add(convertListElement(raw, elementClass));
+      List<T> out = new ArrayList<>(rawList.size());
+      for (Object raw : rawList) {
+        out.add(convertListElement(raw, elementClass));
+      }
+      return out;
+    } catch (RuntimeException error) {
+      throw asJsonException(error);
     }
-    return out;
+  }
+
+  @SuppressWarnings("unchecked")
+  public static List<?> deserializeList(String payload, System.Type elementType) {
+    Class<?> elementClass = resolveTypeClass(elementType);
+    if (elementClass != null) {
+      return deserializeList(payload, (Class<Object>) elementClass);
+    }
+    if (elementType != null && elementType.getName() != null) {
+      String typeName = elementType.getName().trim();
+      if (typeName.equalsIgnoreCase("ApexSObject") || containsSObjectType(typeName)) {
+        return deserializeList(payload, ApexSObject.class);
+      }
+    }
+    return deserializeList(payload, Object.class);
   }
 
   public static Object deserializeUntyped(String payload) {
-    return parseJson(payload);
+    try {
+      return parseJson(payload);
+    } catch (RuntimeException error) {
+      throw asJsonException(error);
+    }
   }
 
   public static <T> T deserializeStrict(String payload, Class<T> clazz) {
     return deserialize(payload, clazz);
   }
 
-  public static Parser createParser(String payload) {
-    return new Parser(payload);
+  public static <T> T deserializeStrict(String payload, System.Type type) {
+    return deserialize(payload, type);
   }
 
-  public static Generator createGenerator(boolean pretty) {
-    return new Generator();
+  public static JSONParser createParser(String payload) {
+    return new JSONParser(payload);
+  }
+
+  public static JSONGenerator createGenerator(boolean pretty) {
+    return new JSONGenerator(pretty);
+  }
+
+  private static String serializeMap(Map<?, ?> map) {
+    StringBuilder out = new StringBuilder();
+    out.append("{");
+    boolean first = true;
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
+      if (!first) {
+        out.append(",");
+      }
+      first = false;
+      String key = entry.getKey() == null ? "null" : String.valueOf(entry.getKey());
+      out.append("\"").append(escape(key)).append("\":").append(serialize(entry.getValue()));
+    }
+    out.append("}");
+    return out.toString();
+  }
+
+  private static String serializeIterable(Iterable<?> iterable) {
+    StringBuilder out = new StringBuilder();
+    out.append("[");
+    boolean first = true;
+    for (Object item : iterable) {
+      if (!first) {
+        out.append(",");
+      }
+      first = false;
+      out.append(serialize(item));
+    }
+    out.append("]");
+    return out.toString();
+  }
+
+  private static String serializeArray(Object array) {
+    int length = java.lang.reflect.Array.getLength(array);
+    StringBuilder out = new StringBuilder();
+    out.append("[");
+    for (int i = 0; i < length; i++) {
+      if (i > 0) {
+        out.append(",");
+      }
+      out.append(serialize(java.lang.reflect.Array.get(array, i)));
+    }
+    out.append("]");
+    return out.toString();
+  }
+
+  private static String serializeReflective(Object value) {
+    StringBuilder out = new StringBuilder();
+    out.append("{");
+    boolean first = true;
+    Class<?> cursor = value.getClass();
+    while (cursor != null && cursor != Object.class) {
+      for (Field field : cursor.getDeclaredFields()) {
+        if (Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+          continue;
+        }
+        try {
+          field.setAccessible(true);
+          Object fieldValue = field.get(value);
+          if (!first) {
+            out.append(",");
+          }
+          first = false;
+          out.append("\"").append(escape(field.getName())).append("\":").append(serialize(fieldValue));
+        } catch (IllegalAccessException ignored) {
+          // skip inaccessible fields
+        }
+      }
+      cursor = cursor.getSuperclass();
+    }
+    out.append("}");
+    return out.toString();
   }
 
   private static String escape(String value) {
@@ -140,8 +330,82 @@ public final class JSON {
         "cannot coerce list element into " + elementClass.getSimpleName());
   }
 
+  private static boolean containsSObjectType(String typeName) {
+    if (typeName == null || typeName.isBlank()) {
+      return false;
+    }
+    for (String knownType : Schema.getGlobalDescribe().keySet()) {
+      if (knownType != null && knownType.equalsIgnoreCase(typeName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static Object deserializeSObjectPayload(String payload, String typeName) {
+    Object parsed = parseJson(payload);
+    if (parsed == null) {
+      return null;
+    }
+    if (parsed instanceof Map<?, ?> map) {
+      return mapToApexSObjectWithType(castMap(map), typeName);
+    }
+    if (parsed instanceof List<?> list) {
+      List<ApexSObject> out = new ArrayList<>(list.size());
+      for (Object entry : list) {
+        if (entry instanceof Map<?, ?> rowMap) {
+          out.add(mapToApexSObjectWithType(castMap(rowMap), typeName));
+        } else if (entry instanceof ApexSObject row) {
+          out.add(row);
+        }
+      }
+      return out;
+    }
+    return parsed;
+  }
+
   private static ApexSObject mapToApexSObject(Map<String, Object> values) {
-    String type = inferSObjectType(values);
+    return mapToApexSObjectWithType(values, null);
+  }
+
+  private static Class<?> resolveTypeClass(System.Type type) {
+    if (type == null || type.getName() == null || type.getName().isBlank()) {
+      return null;
+    }
+    String normalized = type.getName().trim();
+    String[] candidates = {
+      normalized,
+      normalized.replace('.', '$'),
+      "generated." + normalized,
+      "generated." + normalized.replace('.', '$'),
+      "apexemu.runtime." + normalized,
+      "apexemu.runtime." + normalized.replace('.', '$')
+    };
+    ClassLoader cl = Thread.currentThread().getContextClassLoader();
+    if (cl == null) {
+      cl = JSON.class.getClassLoader();
+    }
+    for (String candidate : candidates) {
+      try {
+        return Class.forName(candidate, true, cl);
+      } catch (ClassNotFoundException ignored) {
+        // try next candidate
+      }
+    }
+    try {
+      Object instance = type.newInstance();
+      if (instance != null) {
+        return instance.getClass();
+      }
+    } catch (RuntimeException ignored) {
+      // type token may not be instantiable
+    }
+    return null;
+  }
+
+  private static ApexSObject mapToApexSObjectWithType(Map<String, Object> values, String forcedType) {
+    String type =
+        (forcedType == null || forcedType.isBlank()) ? inferSObjectType(values) : forcedType.trim();
     ApexSObject row = ApexSObject.of(type);
     for (Map.Entry<String, Object> entry : values.entrySet()) {
       String key = entry.getKey();
@@ -154,6 +418,30 @@ public final class JSON {
       row.set(key, normalizeJsonValue(entry.getValue()));
     }
     return row;
+  }
+
+  private static Object mapToTypedApexSObject(Map<String, Object> values, Class<?> clazz) {
+    ApexSObject mapped = mapToApexSObject(values);
+    if (clazz == ApexSObject.class) {
+      return mapped;
+    }
+    try {
+      Constructor<?> constructor = clazz.getDeclaredConstructor();
+      constructor.setAccessible(true);
+      Object instance = constructor.newInstance();
+      if (instance instanceof ApexSObject typed) {
+        if (mapped.id() != null) {
+          typed.withId(mapped.id());
+        }
+        for (Map.Entry<String, Object> entry : mapped.fields().entrySet()) {
+          typed.set(entry.getKey(), normalizeJsonValue(entry.getValue()));
+        }
+        return typed;
+      }
+      return mapped;
+    } catch (ReflectiveOperationException ignored) {
+      return mapped;
+    }
   }
 
   private static String inferSObjectType(Map<String, Object> values) {
@@ -180,6 +468,13 @@ public final class JSON {
       return "Contact";
     }
     return "Generic__c";
+  }
+
+  private static String formatDateTime(DateTime value) {
+    if (value == null) {
+      return "";
+    }
+    return ISO_MILLIS_UTC.format(Instant.ofEpochMilli(value.getTime()));
   }
 
   private static Object mapToObject(Map<String, Object> values, Class<?> clazz) {
@@ -236,6 +531,9 @@ public final class JSON {
     if (raw instanceof Map<?, ?> map && targetType == ApexSObject.class) {
       return mapToApexSObject(castMap(map));
     }
+    if (raw instanceof Map<?, ?> map && targetType != Map.class) {
+      return mapToObject(castMap(map), targetType);
+    }
     return raw;
   }
 
@@ -287,8 +585,25 @@ public final class JSON {
 
   private static Object normalizeJsonValue(Object raw) {
     if (raw instanceof Map<?, ?> map) {
+      Map<String, Object> objectMap = castMap(map);
+      if (looksLikeRelationshipEnvelope(objectMap)) {
+        Object recordsRaw = objectMap.get("records");
+        if (recordsRaw instanceof List<?> records) {
+          List<Object> out = new ArrayList<>(records.size());
+          for (Object record : records) {
+            out.add(normalizeJsonValue(record));
+          }
+          return out;
+        }
+      }
+
+      Object attributes = objectMap.get("attributes");
+      if (attributes instanceof Map<?, ?>) {
+        return mapToApexSObject(objectMap);
+      }
+
       Map<String, Object> out = new LinkedHashMap<>();
-      for (Map.Entry<String, Object> entry : castMap(map).entrySet()) {
+      for (Map.Entry<String, Object> entry : objectMap.entrySet()) {
         out.put(entry.getKey(), normalizeJsonValue(entry.getValue()));
       }
       return out;
@@ -303,6 +618,14 @@ public final class JSON {
     return raw;
   }
 
+  private static boolean looksLikeRelationshipEnvelope(Map<String, Object> values) {
+    if (values == null || values.isEmpty()) {
+      return false;
+    }
+    return values.containsKey("records")
+        && (values.containsKey("totalSize") || values.containsKey("done"));
+  }
+
   private static Object parseJson(String payload) {
     if (payload == null) {
       return null;
@@ -311,13 +634,74 @@ public final class JSON {
     if (trimmed.isEmpty()) {
       return null;
     }
-    JsonParser parser = new JsonParser(trimmed);
+    RuntimeException firstError = null;
+    try {
+      return parseJsonStrict(trimmed);
+    } catch (RuntimeException error) {
+      firstError = error;
+    }
+
+    String normalized = normalizeEscapedPayload(trimmed);
+    if (!normalized.equals(trimmed)) {
+      try {
+        return parseJsonStrict(normalized);
+      } catch (RuntimeException ignored) {
+        // try final fallback
+      }
+    }
+
+    if (trimmed.length() >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+      try {
+        Object parsed = parseJsonStrict(trimmed);
+        if (parsed instanceof String inner) {
+          String innerTrimmed = inner.trim();
+          if (innerTrimmed.startsWith("{") || innerTrimmed.startsWith("[")) {
+            return parseJsonStrict(innerTrimmed);
+          }
+        }
+      } catch (RuntimeException ignored) {
+        // fall through to original parse error
+      }
+    }
+
+    throw firstError;
+  }
+
+  private static Object parseJsonStrict(String payload) {
+    JsonParser parser = new JsonParser(payload);
     Object value = parser.parseValue();
     parser.skipWhitespace();
     if (!parser.isAtEnd()) {
       throw new IllegalArgumentException("invalid JSON: trailing characters");
     }
     return value;
+  }
+
+  private static String normalizeEscapedPayload(String payload) {
+    if (payload == null || payload.isEmpty()) {
+      return payload == null ? "" : payload;
+    }
+    return payload
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("\\\"", "\"");
+  }
+
+  private static JSONException asJsonException(RuntimeException error) {
+    if (error instanceof JSONException jsonException) {
+      // Ensure "Malformed JSON" prefix for parse errors that lack it
+      String msg = jsonException.getMessage();
+      if (msg != null && !msg.startsWith("Malformed JSON") && !msg.startsWith("Argument")) {
+        return new JSONException("Malformed JSON: " + msg, jsonException);
+      }
+      return jsonException;
+    }
+    String message = error.getMessage();
+    if (message == null || message.isBlank()) {
+      message = "JSON parse error";
+    }
+    return new JSONException("Malformed JSON: " + message, error);
   }
 
   private static final class JsonParser {
@@ -500,7 +884,11 @@ public final class JSON {
         if (hasFraction) {
           return Double.parseDouble(literal);
         }
-        return Long.parseLong(literal);
+        long longVal = Long.parseLong(literal);
+        if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE) {
+          return Integer.valueOf((int) longVal);
+        }
+        return longVal;
       } catch (NumberFormatException error) {
         throw new IllegalArgumentException("invalid numeric literal: " + literal, error);
       }
@@ -523,7 +911,10 @@ public final class JSON {
 
     private void expect(char expected) {
       skipWhitespace();
-      if (isAtEnd() || text.charAt(index) != expected) {
+      if (isAtEnd()) {
+        throw new IllegalArgumentException("Unexpected end-of-input");
+      }
+      if (text.charAt(index) != expected) {
         throw new IllegalArgumentException("expected '" + expected + "' in JSON payload");
       }
       index += 1;

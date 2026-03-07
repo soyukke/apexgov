@@ -18,6 +18,17 @@ zig build run -- emulate test --nix
 ./tools/java-emulation/run-tests.sh \
   --tests-dir tools/java-emulation/examples \
   --out-dir reports/java-emulation-local
+
+# transpile 済みソースを non-best-effort で実行
+./tools/java-emulation/run-tests.sh \
+  --tests-dir reports/apex-transpile-external/my-repo \
+  --out-dir reports/java-emulation-local
+
+# unresolved source がある場合のみ fallback して実行を継続
+./tools/java-emulation/run-tests.sh \
+  --tests-dir reports/apex-transpile-external/my-repo \
+  --out-dir reports/java-emulation-local \
+  --best-effort
 ```
 
 上限は環境変数で変更できます。
@@ -31,12 +42,15 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 
 - `report.json`: 各テストの pass/fail、cpu_ms、heap_bytes、soql_count、dml_count
 - `build/`: コンパイル済み `.class`
+- `compile-fallbacks.txt` (`--best-effort` 時): placeholder stub に置き換えたソース一覧
+- `compile-failures.txt` (`--best-effort` 時): placeholder 化後もコンパイル不能だったソース一覧
+- `apex-triggers.txt` (transpile 出力側に存在する場合): `fflib_SObjectDomain.triggerHandler(...)` trigger の auto-registration manifest。実行時に `build/` へコピーして読み込みます。
 
 ## Notes
 
 - これは Apex VM の完全再現ではなく、ローカルのデバッグ/概算向けです。
 - `apexemu.runtime.ApexDb` と `apexemu.runtime.Limits` を使って負荷や回数を明示的に記録します。
-- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（best-effort / 手動移植前提、`System.assert*` は `SystemAssert.*`、`Assert.*`/`System.Assert.*` は `ApexAssert.*`、`System.debug` は `System.out.println`。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティ、`switch on / when`（literal + `when else` + `when Account acc`）の Java `switch` 化、`record instanceof Account` の `"Account".equals(ApexSwitch.typeName(record))` への正規化（否定/複合式 + `instanceof SObject` 特例を含む）、`do { ... } while (...)` の do-while tail 正規化、`String.isBlank/join/escapeSingleQuotes` などの `ApexStrings.*` 化、`List/Map/Set` 宣言・コンストラクタ・リテラル、`new Map<Id, SObject>(list/map/query)` の `ApexCollections.mapById/toIdMap` 化、named-arg 風 SObject コンストラクタ、単行/複数行 `[SELECT ...]`、`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る query literal 正規化、`insert/update/upsert/delete/undelete/merge` 変換に対応）。
+- Apex `.cls` から Java 骨組みを生成したい場合は `apexgov emulate transpile` を使えます（scaffold 生成。`System.assert*` は `SystemAssert.*`、`Assert.*`/`System.Assert.*` は `ApexAssert.*`、`System.debug` は `System.out.println`。メソッド署名/コンストラクタ/クラスフィールド/`{ get; set; }` プロパティ、`switch on / when`（literal + `when else` + `when Account acc`）の Java `switch` 化、`record instanceof Account` の `"Account".equals(ApexSwitch.typeName(record))` への正規化（否定/複合式 + `instanceof SObject` 特例を含む）、`do { ... } while (...)` の do-while tail 正規化、`String.isBlank/join/escapeSingleQuotes` などの `ApexStrings.*` 化、`List/Map/Set` 宣言・コンストラクタ・リテラル、`new Map<Id, SObject>(list/map/query)` の `ApexCollections.mapById/toIdMap` 化、named-arg 風 SObject コンストラクタ、単行/複数行 `[SELECT ...]`、`Database.getQueryLocator/countQuery/queryWithBinds` 系に渡る query literal 正規化、`insert/update/upsert/delete/undelete/merge` 変換、`fflib_SObjectDomain.triggerHandler(...)` trigger の manifest 化に対応）。
 
 ## Assertion API
 
@@ -62,6 +76,8 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `isNotInstanceOfType(instance, notExpectedType[, message])`
 - `fail([message])`
 
+`isInstanceOfType` / `isNotInstanceOfType` は class 名だけでなく、実装 interface や親 class 配下の nested interface 名（例: `IList`, `IA`）でも判定します。
+
 失敗時は `AssertionError` と、テスト側の位置情報（`File.java:line`）を出力します。
 
 ## Limits / Test API
@@ -78,6 +94,7 @@ SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
 - `startTest()` を呼ぶと、その時点から CPU/Heap/Query/DML の計測窓を開始
 - `stopTest()` 時に async キュー（future/queueable/batch/schedulable）を flush し、その窓の値を確定
 - `startTest/stopTest` を使わない場合はテストメソッド全体を計測
+- `runAs(user, ...)` / `beginRunAs(user)` / `endRunAs()` により、`UserInfo.getUserId()/getUsername()/getUserName()/getProfileId()` と `Schema` profile context の切替を再現
 
 ## Async Emulation
 

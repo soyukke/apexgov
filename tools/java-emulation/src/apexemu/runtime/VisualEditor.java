@@ -6,6 +6,16 @@ import java.util.List;
 public final class VisualEditor {
   private VisualEditor() {}
 
+  public abstract static class DynamicPickList {
+    public DataRow getDefaultValue() {
+      return null;
+    }
+
+    public DynamicPickListRows getValues() {
+      return new DynamicPickListRows();
+    }
+  }
+
   public static final class DataRow {
     private final String label;
     private final String value;

@@ -3,10 +3,13 @@ package apexemu.runner;
 import apexemu.annotations.Test;
 import apexemu.annotations.TestSetup;
 import apexemu.runtime.Async;
+import apexemu.runtime.Cache;
 import apexemu.runtime.Database;
 import apexemu.runtime.Limits;
 import apexemu.runtime.Limits.Snapshot;
+import apexemu.runtime.Schema;
 import apexemu.runtime.SystemAssert;
+import apexemu.runtime.Trigger;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -48,17 +51,26 @@ public final class Runner {
       Method[] methods = klass.getDeclaredMethods();
       Arrays.sort(methods, Comparator.comparing(Method::getName));
       List<String> testSetupMethods = new ArrayList<>();
-      List<String> testMethods = new ArrayList<>();
+      List<TestMethodSpec> testMethods = new ArrayList<>();
       for (Method method : methods) {
         if (method.isAnnotationPresent(TestSetup.class)) {
           testSetupMethods.add(method.getName());
         }
         if (method.isAnnotationPresent(Test.class)) {
-          testMethods.add(method.getName());
+          Test annotation = method.getAnnotation(Test.class);
+          boolean seeAllData = annotation != null && annotation.seeAllData();
+          testMethods.add(new TestMethodSpec(method.getName(), seeAllData));
         }
       }
-      for (String methodName : testMethods) {
-        results.add(runTest(config, className, testSetupMethods, methodName));
+      for (TestMethodSpec methodSpec : testMethods) {
+        results.add(
+            runTest(
+                config,
+                classNames,
+                className,
+                testSetupMethods,
+                methodSpec.name,
+                methodSpec.seeAllData));
       }
     }
 
@@ -91,22 +103,71 @@ public final class Runner {
   }
 
   private static TestResult runTest(
-      Config config, String className, List<String> testSetupMethodNames, String methodName) {
+      Config config,
+      List<String> allClassNames,
+      String className,
+      List<String> testSetupMethodNames,
+      String methodName,
+      boolean seeAllData) {
     URLClassLoader loader = null;
     Class<?> klass;
     Method method;
     List<Method> testSetupMethods;
+    ClassLoader previousCl = Thread.currentThread().getContextClassLoader();
     try {
-      loader = new URLClassLoader(new URL[] {toUrl(config.classesDir)});
+      // Use child-first class loading for generated.* so static fields are
+      // reset between tests (mimics Apex per-test transaction isolation).
+      loader = new URLClassLoader(new URL[] {toUrl(config.classesDir)}) {
+        @Override
+        public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+          if (name.startsWith("generated.")) {
+            Class<?> c = findLoadedClass(name);
+            if (c == null) {
+              c = findClass(name);
+            }
+            if (resolve) resolveClass(c);
+            return c;
+          }
+          return super.loadClass(name, resolve);
+        }
+      };
+      // Resolve Type.forName/Class.forName inside static initializers against the child-first loader.
+      Thread.currentThread().setContextClassLoader(loader);
+      Async.reset();
+      Database.clearInMemoryStore();
+      Database.clearSchemaRegistry();
+      Database.clearTriggerHandlers();
+      Cache.clearAll();
+      Database.setSoqlNullOrderDefault(config.soqlNullOrderDefault);
+      if (config.registerStandardSchema) {
+        Schema.registerStandardDefaults();
+      }
+      Limits.reset();
+      Limits.configure(config.cpuLimitMs, config.heapLimitBytes);
+      apexemu.runtime.Test.clearMocks();
+      apexemu.runtime.Test.setSeeAllDataEnabled(seeAllData);
+      apexemu.runtime.System.Request.setCurrentQuiddity(apexemu.runtime.System.Quiddity.RUNTEST_SYNC);
+
+      // Prevent stale classes from previous test loaders leaking into static initialization.
+      apexemu.runtime.System.clearClassRegistry();
+      // Register class names before test-class static initialization so Type.forName() can
+      // resolve inner types used in static field initializers.
+      registerAllClasses(allClassNames, loader);
+      autoRegisterTriggerManifest(config.classesDir, loader);
+      autoRegisterTriggerHandlers(allClassNames, loader);
       klass = Class.forName(className, true, loader);
       method = klass.getDeclaredMethod(methodName);
       testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
     } catch (Throwable error) {
+      apexemu.runtime.Test.setSeeAllDataEnabled(false);
+      Thread.currentThread().setContextClassLoader(previousCl);
       closeQuietly(loader);
       return TestResult.loadError(className, shortMessage(error));
     }
 
     if (method.getParameterCount() != 0) {
+      apexemu.runtime.Test.setSeeAllDataEnabled(false);
+      Thread.currentThread().setContextClassLoader(previousCl);
       closeQuietly(loader);
       return TestResult.invalidSignature(className, methodName, "@Test methods must have zero arguments");
     }
@@ -117,15 +178,6 @@ public final class Runner {
     long heapBytes;
     int soqlCount;
     int dmlCount;
-
-    Async.reset();
-    Database.clearInMemoryStore();
-    Database.clearSchemaRegistry();
-    Database.clearTriggerHandlers();
-    Database.setSoqlNullOrderDefault(config.soqlNullOrderDefault);
-    Limits.reset();
-    Limits.configure(config.cpuLimitMs, config.heapLimitBytes);
-    apexemu.runtime.Test.clearMocks();
 
     try {
       executeTestSetupMethods(klass, testSetupMethods);
@@ -140,6 +192,9 @@ public final class Runner {
       failure = error.getCause() == null ? error : error.getCause();
     } catch (Throwable error) {
       failure = error;
+    } finally {
+      apexemu.runtime.Test.setSeeAllDataEnabled(false);
+      Thread.currentThread().setContextClassLoader(previousCl);
     }
 
     Snapshot snapshot = Limits.snapshot();
@@ -223,6 +278,164 @@ public final class Runner {
         state, result.className, result.methodName, result.cpuMs, result.heapBytes, result.soqlCount, result.dmlCount, result.assertions.size());
     if (!result.passed && result.failure != null && !result.failure.isBlank()) {
       System.out.println("      " + result.failure);
+    }
+  }
+
+  private static void autoRegisterTriggerManifest(Path classesDir, ClassLoader loader) {
+    Path manifest = classesDir.resolve("apex-triggers.txt");
+    if (!Files.isRegularFile(manifest)) {
+      return;
+    }
+    List<String> lines;
+    try {
+      lines = Files.readAllLines(manifest, StandardCharsets.UTF_8);
+    } catch (IOException ignored) {
+      return;
+    }
+    for (String line : lines) {
+      if (line == null) {
+        continue;
+      }
+      String trimmed = line.trim();
+      if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+        continue;
+      }
+      String[] parts = trimmed.split("\\|", 3);
+      if (parts.length != 3) {
+        continue;
+      }
+      String sobjectType = parts[0].trim();
+      String[] operations = parts[1].trim().isEmpty() ? new String[0] : parts[1].split(",");
+      String handlerClassName = parts[2].trim();
+      if (sobjectType.isEmpty() || handlerClassName.isEmpty() || operations.length == 0) {
+        continue;
+      }
+
+      Runnable factory =
+          () -> {
+            try {
+              Class<?> domainBase = Class.forName("generated.fflib_SObjectDomain", true, loader);
+              domainBase
+                  .getMethod("triggerHandler", apexemu.runtime.System.Type.class)
+                  .invoke(null, apexemu.runtime.System.Type.forName(handlerClassName));
+            } catch (InvocationTargetException e) {
+              Throwable cause = e.getCause();
+              if (cause instanceof RuntimeException re) throw re;
+              if (cause instanceof Error err) throw err;
+              throw new RuntimeException(cause);
+            } catch (ReflectiveOperationException e) {
+              throw new RuntimeException(e);
+            }
+          };
+
+      for (String operation : operations) {
+        registerTriggerOperation(sobjectType, operation.trim(), factory);
+      }
+    }
+  }
+
+  private static void autoRegisterTriggerHandlers(List<String> allClassNames, ClassLoader loader) {
+    for (String cn : allClassNames) {
+      String simpleName = cn.contains(".") ? cn.substring(cn.lastIndexOf('.') + 1) : cn;
+      if (!simpleName.endsWith("TriggerHandler")) continue;
+      if (simpleName.equals("TriggerHandler")) continue;
+      if (simpleName.equals("MetadataTriggerHandler")) continue;
+      // Skip metadata-driven and event-based handlers (they run via MetadataTriggerHandler or EventBus)
+      if (simpleName.startsWith("MDT")) continue;
+      if (simpleName.startsWith("Log")) continue;
+      if (simpleName.startsWith("PlatformEvent")) continue;
+
+      String sobjectType = simpleName.substring(0, simpleName.length() - "TriggerHandler".length());
+      if (sobjectType.isEmpty()) continue;
+
+      try {
+        Class<?> handlerClass = Class.forName(cn, true, loader);
+        handlerClass.getDeclaredConstructor();
+        handlerClass.getMethod("run");
+      } catch (Exception e) {
+        continue;
+      }
+
+      final String handlerClassName = cn;
+      final ClassLoader handlerLoader = loader;
+      Runnable factory = () -> {
+        try {
+          Class<?> klass = Class.forName(handlerClassName, true, handlerLoader);
+          Object instance = klass.getDeclaredConstructor().newInstance();
+          klass.getMethod("run").invoke(instance);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+          Throwable cause = e.getCause();
+          if (cause instanceof RuntimeException re) throw re;
+          if (cause instanceof Error err) throw err;
+          throw new RuntimeException(cause);
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      };
+
+      Trigger.onBeforeInsert(sobjectType, factory);
+      Trigger.onBeforeUpdate(sobjectType, factory);
+      Trigger.onBeforeDelete(sobjectType, factory);
+      Trigger.onAfterInsert(sobjectType, factory);
+      Trigger.onAfterUpdate(sobjectType, factory);
+      Trigger.onAfterDelete(sobjectType, factory);
+      Trigger.onAfterUndelete(sobjectType, factory);
+    }
+  }
+
+  private static void registerTriggerOperation(String sobjectType, String operation, Runnable handler) {
+    if (sobjectType == null || sobjectType.isBlank() || operation == null || operation.isBlank()) {
+      return;
+    }
+    switch (operation.toLowerCase()) {
+      case "before_insert" -> Trigger.onBeforeInsert(sobjectType, handler);
+      case "before_update" -> Trigger.onBeforeUpdate(sobjectType, handler);
+      case "before_delete" -> Trigger.onBeforeDelete(sobjectType, handler);
+      case "after_insert" -> Trigger.onAfterInsert(sobjectType, handler);
+      case "after_update" -> Trigger.onAfterUpdate(sobjectType, handler);
+      case "after_delete" -> Trigger.onAfterDelete(sobjectType, handler);
+      case "after_undelete" -> Trigger.onAfterUndelete(sobjectType, handler);
+      default -> {
+        // ignore unsupported manifest entries
+      }
+    }
+  }
+
+  private static void registerAllClasses(List<String> allClassNames, ClassLoader loader) {
+    apexemu.runtime.System.clearClassRegistry();
+    for (String cn : allClassNames) {
+      try {
+        Class<?> clazz = Class.forName(cn, false, loader);
+        // Register with simple name (e.g., "SampleHandler")
+        String simpleName = cn.contains(".") ? cn.substring(cn.lastIndexOf('.') + 1) : cn;
+        apexemu.runtime.System.registerClass(simpleName, clazz);
+        // Also register inner classes with Outer.Inner notation
+        if (simpleName.contains("$")) {
+          String dotNotation = simpleName.replace('$', '.');
+          apexemu.runtime.System.registerClass(dotNotation, clazz);
+        }
+        // Register with full qualified name
+        apexemu.runtime.System.registerClass(cn, clazz);
+        // Also register inner classes of this class
+        for (Class<?> inner : clazz.getDeclaredClasses()) {
+          String innerSimple = inner.getSimpleName();
+          String outerSimple = simpleName.contains("$") ? simpleName.substring(0, simpleName.indexOf('$')) : simpleName;
+          apexemu.runtime.System.registerClass(outerSimple + "." + innerSimple, inner);
+          apexemu.runtime.System.registerClass(innerSimple, inner);
+        }
+      } catch (Exception ignored) {
+        // skip classes that can't be loaded
+      }
+    }
+  }
+
+  private static final class TestMethodSpec {
+    private final String name;
+    private final boolean seeAllData;
+
+    private TestMethodSpec(String name, boolean seeAllData) {
+      this.name = name;
+      this.seeAllData = seeAllData;
     }
   }
 
@@ -423,18 +636,21 @@ public final class Runner {
     final long cpuLimitMs;
     final long heapLimitBytes;
     final Database.NullOrderDefault soqlNullOrderDefault;
+    final boolean registerStandardSchema;
 
     Config(
         Path classesDir,
         Path outPath,
         long cpuLimitMs,
         long heapLimitBytes,
-        Database.NullOrderDefault soqlNullOrderDefault) {
+        Database.NullOrderDefault soqlNullOrderDefault,
+        boolean registerStandardSchema) {
       this.classesDir = classesDir;
       this.outPath = outPath;
       this.cpuLimitMs = cpuLimitMs;
       this.heapLimitBytes = heapLimitBytes;
       this.soqlNullOrderDefault = soqlNullOrderDefault;
+      this.registerStandardSchema = registerStandardSchema;
     }
 
     static Config parse(String[] args) {
@@ -444,6 +660,7 @@ public final class Runner {
       long heapLimitBytes = 6_000_000L;
       Database.NullOrderDefault soqlNullOrderDefault =
           parseNullOrderDefault(System.getenv("SOQL_NULL_ORDER_DEFAULT"));
+      boolean registerStandardSchema = "true".equalsIgnoreCase(System.getenv("REGISTER_STANDARD_SCHEMA"));
 
       int i = 0;
       while (i < args.length) {
@@ -474,6 +691,9 @@ public final class Runner {
             requireValue(i, args, "--soql-null-order-default");
             soqlNullOrderDefault = parseNullOrderDefault(args[i]);
             break;
+          case "--register-standard-schema":
+            registerStandardSchema = true;
+            break;
           case "-h":
           case "--help":
             printHelpAndExit(0);
@@ -489,7 +709,7 @@ public final class Runner {
         System.err.println("missing --classes-dir");
         printHelpAndExit(2);
       }
-      return new Config(classesDir, outPath, cpuLimitMs, heapLimitBytes, soqlNullOrderDefault);
+      return new Config(classesDir, outPath, cpuLimitMs, heapLimitBytes, soqlNullOrderDefault, registerStandardSchema);
     }
 
     private static void requireValue(int idx, String[] args, String option) {

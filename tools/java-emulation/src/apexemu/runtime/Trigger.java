@@ -11,6 +11,7 @@ import java.util.Map;
 public final class Trigger {
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
   private static final ThreadLocal<Registry> REGISTRY = ThreadLocal.withInitial(Registry::new);
+  public static System.TriggerOperation operationType = null;
 
   private Trigger() {}
 
@@ -19,6 +20,16 @@ public final class Trigger {
     UPDATE,
     DELETE,
     UNDELETE
+  }
+
+  public enum TriggerOperation {
+    BEFORE_INSERT,
+    BEFORE_UPDATE,
+    BEFORE_DELETE,
+    AFTER_INSERT,
+    AFTER_UPDATE,
+    AFTER_DELETE,
+    AFTER_UNDELETE
   }
 
   public static void run(
@@ -35,11 +46,13 @@ public final class Trigger {
     }
 
     State previous = STATE.get();
+    System.TriggerOperation previousOperationType = operationType;
     State current = new State();
     current.executing = true;
     current.before = isBefore;
     current.after = !isBefore;
     current.operation = operation;
+    operationType = toTriggerOperation(isBefore, operation);
     current.newRecords = toObjectList(newRecords);
     current.oldRecords = toObjectList(oldRecords);
     current.newMap = buildMap(current.newRecords);
@@ -50,6 +63,7 @@ public final class Trigger {
       handler.run();
     } finally {
       STATE.set(previous);
+      operationType = previousOperationType;
     }
   }
 
@@ -113,6 +127,47 @@ public final class Trigger {
     REGISTRY.set(new Registry());
   }
 
+  public static void setContext(
+      boolean isBefore, Operation operation, List<?> newRecords, List<?> oldRecords) {
+    State current = new State();
+    current.executing = true;
+    current.before = isBefore;
+    current.after = !isBefore;
+    current.operation = operation;
+    operationType = toTriggerOperation(isBefore, operation);
+    current.newRecords = toObjectList(newRecords);
+    current.oldRecords = toObjectList(oldRecords);
+    current.newMap = buildMap(current.newRecords);
+    current.oldMap = buildMap(current.oldRecords);
+    STATE.set(current);
+  }
+
+  public static void setTriggerContext(String context, Boolean isBefore) {
+    if (context == null || context.isBlank()) {
+      clearContext();
+      return;
+    }
+    String normalized = context.trim().toUpperCase();
+    Operation op = switch (normalized) {
+      case "INSERT" -> Operation.INSERT;
+      case "UPDATE" -> Operation.UPDATE;
+      case "DELETE" -> Operation.DELETE;
+      case "UNDELETE" -> Operation.UNDELETE;
+      default -> null;
+    };
+    if (op == null) {
+      clearContext();
+      return;
+    }
+    boolean before = isBefore != null && isBefore;
+    setContext(before, op, new ArrayList<>(), new ArrayList<>());
+  }
+
+  public static void clearContext() {
+    STATE.set(new State());
+    operationType = null;
+  }
+
   public static boolean isExecuting() {
     return STATE.get().executing;
   }
@@ -141,20 +196,56 @@ public final class Trigger {
     return STATE.get().operation == Operation.UNDELETE;
   }
 
-  public static List<Object> getNew() {
-    return STATE.get().newRecords;
+  public static System.TriggerOperation getOperationType() {
+    return operationType;
   }
 
-  public static List<Object> getOld() {
-    return STATE.get().oldRecords;
+  private static System.TriggerOperation toTriggerOperation(boolean isBefore, Operation operation) {
+    if (operation == null) {
+      return null;
+    }
+    if (isBefore) {
+      return switch (operation) {
+        case INSERT -> System.TriggerOperation.BEFORE_INSERT;
+        case UPDATE -> System.TriggerOperation.BEFORE_UPDATE;
+        case DELETE -> System.TriggerOperation.BEFORE_DELETE;
+        case UNDELETE -> null;
+      };
+    }
+    return switch (operation) {
+      case INSERT -> System.TriggerOperation.AFTER_INSERT;
+      case UPDATE -> System.TriggerOperation.AFTER_UPDATE;
+      case DELETE -> System.TriggerOperation.AFTER_DELETE;
+      case UNDELETE -> System.TriggerOperation.AFTER_UNDELETE;
+    };
   }
 
-  public static Map<String, Object> getNewMap() {
-    return STATE.get().newMap;
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List getNew() {
+    State state = STATE.get();
+    if (state == null || state.newRecords == null || state.newRecords.isEmpty()) {
+      return null;
+    }
+    return (List) state.newRecords;
   }
 
-  public static Map<String, Object> getOldMap() {
-    return STATE.get().oldMap;
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List getOld() {
+    State state = STATE.get();
+    if (state == null || state.oldRecords == null || state.oldRecords.isEmpty()) {
+      return null;
+    }
+    return (List) state.oldRecords;
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static Map getNewMap() {
+    return (Map) STATE.get().newMap;
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static Map getOldMap() {
+    return (Map) STATE.get().oldMap;
   }
 
   public static int size() {

@@ -41,6 +41,7 @@ const EmulateTestOptions = struct {
     heap_limit_bytes: ?u64 = null,
     use_nix: bool = false,
     best_effort: bool = false,
+    register_standard_schema: bool = false,
 };
 
 const EmulateTranspileOptions = struct {
@@ -241,6 +242,9 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     }
     if (opts.best_effort) {
         try child_args.append(gpa, "--best-effort");
+    }
+    if (opts.register_standard_schema) {
+        try env_map.put("REGISTER_STANDARD_SCHEMA", "true");
     }
 
     var child = std.process.Child.init(child_args.items, gpa);
@@ -560,6 +564,11 @@ fn parseEmulateTestOptions(args: []const []const u8) !EmulateTestOptions {
         }
         if (std.mem.eql(u8, arg, "--best-effort")) {
             opts.best_effort = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--register-standard-schema")) {
+            opts.register_standard_schema = true;
             i += 1;
             continue;
         }

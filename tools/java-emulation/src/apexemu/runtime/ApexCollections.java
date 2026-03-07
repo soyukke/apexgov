@@ -1,8 +1,13 @@
 package apexemu.runtime;
 
+import java.util.AbstractMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class ApexCollections {
   private ApexCollections() {}
@@ -69,6 +74,70 @@ public final class ApexCollections {
     return rows.get(0);
   }
 
+  /** Like firstOrNull but throws QueryException when no rows found (Apex single-row assignment). */
+  public static ApexSObject firstOrThrow(List<ApexSObject> rows) {
+    if (rows == null || rows.isEmpty()) {
+      throw new QueryException("List has no rows for assignment to SObject");
+    }
+    return rows.get(0);
+  }
+
+  public static <T> T firstOrNull(T value) {
+    return value;
+  }
+
+  private static final ApexSObject EMPTY_SOBJECT = ApexSObject.of("__empty__");
+
+  public static ApexSObject emptyIfNull(ApexSObject obj) {
+    return obj != null ? obj : EMPTY_SOBJECT;
+  }
+
+  public static <T> List<T> listOf() {
+    return new ArrayList<>();
+  }
+
+  public static <T> List<T> listOf(T first, T second) {
+    List<T> list = new ArrayList<>(2);
+    list.add(first);
+    list.add(second);
+    return list;
+  }
+
+  @SafeVarargs
+  @SuppressWarnings("varargs")
+  public static <T> List<T> listOf(T first, T... rest) {
+    List<T> list = new ArrayList<>(1 + (rest == null ? 0 : rest.length));
+    list.add(first);
+    // listOf("x", null) is emitted by the transpiler and represents two elements in Apex.
+    if (rest == null) {
+      list.add(null);
+      return list;
+    }
+    if (rest.length > 0) {
+      java.util.Collections.addAll(list, rest);
+    }
+    return list;
+  }
+
+  public static <K, V> Map.Entry<K, V> mapEntry(K key, V value) {
+    return new AbstractMap.SimpleImmutableEntry<>(key, value);
+  }
+
+  @SafeVarargs
+  public static <K, V> Map<K, V> mapOfEntries(Map.Entry<? extends K, ? extends V>... entries) {
+    Map<K, V> out = new LinkedHashMap<>();
+    if (entries == null) {
+      return out;
+    }
+    for (Map.Entry<? extends K, ? extends V> entry : entries) {
+      if (entry == null) {
+        continue;
+      }
+      out.put(entry.getKey(), entry.getValue());
+    }
+    return out;
+  }
+
   public static Map<String, Object> bindMap(Object... keyValuePairs) {
     Map<String, Object> out = new LinkedHashMap<>();
     if (keyValuePairs == null || keyValuePairs.length == 0) {
@@ -86,6 +155,102 @@ public final class ApexCollections {
       out.put(key, keyValuePairs[i + 1]);
     }
     return out;
+  }
+
+  public static <T> List<List<T>> chunk(List<T> rows, int chunkSize) {
+    List<List<T>> out = new ArrayList<>();
+    if (rows == null || rows.isEmpty()) {
+      return out;
+    }
+    int normalized = Math.max(1, chunkSize);
+    for (int offset = 0; offset < rows.size(); offset += normalized) {
+      int end = Math.min(rows.size(), offset + normalized);
+      out.add(new ArrayList<>(rows.subList(offset, end)));
+    }
+    return out;
+  }
+
+  public static <T> List<T> clone(List<T> values) {
+    if (values == null) {
+      return null;
+    }
+    return new ArrayList<>(values);
+  }
+
+  public static List<ApexSObject> deepClone(
+      List<ApexSObject> values,
+      Boolean preserveId,
+      Boolean isDeepClone,
+      Boolean preserveReadonlyTimestamps) {
+    if (values == null) {
+      return null;
+    }
+    List<ApexSObject> out = new ArrayList<>(values.size());
+    for (ApexSObject value : values) {
+      out.add(
+          value == null
+              ? null
+              : value.clone(
+                  Boolean.TRUE.equals(preserveId),
+                  Boolean.TRUE.equals(isDeepClone),
+                  Boolean.TRUE.equals(preserveReadonlyTimestamps),
+                  false));
+    }
+    return out;
+  }
+
+  public static <T> Set<T> clone(Set<T> values) {
+    if (values == null) {
+      return null;
+    }
+    return new LinkedHashSet<>(values);
+  }
+
+  public static <K, V> Map<K, V> clone(Map<K, V> values) {
+    if (values == null) {
+      return null;
+    }
+    return new LinkedHashMap<>(values);
+  }
+
+  public static <T> T clone(T value) {
+    if (value instanceof ApexSObject row) {
+      @SuppressWarnings("unchecked")
+      T cloned = (T) row.clone(false, true, false, false);
+      return cloned;
+    }
+    return value;
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static void sort(List<?> rows) {
+    if (rows == null || rows.size() < 2) {
+      return;
+    }
+    List raw = (List) rows;
+    raw.sort(
+        new Comparator() {
+          @Override
+          public int compare(Object left, Object right) {
+            if (left == right) {
+              return 0;
+            }
+            if (left == null) {
+              return -1;
+            }
+            if (right == null) {
+              return 1;
+            }
+            if (left instanceof ApexComparable cmp) {
+              Integer value = cmp.compareTo(right);
+              return value == null ? 0 : value.intValue();
+            }
+            if (left instanceof Comparable cmp) {
+              return cmp.compareTo(right);
+            }
+            return ApexStrings.compareTo(left, right);
+          }
+        });
   }
 
   private static ApexSObject asSObject(Object value) {

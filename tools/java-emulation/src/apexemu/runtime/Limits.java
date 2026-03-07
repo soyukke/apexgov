@@ -4,6 +4,8 @@ public final class Limits {
   private static final int QUERY_LIMIT = 100;
   private static final int DML_LIMIT = 150;
   private static final int CALLOUT_LIMIT = 100;
+  private static final int QUERY_ROWS_LIMIT = 50_000;
+  private static final int DML_ROWS_LIMIT = 10_000;
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private Limits() {}
@@ -46,8 +48,7 @@ public final class Limits {
     state.windowCalloutCount = Math.max(0, state.calloutCount - state.windowStartCalloutCount);
 
     long trackedHeapDelta = Math.max(0L, state.heapBytes - state.windowStartHeapBytes);
-    long actualHeapDelta = Math.max(0L, usedHeapBytes() - state.windowStartUsedHeapBytes);
-    state.windowHeapBytes = Math.max(trackedHeapDelta, actualHeapDelta);
+    state.windowHeapBytes = trackedHeapDelta;
   }
 
   public static void addSoql(int count) {
@@ -86,6 +87,14 @@ public final class Limits {
     return snapshot().dmlCount();
   }
 
+  public static int getDMLRows() {
+    return getDmlStatements();
+  }
+
+  public static int getQueryRows() {
+    return getQueries();
+  }
+
   public static int getCallouts() {
     State state = STATE.get();
     if (state.windowEnabled) {
@@ -109,12 +118,28 @@ public final class Limits {
     return QUERY_LIMIT;
   }
 
+  public static int getLimitQueryRows() {
+    return QUERY_ROWS_LIMIT;
+  }
+
   public static int getLimitDmlStatements() {
     return DML_LIMIT;
   }
 
+  public static int getLimitDMLRows() {
+    return DML_ROWS_LIMIT;
+  }
+
   public static int getLimitCallouts() {
     return CALLOUT_LIMIT;
+  }
+
+  public static int getLimitQueueableJobs() {
+    return 50;
+  }
+
+  public static int getQueueableJobs() {
+    return 0;
   }
 
   public static int getLimitCpuTime() {
@@ -138,15 +163,12 @@ public final class Limits {
       int currentSoql = Math.max(0, state.soqlCount - state.windowStartSoqlCount);
       int currentDml = Math.max(0, state.dmlCount - state.windowStartDmlCount);
       long trackedHeapDelta = Math.max(0L, state.heapBytes - state.windowStartHeapBytes);
-      long actualHeapDelta = Math.max(0L, usedHeapBytes() - state.windowStartUsedHeapBytes);
-      long currentHeap = Math.max(trackedHeapDelta, actualHeapDelta);
+      long currentHeap = trackedHeapDelta;
       return new Snapshot(currentSoql, currentDml, currentHeap, currentCpuMs, true);
     }
 
     long cpuMs = elapsedMs(state.testStartNs, java.lang.System.nanoTime());
-    long trackedHeap = Math.max(0L, state.heapBytes);
-    long actualHeap = Math.max(0L, usedHeapBytes() - state.testStartUsedHeapBytes);
-    long heap = Math.max(trackedHeap, actualHeap);
+    long heap = Math.max(0L, state.heapBytes);
     return new Snapshot(state.soqlCount, state.dmlCount, heap, cpuMs, false);
   }
 

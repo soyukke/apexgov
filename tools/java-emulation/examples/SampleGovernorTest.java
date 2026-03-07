@@ -8,6 +8,7 @@ import apexemu.runtime.ApexSObject;
 import apexemu.runtime.ApexStrings;
 import apexemu.runtime.BatchContext;
 import apexemu.runtime.Database;
+import apexemu.runtime.DmlException;
 import apexemu.runtime.Limits;
 import apexemu.runtime.QueryLocatorBatchable;
 import apexemu.runtime.Schema;
@@ -602,7 +603,7 @@ public final class SampleGovernorTest {
     Database.clearTriggerHandlers();
 
     Database.insert(List.of(ApexSObject.of("Account").set("Name", "Seed")));
-    ApexSObject seed = Database.query("SELECT Id, Name FROM Account LIMIT 1").get(0);
+    ApexSObject seed = (ApexSObject) Database.query("SELECT Id, Name FROM Account LIMIT 1").get(0);
 
     final int[] beforeInsert = new int[] {0};
     final int[] afterInsert = new int[] {0};
@@ -664,9 +665,12 @@ public final class SampleGovernorTest {
             ApexSObject.of("Account").set("Name", "Dup-A"),
             ApexSObject.of("Account").set("Name", "Dup-B")));
 
-    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
-    ApexSObject duplicateA = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-A' LIMIT 1").get(0);
-    ApexSObject duplicateB = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-B' LIMIT 1").get(0);
+    ApexSObject master =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject duplicateA =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-A' LIMIT 1").get(0);
+    ApexSObject duplicateB =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Dup-B' LIMIT 1").get(0);
 
     final int[] beforeUpdateCount = new int[] {0};
     final int[] afterUpdateCount = new int[] {0};
@@ -736,9 +740,10 @@ public final class SampleGovernorTest {
             ApexSObject.of("Account").set("Name", "Master"),
             ApexSObject.of("Account").set("Name", "Duplicate")));
 
-    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject master =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
     ApexSObject duplicate =
-        Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
 
     Database.MergeResult result =
         Database.merge(
@@ -805,9 +810,10 @@ public final class SampleGovernorTest {
             ApexSObject.of("Account").set("Name", "Master"),
             ApexSObject.of("Account").set("Name", "Duplicate")));
 
-    ApexSObject master = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
+    ApexSObject master =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Master' LIMIT 1").get(0);
     ApexSObject duplicate =
-        Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Duplicate' LIMIT 1").get(0);
 
     Database.insert(
         List.of(
@@ -1134,7 +1140,8 @@ public final class SampleGovernorTest {
         .register();
 
     Database.SaveResult[] missingRequired =
-        Database.insert(List.of(ApexSObject.of("Invoice__c").set("Name", "INV-001")), false);
+        Database.insert(List.of(ApexSObject.of("Invoice__c").set("Name", "INV-001")), false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(missingRequired[0].isSuccess(), "missing required field should fail");
     SystemAssert.assertEquals(
         "REQUIRED_FIELD_MISSING",
@@ -1152,7 +1159,8 @@ public final class SampleGovernorTest {
                     .set("Name", "INV-002")
                     .set("Amount__c", "oops")
                     .set("Paid__c", false)),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(invalidType[0].isSuccess(), "invalid field type should fail");
     SystemAssert.assertEquals(
         "INVALID_TYPE_ON_FIELD_IN_RECORD",
@@ -1166,7 +1174,8 @@ public final class SampleGovernorTest {
                     .set("Name", "INV-003")
                     .set("Amount__c", 1200.0)
                     .set("Paid__c", false)),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertTrue(valid[0].isSuccess(), "valid custom object row should succeed");
 
     List<ApexSObject> rows =
@@ -1193,13 +1202,15 @@ public final class SampleGovernorTest {
     Database.SaveResult[] valid =
         Database.insert(
             List.of(ApexSObject.of("Invoice__c").set("Name", "INV-1001").set("Status__c", "Draft")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertTrue(valid[0].isSuccess(), "valid row should pass schema constraints");
 
     Database.SaveResult[] tooLong =
         Database.insert(
             List.of(ApexSObject.of("Invoice__c").set("Name", "INV-10001").set("Status__c", "Draft")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(tooLong[0].isSuccess(), "max length overflow should fail");
     SystemAssert.assertEquals(
         "STRING_TOO_LONG", tooLong[0].getErrors()[0].getStatusCode(), "max length status mismatch");
@@ -1209,7 +1220,8 @@ public final class SampleGovernorTest {
     Database.SaveResult[] invalidRequiredPicklist =
         Database.insert(
             List.of(ApexSObject.of("Invoice__c").set("Name", "INV-1002").set("Status__c", "Archived")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(
         invalidRequiredPicklist[0].isSuccess(), "restricted required picklist should reject unknown value");
     SystemAssert.assertEquals(
@@ -1228,7 +1240,8 @@ public final class SampleGovernorTest {
                     .set("Name", "INV-1003")
                     .set("Status__c", "Paid")
                     .set("Region__c", "EU")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(
         invalidOptionalPicklist[0].isSuccess(), "restricted optional picklist should reject unknown value");
     SystemAssert.assertEquals(
@@ -1264,7 +1277,8 @@ public final class SampleGovernorTest {
                 ApexSObject.of("Invoice__c")
                     .set("Name", "INV-PREC")
                     .set("Amount__c", 12345.678)),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(invalidPrecision[0].isSuccess(), "precision overflow should fail");
     SystemAssert.assertEquals(
         "NUMBER_OUTSIDE_VALID_RANGE",
@@ -1282,7 +1296,8 @@ public final class SampleGovernorTest {
                     .set("Name", "INV-REF")
                     .set("Amount__c", 99.99)
                     .set("Account__c", "001NOREF000000001")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(invalidReference[0].isSuccess(), "lookup reference mismatch should fail");
     SystemAssert.assertEquals(
         "FIELD_INTEGRITY_EXCEPTION",
@@ -1303,7 +1318,8 @@ public final class SampleGovernorTest {
                     .set("Name", "INV-OK")
                     .set("Amount__c", 1234.56)
                     .set("Account__c", account.id())),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertTrue(valid[0].isSuccess(), "valid precision + lookup row should pass");
   }
 
@@ -1845,7 +1861,8 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(
         2, Database.countQuery("SELECT count() FROM Account"), "savepoint branch should add second row");
 
-    ApexSObject loaded = Database.query("SELECT Id, Name FROM Account WHERE Name = 'Seed' LIMIT 1").get(0);
+    ApexSObject loaded =
+        (ApexSObject) Database.query("SELECT Id, Name FROM Account WHERE Name = 'Seed' LIMIT 1").get(0);
     Database.update(List.of(loaded.set("Name", "Seed-Updated")));
     SystemAssert.assertEquals(
         1,
@@ -1877,7 +1894,8 @@ public final class SampleGovernorTest {
 
     ApexSObject validPartial = ApexSObject.of("Account").withId(target.id()).set("Name", "Updated-Partial");
     ApexSObject invalidPartial = ApexSObject.of("Account").set("Name", "MissingId");
-    Database.SaveResult[] partialResults = Database.update(List.of(validPartial, invalidPartial), false);
+    Database.SaveResult[] partialResults =
+        Database.update(List.of(validPartial, invalidPartial), false).toArray(new Database.SaveResult[0]);
 
     SystemAssert.assertEquals(2, partialResults.length, "partial results size mismatch");
     SystemAssert.assertTrue(partialResults[0].isSuccess(), "first row should succeed in partial mode");
@@ -1895,18 +1913,16 @@ public final class SampleGovernorTest {
 
     ApexSObject validAtomic = ApexSObject.of("Account").withId(target.id()).set("Name", "Updated-AllOrNone");
     ApexSObject invalidAtomic = ApexSObject.of("Account").set("Name", "MissingIdAgain");
-    Database.SaveResult[] atomicResults = Database.update(List.of(validAtomic, invalidAtomic), true);
-
-    SystemAssert.assertEquals(2, atomicResults.length, "allOrNone results size mismatch");
-    SystemAssert.assertFalse(atomicResults[0].isSuccess(), "all rows should fail in allOrNone mode");
-    SystemAssert.assertFalse(atomicResults[1].isSuccess(), "all rows should fail in allOrNone mode");
-    SystemAssert.assertEquals(
-        "REQUIRED_FIELD_MISSING",
-        atomicResults[0].getErrors()[0].getStatusCode(),
-        "allOrNone should preserve root status code");
-    SystemAssert.assertTrue(
-        atomicResults[0].getErrors()[0].getMessage().contains("allOrNone rollback"),
-        "failure message should indicate rollback");
+    boolean threwDmlException = false;
+    try {
+      Database.update(List.of(validAtomic, invalidAtomic), true);
+    } catch (DmlException e) {
+      threwDmlException = true;
+      SystemAssert.assertTrue(
+          e.getMessage().contains("allOrNone rollback") || e.getMessage().contains("requires id"),
+          "DmlException message should indicate rollback or missing id");
+    }
+    SystemAssert.assertTrue(threwDmlException, "allOrNone=true should throw DmlException on failure");
     SystemAssert.assertEquals(
         1,
         Database.countQuery("SELECT count() FROM Account WHERE Name = 'Updated-Partial'"),
@@ -1966,7 +1982,8 @@ public final class SampleGovernorTest {
 
     ApexSObject ok = ApexSObject.of("Account").withId(rows.get(2).id()).set("Name", "C-Updated");
     ApexSObject ng = ApexSObject.of("Account").set("Name", "MissingId");
-    Database.SaveResult[] partial = Database.update(List.of(ok, ng), false);
+    Database.SaveResult[] partial =
+        Database.update(List.of(ok, ng), false).toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(partial[1].isSuccess(), "partial mode should report per-row failure");
     SystemAssert.assertEquals(5, Limits.getDmlStatements(), "partial update call should count once");
 
@@ -2016,7 +2033,8 @@ public final class SampleGovernorTest {
     Database.SaveResult[] duplicate =
         Database.insert(
             List.of(ApexSObject.of("Account").set("Name", "Dup").set("ExternalKey__c", "EXT-2")),
-            false);
+            false)
+            .toArray(new Database.SaveResult[0]);
     SystemAssert.assertFalse(duplicate[0].isSuccess(), "unique external-id should reject duplicates");
     SystemAssert.assertEquals(
         "DUPLICATE_VALUE",
@@ -2063,14 +2081,43 @@ public final class SampleGovernorTest {
     Database.clearSchemaRegistry();
     apexemu.runtime.Test.clearMocks();
 
-    ApexSObject user = ApexSObject.of("User").withId("005TESTUSER00001");
+    ApexSObject user =
+        ApexSObject.of("User")
+            .withId("005TESTUSER00001")
+            .set("Username", "runas-user@example.test")
+            .set("ProfileId", "00eRUNASPROFILE001");
     String before = apexemu.runtime.UserInfo.getUserId();
+    String beforeUsername = apexemu.runtime.UserInfo.getUsername();
+    String beforeProfileId = apexemu.runtime.UserInfo.getProfileId();
     apexemu.runtime.Test.runAs(
         user,
-        () ->
-            SystemAssert.assertEquals(
-                "005TESTUSER00001", apexemu.runtime.UserInfo.getUserId(), "runAs should switch user context"));
+        () -> {
+          SystemAssert.assertEquals(
+              "005TESTUSER00001",
+              apexemu.runtime.UserInfo.getUserId(),
+              "runAs should switch user context");
+          SystemAssert.assertEquals(
+              "runas-user@example.test",
+              apexemu.runtime.UserInfo.getUsername(),
+              "runAs should switch username context");
+          SystemAssert.assertEquals(
+              "runas-user@example.test",
+              apexemu.runtime.UserInfo.getUserName(),
+              "UserName alias should follow runAs context");
+          SystemAssert.assertEquals(
+              "00eRUNASPROFILE001",
+              apexemu.runtime.UserInfo.getProfileId(),
+              "runAs should switch profile context");
+        });
     SystemAssert.assertEquals(before, apexemu.runtime.UserInfo.getUserId(), "runAs should restore user context");
+    SystemAssert.assertEquals(
+        beforeUsername,
+        apexemu.runtime.UserInfo.getUsername(),
+        "runAs should restore username context");
+    SystemAssert.assertEquals(
+        beforeProfileId,
+        apexemu.runtime.UserInfo.getProfileId(),
+        "runAs should restore profile context");
 
     Schema.object("Invoice__c").required("Name", Schema.FieldType.STRING).register();
     Path csv = Files.createTempFile("apexemu-load-data-", ".csv");
@@ -2102,6 +2149,153 @@ public final class SampleGovernorTest {
     SystemAssert.assertEquals(1, Limits.getCallouts(), "callout count should increase by send()");
   }
 
+  @Test
+  public void beginAndEndRunAsRestoreNestedContexts() {
+    apexemu.runtime.Test.clearMocks();
+
+    ApexSObject outerUser =
+        ApexSObject.of("User")
+            .withId("005TESTOUTER0001")
+            .set("Username", "outer-user@example.test")
+            .set("profileId", "00eRUNASPROFILEO01");
+    ApexSObject innerUser =
+        ApexSObject.of("User")
+            .withId("005TESTINNER0001")
+            .set("Username", "inner-user@example.test")
+            .set("ProfileId", "00eRUNASPROFILEI01");
+
+    String baseUserId = apexemu.runtime.UserInfo.getUserId();
+    String baseUsername = apexemu.runtime.UserInfo.getUsername();
+    String baseProfileId = apexemu.runtime.UserInfo.getProfileId();
+
+    apexemu.runtime.Test.beginRunAs(outerUser);
+    try {
+      SystemAssert.assertEquals(
+          "005TESTOUTER0001",
+          apexemu.runtime.UserInfo.getUserId(),
+          "outer runAs should switch user context");
+      SystemAssert.assertEquals(
+          "outer-user@example.test",
+          apexemu.runtime.UserInfo.getUsername(),
+          "outer runAs should switch username context");
+      SystemAssert.assertEquals(
+          "00eRUNASPROFILEO01",
+          apexemu.runtime.UserInfo.getProfileId(),
+          "outer runAs should read lowercase profileId");
+
+      apexemu.runtime.Test.beginRunAs(innerUser);
+      try {
+        SystemAssert.assertEquals(
+            "005TESTINNER0001",
+            apexemu.runtime.UserInfo.getUserId(),
+            "inner runAs should switch user context");
+        SystemAssert.assertEquals(
+            "inner-user@example.test",
+            apexemu.runtime.UserInfo.getUsername(),
+            "inner runAs should switch username context");
+        SystemAssert.assertEquals(
+            "00eRUNASPROFILEI01",
+            apexemu.runtime.UserInfo.getProfileId(),
+            "inner runAs should switch profile context");
+      } finally {
+        apexemu.runtime.Test.endRunAs();
+      }
+
+      SystemAssert.assertEquals(
+          "005TESTOUTER0001",
+          apexemu.runtime.UserInfo.getUserId(),
+          "ending nested runAs should restore outer user");
+      SystemAssert.assertEquals(
+          "outer-user@example.test",
+          apexemu.runtime.UserInfo.getUsername(),
+          "ending nested runAs should restore outer username");
+      SystemAssert.assertEquals(
+          "00eRUNASPROFILEO01",
+          apexemu.runtime.UserInfo.getProfileId(),
+          "ending nested runAs should restore outer profile");
+    } finally {
+      apexemu.runtime.Test.endRunAs();
+    }
+
+    SystemAssert.assertEquals(baseUserId, apexemu.runtime.UserInfo.getUserId(), "runAs should restore base user");
+    SystemAssert.assertEquals(
+        baseUsername, apexemu.runtime.UserInfo.getUsername(), "runAs should restore base username");
+    SystemAssert.assertEquals(
+        baseProfileId, apexemu.runtime.UserInfo.getProfileId(), "runAs should restore base profile");
+  }
+
+  @Test
+  public void dynamicStubImplementsNestedInterfacesAndUsesStableApexStubName() {
+    StubHost stub =
+        apexemu.runtime.Test.createStub(
+            StubHost.class,
+            new apexemu.runtime.System.StubProvider() {
+              @Override
+              public Object handleMethodCall(
+                  Object stubbedObject,
+                  String methodName,
+                  apexemu.runtime.System.Type returnType,
+                  List<apexemu.runtime.System.Type> paramTypes,
+                  List<String> paramNames,
+                  List<Object> args) {
+                if ("doA".equals(methodName)) {
+                  return "stub-a";
+                }
+                if ("doB".equals(methodName)) {
+                  return "stub-b";
+                }
+                return null;
+              }
+            });
+
+    SystemAssert.assertTrue(
+        stub instanceof StubHost.IStubHost, "dynamic stub should implement matching nested interfaces");
+    ApexAssert.isInstanceOfType(
+        stub, "IStubHost", "ApexAssert should resolve implemented nested interface names");
+    SystemAssert.assertTrue(
+        ApexStrings.valueOf(stub).startsWith("StubHost__sfdc_ApexStub:"),
+        "dynamic stub should use Apex-style stub naming");
+    SystemAssert.assertEquals("stub-a", stub.doA(), "stub override should call provider");
+    SystemAssert.assertEquals(
+        "stub-b",
+        ((StubHost.IStubHost) stub).doB(),
+        "nested interface dispatch should call provider");
+  }
+
+  @Test
+  public void dynamicStubSupportsMultipleNestedInterfaces() {
+    StubMultiHost stub =
+        apexemu.runtime.Test.createStub(
+            StubMultiHost.class,
+            new apexemu.runtime.System.StubProvider() {
+              @Override
+              public Object handleMethodCall(
+                  Object stubbedObject,
+                  String methodName,
+                  apexemu.runtime.System.Type returnType,
+                  List<apexemu.runtime.System.Type> paramTypes,
+                  List<String> paramNames,
+                  List<Object> args) {
+                return switch (methodName) {
+                  case "doA" -> "stub-a";
+                  case "doB" -> "stub-b";
+                  case "doC" -> "stub-c";
+                  default -> null;
+                };
+              }
+            });
+
+    SystemAssert.assertTrue(stub instanceof StubMultiHost.IA, "dynamic stub should implement IA");
+    SystemAssert.assertTrue(stub instanceof StubMultiHost.IB, "dynamic stub should implement IB");
+    SystemAssert.assertTrue(stub instanceof StubMultiHost.IC, "dynamic stub should implement IC");
+    ApexAssert.isInstanceOfType(stub, "IA", "ApexAssert should match IA");
+    ApexAssert.isInstanceOfType(stub, "IB", "ApexAssert should match IB");
+    ApexAssert.isInstanceOfType(stub, "IC", "ApexAssert should match IC");
+    SystemAssert.assertEquals("stub-a", ((StubMultiHost.IA) stub).doA(), "IA dispatch should work");
+    SystemAssert.assertEquals("stub-b", ((StubMultiHost.IB) stub).doB(), "IB dispatch should work");
+    SystemAssert.assertEquals("stub-c", ((StubMultiHost.IC) stub).doC(), "IC dispatch should work");
+  }
+
   private static final class FutureWorker {
     static int executed;
 
@@ -2123,6 +2317,48 @@ public final class SampleGovernorTest {
     TriggerRow(String id, String name) {
       this.id = id;
       this.name = name;
+    }
+  }
+
+  public static class StubHost {
+    public interface IStubHost {
+      String doA();
+
+      String doB();
+    }
+
+    public String doA() {
+      return "real-a";
+    }
+
+    public String doB() {
+      return "real-b";
+    }
+  }
+
+  public static class StubMultiHost {
+    public interface IA {
+      String doA();
+    }
+
+    public interface IB {
+      String doB();
+    }
+
+    public interface IC {
+      String doC();
+    }
+
+    public String doA() {
+      return "real-a";
+    }
+
+    public String doB() {
+      return "real-b";
+    }
+
+    public String doC() {
+      return "real-c";
     }
   }
 }

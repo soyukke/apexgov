@@ -1,6 +1,7 @@
 package apexemu.runtime;
 
-@FunctionalInterface
 public interface Schedulable {
-  void execute();
+  default void execute(System.SchedulableContext context) {}
+
+  default void execute() {}
 }

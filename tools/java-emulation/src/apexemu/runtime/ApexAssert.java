@@ -133,8 +133,54 @@ public final class ApexAssert {
     }
 
     Class<?> actualClass = instance.getClass();
-    return actualClass.getSimpleName().equalsIgnoreCase(expectedTypeName)
-        || actualClass.getName().equalsIgnoreCase(expectedTypeName);
+    return typeHierarchyMatches(actualClass, expectedTypeName);
+  }
+
+  private static boolean typeHierarchyMatches(Class<?> actualClass, String expectedTypeName) {
+    for (Class<?> current = actualClass; current != null; current = current.getSuperclass()) {
+      if (typeNameMatches(current, expectedTypeName)) {
+        return true;
+      }
+      for (Class<?> iface : current.getInterfaces()) {
+        if (interfaceHierarchyMatches(iface, expectedTypeName)) {
+          return true;
+        }
+      }
+      for (Class<?> nested : current.getDeclaredClasses()) {
+        if (nested == null) {
+          continue;
+        }
+        if (typeNameMatches(nested, expectedTypeName)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private static boolean interfaceHierarchyMatches(Class<?> iface, String expectedTypeName) {
+    if (iface == null) {
+      return false;
+    }
+    if (typeNameMatches(iface, expectedTypeName)) {
+      return true;
+    }
+    for (Class<?> parent : iface.getInterfaces()) {
+      if (interfaceHierarchyMatches(parent, expectedTypeName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean typeNameMatches(Class<?> type, String expectedTypeName) {
+    if (type == null || expectedTypeName == null || expectedTypeName.isEmpty()) {
+      return false;
+    }
+    return type.getSimpleName().equalsIgnoreCase(expectedTypeName)
+        || type.getName().equalsIgnoreCase(expectedTypeName)
+        || type.getName().endsWith("$" + expectedTypeName)
+        || type.getName().endsWith("." + expectedTypeName);
   }
 
   private static String describeExpectedType(Object expectedType) {

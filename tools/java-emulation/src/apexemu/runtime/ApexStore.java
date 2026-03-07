@@ -14,6 +14,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -25,7 +26,8 @@ import java.util.regex.PatternSyntaxException;
 final class ApexStore {
   private static final String IDENTIFIER_TEXT = "[a-zA-Z_][\\w]*";
   private static final String FIELD_PATH_TEXT = IDENTIFIER_TEXT + "(?:\\." + IDENTIFIER_TEXT + ")*";
-  private static final Pattern FROM_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([a-zA-Z_][\\w]*)");
+  private static final Pattern FROM_PATTERN =
+      Pattern.compile("(?i)\\bfrom\\s+(" + FIELD_PATH_TEXT + ")");
   private static final Pattern LIMIT_PATTERN = Pattern.compile("(?i)\\blimit\\s+(\\d+)");
   private static final Pattern OFFSET_PATTERN = Pattern.compile("(?i)\\boffset\\s+(\\d+)");
   private static final Pattern WHERE_KEYWORD = Pattern.compile("(?i)\\bwhere\\b");
@@ -48,6 +50,8 @@ final class ApexStore {
       Pattern.compile("(?i)\\s+for\\s+reference\\s*$");
   private static final Pattern TRAILING_ALL_ROWS_PATTERN =
       Pattern.compile("(?i)\\s+all\\s+rows\\s*$");
+  private static final Pattern INLINE_WITH_MODE_PATTERN =
+      Pattern.compile("(?i)\\s+with\\s+(user_mode|system_mode|security_enforced)\\b");
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile(
           "(?i)^(" + FIELD_PATH_TEXT + ")(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
@@ -106,7 +110,152 @@ final class ApexStore {
         Boolean.TRUE,
         Boolean.TRUE,
         Boolean.TRUE);
+    seedProfile(
+        state,
+        "00e000000000003",
+        "Standard User",
+        "Standard",
+        Boolean.TRUE,
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedProfile(
+        state,
+        "00e000000000004",
+        "Marketing User",
+        "Standard",
+        Boolean.TRUE,
+        Boolean.TRUE,
+        Boolean.TRUE);
     seedPermissionSet(state, "0PS000000000001", "dreamhouse");
+    seedPermissionSet(state, "0PS000000000002", "Proving_With_User_Mode_Works");
+    seedPermissionSet(state, "0PS000000000003", "provides_access_to_actual_cost_field_on_campaign");
+    seedPermissionSet(state, "0PS000000000004", "Provides_Read_Only_Access_to_Account_and_all_fields");
+    seedPermissionSet(state, "0PS000000000005", "Provides_Read_Access_to_Contact_and_Contact_Name_field");
+    seedPermissionSet(state, "0PS000000000006", "Provides_create_access_to_Contact_and_contact_email_field");
+    seedPermissionSet(state, "0PS000000000007", "Provides_edit_access_to_Accounts_except_shippingStreet");
+    seedPermissionSet(state, "0PS000000000008", "Read_access_to_Account_Shipping_Address");
+    seedPermissionSet(state, "0PS000000000009", "ReadAccessToTradeStyle");
+    seedPermissionSetGroup(
+        state,
+        "0PG000000000001",
+        "Permission_Set_Group_for_testing",
+        "Updated");
+    seedObjectPermission(
+        state,
+        "0OP000000000001",
+        "0PS000000000002",
+        "Account",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000002",
+        "0PS000000000003",
+        "Campaign",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000003",
+        "0PS000000000004",
+        "Account",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000004",
+        "0PS000000000005",
+        "Contact",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000005",
+        "0PS000000000006",
+        "Contact",
+        Boolean.TRUE,
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000006",
+        "0PS000000000007",
+        "Account",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.TRUE,
+        Boolean.FALSE);
+    seedObjectPermission(
+        state,
+        "0OP000000000007",
+        "0PS000000000008",
+        "Account",
+        Boolean.TRUE,
+        Boolean.FALSE,
+        Boolean.FALSE,
+        Boolean.FALSE);
+    seedFieldPermission(
+        state,
+        "0FP000000000001",
+        "0PS000000000003",
+        "Campaign.ActualCost",
+        Boolean.TRUE,
+        Boolean.FALSE);
+    seedFieldPermission(
+        state,
+        "0FP000000000002",
+        "0PS000000000005",
+        "Contact.AccountId",
+        Boolean.TRUE,
+        Boolean.FALSE);
+    seedFieldPermission(
+        state,
+        "0FP000000000003",
+        "0PS000000000006",
+        "Contact.AccountId",
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedFieldPermission(
+        state,
+        "0FP000000000004",
+        "0PS000000000006",
+        "Contact.Email",
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedFieldPermission(
+        state,
+        "0FP000000000005",
+        "0PS000000000007",
+        "Account.ShippingStreet",
+        Boolean.TRUE,
+        Boolean.TRUE);
+    seedFieldPermission(
+        state,
+        "0FP000000000006",
+        "0PS000000000008",
+        "Account.ShippingStreet",
+        Boolean.TRUE,
+        Boolean.FALSE);
+    seedFieldPermission(
+        state,
+        "0FP000000000007",
+        "0PS000000000009",
+        "Account.TradeStyle",
+        Boolean.TRUE,
+        Boolean.FALSE);
+    seedPlatformCachePartition(state, "08A000000000001", "default", "");
+    seedOrganization(state, "00D000000000001", "ApexGov Test Org");
+    seedStandardPricebook(state, "01s000000000001AAA");
+    seedCustomMetadataFixtures(state);
     seedStaticResource(
         state,
         "081000000000001",
@@ -122,6 +271,59 @@ final class ApexStore {
         "081000000000003",
         "sample_data_contacts",
         "[{\"FirstName\":\"Alice\",\"LastName\":\"Example\",\"Email\":\"alice@example.com\"}]");
+    seedStaticResource(state, "081000000000004", "helloworld", Blob.valueOf("hello world"));
+    seedStaticResource(state, "081000000000005", "helloaudio", Blob.valueOf("hello audio"));
+    seedStaticResource(state, "081000000000006", "logo", Blob.valueOf("logo image"));
+    seedAppMenuItem(state, "0MM000000000001", "Apex_Recipes", "02u000000000001");
+    seedAppMenuItem(state, "0MM000000000002", "Sales", "02u000000000002");
+    seedApexClass(
+        state,
+        "01p000000000001",
+        "ApexClassUtilities",
+        "/**\n * @group Shared Code\n * @see RecipeTreeViewController\n * @see FormattedRecipeDisplayController\n */\npublic class ApexClassUtilities {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000002",
+        "DynamicSOQLRecipes_Tests",
+        "/**\n * @group Data Recipes\n */\npublic class DynamicSOQLRecipes_Tests {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000003",
+        "FormattedRecipeDisplayController",
+        "/**\n * @group Shared Code\n */\npublic class FormattedRecipeDisplayController {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000004",
+        "FormattedRecipeDisplayController_Tests",
+        "/**\n * @group Tests\n */\npublic class FormattedRecipeDisplayController_Tests {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000005",
+        "ApiServiceRecipes",
+        "/**\n * @group Integration Recipes\n * @see RestClient\n * @see ApiServiceRecipesDataModel\n */\npublic class ApiServiceRecipes {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000006",
+        "DMLRecipes_Tests",
+        "/**\n * @group Tests\n */\npublic class DMLRecipes_Tests {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000007",
+        "RecipeTreeViewController",
+        "/**\n * @group Shared Code\n */\npublic class RecipeTreeViewController {}",
+        62.0);
+    seedApexClass(
+        state,
+        "01p000000000008",
+        "SOQLRecipes",
+        "/**\n * @group Data Recipes\n */\npublic class SOQLRecipes {}",
+        62.0);
     return state;
   }
 
@@ -155,7 +357,193 @@ final class ApexStore {
     state.active.computeIfAbsent("PermissionSet", ignored -> new LinkedHashMap<>()).put(id, permissionSet);
   }
 
-  private static void seedStaticResource(State state, String id, String name, String body) {
+  private static void seedPermissionSetGroup(
+      State state, String id, String developerName, String status) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || developerName == null
+        || developerName.isBlank()) {
+      return;
+    }
+    ApexSObject group =
+        ApexSObject.of("PermissionSetGroup")
+            .withId(id)
+            .set("DeveloperName", developerName)
+            .set("Status", status == null || status.isBlank() ? "Updated" : status);
+    state.active.computeIfAbsent("PermissionSetGroup", ignored -> new LinkedHashMap<>()).put(id, group);
+  }
+
+  private static void seedObjectPermission(
+      State state,
+      String id,
+      String parentId,
+      String objectType,
+      Boolean read,
+      Boolean create,
+      Boolean edit,
+      Boolean delete) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || parentId == null
+        || parentId.isBlank()
+        || objectType == null
+        || objectType.isBlank()) {
+      return;
+    }
+    ApexSObject row =
+        ApexSObject.of("ObjectPermissions")
+            .withId(id)
+            .set("ParentId", parentId)
+            .set("SobjectType", objectType)
+            .set("PermissionsRead", read)
+            .set("PermissionsCreate", create)
+            .set("PermissionsEdit", edit)
+            .set("PermissionsDelete", delete);
+    state.active.computeIfAbsent("ObjectPermissions", ignored -> new LinkedHashMap<>()).put(id, row);
+  }
+
+  private static void seedFieldPermission(
+      State state,
+      String id,
+      String parentId,
+      String fieldApiName,
+      Boolean read,
+      Boolean edit) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || parentId == null
+        || parentId.isBlank()
+        || fieldApiName == null
+        || fieldApiName.isBlank()) {
+      return;
+    }
+    String objectType = fieldApiName;
+    int dot = fieldApiName.indexOf('.');
+    if (dot > 0) {
+      objectType = fieldApiName.substring(0, dot);
+    }
+    ApexSObject row =
+        ApexSObject.of("FieldPermissions")
+            .withId(id)
+            .set("ParentId", parentId)
+            .set("SobjectType", objectType)
+            .set("Field", fieldApiName)
+            .set("PermissionsRead", read)
+            .set("PermissionsEdit", edit);
+    state.active.computeIfAbsent("FieldPermissions", ignored -> new LinkedHashMap<>()).put(id, row);
+  }
+
+  private static void seedPlatformCachePartition(
+      State state, String id, String developerName, String namespacePrefix) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || developerName == null
+        || developerName.isBlank()) {
+      return;
+    }
+    ApexSObject partition =
+        ApexSObject.of("PlatformCachePartition")
+            .withId(id)
+            .set("DeveloperName", developerName)
+            .set("NamespacePrefix", namespacePrefix == null ? "" : namespacePrefix);
+    state.active
+        .computeIfAbsent("PlatformCachePartition", ignored -> new LinkedHashMap<>())
+        .put(id, partition);
+  }
+
+  private static void seedOrganization(State state, String id, String name) {
+    if (state == null || id == null || id.isBlank()) {
+      return;
+    }
+    ApexSObject organization =
+        ApexSObject.of("Organization")
+            .withId(id)
+            .set("Name", name == null || name.isBlank() ? "Organization" : name)
+            .set("IsSandbox", Boolean.FALSE)
+            .set("InstanceName", "APEXGOV")
+            .set("OrganizationType", "Developer Edition")
+            .set("IsReadOnly", Boolean.FALSE)
+            .set("FiscalYearStartMonth", Integer.valueOf(1))
+            .set("LanguageLocaleKey", "en_US")
+            .set("TimeZoneSidKey", "America/Los_Angeles")
+            .set("NamespacePrefix", "");
+    state.active.computeIfAbsent("Organization", ignored -> new LinkedHashMap<>()).put(id, organization);
+  }
+
+  private static void seedStandardPricebook(State state, String id) {
+    if (state == null || id == null || id.isBlank()) {
+      return;
+    }
+    ApexSObject pricebook =
+        ApexSObject.of("Pricebook2")
+            .withId(id)
+            .set("Name", "Standard Price Book")
+            .set("IsActive", Boolean.TRUE)
+            .set("IsStandard", Boolean.TRUE);
+    state.active.computeIfAbsent("Pricebook2", ignored -> new LinkedHashMap<>()).put(id, pricebook);
+  }
+
+  private static void seedCustomMetadataFixtures(State state) {
+    if (state == null) {
+      return;
+    }
+
+    ApexSObject objectDefinition =
+        ApexSObject.of("EntityDefinition")
+            .withId("01I000000000001")
+            .set("QualifiedApiName", "Contact");
+    ApexSObject fieldDefinition =
+        ApexSObject.of("FieldDefinition")
+            .withId("01J000000000001")
+            .set("QualifiedApiName", "AttendanceStatus__c");
+    state.active.computeIfAbsent("EntityDefinition", ignored -> new LinkedHashMap<>())
+        .put(objectDefinition.id(), objectDefinition);
+    state.active.computeIfAbsent("FieldDefinition", ignored -> new LinkedHashMap<>())
+        .put(fieldDefinition.id(), fieldDefinition);
+
+    ApexSObject bucketedPicklist =
+        ApexSObject.of("Bucketed_Picklist__mdt")
+            .withId("mBP000000000001")
+            .set("DeveloperName", "Attendance")
+            .set("Object__c", objectDefinition.id())
+            .set("Field__c", fieldDefinition.id())
+            .set("Object__r", objectDefinition.copy())
+            .set("Field__r", fieldDefinition.copy());
+    state.active.computeIfAbsent("Bucketed_Picklist__mdt", ignored -> new LinkedHashMap<>())
+        .put(bucketedPicklist.id(), bucketedPicklist);
+
+    ApexSObject picklistBucket =
+        ApexSObject.of("Picklist_Bucket__mdt")
+            .withId("mPB000000000001")
+            .set("DeveloperName", "Attended")
+            .set("Bucketed_Picklist__c", bucketedPicklist.id());
+    state.active.computeIfAbsent("Picklist_Bucket__mdt", ignored -> new LinkedHashMap<>())
+        .put(picklistBucket.id(), picklistBucket);
+
+    ApexSObject picklistValue =
+        ApexSObject.of("Bucketed_Picklist_value__mdt")
+            .withId("mPV000000000001")
+            .set("DeveloperName", "Asleep")
+            .set("Label", "Asleep")
+            .set("Picklist_Bucket__c", picklistBucket.id());
+    state.active.computeIfAbsent("Bucketed_Picklist_value__mdt", ignored -> new LinkedHashMap<>())
+        .put(picklistValue.id(), picklistValue);
+
+    ApexSObject picklistValueRelation =
+        ApexSObject.of("Bucketed_Picklist_values__c")
+            .withId("a0V000000000001")
+            .set("DeveloperName", "Asleep")
+            .set("Label", "Asleep")
+            .set("Picklist_Bucket__mdtId", picklistBucket.id());
+    state.active.computeIfAbsent("Bucketed_Picklist_values__c", ignored -> new LinkedHashMap<>())
+        .put(picklistValueRelation.id(), picklistValueRelation);
+  }
+
+  private static void seedStaticResource(State state, String id, String name, Object body) {
     if (state == null
         || id == null
         || id.isBlank()
@@ -170,6 +558,173 @@ final class ApexStore {
             .set("Name", name)
             .set("Body", body);
     state.active.computeIfAbsent("StaticResource", ignored -> new LinkedHashMap<>()).put(id, resource);
+  }
+
+  private static void seedAppMenuItem(
+      State state, String id, String name, String applicationId) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || name == null
+        || name.isBlank()
+        || applicationId == null
+        || applicationId.isBlank()) {
+      return;
+    }
+    ApexSObject item =
+        ApexSObject.of("AppMenuItem")
+            .withId(id)
+            .set("Name", name)
+            .set("ApplicationId", applicationId);
+    state.active.computeIfAbsent("AppMenuItem", ignored -> new LinkedHashMap<>()).put(id, item);
+  }
+
+  private static void seedApexClass(
+      State state, String id, String name, String body, Double apiVersion) {
+    if (state == null
+        || id == null
+        || id.isBlank()
+        || name == null
+        || name.isBlank()
+        || body == null) {
+      return;
+    }
+    ApexSObject klass =
+        ApexSObject.of("ApexClass")
+            .withId(id)
+            .set("Name", name)
+            .set("Body", body)
+            .set("ApiVersion", apiVersion == null ? 62.0 : apiVersion)
+            .set("LengthWithoutComments", body.length());
+    state.active.computeIfAbsent("ApexClass", ignored -> new LinkedHashMap<>()).put(id, klass);
+  }
+
+  /**
+   * Resolve an SObject type name from an ID by scanning all active stores.
+   */
+  static String resolveTypeFromId(String id) {
+    if (id == null || id.isBlank()) {
+      return null;
+    }
+    State state = STATE.get();
+    for (Map.Entry<String, Map<String, ApexSObject>> entry : state.active.entrySet()) {
+      if (entry.getValue().containsKey(id)) {
+        return entry.getKey();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Check if the current user has an ObjectPermission granting a specific CRUD operation
+   * via an assigned PermissionSet.
+   */
+  static boolean hasObjectPermission(String objectType, String permissionField) {
+    if (objectType == null || objectType.isBlank() || permissionField == null || permissionField.isBlank()) {
+      return false;
+    }
+    String userId = UserContext.currentUserId();
+    State state = STATE.get();
+    Set<String> permissionSetIds = resolveAssignedPermissionSetIds(state, userId);
+    if (permissionSetIds.isEmpty()) return false;
+    Map<String, ApexSObject> opStore = state.active.get("ObjectPermissions");
+    if (opStore == null || opStore.isEmpty()) return false;
+    for (ApexSObject op : opStore.values()) {
+      String parentId = normalizeId(op.getAs("ParentId"));
+      if (parentId == null || !containsIgnoreCase(permissionSetIds, parentId)) continue;
+      String opType = op.getAs("SobjectType");
+      if (opType == null || !opType.equalsIgnoreCase(objectType)) continue;
+      Object value = op.get(permissionField);
+      if (value instanceof Boolean b && b) return true;
+      if (value instanceof String s && "true".equalsIgnoreCase(s)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if the current user has a FieldPermission granting a specific access level
+   * for a field on a given object via an assigned PermissionSet.
+   *
+   * @param objectType the SObject type (e.g. "Campaign")
+   * @param fieldName the field API name (e.g. "ActualCost")
+   * @param permissionField "PermissionsRead" or "PermissionsEdit"
+   */
+  static boolean hasFieldPermission(String objectType, String fieldName, String permissionField) {
+    if (objectType == null || fieldName == null || permissionField == null) {
+      return false;
+    }
+    String userId = UserContext.currentUserId();
+    State state = STATE.get();
+    Set<String> permissionSetIds = resolveAssignedPermissionSetIds(state, userId);
+    if (permissionSetIds.isEmpty()) return false;
+    Map<String, ApexSObject> fpStore = state.active.get("FieldPermissions");
+    if (fpStore == null || fpStore.isEmpty()) return false;
+    for (ApexSObject fp : fpStore.values()) {
+      String parentId = normalizeId(fp.getAs("ParentId"));
+      if (parentId == null || !containsIgnoreCase(permissionSetIds, parentId)) continue;
+      String fpField = fp.getAs("Field");
+      // FieldPermissions.Field stores "ObjectType.FieldName"
+      String expected = objectType + "." + fieldName;
+      if (fpField == null) continue;
+      if (!fpField.equalsIgnoreCase(expected) && !fpField.equalsIgnoreCase(fieldName)) continue;
+      Object value = fp.get(permissionField);
+      if (value instanceof Boolean b && b) return true;
+      if (value instanceof String s && "true".equalsIgnoreCase(s)) return true;
+    }
+    return false;
+  }
+
+  private static Set<String> resolveAssignedPermissionSetIds(State state, String userId) {
+    Set<String> ids = new LinkedHashSet<>();
+    if (state == null) {
+      return ids;
+    }
+    String normalizedUserId = normalizeId(userId);
+    if (normalizedUserId == null) {
+      return ids;
+    }
+    Map<String, ApexSObject> psaStore = state.active.get("PermissionSetAssignment");
+    if (psaStore == null || psaStore.isEmpty()) {
+      return ids;
+    }
+    Map<String, ApexSObject> psgcStore = state.active.get("PermissionSetGroupComponent");
+    for (ApexSObject psa : psaStore.values()) {
+      String assigneeId = normalizeId(psa.getAs("AssigneeId"));
+      if (assigneeId == null || !assigneeId.equalsIgnoreCase(normalizedUserId)) continue;
+
+      String permissionSetId = normalizeId(psa.getAs("PermissionSetId"));
+      if (permissionSetId != null) {
+        ids.add(permissionSetId);
+      }
+
+      String permissionSetGroupId = normalizeId(psa.getAs("PermissionSetGroupId"));
+      if (permissionSetGroupId == null || psgcStore == null || psgcStore.isEmpty()) {
+        continue;
+      }
+      for (ApexSObject component : psgcStore.values()) {
+        String componentGroupId = normalizeId(component.getAs("PermissionSetGroupId"));
+        if (componentGroupId == null || !componentGroupId.equalsIgnoreCase(permissionSetGroupId)) {
+          continue;
+        }
+        String componentPermissionSetId = normalizeId(component.getAs("PermissionSetId"));
+        if (componentPermissionSetId != null) {
+          ids.add(componentPermissionSetId);
+        }
+      }
+    }
+    return ids;
+  }
+
+  private static boolean containsIgnoreCase(Set<String> values, String target) {
+    if (values == null || values.isEmpty() || target == null) {
+      return false;
+    }
+    for (String value : values) {
+      if (value != null && value.equalsIgnoreCase(target)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static void setSoqlNullOrderDefault(Database.NullOrderDefault mode) {
@@ -267,17 +822,96 @@ final class ApexStore {
 
   static List<ApexSObject> query(String soql) {
     STATE.get().semiJoinCache.clear();
+    boolean enforceReadAccess =
+        soql != null
+            && (containsIgnoreCase(soql, "WITH USER_MODE")
+                || containsIgnoreCase(soql, "WITH SECURITY_ENFORCED"));
     QuerySpec spec = parseQuerySpec(soql);
+    if (enforceReadAccess) {
+      checkReadAccessForQuery(spec);
+    }
     List<ApexSObject> all = scan(spec, false);
+    // Aggregate queries already return AggregateResult instances — return as-is
+    if (isAggregateQuery(spec)) {
+      Limits.addSoql(1);
+      Limits.addHeapBytes(all.size() * 256L);
+      return all;
+    }
+    Set<String> selectedFields = collectSelectedFields(spec);
     List<ApexSObject> out = new ArrayList<>(all.size());
     for (ApexSObject row : all) {
       ApexSObject projected = row.copy();
+      if (selectedFields != null) {
+        projected.retainFields(selectedFields);
+        projected.markQueriedFields(selectedFields);
+      }
+      attachParentRecordFields(spec, row, projected);
       attachChildSubqueryRows(spec, row, projected);
       out.add(projected);
     }
     Limits.addSoql(1);
     Limits.addHeapBytes(out.size() * 256L);
     return out;
+  }
+
+  /** Embed resolved parent records for relationship field paths in SELECT (e.g. Account.Name). */
+  private static void attachParentRecordFields(QuerySpec spec, ApexSObject sourceRow, ApexSObject projectedRow) {
+    if (spec == null || spec.selectSpec == null || spec.selectSpec.items == null) {
+      return;
+    }
+    Set<String> attachedRelationships = new HashSet<>();
+    for (SelectItem item : spec.selectSpec.items) {
+      if (item.kind() != SelectItemKind.FIELD || item.field() == null) {
+        continue;
+      }
+      String field = item.field();
+      if (!field.contains(".")) {
+        continue;
+      }
+      String relationshipSegment = field.substring(0, field.indexOf('.'));
+      String relLower = relationshipSegment.toLowerCase();
+      if (attachedRelationships.contains(relLower)) {
+        continue;
+      }
+      attachedRelationships.add(relLower);
+      ApexSObject parentRecord = resolveRelationshipHop(sourceRow, relationshipSegment);
+      if (parentRecord != null) {
+        projectedRow.set(relationshipSegment, parentRecord.copy());
+      }
+    }
+  }
+
+  /** Collect lowercase field names from the SELECT clause. Returns null if all fields should be kept (e.g. aggregate-only query). */
+  private static Set<String> collectSelectedFields(QuerySpec spec) {
+    if (spec == null || spec.selectSpec == null || spec.selectSpec.items == null) {
+      return null;
+    }
+    if (spec.selectSpec.hasAggregate) {
+      return null; // aggregate queries return AggregateResult, not SObject field projection
+    }
+    Set<String> fields = new HashSet<>();
+    fields.add("id"); // Id is always included
+    for (SelectItem item : spec.selectSpec.items) {
+      if (item.kind() == SelectItemKind.FIELDS_SELECTOR) {
+        return null;
+      }
+      if (item.kind() == SelectItemKind.FIELD && item.field() != null) {
+        String f = item.field().toLowerCase();
+        fields.add(f);
+        if (f.contains(".")) {
+          String relSegment = f.substring(0, f.indexOf('.')).toLowerCase();
+          fields.add(relSegment);
+          // Also keep the foreign key field (e.g., "accountid" for "account")
+          fields.add(relSegment.replaceAll("__r$", "__c") + (relSegment.endsWith("__r") ? "" : "id"));
+        }
+      } else if (item.kind() == SelectItemKind.CHILD_SUBQUERY && item.childSubquery() != null) {
+        String rel = item.outputName();
+        if (rel != null) {
+          fields.add(rel.toLowerCase());
+        }
+      }
+    }
+    return fields;
   }
 
   static int countQuery(String soql) {
@@ -364,14 +998,17 @@ final class ApexStore {
       State state, List<ApexSObject> normalized, String externalIdFieldName) {
     StateSnapshot original = snapshotOf(state);
     try {
+      clearRecordErrors(normalized);
       List<UpsertPlanRow> plan = planUpsertRows(state, normalized, externalIdFieldName);
 
       List<ApexSObject> insertNew = upsertPlanNewRows(plan, UpsertPath.INSERT);
       List<ApexSObject> updateNew = upsertPlanNewRows(plan, UpsertPath.UPDATE);
       List<ApexSObject> updateOld = upsertPlanOldRows(plan);
 
-      dispatchBefore(DmlVerb.INSERT, insertNew, null);
-      dispatchBefore(DmlVerb.UPDATE, updateNew, updateOld);
+      dispatchBefore(state, DmlVerb.INSERT, insertNew, null);
+      dispatchBefore(state, DmlVerb.UPDATE, updateNew, updateOld);
+      throwIfRecordErrors(insertNew);
+      throwIfRecordErrors(updateNew);
 
       Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
       for (UpsertPlanRow row : plan) {
@@ -379,7 +1016,7 @@ final class ApexStore {
             row.path == UpsertPath.UPDATE
                 ? updateOne(state, row.record)
                 : insertOne(state, row.record);
-        out[row.index] = success(id);
+        out[row.index] = success(id, row.path == UpsertPath.INSERT);
       }
 
       List<ApexSObject> insertedAfter = snapshotActiveRows(state, insertNew, "upsert");
@@ -387,6 +1024,8 @@ final class ApexStore {
 
       dispatchAfter(DmlVerb.INSERT, insertedAfter, null);
       dispatchAfter(DmlVerb.UPDATE, updatedAfter, updateOld);
+      throwIfRecordErrors(insertedAfter);
+      throwIfRecordErrors(updatedAfter);
       return out;
     } catch (RuntimeException error) {
       restore(state, original);
@@ -400,22 +1039,27 @@ final class ApexStore {
     for (int i = 0; i < normalized.size(); i += 1) {
       ApexSObject record = normalized.get(i);
       try {
+        clearRecordErrors(List.of(record));
         UpsertPath path = resolveUpsertPath(state, record, externalIdFieldName);
         if (path == UpsertPath.UPDATE) {
           List<ApexSObject> singleRecord = List.of(record);
           List<ApexSObject> oldRows = List.of(snapshotActiveRow(state, record, "upsert"));
-          dispatchBefore(DmlVerb.UPDATE, singleRecord, oldRows);
+          dispatchBefore(state, DmlVerb.UPDATE, singleRecord, oldRows);
+          throwIfRecordErrors(singleRecord);
           String id = updateOne(state, record);
           List<ApexSObject> newRows = snapshotActiveRows(state, singleRecord, "upsert");
           dispatchAfter(DmlVerb.UPDATE, newRows, oldRows);
-          out[i] = success(id);
+          throwIfRecordErrors(newRows);
+          out[i] = success(id, false);
         } else {
           List<ApexSObject> singleRecord = List.of(record);
-          dispatchBefore(DmlVerb.INSERT, singleRecord, null);
+          dispatchBefore(state, DmlVerb.INSERT, singleRecord, null);
+          throwIfRecordErrors(singleRecord);
           String id = insertOne(state, record);
           List<ApexSObject> newRows = snapshotActiveRows(state, singleRecord, "upsert");
           dispatchAfter(DmlVerb.INSERT, newRows, null);
-          out[i] = success(id);
+          throwIfRecordErrors(newRows);
+          out[i] = success(id, true);
         }
       } catch (RuntimeException error) {
         out[i] = failure(record == null ? null : record.id(), classifyFailure(error), null);
@@ -428,8 +1072,10 @@ final class ApexStore {
       State state, List<ApexSObject> normalized, DmlVerb verb, DmlOperation operation) {
     StateSnapshot original = snapshotOf(state);
     try {
+      clearRecordErrors(normalized);
       List<ApexSObject> beforeOld = beforeOldRecords(state, verb, normalized);
-      dispatchBefore(verb, normalized, beforeOld);
+      dispatchBefore(state, verb, normalized, beforeOld);
+      throwIfRecordErrors(normalized);
 
       Database.SaveResult[] successes = new Database.SaveResult[normalized.size()];
       for (int i = 0; i < normalized.size(); i += 1) {
@@ -440,6 +1086,7 @@ final class ApexStore {
 
       List<ApexSObject> afterNew = afterNewRecords(state, verb, normalized);
       dispatchAfter(verb, afterNew, beforeOld);
+      throwIfRecordErrors(afterNew);
       return successes;
     } catch (RuntimeException error) {
       restore(state, original);
@@ -454,18 +1101,49 @@ final class ApexStore {
       ApexSObject record = normalized.get(i);
       List<ApexSObject> singleRecord = List.of(record);
       try {
+        clearRecordErrors(singleRecord);
         List<ApexSObject> beforeOld = beforeOldRecords(state, verb, singleRecord);
-        dispatchBefore(verb, singleRecord, beforeOld);
+        dispatchBefore(state, verb, singleRecord, beforeOld);
+        throwIfRecordErrors(singleRecord);
 
         String id = operation.apply(state, record);
         List<ApexSObject> afterNew = afterNewRecords(state, verb, singleRecord);
         dispatchAfter(verb, afterNew, beforeOld);
+        throwIfRecordErrors(afterNew);
         out[i] = success(id);
       } catch (RuntimeException error) {
         out[i] = failure(record == null ? null : record.id(), classifyFailure(error), null);
       }
     }
     return out;
+  }
+
+  private static void clearRecordErrors(List<ApexSObject> records) {
+    if (records == null) {
+      return;
+    }
+    for (ApexSObject record : records) {
+      if (record != null) {
+        record.clearErrors();
+      }
+    }
+  }
+
+  private static void throwIfRecordErrors(List<ApexSObject> records) {
+    if (records == null) {
+      return;
+    }
+    for (ApexSObject record : records) {
+      if (record == null || !record.hasErrors()) {
+        continue;
+      }
+      Database.Error[] errors = record.getErrors();
+      if (errors == null || errors.length == 0 || errors[0] == null) {
+        throw new DmlFailure("FIELD_CUSTOM_VALIDATION_EXCEPTION", "validation error", new String[0]);
+      }
+      Database.Error first = errors[0];
+      throw new DmlFailure(first.getStatusCode(), first.getMessage(), first.getFields());
+    }
   }
 
   private static Database.SaveResult[] allOrNoneFailures(
@@ -480,8 +1158,13 @@ final class ApexStore {
 
   private static String insertOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
+    resolveReferenceFields(state, record);
+    applyDerivedSalesItemFields(state, record);
     validateForInsert(state, record);
     ApexSObject stored = record.copy();
+    applyDerivedNameFields(stored);
+    applyDerivedSalesItemFields(state, stored);
+    stored.set("IsDeleted", Boolean.FALSE);
 
     String id = normalizeId(stored.id());
     if (id == null) {
@@ -497,14 +1180,25 @@ final class ApexStore {
     if (isType(stored.type(), "ContentVersion")) {
       ensureContentVersionDocumentLinkage(state, stored, record, id);
     }
+    if (isType(stored.type(), "ContentDistribution")) {
+      ensureContentDistributionFields(stored, record, id);
+    }
+
+    applySystemTimestampsOnInsert(stored, record);
 
     Map<String, ApexSObject> bucket = state.active.computeIfAbsent(stored.type(), ignored -> new LinkedHashMap<>());
     bucket.put(id, stored);
+    syncRelatedRollups(state, null, stored);
+    if (isType(stored.type(), "EmailMessage")) {
+      ensureEmailMessageToRelations(state, stored, record, id);
+    }
     return id;
   }
 
   private static String updateOne(State state, ApexSObject raw) {
     ApexSObject record = requireRecord(raw);
+    resolveReferenceFields(state, record);
+    applyDerivedSalesItemFields(state, record);
     validateForUpdate(state, record);
     String id = requireId(record, "update");
 
@@ -514,10 +1208,16 @@ final class ApexStore {
     }
 
     ApexSObject stored = bucket.get(id).copy();
+    ApexSObject beforeUpdate = stored.copy();
     for (Map.Entry<String, Object> field : record.fields().entrySet()) {
       stored.set(field.getKey(), field.getValue());
     }
+    applyDerivedNameFields(stored);
+    applyDerivedSalesItemFields(state, stored);
+    stored.set("IsDeleted", Boolean.FALSE);
+    applySystemTimestampsOnUpdate(stored, record);
     bucket.put(id, stored);
+    syncRelatedRollups(state, beforeUpdate, stored);
     return id;
   }
 
@@ -526,6 +1226,255 @@ final class ApexStore {
     return resolveUpsertPath(state, record, null) == UpsertPath.UPDATE
         ? updateOne(state, record)
         : insertOne(state, record);
+  }
+
+  private static void applyDerivedNameFields(ApexSObject record) {
+    if (record == null) {
+      return;
+    }
+    if (isType(record.type(), "Contact") || isType(record.type(), "User") || isType(record.type(), "Lead")) {
+      String first = trimToNull(safeGet(record, "FirstName"));
+      String last = trimToNull(safeGet(record, "LastName"));
+      if (first == null && last == null) {
+        // fall through to generic Name synthesis for records without person-name parts
+      } else {
+        String fullName;
+        if (first != null && last != null) {
+          fullName = first + " " + last;
+        } else if (first != null) {
+          fullName = first;
+        } else {
+          fullName = last;
+        }
+        record.set("Name", fullName);
+      }
+    }
+
+    if (isBlankValue(record.get("Name"))) {
+      String type = record.type();
+      if (type != null
+          && (type.endsWith("__c")
+              || type.endsWith("__mdt")
+              || isType(type, "Organization")
+              || isType(type, "ApexClass"))) {
+        String suffix = trimToNull(record.id());
+        if (suffix == null) {
+          suffix = "record";
+        }
+        record.set("Name", type + " " + suffix);
+      }
+    }
+  }
+
+  private static void applyDerivedSalesItemFields(State state, ApexSObject record) {
+    if (record == null || !isType(record.type(), "OpportunityLineItem")) {
+      return;
+    }
+
+    Double quantity = toNumber(record.get("Quantity"));
+    Double unitPrice = toNumber(record.get("UnitPrice"));
+    Double totalPrice = toNumber(record.get("TotalPrice"));
+
+    if (unitPrice == null) {
+      if (quantity != null && Double.compare(quantity, 0.0d) != 0 && totalPrice != null) {
+        unitPrice = totalPrice / quantity;
+        record.set("UnitPrice", unitPrice);
+      } else {
+        Object pricebookEntryIdRaw = record.get("PricebookEntryId");
+        if (pricebookEntryIdRaw instanceof String pricebookEntryId && !pricebookEntryId.isBlank()) {
+          ApexSObject pricebookEntry = findActiveRowByIdAndType(pricebookEntryId, "PricebookEntry");
+          Double entryUnitPrice = pricebookEntry == null ? null : toNumber(pricebookEntry.get("UnitPrice"));
+          if (entryUnitPrice != null) {
+            unitPrice = entryUnitPrice;
+            record.set("UnitPrice", entryUnitPrice);
+          }
+        }
+      }
+    }
+
+    if (record.get("ListPrice") == null) {
+      Object pricebookEntryIdRaw = record.get("PricebookEntryId");
+      if (pricebookEntryIdRaw instanceof String pricebookEntryId && !pricebookEntryId.isBlank()) {
+        ApexSObject pricebookEntry = findActiveRowByIdAndType(pricebookEntryId, "PricebookEntry");
+        Double entryUnitPrice = pricebookEntry == null ? null : toNumber(pricebookEntry.get("UnitPrice"));
+        if (entryUnitPrice != null) {
+          record.set("ListPrice", entryUnitPrice);
+        }
+      }
+    }
+
+    if (unitPrice != null && quantity != null) {
+      record.set("TotalPrice", unitPrice * quantity);
+    }
+  }
+
+  private static void syncRelatedRollups(State state, ApexSObject before, ApexSObject after) {
+    if (state == null) {
+      return;
+    }
+    if (!isType(before == null ? null : before.type(), "OpportunityLineItem")
+        && !isType(after == null ? null : after.type(), "OpportunityLineItem")) {
+      return;
+    }
+
+    Set<String> opportunityIds = new LinkedHashSet<>();
+    addOpportunityRollupId(opportunityIds, before);
+    addOpportunityRollupId(opportunityIds, after);
+    for (String opportunityId : opportunityIds) {
+      syncOpportunityAmountFromLineItems(state, opportunityId);
+    }
+  }
+
+  private static void addOpportunityRollupId(Set<String> opportunityIds, ApexSObject lineItem) {
+    if (opportunityIds == null || lineItem == null) {
+      return;
+    }
+    Object rawOpportunityId = lineItem.get("OpportunityId");
+    if (rawOpportunityId instanceof String opportunityId && !opportunityId.isBlank()) {
+      opportunityIds.add(opportunityId);
+    }
+  }
+
+  private static void syncOpportunityAmountFromLineItems(State state, String opportunityId) {
+    if (state == null || opportunityId == null || opportunityId.isBlank()) {
+      return;
+    }
+    ApexSObject opportunity = findActiveRowByIdAndType(opportunityId, "Opportunity");
+    if (opportunity == null) {
+      return;
+    }
+
+    Map<String, ApexSObject> lineItems = findBucketByType(state.active, "OpportunityLineItem");
+    if (lineItems == null || lineItems.isEmpty()) {
+      opportunity.set("Amount", null);
+      return;
+    }
+
+    double totalAmount = 0.0d;
+    boolean hasLineItems = false;
+    for (ApexSObject lineItem : lineItems.values()) {
+      if (lineItem == null) {
+        continue;
+      }
+      Object rawOpportunityId = lineItem.get("OpportunityId");
+      if (!(rawOpportunityId instanceof String lineOpportunityId)
+          || !lineOpportunityId.equalsIgnoreCase(opportunityId)) {
+        continue;
+      }
+      hasLineItems = true;
+      Double lineTotal = toNumber(lineItem.get("TotalPrice"));
+      if (lineTotal == null) {
+        Double lineUnitPrice = toNumber(lineItem.get("UnitPrice"));
+        Double lineQuantity = toNumber(lineItem.get("Quantity"));
+        if (lineUnitPrice != null && lineQuantity != null) {
+          lineTotal = lineUnitPrice * lineQuantity;
+        }
+      }
+      if (lineTotal != null) {
+        totalAmount += lineTotal;
+      }
+    }
+
+    opportunity.set("Amount", hasLineItems ? totalAmount : null);
+  }
+
+  private static Object safeGet(ApexSObject record, String fieldName) {
+    if (record == null || fieldName == null || fieldName.isBlank()) {
+      return null;
+    }
+    try {
+      return record.get(fieldName);
+    } catch (SObjectException ignored) {
+      return null;
+    }
+  }
+
+  private static String trimToNull(Object value) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value).trim();
+    return text.isEmpty() ? null : text;
+  }
+
+  private static void resolveReferenceFields(State state, ApexSObject record) {
+    if (state == null || record == null || record.type() == null) {
+      return;
+    }
+    if (isType(record.type(), "Contact")) {
+      boolean needsAccountResolution = !record.hasField("AccountId");
+      if (record.hasField("AccountId")) {
+        needsAccountResolution = isBlankValue(record.get("AccountId"));
+      }
+      if (needsAccountResolution) {
+        Object accountRefRaw = record.hasField("Account") ? record.get("Account") : null;
+        if (accountRefRaw instanceof ApexSObject accountRef) {
+          String resolvedAccountId = normalizeId(accountRef.id());
+          if (resolvedAccountId == null) {
+            Object external = accountRef.get("ExternalSalesforceId__c");
+            if (!isBlankValue(external)) {
+              resolvedAccountId =
+                  findRecordIdByFieldValue(state, "Account", "ExternalSalesforceId__c", external);
+            }
+          }
+          if (resolvedAccountId != null) {
+            record.set("AccountId", resolvedAccountId);
+          }
+        }
+      }
+      return;
+    }
+  }
+
+  private static String findRecordIdByFieldValue(
+      State state, String typeName, String fieldName, Object expected) {
+    if (state == null || typeName == null || fieldName == null || expected == null) {
+      return null;
+    }
+    Map<String, ApexSObject> bucket = findBucketByType(state.active, typeName);
+    if (bucket == null || bucket.isEmpty()) {
+      return null;
+    }
+    for (ApexSObject row : bucket.values()) {
+      if (row == null) {
+        continue;
+      }
+      Object actual = row.get(fieldName);
+      if (valuesEqualForField(actual, expected)) {
+        return normalizeId(row.id());
+      }
+    }
+    return null;
+  }
+
+  private static boolean valuesEqualForField(Object actual, Object expected) {
+    if (actual == expected) {
+      return true;
+    }
+    if (actual == null || expected == null) {
+      return false;
+    }
+    if (compareEquality(actual, expected)) {
+      return true;
+    }
+
+    if (actual instanceof ApexSObject actualRecord) {
+      String actualId = normalizeId(actualRecord.id());
+      if (actualId != null && compareEquality(actualId, expected)) {
+        return true;
+      }
+    }
+    if (expected instanceof ApexSObject expectedRecord) {
+      String expectedId = normalizeId(expectedRecord.id());
+      if (expectedId != null && compareEquality(actual, expectedId)) {
+        return true;
+      }
+    }
+
+    if (actual instanceof String actualText && expected instanceof String expectedText) {
+      return actualText.trim().equalsIgnoreCase(expectedText.trim());
+    }
+    return false;
   }
 
   private static UpsertPath resolveUpsertPath(
@@ -542,7 +1491,12 @@ final class ApexStore {
     if (bucket != null && bucket.containsKey(id)) {
       return UpsertPath.UPDATE;
     }
-    return UpsertPath.INSERT;
+    // Record has an ID but it doesn't exist — in Salesforce this is
+    // INVALID_CROSS_REFERENCE_KEY (upsert with non-existent ID).
+    throw new DmlFailure(
+        "INVALID_CROSS_REFERENCE_KEY",
+        "invalid cross reference id: " + id,
+        new String[] {"Id"});
   }
 
   private static String normalizeExternalIdFieldName(String fieldName) {
@@ -561,17 +1515,13 @@ final class ApexStore {
 
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
-      throw new DmlFailure(
-          "INVALID_FIELD_FOR_INSERT_UPDATE",
-          "external id field is not defined in schema: " + fieldName,
-          new String[] {fieldName});
+      // No schema registered — fall back to insert (cannot resolve external id)
+      return UpsertPath.INSERT;
     }
     Schema.FieldDefinition field = definition.field(fieldName);
     if (field == null) {
-      throw new DmlFailure(
-          "INVALID_FIELD_FOR_INSERT_UPDATE",
-          "external id field is not defined in schema: " + fieldName,
-          new String[] {fieldName});
+      // Field not in partial schema — fall back to insert
+      return UpsertPath.INSERT;
     }
     if (!field.externalId && !field.unique) {
       throw new DmlFailure(
@@ -648,7 +1598,11 @@ final class ApexStore {
     }
 
     ApexSObject removed = activeBucket.remove(id);
+    if (removed != null) {
+      removed.set("IsDeleted", Boolean.TRUE);
+    }
     state.deleted.computeIfAbsent(record.type(), ignored -> new LinkedHashMap<>()).put(id, removed);
+    syncRelatedRollups(state, removed, null);
     return id;
   }
 
@@ -667,7 +1621,12 @@ final class ApexStore {
       throw new IllegalArgumentException("active record already exists for undelete: " + record.type() + "#" + id);
     }
 
-    activeBucket.put(id, deletedBucket.remove(id));
+    ApexSObject restored = deletedBucket.remove(id);
+    if (restored != null) {
+      restored.set("IsDeleted", Boolean.FALSE);
+    }
+    activeBucket.put(id, restored);
+    syncRelatedRollups(state, null, restored);
     return id;
   }
 
@@ -679,8 +1638,8 @@ final class ApexStore {
     ApexSObject masterOld = snapshotActiveRow(state, master, "merge");
     MergePlan plan = planMerge(state, master, masterId, rawDuplicates);
 
-    dispatchBefore(DmlVerb.UPDATE, List.of(master), List.of(masterOld));
-    dispatchBefore(DmlVerb.DELETE, null, plan.duplicateOldRows);
+    dispatchBefore(state, DmlVerb.UPDATE, List.of(master), List.of(masterOld));
+    dispatchBefore(state, DmlVerb.DELETE, null, plan.duplicateOldRows);
 
     String mergedId = updateOne(state, master);
     for (ApexSObject duplicateDelete : plan.duplicateDeleteRows) {
@@ -781,12 +1740,90 @@ final class ApexStore {
   }
 
   private static void dispatchBefore(
-      DmlVerb verb, List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
+      State state, DmlVerb verb, List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
     switch (verb) {
       case INSERT -> dispatchTrigger(true, Trigger.Operation.INSERT, newRecords, null);
-      case UPDATE -> dispatchTrigger(true, Trigger.Operation.UPDATE, newRecords, oldRecords);
+      case UPDATE ->
+          {
+            List<ApexSObject> triggerNew = materializeBeforeUpdateRows(state, newRecords, oldRecords);
+            dispatchTrigger(true, Trigger.Operation.UPDATE, triggerNew, oldRecords);
+            applyBeforeUpdateMutations(newRecords, triggerNew);
+          }
       case DELETE -> dispatchTrigger(true, Trigger.Operation.DELETE, null, oldRecords);
       case UNDELETE, UPSERT -> {}
+    }
+  }
+
+  private static List<ApexSObject> materializeBeforeUpdateRows(
+      State state, List<ApexSObject> newRecords, List<ApexSObject> oldRecords) {
+    if (newRecords == null || newRecords.isEmpty()) {
+      return List.of();
+    }
+    Map<String, ApexSObject> oldByKey = new LinkedHashMap<>();
+    if (oldRecords != null) {
+      for (ApexSObject oldRow : oldRecords) {
+        if (oldRow == null || oldRow.type() == null || oldRow.id() == null || oldRow.id().isBlank()) {
+          continue;
+        }
+        oldByKey.put(oldRow.type().toLowerCase() + "#" + oldRow.id().toLowerCase(), oldRow);
+      }
+    }
+
+    List<ApexSObject> out = new ArrayList<>(newRecords.size());
+    for (ApexSObject newRow : newRecords) {
+      if (newRow == null) {
+        continue;
+      }
+      ApexSObject merged = null;
+      String id = newRow.id();
+      if (newRow.type() != null && id != null && !id.isBlank()) {
+        merged = oldByKey.get(newRow.type().toLowerCase() + "#" + id.toLowerCase());
+        if (merged != null) {
+          merged = merged.copy();
+        }
+      }
+      if (merged == null) {
+        try {
+          merged = snapshotActiveRow(state, newRow, "update");
+        } catch (RuntimeException ignored) {
+          // fall through
+        }
+      }
+      if (merged == null) {
+        merged = ApexSObject.of(newRow.type());
+        if (id != null && !id.isBlank()) {
+          merged.withId(id);
+        }
+      }
+      for (Map.Entry<String, Object> field : newRow.fields().entrySet()) {
+        merged.set(field.getKey(), field.getValue());
+      }
+      if (merged.id() == null && id != null && !id.isBlank()) {
+        merged.withId(id);
+      }
+      out.add(merged);
+    }
+    return out;
+  }
+
+  private static void applyBeforeUpdateMutations(
+      List<ApexSObject> targetRows, List<ApexSObject> triggerRows) {
+    if (targetRows == null || triggerRows == null || targetRows.isEmpty() || triggerRows.isEmpty()) {
+      return;
+    }
+    int count = Math.min(targetRows.size(), triggerRows.size());
+    for (int i = 0; i < count; i += 1) {
+      ApexSObject target = targetRows.get(i);
+      ApexSObject source = triggerRows.get(i);
+      if (target == null || source == null) {
+        continue;
+      }
+      if (source.id() != null && !source.id().isBlank()) {
+        target.withId(source.id());
+      }
+      for (Map.Entry<String, Object> field : source.fields().entrySet()) {
+        target.set(field.getKey(), field.getValue());
+      }
     }
   }
 
@@ -863,10 +1900,22 @@ final class ApexStore {
   }
 
   private static List<ApexSObject> scan(QuerySpec spec, boolean countOnly) {
+    if (spec != null
+        && isType(spec.sobjectType, "DatedConversionRate")
+        && !UserInfo.isMultiCurrencyOrganization()) {
+      throw new QueryException("sObject type 'DatedConversionRate' is not supported");
+    }
+
     State state = STATE.get();
-    Map<String, ApexSObject> bucket = findBucketByType(state.active, spec.sobjectType);
+    Map<String, ApexSObject> activeBucket = findBucketByType(state.active, spec.sobjectType);
+    Map<String, ApexSObject> deletedBucket =
+        spec != null && spec.includeAllRows
+            ? findBucketByType(state.deleted, spec.sobjectType)
+            : null;
     boolean aggregateQuery = isAggregateQuery(spec);
-    if (bucket == null || bucket.isEmpty()) {
+    boolean hasActiveRows = activeBucket != null && !activeBucket.isEmpty();
+    boolean hasDeletedRows = deletedBucket != null && !deletedBucket.isEmpty();
+    if (!hasActiveRows && !hasDeletedRows) {
       if (!countOnly && aggregateQuery && (spec.groupByFields == null || spec.groupByFields.isEmpty())) {
         ApexSObject aggregate = buildAggregateRow(spec, List.of(), List.of());
         if (aggregate == null) {
@@ -878,11 +1927,21 @@ final class ApexStore {
     }
 
     List<ApexSObject> out = new ArrayList<>();
-    for (ApexSObject row : bucket.values()) {
-      if (!matchesWhere(row, spec.whereExpr)) {
-        continue;
+    if (hasActiveRows) {
+      for (ApexSObject row : activeBucket.values()) {
+        if (!matchesWhere(row, spec.whereExpr)) {
+          continue;
+        }
+        out.add(row);
       }
-      out.add(row);
+    }
+    if (hasDeletedRows) {
+      for (ApexSObject row : deletedBucket.values()) {
+        if (!matchesWhere(row, spec.whereExpr)) {
+          continue;
+        }
+        out.add(row);
+      }
     }
 
     if (!countOnly && aggregateQuery) {
@@ -978,7 +2037,7 @@ final class ApexStore {
       return null;
     }
 
-    ApexSObject row = ApexSObject.of("AggregateResult");
+    AggregateResult row = new AggregateResult();
 
     if (spec.groupByFields != null && !spec.groupByFields.isEmpty()) {
       for (int i = 0; i < spec.groupByFields.size(); i += 1) {
@@ -1150,7 +2209,8 @@ final class ApexStore {
         spec.havingExpr,
         spec.orderByKeys,
         spec.limit,
-        spec.offset);
+        spec.offset,
+        spec.includeAllRows);
   }
 
   private static boolean matchesAnyReferenceField(ApexSObject row, String parentId) {
@@ -1342,6 +2402,18 @@ final class ApexStore {
     }
     if (whereLiteral instanceof Boolean literalBoolean) {
       return String.valueOf(value).equalsIgnoreCase(literalBoolean.toString());
+    }
+    if (whereLiteral instanceof Number literalNum) {
+      Double valueNum = toNumber(value);
+      if (valueNum != null) {
+        return Double.compare(literalNum.doubleValue(), valueNum.doubleValue()) == 0;
+      }
+    }
+    if (value instanceof Number valueNum) {
+      Double literalNum = toNumber(whereLiteral);
+      if (literalNum != null) {
+        return Double.compare(valueNum.doubleValue(), literalNum.doubleValue()) == 0;
+      }
     }
     return Objects.equals(String.valueOf(whereLiteral), String.valueOf(value));
   }
@@ -1721,6 +2793,15 @@ final class ApexStore {
       throw new IllegalArgumentException("SOQL cannot be blank");
     }
 
+    String rawForModifierCheck = rawSoql.trim();
+    if (rawForModifierCheck.startsWith("[") && rawForModifierCheck.endsWith("]")) {
+      rawForModifierCheck = rawForModifierCheck.substring(1, rawForModifierCheck.length() - 1).trim();
+    }
+    if (rawForModifierCheck.endsWith(";")) {
+      rawForModifierCheck = rawForModifierCheck.substring(0, rawForModifierCheck.length() - 1).trim();
+    }
+    boolean includeAllRows = TRAILING_ALL_ROWS_PATTERN.matcher(rawForModifierCheck).find();
+
     String soql = sanitize(rawSoql);
     String masked = maskNestedSoqlClauses(soql);
     Matcher fromMatcher = FROM_PATTERN.matcher(masked);
@@ -1841,7 +2922,15 @@ final class ApexStore {
     }
 
     return new QuerySpec(
-        sobjectType, selectSpec, whereExpr, groupByFields, havingExpr, orderByKeys, limit, offset);
+        sobjectType,
+        selectSpec,
+        whereExpr,
+        groupByFields,
+        havingExpr,
+        orderByKeys,
+        limit,
+        offset,
+        includeAllRows);
   }
 
   private static SelectSpec parseSelectSpec(String selectExpr, String rawSoql, String fromType) {
@@ -1864,6 +2953,11 @@ final class ApexStore {
     for (String term : terms) {
       String normalized = term == null ? "" : term.trim();
       if (normalized.isEmpty()) {
+        continue;
+      }
+
+      if (isFieldsSelector(normalized)) {
+        items.add(SelectItem.fieldsSelector(normalized));
         continue;
       }
 
@@ -1919,6 +3013,23 @@ final class ApexStore {
     return new SelectSpec(items, hasAggregate);
   }
 
+  private static boolean isFieldsSelector(String selectTerm) {
+    if (selectTerm == null) {
+      return false;
+    }
+    String normalized = selectTerm.trim();
+    if (!normalized.regionMatches(true, 0, "FIELDS(", 0, 7) || !normalized.endsWith(")")) {
+      return false;
+    }
+    if (normalized.length() <= 8) {
+      return false;
+    }
+    String mode = normalized.substring(7, normalized.length() - 1).trim();
+    return mode.equalsIgnoreCase("STANDARD")
+        || mode.equalsIgnoreCase("CUSTOM")
+        || mode.equalsIgnoreCase("ALL");
+  }
+
   private static ChildSubquerySpec parseChildSubquerySpec(
       String termText, String rawSoql, String parentType) {
     String wrapped = termText == null ? "" : termText.trim();
@@ -1942,6 +3053,9 @@ final class ApexStore {
     }
 
     String relationshipName = rawSpec.sobjectType;
+    if (relationshipName != null && relationshipName.contains(".")) {
+      relationshipName = relationshipName.substring(relationshipName.lastIndexOf('.') + 1);
+    }
     String childType = null;
     String parentLinkField = null;
     Schema.ChildRelationship schemaRelationship =
@@ -1969,7 +3083,8 @@ final class ApexStore {
             rawSpec.havingExpr,
             rawSpec.orderByKeys,
             rawSpec.limit,
-            rawSpec.offset);
+            rawSpec.offset,
+            rawSpec.includeAllRows);
     return new ChildSubquerySpec(relationshipName, normalizedSpec, parentLinkField);
   }
 
@@ -2082,6 +3197,77 @@ final class ApexStore {
     };
   }
 
+  private static boolean containsIgnoreCase(String haystack, String needle) {
+    if (haystack == null || needle == null) return false;
+    return haystack.toLowerCase().contains(needle.toLowerCase());
+  }
+
+  /** Check that the queried object is accessible in USER_MODE queries. */
+  private static void checkReadAccessForQuery(QuerySpec spec) {
+    if (spec == null || spec.sobjectType() == null || spec.sobjectType().isBlank()) {
+      return;
+    }
+    String objectType = spec.sobjectType();
+    Schema.DescribeSObjectResult describe = new Schema.DescribeSObjectResult(objectType);
+    Map<String, Set<String>> inaccessible = new LinkedHashMap<>();
+    Set<String> blockedFields = new LinkedHashSet<>();
+
+    if (!describe.isAccessible()) {
+      blockedFields.addAll(selectedRootFields(spec));
+      if (blockedFields.isEmpty()) {
+        blockedFields.add("Name");
+      }
+      inaccessible.put(describe.getName(), blockedFields);
+      QueryException error =
+          new QueryException("Implementation restriction: sObject type '" + objectType + "' is not supported");
+      error.setInaccessibleFields(inaccessible);
+      throw error;
+    }
+
+    for (String fieldName : selectedRootFields(spec)) {
+      Schema.DescribeFieldResult fieldDescribe = new Schema.SObjectField(objectType, fieldName).getDescribe();
+      if (!fieldDescribe.isAccessible()) {
+        blockedFields.add(fieldDescribe.getName());
+      }
+    }
+    if (blockedFields.isEmpty()) {
+      return;
+    }
+    inaccessible.put(describe.getName(), blockedFields);
+    QueryException error = new QueryException("Query includes inaccessible fields for " + describe.getName());
+    error.setInaccessibleFields(inaccessible);
+    throw error;
+  }
+
+  private static Set<String> selectedRootFields(QuerySpec spec) {
+    Set<String> out = new LinkedHashSet<>();
+    if (spec == null
+        || spec.sobjectType() == null
+        || spec.sobjectType().isBlank()
+        || spec.selectSpec() == null
+        || spec.selectSpec().items() == null) {
+      return out;
+    }
+    String objectType = spec.sobjectType();
+    for (SelectItem item : spec.selectSpec().items()) {
+      if (item == null || item.kind() != SelectItemKind.FIELD || item.field() == null || item.field().isBlank()) {
+        continue;
+      }
+      String fieldName = item.field();
+      int dot = fieldName.indexOf('.');
+      if (dot >= 0) {
+        fieldName = fieldName.substring(0, dot);
+      }
+      Schema.DescribeFieldResult fieldDescribe = new Schema.SObjectField(objectType, fieldName).getDescribe();
+      String canonicalName = fieldDescribe.getName();
+      if (canonicalName == null || canonicalName.isBlank()) {
+        canonicalName = fieldName;
+      }
+      out.add(canonicalName);
+    }
+    return out;
+  }
+
   private static boolean containsIgnoreCase(List<String> values, String target) {
     if (values == null || values.isEmpty() || target == null) {
       return false;
@@ -2130,10 +3316,17 @@ final class ApexStore {
         }
 
         String bindName = soql.substring(bindStart, bindEnd);
-        Object bindValue = resolveBindValue(binds, bindName, soql);
+        int bindExpressionEnd = bindEnd;
+        Object bindValue;
+        if (isTrimBindInvocation(soql, bindEnd, bindName)) {
+          bindValue = resolveTrimmedBindValue(binds, bindName, soql);
+          bindExpressionEnd = bindEnd + 2;
+        } else {
+          bindValue = resolveBindValue(binds, bindName, soql);
+        }
         boolean wrappedByParentheses = isWrappedByParentheses(soql, i, bindEnd);
         out.append(formatBindLiteral(bindValue, wrappedByParentheses, bindName));
-        i = bindEnd - 1;
+        i = bindExpressionEnd - 1;
         continue;
       }
 
@@ -2157,6 +3350,51 @@ final class ApexStore {
       }
     }
     throw new IllegalArgumentException("missing bind variable :" + bindName + " in SOQL: " + rawSoql);
+  }
+
+  private static boolean isTrimBindInvocation(String soql, int bindEnd, String bindName) {
+    if (soql == null || bindName == null || bindName.isBlank()) {
+      return false;
+    }
+    if (!bindName.toLowerCase().endsWith(".trim")) {
+      return false;
+    }
+    return bindEnd + 1 < soql.length()
+        && soql.charAt(bindEnd) == '('
+        && soql.charAt(bindEnd + 1) == ')';
+  }
+
+  private static Object resolveTrimmedBindValue(
+      Map<String, Object> bindVariables, String bindName, String rawSoql) {
+    String baseName = bindName.substring(0, bindName.length() - ".trim".length());
+    Object value;
+    if (containsBindKey(bindVariables, bindName)) {
+      value = resolveBindValue(bindVariables, bindName, rawSoql);
+    } else {
+      value = resolveBindValue(bindVariables, baseName, rawSoql);
+    }
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof String text) {
+      return text.trim();
+    }
+    return String.valueOf(value).trim();
+  }
+
+  private static boolean containsBindKey(Map<String, Object> bindVariables, String bindName) {
+    if (bindVariables == null || bindVariables.isEmpty() || bindName == null || bindName.isBlank()) {
+      return false;
+    }
+    if (bindVariables.containsKey(bindName)) {
+      return true;
+    }
+    for (String candidate : bindVariables.keySet()) {
+      if (candidate != null && candidate.equalsIgnoreCase(bindName)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static boolean isWrappedByParentheses(String source, int placeholderStart, int placeholderEnd) {
@@ -2306,6 +3544,7 @@ final class ApexStore {
     out = stripTrailingSoqlModifier(out, TRAILING_FOR_VIEW_PATTERN);
     out = stripTrailingSoqlModifier(out, TRAILING_FOR_REFERENCE_PATTERN);
     out = stripTrailingSoqlModifier(out, TRAILING_ALL_ROWS_PATTERN);
+    out = stripInlineSoqlModifier(out, INLINE_WITH_MODE_PATTERN);
     return out;
   }
 
@@ -2383,6 +3622,17 @@ final class ApexStore {
       return soql;
     }
     return soql.substring(0, matcher.start()).trim();
+  }
+
+  private static String stripInlineSoqlModifier(String soql, Pattern pattern) {
+    if (soql == null || soql.isBlank() || pattern == null) {
+      return soql;
+    }
+    Matcher matcher = pattern.matcher(soql);
+    if (!matcher.find()) {
+      return soql;
+    }
+    return matcher.replaceAll(" ");
   }
 
   private static int nextClauseStart(int defaultEnd, int bodyStart, int... clauseStarts) {
@@ -3102,6 +4352,7 @@ final class ApexStore {
 
   private static void validateForInsert(State state, ApexSObject record) {
     validateCustomInsertConstraints(record);
+    validateStandardRequiredFields(record, true);
 
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
@@ -3123,6 +4374,15 @@ final class ApexStore {
 
   private static void validateCustomInsertConstraints(ApexSObject record) {
     if (record == null || record.type() == null || record.type().isBlank()) {
+      return;
+    }
+    if (isType(record.type(), "Event_Recipes_Demo__e")) {
+      if (isBlankValue(record.get("AccountId__c"))) {
+        throw new DmlFailure(
+            "REQUIRED_FIELD_MISSING",
+            "required field missing: AccountId__c",
+            new String[] {"AccountId__c"});
+      }
       return;
     }
     if (isType(record.type(), "ContentVersion")) {
@@ -3202,9 +4462,193 @@ final class ApexStore {
     }
     document.set("LatestPublishedVersionId", contentVersionId);
     bucket.put(contentDocumentId, document);
+
+    ensureFirstPublishLocationLink(state, stored, inputRecord, contentDocumentId);
+  }
+
+  private static void ensureFirstPublishLocationLink(
+      State state, ApexSObject stored, ApexSObject inputRecord, String contentDocumentId) {
+    if (state == null || contentDocumentId == null || contentDocumentId.isBlank()) {
+      return;
+    }
+    String linkedEntityId = normalizeIdValue(stored == null ? null : stored.get("FirstPublishLocationId"));
+    if (linkedEntityId == null && inputRecord != null) {
+      linkedEntityId = normalizeIdValue(inputRecord.get("FirstPublishLocationId"));
+    }
+    if (linkedEntityId == null) {
+      return;
+    }
+    if (findActiveRowById(linkedEntityId) == null) {
+      return;
+    }
+
+    Map<String, ApexSObject> links =
+        state.active.computeIfAbsent("ContentDocumentLink", ignored -> new LinkedHashMap<>());
+    for (ApexSObject existing : links.values()) {
+      if (existing == null) {
+        continue;
+      }
+      if (compareEquality(existing.get("ContentDocumentId"), contentDocumentId)
+          && compareEquality(existing.get("LinkedEntityId"), linkedEntityId)) {
+        return;
+      }
+    }
+
+    String linkId = nextId(state, "ContentDocumentLink");
+    ApexSObject link =
+        ApexSObject.of("ContentDocumentLink")
+            .withId(linkId)
+            .set("ContentDocumentId", contentDocumentId)
+            .set("LinkedEntityId", linkedEntityId)
+            .set("ShareType", "V")
+            .set("Visibility", "AllUsers");
+    links.put(linkId, link);
+  }
+
+  private static void ensureContentDistributionFields(
+      ApexSObject stored, ApexSObject inputRecord, String contentDistributionId) {
+    if (stored == null) {
+      return;
+    }
+    String versionId = normalizeIdValue(stored.get("ContentVersionId"));
+    if (versionId == null && inputRecord != null) {
+      versionId = normalizeIdValue(inputRecord.get("ContentVersionId"));
+    }
+    String existingDownloadUrl = trimToNull(stored.get("ContentDownloadUrl"));
+    if (existingDownloadUrl != null) {
+      return;
+    }
+    String token = versionId == null ? contentDistributionId : versionId;
+    if (token == null || token.isBlank()) {
+      token = "content";
+    }
+    String downloadUrl = "https://example.invalid/sfc/servlet.shepherd/version/download/" + token;
+    stored.set("ContentDownloadUrl", downloadUrl);
+    if (inputRecord != null) {
+      inputRecord.set("ContentDownloadUrl", downloadUrl);
+    }
+  }
+
+  private static void ensureEmailMessageToRelations(
+      State state, ApexSObject stored, ApexSObject inputRecord, String emailMessageId) {
+    if (state == null || emailMessageId == null || emailMessageId.isBlank()) {
+      return;
+    }
+    List<String> toIds = normalizeIdList(stored == null ? null : stored.get("toIds"));
+    if (toIds.isEmpty() && inputRecord != null) {
+      toIds = normalizeIdList(inputRecord.get("toIds"));
+    }
+    if (toIds.isEmpty()) {
+      return;
+    }
+
+    Map<String, ApexSObject> relations =
+        state.active.computeIfAbsent("EmailMessageRelation", ignored -> new LinkedHashMap<>());
+    for (String relationId : toIds) {
+      if (relationId == null || relationId.isBlank()) {
+        continue;
+      }
+      boolean exists = false;
+      for (ApexSObject existing : relations.values()) {
+        if (existing == null) {
+          continue;
+        }
+        if (compareEquality(existing.get("EmailMessageId"), emailMessageId)
+            && compareEquality(existing.get("RelationId"), relationId)) {
+          exists = true;
+          break;
+        }
+      }
+      if (exists) {
+        continue;
+      }
+
+      ApexSObject target = findActiveRowById(relationId);
+      String relationAddress = target == null ? null : trimToNull(target.get("Email"));
+      String relationRowId = nextId(state, "EmailMessageRelation");
+      ApexSObject relation =
+          ApexSObject.of("EmailMessageRelation")
+              .withId(relationRowId)
+              .set("EmailMessageId", emailMessageId)
+              .set("RelationId", relationId)
+              .set("RelationType", "ToAddress");
+      if (relationAddress != null) {
+        relation.set("RelationAddress", relationAddress);
+      }
+      relations.put(relationRowId, relation);
+    }
+  }
+
+  private static List<String> normalizeIdList(Object value) {
+    if (value == null) {
+      return List.of();
+    }
+    List<String> out = new ArrayList<>();
+    if (value instanceof Collection<?> collection) {
+      for (Object item : collection) {
+        String normalized = normalizeIdValue(item);
+        if (normalized != null) {
+          out.add(normalized);
+        }
+      }
+      return out;
+    }
+    if (value.getClass().isArray()) {
+      int length = java.lang.reflect.Array.getLength(value);
+      for (int i = 0; i < length; i += 1) {
+        String normalized = normalizeIdValue(java.lang.reflect.Array.get(value, i));
+        if (normalized != null) {
+          out.add(normalized);
+        }
+      }
+      return out;
+    }
+    String normalized = normalizeIdValue(value);
+    return normalized == null ? List.of() : List.of(normalized);
+  }
+
+  private static String normalizeIdValue(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof ApexSObject row) {
+      return normalizeId(row.id());
+    }
+    return normalizeId(String.valueOf(value));
+  }
+
+  private static void applySystemTimestampsOnInsert(ApexSObject stored, ApexSObject inputRecord) {
+    if (stored == null) {
+      return;
+    }
+    DateTime now = DateTime.now();
+    if (!stored.hasField("CreatedDate") || stored.get("CreatedDate") == null) {
+      stored.set("CreatedDate", now);
+      if (inputRecord != null) {
+        inputRecord.set("CreatedDate", now);
+      }
+    }
+    if (!stored.hasField("LastModifiedDate") || stored.get("LastModifiedDate") == null) {
+      stored.set("LastModifiedDate", now);
+      if (inputRecord != null) {
+        inputRecord.set("LastModifiedDate", now);
+      }
+    }
+  }
+
+  private static void applySystemTimestampsOnUpdate(ApexSObject stored, ApexSObject inputRecord) {
+    if (stored == null) {
+      return;
+    }
+    DateTime now = DateTime.now();
+    stored.set("LastModifiedDate", now);
+    if (inputRecord != null) {
+      inputRecord.set("LastModifiedDate", now);
+    }
   }
 
   private static void validateForUpdate(State state, ApexSObject record) {
+    validateStandardRequiredFields(record, false);
     Schema.ObjectDefinition definition = Schema.find(record.type());
     if (definition == null) {
       return;
@@ -3217,10 +4661,8 @@ final class ApexStore {
     for (Map.Entry<String, Object> entry : record.fields().entrySet()) {
       Schema.FieldDefinition field = definition.field(entry.getKey());
       if (field == null) {
-        throw new DmlFailure(
-            "INVALID_FIELD_FOR_INSERT_UPDATE",
-            "field is not defined in schema: " + entry.getKey(),
-            new String[] {entry.getKey()});
+        // In emulation mode, unknown fields are allowed (schema is partial).
+        continue;
       }
 
       Object value = entry.getValue();
@@ -3240,6 +4682,25 @@ final class ApexStore {
       }
 
       validateFieldConstraints(field, value);
+    }
+  }
+
+  private static void validateStandardRequiredFields(ApexSObject record, boolean isInsert) {
+    if (record == null || record.type() == null || record.type().isBlank()) {
+      return;
+    }
+    if (isType(record.type(), "Account")) {
+      boolean missingOrBlankName = isBlankValue(record.get("Name"));
+      if (isInsert && missingOrBlankName) {
+        throw new DmlFailure(
+            "REQUIRED_FIELD_MISSING", "required field missing: Name", new String[] {"Name"});
+      }
+      if (!isInsert && record.hasField("Name") && missingOrBlankName) {
+        throw new DmlFailure(
+            "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+            "Script-thrown exception",
+            new String[] {"Name"});
+      }
     }
   }
 
@@ -3401,6 +4862,10 @@ final class ApexStore {
       case INTEGER -> value instanceof Integer;
       case LONG -> value instanceof Long || value instanceof Integer;
       case DECIMAL, DOUBLE -> value instanceof Number;
+      case DATE -> value instanceof String || value instanceof java.time.LocalDate
+          || value instanceof java.time.LocalDateTime || value instanceof Date || value instanceof DateTime;
+      case DATETIME -> value instanceof String || value instanceof java.time.LocalDate
+          || value instanceof java.time.LocalDateTime || value instanceof Date || value instanceof DateTime;
       case ID -> value instanceof String text && !text.isBlank();
     };
   }
@@ -3408,7 +4873,8 @@ final class ApexStore {
   private static String requireId(ApexSObject record, String operation) {
     String id = normalizeId(record.id());
     if (id == null) {
-      throw new IllegalArgumentException(operation + " requires id: " + record.type());
+      throw new apexemu.runtime.System.DmlException(
+          "Id not specified in an update call: " + record.type());
     }
     return id;
   }
@@ -3486,11 +4952,27 @@ final class ApexStore {
     if (ext.equals("gif")) {
       return "GIF";
     }
+    if (ext.equals("docx")) {
+      return "WORD_X";
+    }
+    if (ext.equals("xlsx")) {
+      return "EXCEL_X";
+    }
+    if (ext.equals("pptx")) {
+      return "POWER_POINT_X";
+    }
+    if (ext.equals("pdf")) {
+      return "PDF";
+    }
     return ext.toUpperCase();
   }
 
   private static Database.SaveResult success(String id) {
     return new Database.SaveResult(true, id, new Database.Error[0]);
+  }
+
+  private static Database.SaveResult success(String id, boolean created) {
+    return new Database.SaveResult(true, id, new Database.Error[0], created);
   }
 
   private static Database.SaveResult failure(String id, FailureInfo info, String messagePrefix) {
@@ -3526,7 +5008,7 @@ final class ApexStore {
       return new FailureInfo(dmlFailure.statusCode, dmlFailure.getMessage(), dmlFailure.fields);
     }
     String message = messageOrDefault(error);
-    if (message.contains("requires id")) {
+    if (message.contains("requires id") || message.contains("Id not specified in an update call")) {
       return new FailureInfo("REQUIRED_FIELD_MISSING", message, new String[] {"Id"});
     }
     if (message.contains("duplicate id")) {
@@ -3605,7 +5087,7 @@ final class ApexStore {
       return List.of();
     }
 
-    dispatchBefore(DmlVerb.UPDATE, plan.newRows, plan.oldRows);
+    dispatchBefore(state, DmlVerb.UPDATE, plan.newRows, plan.oldRows);
     for (ApexSObject row : plan.newRows) {
       updateOne(state, row);
     }
@@ -3698,8 +5180,31 @@ final class ApexStore {
 
   private static String nextId(State state, String type) {
     state.idSequence += 1L;
-    String prefix = type.length() >= 3 ? type.substring(0, 3) : String.format("%-3s", type).replace(' ', 'X');
-    return prefix + String.format("%015d", state.idSequence);
+    String prefix = idPrefixForType(type);
+    return prefix + String.format("%012d", state.idSequence) + "AAA";
+  }
+
+  private static String idPrefixForType(String type) {
+    if (type == null || type.isBlank()) {
+      return "a00";
+    }
+    String normalized = type.trim();
+    if (normalized.equalsIgnoreCase("Account")) return "001";
+    if (normalized.equalsIgnoreCase("Contact")) return "003";
+    if (normalized.equalsIgnoreCase("Lead")) return "00Q";
+    if (normalized.equalsIgnoreCase("Opportunity")) return "006";
+    if (normalized.equalsIgnoreCase("Case")) return "500";
+    if (normalized.equalsIgnoreCase("Task")) return "00T";
+    if (normalized.equalsIgnoreCase("Event")) return "00U";
+    if (normalized.equalsIgnoreCase("User")) return "005";
+    if (normalized.equalsIgnoreCase("Group")) return "00G";
+    if (normalized.equalsIgnoreCase("Profile")) return "00e";
+    if (normalized.equalsIgnoreCase("PermissionSet")) return "0PS";
+    if (normalized.equalsIgnoreCase("PermissionSetAssignment")) return "0Pa";
+    if (normalized.endsWith("__mdt")) return "m00";
+    if (normalized.endsWith("__e")) return "e00";
+    if (normalized.endsWith("__c")) return "a00";
+    return "a00";
   }
 
   private interface DmlOperation {
@@ -3804,6 +5309,7 @@ final class ApexStore {
 
   private enum SelectItemKind {
     FIELD,
+    FIELDS_SELECTOR,
     AGGREGATE,
     CHILD_SUBQUERY
   }
@@ -3827,6 +5333,11 @@ final class ApexStore {
       ChildSubquerySpec childSubquery) {
     static SelectItem field(String field, String outputName, String sourceText) {
       return new SelectItem(SelectItemKind.FIELD, field, null, false, outputName, sourceText, null);
+    }
+
+    static SelectItem fieldsSelector(String sourceText) {
+      return new SelectItem(
+          SelectItemKind.FIELDS_SELECTOR, null, null, false, "FIELDS", sourceText, null);
     }
 
     static SelectItem aggregate(
@@ -3867,7 +5378,8 @@ final class ApexStore {
       HavingExpr havingExpr,
       List<OrderByKey> orderByKeys,
       int limit,
-      int offset) {}
+      int offset,
+      boolean includeAllRows) {}
 
   private record SoslSpec(String term, boolean nameFieldsOnly, List<String> returningTypes) {
     SoslSpec {
