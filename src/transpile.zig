@@ -1188,7 +1188,7 @@ fn normalizeInnerClassSuffix(gpa: std.mem.Allocator, suffix: []const u8) ![]u8 {
         defer gpa.free(converted);
         try out.appendSlice(gpa, converted);
     }
-    return out.toOwnedSlice(gpa);
+    return try out.toOwnedSlice(gpa);
 }
 
 fn extractRenderedJavaClassBody(rendered_java: []const u8) ?[]const u8 {
@@ -1367,7 +1367,7 @@ fn stripSelfInnerImplementsFromClassSuffix(
         try out.appendSlice(gpa, item);
     }
 
-    return out.toOwnedSlice(gpa);
+    return try out.toOwnedSlice(gpa);
 }
 
 fn replaceStandaloneTypeName(
@@ -2545,7 +2545,7 @@ fn parseClassName(gpa: std.mem.Allocator, source_path: []const u8, content: []co
 
         if (indexOfWordIgnoreCase(trimmed, "class")) |class_pos| {
             const prefix = std.mem.trim(u8, trimmed[0..class_pos], " \t");
-            if (!looksLikeClassDeclarationPrefix(prefix)) continue;
+            if (!looksLikeTopLevelDeclarationPrefix(prefix)) continue;
             const after = std.mem.trimLeft(u8, trimmed[(class_pos + 5)..], " \t");
             if (leadingIdentifier(after)) |name| {
                 return gpa.dupe(u8, name);
@@ -2599,13 +2599,13 @@ fn parseClassDeclarationSuffix(
                 const decl_match = blk: {
                     if (indexOfWordIgnoreCase(trimmed, "class")) |class_pos| {
                         const class_prefix = std.mem.trim(u8, trimmed[0..class_pos], " \t");
-                        if (looksLikeClassDeclarationPrefix(class_prefix)) {
+                        if (looksLikeTopLevelDeclarationPrefix(class_prefix)) {
                             break :blk DeclMatch{ .kind = .class, .pos = class_pos, .keyword = "class" };
                         }
                     }
                     if (indexOfWordIgnoreCase(trimmed, "interface")) |interface_pos| {
                         const interface_prefix = std.mem.trim(u8, trimmed[0..interface_pos], " \t");
-                        if (looksLikeClassDeclarationPrefix(interface_prefix)) {
+                        if (looksLikeTopLevelDeclarationPrefix(interface_prefix)) {
                             break :blk DeclMatch{ .kind = .interface, .pos = interface_pos, .keyword = "interface" };
                         }
                     }
@@ -2753,7 +2753,7 @@ fn parseTopLevelDeclarationKind(
 
         if (indexOfWordIgnoreCase(trimmed, "class")) |class_pos| {
             const prefix = std.mem.trim(u8, trimmed[0..class_pos], " \t");
-            if (!looksLikeClassDeclarationPrefix(prefix)) continue;
+            if (!looksLikeTopLevelDeclarationPrefix(prefix)) continue;
             const after = std.mem.trimLeft(u8, trimmed[(class_pos + "class".len)..], " \t");
             if (leadingIdentifier(after)) |name| {
                 if (std.ascii.eqlIgnoreCase(name, class_name)) return .class;
@@ -2762,7 +2762,7 @@ fn parseTopLevelDeclarationKind(
 
         if (indexOfWordIgnoreCase(trimmed, "interface")) |interface_pos| {
             const prefix = std.mem.trim(u8, trimmed[0..interface_pos], " \t");
-            if (!looksLikeClassDeclarationPrefix(prefix)) continue;
+            if (!looksLikeTopLevelDeclarationPrefix(prefix)) continue;
             const after = std.mem.trimLeft(u8, trimmed[(interface_pos + "interface".len)..], " \t");
             if (leadingIdentifier(after)) |name| {
                 if (std.ascii.eqlIgnoreCase(name, class_name)) return .interface;
@@ -2771,7 +2771,7 @@ fn parseTopLevelDeclarationKind(
 
         if (indexOfWordIgnoreCase(trimmed, "enum")) |enum_pos| {
             const prefix = std.mem.trim(u8, trimmed[0..enum_pos], " \t");
-            if (!looksLikeClassDeclarationPrefix(prefix)) continue;
+            if (!looksLikeTopLevelDeclarationPrefix(prefix)) continue;
             const after = std.mem.trimLeft(u8, trimmed[(enum_pos + "enum".len)..], " \t");
             if (leadingIdentifier(after)) |name| {
                 if (std.ascii.eqlIgnoreCase(name, class_name)) return .enum_type;
@@ -2821,7 +2821,7 @@ fn parseTopLevelEnumConstants(
             continue;
         };
         const prefix = std.mem.trim(u8, trimmed[0..enum_pos], " \t");
-        if (!looksLikeClassDeclarationPrefix(prefix)) {
+        if (!looksLikeTopLevelDeclarationPrefix(prefix)) {
             offset += line.len + 1;
             continue;
         }
@@ -2858,6 +2858,11 @@ fn looksLikeClassDeclarationPrefix(prefix: []const u8) bool {
         if (!isClassDeclarationPrefixToken(token)) return false;
     }
     return found_token;
+}
+
+fn looksLikeTopLevelDeclarationPrefix(prefix: []const u8) bool {
+    if (prefix.len == 0) return true;
+    return looksLikeClassDeclarationPrefix(prefix);
 }
 
 fn looksLikeInnerTypeDeclarationPrefix(prefix: []const u8) bool {
@@ -11495,7 +11500,7 @@ fn containsGetAsCall(arg: []const u8) bool {
     return false;
 }
 
-fn convertBracketIndexAccess(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
+fn convertBracketIndexAccessPass(gpa: std.mem.Allocator, text: []const u8) anyerror!?[]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
@@ -11534,6 +11539,7 @@ fn convertBracketIndexAccess(gpa: std.mem.Allocator, text: []const u8) anyerror!
         const base_start = findIndexAccessBaseStart(text, i) orelse continue;
         const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
         if (base_expr.len == 0) continue;
+        if (base_start < last_emit) continue;
 
         try out.appendSlice(gpa, text[last_emit..base_start]);
         try appendFmt(gpa, &out, "{s}.get({s})", .{ base_expr, index_expr });
@@ -11544,9 +11550,20 @@ fn convertBracketIndexAccess(gpa: std.mem.Allocator, text: []const u8) anyerror!
         escaped = false;
     }
 
-    if (!replaced) return gpa.dupe(u8, text);
+    if (!replaced) return null;
     try out.appendSlice(gpa, text[last_emit..]);
-    return out.toOwnedSlice(gpa);
+    return @as(?[]u8, try out.toOwnedSlice(gpa));
+}
+
+fn convertBracketIndexAccess(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
+    var current = try gpa.dupe(u8, text);
+    var pass_count: usize = 0;
+    while (pass_count < 32) : (pass_count += 1) {
+        const next = try convertBracketIndexAccessPass(gpa, current) orelse return current;
+        gpa.free(current);
+        current = next;
+    }
+    return current;
 }
 
 fn findIndexAccessBaseStart(text: []const u8, bracket_pos: usize) ?usize {
@@ -15472,6 +15489,16 @@ test "convertApexExpressionToJava rewrites apex string utility calls" {
         call_index,
     );
 
+    const nested_index = try convertApexExpressionToJava(
+        gpa,
+        "alloWrapper.oppsAllocations.get(oppIds[7])[0]",
+    );
+    defer gpa.free(nested_index);
+    try std.testing.expectEqualStrings(
+        "alloWrapper.oppsAllocations.get(oppIds.get(7)).get(0)",
+        nested_index,
+    );
+
     const null_coalescing = try convertApexExpressionToJava(gpa, "maxPrice ?? DEFAULT_MAX_PRICE");
     defer gpa.free(null_coalescing);
     try std.testing.expectEqualStrings(
@@ -16306,6 +16333,138 @@ test "renderJavaClass emits inner enum and interface declarations" {
     try std.testing.expect(std.mem.indexOf(u8, output.java, "public static interface Worker {") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.java, "public void run();") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.java, "HttpVerb verb = HttpVerb.GET;") != null);
+}
+
+test "renderJavaClass emits inner class with field-only body" {
+    const gpa = std.testing.allocator;
+
+    const source =
+        \\public class Demo {
+        \\  private class Inner {
+        \\    public Boolean enabled = true;
+        \\  }
+        \\}
+    ;
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "private static class Inner") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public Boolean enabled = true;") != null);
+}
+
+test "run transpiles file with field-only inner class" {
+    const gpa = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\public class Demo {
+        \\  private class Inner {
+        \\    public Boolean enabled = true;
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "Demo.cls", .data = source });
+    try tmp.dir.makePath("out");
+
+    const root = try std.fs.path.join(
+        gpa,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path },
+    );
+    defer gpa.free(root);
+    const out_dir = try std.fs.path.join(gpa, &.{ root, "out" });
+    defer gpa.free(out_dir);
+
+    const inputs = [_][]const u8{root};
+    var summary = try run(gpa, .{
+        .input_paths = &inputs,
+        .out_dir = out_dir,
+        .package_name = "generated",
+        .overwrite = true,
+    });
+    defer summary.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files_generated);
+}
+
+test "run transpiles direct file input with field-only inner class" {
+    const gpa = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\public class Demo {
+        \\  private class Inner {
+        \\    public Boolean enabled = true;
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "Direct.cls", .data = source });
+    try tmp.dir.makePath("out");
+
+    const root = try std.fs.path.join(
+        gpa,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path },
+    );
+    defer gpa.free(root);
+    const file_path = try std.fs.path.join(gpa, &.{ root, "Direct.cls" });
+    defer gpa.free(file_path);
+    const out_dir = try std.fs.path.join(gpa, &.{ root, "out" });
+    defer gpa.free(out_dir);
+
+    const inputs = [_][]const u8{file_path};
+    var summary = try run(gpa, .{
+        .input_paths = &inputs,
+        .out_dir = out_dir,
+        .package_name = "generated",
+        .overwrite = true,
+    });
+    defer summary.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files_generated);
+}
+
+test "run transpiles package-private top-level class with inner class" {
+    const gpa = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\class Demo {
+        \\  private class Inner {
+        \\    public Boolean enabled = true;
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "Demo.cls", .data = source });
+    try tmp.dir.makePath("out");
+
+    const root = try std.fs.path.join(
+        gpa,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path },
+    );
+    defer gpa.free(root);
+    const file_path = try std.fs.path.join(gpa, &.{ root, "Demo.cls" });
+    defer gpa.free(file_path);
+    const out_dir = try std.fs.path.join(gpa, &.{ root, "out" });
+    defer gpa.free(out_dir);
+
+    const inputs = [_][]const u8{file_path};
+    var summary = try run(gpa, .{
+        .input_paths = &inputs,
+        .out_dir = out_dir,
+        .package_name = "generated",
+        .overwrite = true,
+    });
+    defer summary.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files_generated);
 }
 
 test "rewriteKnownCompatibilityFixups preserves unit of work registration state" {
