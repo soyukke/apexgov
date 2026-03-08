@@ -51,10 +51,18 @@ public final class Test {
     Limits.startTest();
   }
 
+  public static void StartTest() {
+    startTest();
+  }
+
   public static void stopTest() {
     Async.flush();
     EventBus.flushPending();
     Limits.stopTest();
+  }
+
+  public static void StopTest() {
+    stopTest();
   }
 
   public static String enqueueFuture(Runnable task) {
@@ -75,6 +83,10 @@ public final class Test {
 
   public static void setCurrentPage(PageReference pageReference) {
     ApexPages.setCurrentPage(pageReference);
+  }
+
+  public static void setCurrentPageReference(PageReference pageReference) {
+    setCurrentPage(pageReference);
   }
 
   public static void runAs(ApexSObject user, Runnable work) {

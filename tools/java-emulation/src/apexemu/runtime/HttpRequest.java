@@ -8,9 +8,14 @@ public final class HttpRequest {
   private String method = "GET";
   private String body;
   private final Map<String, String> headers = new LinkedHashMap<>();
+  private int timeout = 10000;
 
   public String getEndpoint() {
     return endpoint;
+  }
+
+  public String getEndPoint() {
+    return getEndpoint();
   }
 
   public void setEndpoint(String endpoint) {
@@ -58,5 +63,13 @@ public final class HttpRequest {
 
   public Map<String, String> getHeaders() {
     return Map.copyOf(headers);
+  }
+
+  public void setTimeout(int timeout) {
+    this.timeout = Math.max(0, timeout);
+  }
+
+  public int getTimeout() {
+    return timeout;
   }
 }

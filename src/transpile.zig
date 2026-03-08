@@ -7986,7 +7986,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const erased_overload_compatible = try rewriteErasedOverloadCompatibility(gpa, compatibility_rewritten);
     defer gpa.free(erased_overload_compatible);
 
-    return rewriteNpspAliasCompat(gpa, erased_overload_compatible);
+    const npsp_alias_compatible = try rewriteNpspAliasCompat(gpa, erased_overload_compatible);
+    defer gpa.free(npsp_alias_compatible);
+
+    const label_compatible = try rewriteLabelNamespaceAccess(gpa, npsp_alias_compatible);
+    defer gpa.free(label_compatible);
+
+    return rewriteLowercaseDatabaseNamespaceAccess(gpa, label_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -9247,6 +9253,22 @@ fn rewriteErasedOverloadCompatibility(gpa: std.mem.Allocator, text: []const u8) 
             .from = "for(FieldSetMember ",
             .to = "for(Schema.FieldSetMember ",
         },
+        .{
+            .from = "ApexPages.standardController",
+            .to = "ApexPages.StandardController",
+        },
+        .{
+            .from = "Test.StartTest(",
+            .to = "Test.startTest(",
+        },
+        .{
+            .from = "Test.StopTest(",
+            .to = "Test.stopTest(",
+        },
+        .{
+            .from = "logginglevel.",
+            .to = "LoggingLevel.",
+        },
     };
 
     for (literal_patterns) |pattern| {
@@ -9324,7 +9346,250 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    if (std.mem.indexOf(u8, current, "public class CDL_CascadeDeleteLookups") != null) {
+        const alias_insertion =
+            \\  public static class CascadeUnDelete extends CascadeUndelete {}
+            \\  public static class Error {
+        ;
+        var next = try replaceLiteralAll(gpa, current, "  public static class Error {\n", alias_insertion);
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "validator.validate(deletedRecords.values(), children);", "validator.validate(new ArrayList<ApexSObject>(deletedRecords.values()), children);");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "ERR_Handler.getErrors(deletionResults, children)", "ERR_Handler.getErrors(new ArrayList<Object>(deletionResults), children)");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "ERR_Handler.getErrors(undeleteResults, children)", "ERR_Handler.getErrors(new ArrayList<Object>(undeleteResults), children)");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class TEST_RecurringDonationBuilder") != null) {
+        const insertion =
+            \\  public TEST_RecurringDonationBuilder withAmount(Number amount) {
+            \\    return withAmount(amount == null ? null : amount.doubleValue());
+            \\  }
+            \\
+            \\  @SuppressWarnings("unchecked")
+        ;
+        const next = try replaceLiteralAll(gpa, current, marker, insertion);
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ACCT_IndividualAccounts_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, "insertedcontacts", "insertedContacts");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ERR_Handler_API") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static enum Context { PLACEHOLDER }",
+            "public static enum Context { ADDR, AFFL, ALLO, BDE, BDI, CON, CONV, CRLP, GE, HH, LD, LVL, OPP, PMT, REL, RD, Elevate, RLLP, SCH, STTG, TDTM, USER }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class SfdoInstrumentationEnum") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static enum Action { Save, Cancel, Create, Dml_Delete, Dml_Update, Dml_Merge, Dml_Undelete,",
+            "public static enum Action { Save, Cancel, Create, Dml_Insert, Dml_Delete, Dml_Update, Dml_Merge, Dml_Undelete,",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
     return current;
+}
+
+fn rewriteLabelNamespaceAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const prefixes = [_][]const u8{
+        "System.Label.",
+        "System.label.",
+        "Label.",
+        "label.",
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const State = enum {
+        normal,
+        line_comment,
+        block_comment,
+        string_literal,
+        char_literal,
+    };
+
+    var state: State = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+                    i += 1;
+                    continue;
+                }
+
+                var matched_prefix: ?[]const u8 = null;
+                for (prefixes) |prefix| {
+                    if (startsWithIgnoreCase(text[i..], prefix)) {
+                        matched_prefix = prefix;
+                        break;
+                    }
+                }
+                if (matched_prefix == null) {
+                    i += 1;
+                    continue;
+                }
+
+                const prefix = matched_prefix.?;
+                const first_start = i + prefix.len;
+                if (first_start >= text.len or !isIdentifierChar(text[first_start])) {
+                    i += 1;
+                    continue;
+                }
+
+                var first_end = first_start;
+                while (first_end < text.len and isIdentifierChar(text[first_end])) : (first_end += 1) {}
+                const first_ident = text[first_start..first_end];
+
+                var replacement: ?[]u8 = null;
+                var replace_end = first_end;
+
+                if (std.ascii.eqlIgnoreCase(first_ident, "getAs") and first_end < text.len and text[first_end] == '(') {
+                    replacement = try std.fmt.allocPrint(gpa, "Labels.", .{});
+                    replace_end = first_start;
+                } else if (std.ascii.eqlIgnoreCase(prefix, "label.") and first_end < text.len and text[first_end] == '(') {
+                    i += 1;
+                    continue;
+                } else if (first_end < text.len and text[first_end] == '.') {
+                    const second_start = first_end + 1;
+                    if (second_start < text.len and isIdentifierChar(text[second_start])) {
+                        var second_end = second_start;
+                        while (second_end < text.len and isIdentifierChar(text[second_end])) : (second_end += 1) {}
+                        const second_ident = text[second_start..second_end];
+                        if (std.ascii.eqlIgnoreCase(second_ident, "getAs") and second_end < text.len and text[second_end] == '(') {
+                            replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
+                            replace_end = first_end;
+                        } else if (second_end < text.len and text[second_end] == '(') {
+                            replacement = try std.fmt.allocPrint(gpa, "Labels.get(\"{s}\")", .{first_ident});
+                            replace_end = first_end;
+                        } else {
+                            replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\").get(\"{s}\")", .{ first_ident, second_ident });
+                            replace_end = second_end;
+                        }
+                    } else {
+                        replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
+                        replace_end = first_end;
+                    }
+                } else {
+                    replacement = try std.fmt.allocPrint(gpa, "Labels.get(\"{s}\")", .{first_ident});
+                    replace_end = first_end;
+                }
+
+                if (replacement) |rewritten| {
+                    defer gpa.free(rewritten);
+                    try out.appendSlice(gpa, text[last_emit..i]);
+                    try out.appendSlice(gpa, rewritten);
+                    replaced = true;
+                    last_emit = replace_end;
+                    i = replace_end;
+                    continue;
+                }
+
+                i += 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteLowercaseDatabaseNamespaceAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const needle = "database.";
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], needle)) continue;
+        if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) continue;
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, "Database.");
+        replaced = true;
+        i += needle.len - 1;
+        last_emit = i + 1;
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 fn rewriteUtilFinderInnerSearchBuilder(gpa: std.mem.Allocator, text: []const u8) ![]u8 {

@@ -161,6 +161,19 @@ public final class ApexStrings {
     return new ArrayList<>(Arrays.asList(text.split(pattern)));
   }
 
+  public static List<String> split(Object value, String regex, Integer limit) {
+    if (value == null) {
+      return new ArrayList<>();
+    }
+    String text = String.valueOf(value);
+    String pattern = regex == null ? "" : regex;
+    if (pattern.contains("\\\\")) {
+      pattern = pattern.replace("\\\\", "\\");
+    }
+    int resolvedLimit = limit == null ? 0 : limit.intValue();
+    return new ArrayList<>(Arrays.asList(text.split(pattern, resolvedLimit)));
+  }
+
   public static String substringAfter(Object value, String separator) {
     if (value == null) {
       return null;

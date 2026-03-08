@@ -32,6 +32,10 @@ public final class Crypto {
     return RANDOM.nextInt(Integer.MAX_VALUE);
   }
 
+  public static Long getRandomLong() {
+    return RANDOM.nextLong();
+  }
+
   public static byte[] encryptWithManagedIV(String algorithm, byte[] key, byte[] data) {
     try {
       String jceAlgorithm = toCipherAlgorithm(algorithm);

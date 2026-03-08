@@ -5,6 +5,7 @@ public final class ApexPages {
       ThreadLocal.withInitial(() -> new PageReference(""));
   private static final ThreadLocal<java.util.List<Message>> MESSAGES =
       ThreadLocal.withInitial(java.util.ArrayList::new);
+  public static final java.util.function.Supplier<PageReference> currentPage = ApexPages::currentPage;
 
   private ApexPages() {}
 
@@ -15,7 +16,13 @@ public final class ApexPages {
   public enum Severity {
     INFO,
     WARNING,
-    ERROR
+    ERROR,
+    CONFIRM;
+
+    public static final Severity Info = INFO;
+    public static final Severity Warning = WARNING;
+    public static final Severity Error = ERROR;
+    public static final Severity Confirm = CONFIRM;
   }
 
   public static final class Message {
@@ -32,6 +39,10 @@ public final class ApexPages {
     }
 
     public String getSummary() {
+      return summary;
+    }
+
+    public String getDetail() {
       return summary;
     }
   }
@@ -96,5 +107,17 @@ public final class ApexPages {
     public java.util.List<ApexSObject> getSelected() {
       return getRecords();
     }
+  }
+
+  public static boolean hasMessages(Severity severity) {
+    if (severity == null) {
+      return hasMessages();
+    }
+    for (Message message : MESSAGES.get()) {
+      if (message.getSeverity() == severity) {
+        return true;
+      }
+    }
+    return false;
   }
 }

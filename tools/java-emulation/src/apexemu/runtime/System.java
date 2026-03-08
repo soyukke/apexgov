@@ -248,6 +248,22 @@ public final class System {
     }
   }
 
+  public static PageReference currentPageReference() {
+    return ApexPages.currentPage();
+  }
+
+  public static final class Crypto {
+    private Crypto() {}
+
+    public static Integer getRandomInteger() {
+      return apexemu.runtime.Crypto.getRandomInteger();
+    }
+
+    public static Long getRandomLong() {
+      return apexemu.runtime.Crypto.getRandomLong();
+    }
+  }
+
   public static class SObjectException extends apexemu.runtime.SObjectException {
     public SObjectException(String message) {
       super(message);

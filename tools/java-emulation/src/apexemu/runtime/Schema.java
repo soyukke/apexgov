@@ -770,6 +770,10 @@ public final class Schema {
       return DisplayType.STRING;
     }
 
+    public List<PicklistEntry> getPicklistValues() {
+      return Collections.emptyList();
+    }
+
     public boolean isExternalId() {
       return false;
     }
@@ -1181,6 +1185,28 @@ public final class Schema {
     DATE,
     DATETIME,
     ID
+  }
+
+  public static final class PicklistEntry {
+    private final String label;
+    private final String value;
+
+    public PicklistEntry(String label, String value) {
+      this.label = label == null ? "" : label;
+      this.value = value == null ? this.label : value;
+    }
+
+    public String getLabel() {
+      return label;
+    }
+
+    public String getValue() {
+      return value;
+    }
+
+    public boolean isActive() {
+      return true;
+    }
   }
 
   public enum SoapType {
