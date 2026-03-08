@@ -244,6 +244,13 @@ public final class ApexStrings {
     return String.valueOf(value).startsWith(prefix);
   }
 
+  public static boolean endsWith(Object value, String suffix) {
+    if (value == null || suffix == null) {
+      return false;
+    }
+    return String.valueOf(value).endsWith(suffix);
+  }
+
   public static boolean endsWithIgnoreCase(Object value, String suffix) {
     if (value == null || suffix == null) {
       return false;
@@ -292,6 +299,20 @@ public final class ApexStrings {
       return text;
     }
     return text.substring(prefix.length());
+  }
+
+  public static String replace(Object value, String target, String replacement) {
+    if (value == null) {
+      return null;
+    }
+    return String.valueOf(value).replace(target, replacement);
+  }
+
+  public static String replaceFirst(Object value, String regex, String replacement) {
+    if (value == null) {
+      return null;
+    }
+    return String.valueOf(value).replaceFirst(regex, replacement);
   }
 
   public static String capitalize(Object value) {
@@ -358,6 +379,43 @@ public final class ApexStrings {
       return text;
     }
     return text.substring(0, n);
+  }
+
+  public static String rightPad(Object value, Object size, String padStr) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    int targetSize = toInt(size, text.length());
+    if (targetSize <= text.length()) {
+      return text;
+    }
+    String pad = (padStr == null || padStr.isEmpty()) ? " " : padStr;
+    StringBuilder out = new StringBuilder(targetSize);
+    out.append(text);
+    while (out.length() < targetSize) {
+      out.append(pad);
+    }
+    if (out.length() > targetSize) {
+      out.setLength(targetSize);
+    }
+    return out.toString();
+  }
+
+  public static boolean isAlpha(Object value) {
+    if (value == null) {
+      return false;
+    }
+    String text = String.valueOf(value);
+    if (text.isEmpty()) {
+      return false;
+    }
+    for (int i = 0; i < text.length(); i++) {
+      if (!Character.isLetter(text.charAt(i))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   public static String escapeHtml4(Object value) {

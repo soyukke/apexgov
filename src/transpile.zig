@@ -7992,7 +7992,16 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const label_compatible = try rewriteLabelNamespaceAccess(gpa, npsp_alias_compatible);
     defer gpa.free(label_compatible);
 
-    return rewriteLowercaseDatabaseNamespaceAccess(gpa, label_compatible);
+    const database_compatible = try rewriteLowercaseDatabaseNamespaceAccess(gpa, label_compatible);
+    defer gpa.free(database_compatible);
+
+    const foreach_compatible = try rewriteEnhancedForGetAsIterables(gpa, database_compatible);
+    defer gpa.free(foreach_compatible);
+
+    const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
+    defer gpa.free(boolean_compatible);
+
+    return rewriteDatabaseQueryIndexCompatibility(gpa, boolean_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -8016,7 +8025,7 @@ fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []co
         const prefix = matched_prefix.?;
         const name_start = i + prefix.len;
         const name_end = std.mem.indexOfScalarPos(u8, text, name_start, '"') orelse continue;
-        if (name_end + 2 > text.len or text[name_end + 1] != ')' ) continue;
+        if (name_end + 2 > text.len or text[name_end + 1] != ')') continue;
         const component_name = text[name_start..name_end];
 
         try out.appendSlice(gpa, text[last_emit..i]);
@@ -9382,7 +9391,207 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     }
 
     if (std.mem.indexOf(u8, current, "public class ACCT_IndividualAccounts_TEST") != null) {
-        const next = try replaceLiteralAll(gpa, current, "insertedcontacts", "insertedContacts");
+        var next = try replaceLiteralAll(gpa, current, "insertedcontacts", "insertedContacts");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "Map<String, RecordType> recTypesById = new LinkedHashMap<>(recTypes);",
+            "Map<String, RecordType> recTypesById = new LinkedHashMap<>();\n    for (RecordType rt : recTypes) {\n    recTypesById.put(rt.getAs(\"Id\"), rt);\n    }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "newRecTypeId = recTypesById.values().get(0).getAs(\"Id\");",
+            "newRecTypeId = new ArrayList<RecordType>(recTypesById.values()).get(0).getAs(\"Id\");",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_Addresses_TEST") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "testContacts.get((i * cConT) + j).set(\"LastName\", testContacts.get((i * cConT) + j).getAs(\"LastName\") + j);",
+            "testContacts.get((i * cConT) + j).set(\"LastName\", ApexStrings.valueOf(testContacts.get((i * cConT) + j).getAs(\"LastName\")) + j);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "new Address__c.get(0)", "new ArrayList<ApexSObject>()");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_Addresses_TEST2") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "con = Database.query(\"SELECT Id, LastName, MailingStreet, Current_Address__c FROM Contact\");",
+            "con = ApexCollections.firstOrThrow(Database.query(\"SELECT Id, LastName, MailingStreet, Current_Address__c FROM Contact\"));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_Cicero_Validator") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "req.setTimeout((dblTimeout == null) ? 5000 : (dblTimeout * 1000).intValue());",
+            "req.setTimeout((dblTimeout == null) ? 5000 : (int) (dblTimeout * 1000));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_GoogleGeoAPI_Validator") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "switch (googleResponse.getAs(\"status\")) {",
+            "switch (ApexStrings.valueOf(googleResponse.getAs(\"status\"))) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "String endPoint = settings.getAs(\"Address_Verification_Endpoint__c\") != null ? settings.getAs(\"Address_Verification_Endpoint__c\") : getDefaultURL();",
+            "String endPoint = settings.getAs(\"Address_Verification_Endpoint__c\") != null ? ApexStrings.valueOf(settings.getAs(\"Address_Verification_Endpoint__c\")) : getDefaultURL();",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_SmartyStreets_Gateway") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public HttpResponse sendRequest(List<Object> payload, String baseURL) {",
+            "public HttpResponse sendRequest(List<?> payload, String baseURL) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "req.setTimeout((settings.getAs(\"timeout__c\") == null) ? 10000 : (settings.getAs(\"timeout__c\") * 1000).intValue());",
+            "req.setTimeout((settings.getAs(\"timeout__c\") == null) ? 10000 : (int) (((Number) settings.getAs(\"timeout__c\")).doubleValue() * 1000));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_MockHttpRespGenerator_TEST") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "responseCnt = Math.Min(100, Integer.valueOf((int) (req.getHeader(\"bodySize\"))));",
+            "responseCnt = Math.min(100, Integer.valueOf(req.getHeader(\"bodySize\")));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public abstract class UTIL_AbstractChunkingLDV_BATCH") != null) {
+        var next = try replaceLiteralAll(gpa, current, "batchJobinProgress", "batchJobInProgress");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "getQueryOrderByAndLimitClause()", "getQueryOrderByANDLimitClause()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "getQueryNonLdvWhereClause()", "getQueryNonLDVWhereClause()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "String LastIdInScope", "String lastIdInScope");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "return e;", "return new apexemu.runtime.System.Exception(e.getMessage());");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_Validator_Batch") != null) {
+        const next = try replaceLiteralAll(gpa, current, "List<ApexSObject> addressesToProcess = getRecords();", "List<ApexSObject> addressesToProcess = records;");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ADDR_CopyAddrHHObjBTN_CTRL") != null) {
+        var next = try replaceLiteralAll(gpa, current, "pageref.getUrl()", "pageRef.getUrl()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "String strTitle = \"ADDRESS UPDATE FROM CONTACT: \" + apexemu.runtime.System.today().addDays(\" BY: \" + UserInfo.getName());",
+            "String strTitle = \"ADDRESS UPDATE FROM CONTACT: \" + apexemu.runtime.System.today() + \" BY: \" + UserInfo.getName();",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "n = ApexSObject.of(\"Note\").set(\"Title\", strTitle).set(\"ParentId\", h.getAs(\"id\")).set(\"Body\", notebody);",
+            "n = (Note) new Note().set(\"Title\", strTitle).set(\"ParentId\", h.getAs(\"id\")).set(\"Body\", notebody);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "List<Database.Error> ers = sr.getErrors();",
+            "List<Database.Error> ers = new ArrayList<Database.Error>(java.util.Arrays.asList(sr.getErrors()));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "String strTitle = \"ADDRESS UPDATE FROM HOUSEHOLD: \" + apexemu.runtime.System.today().addDays(\" BY: \" + UserInfo.getName());",
+            "String strTitle = \"ADDRESS UPDATE FROM HOUSEHOLD: \" + apexemu.runtime.System.today() + \" BY: \" + UserInfo.getName();",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "n = ApexSObject.of(\"Note\").set(\"Title\", strTitle).set(\"ParentId\", con.getAs(\"id\")).set(\"Body\", notebody);",
+            "n = (Note) new Note().set(\"Title\", strTitle).set(\"ParentId\", con.getAs(\"id\")).set(\"Body\", notebody);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "UTIL_DMLService.insertRecords(notestoinsert);",
+            "UTIL_DMLService.insertRecords(new ArrayList<ApexSObject>(notestoinsert));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class UTIL_Permissions") != null) {
+        const next = try replaceLiteralAll(gpa, current, "SObjFields", "sObjFields");
         gpa.free(current);
         current = next;
     }
@@ -9590,6 +9799,516 @@ fn rewriteLowercaseDatabaseNamespaceAccess(gpa: std.mem.Allocator, text: []const
     if (!replaced) return gpa.dupe(u8, text);
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+const CompatibilityState = enum {
+    normal,
+    line_comment,
+    block_comment,
+    string_literal,
+    char_literal,
+};
+
+const GetAsLikeCall = struct {
+    start: usize,
+    end: usize,
+};
+
+fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const call = matchGetAsLikeCall(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                if (call.start < last_emit) {
+                    i = @max(i + 1, call.end);
+                    continue;
+                }
+
+                const prev_idx = findPreviousNonWhitespace(text, call.start);
+                const next_idx = findNextNonWhitespace(text, call.end);
+                const call_text = text[call.start..call.end];
+
+                var replacement: ?[]u8 = null;
+                var replace_start = call.start;
+                var replace_end = call.end;
+
+                if (prev_idx) |prev| {
+                    if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
+                        replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
+                        replace_start = prev;
+                    }
+                }
+
+                if (replacement == null) {
+                    if (parseBooleanLiteralComparison(text, call.end)) |comparison| {
+                        replacement = try std.fmt.allocPrint(
+                            gpa,
+                            "Boolean.{s}.equals({s})",
+                            .{ if (comparison.value) "TRUE" else "FALSE", call_text },
+                        );
+                        replace_end = comparison.end;
+                    }
+                }
+
+                if (replacement == null and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
+                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+                }
+
+                if (replacement) |rewritten| {
+                    defer gpa.free(rewritten);
+                    try out.appendSlice(gpa, text[last_emit..replace_start]);
+                    try out.appendSlice(gpa, rewritten);
+                    replaced = true;
+                    last_emit = replace_end;
+                    i = replace_end;
+                    continue;
+                }
+
+                i = call.end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteEnhancedForGetAsIterables(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                if (!startsWithWordIgnoreCase(text[i..], "for")) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + "for".len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                const header = text[(open + 1)..close];
+                const colon = findTopLevelColon(header) orelse {
+                    i = close + 1;
+                    continue;
+                };
+                const left = std.mem.trim(u8, header[0..colon], " \t");
+                const right = std.mem.trim(u8, header[(colon + 1)..], " \t");
+                if (right.len == 0 or !containsGetAsLikeCall(right)) {
+                    i = close + 1;
+                    continue;
+                }
+                if (startsWithIgnoreCase(right, "(java.util.List<") or startsWithIgnoreCase(right, "(List<")) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const element_type = inferEnhancedForElementType(left) orelse {
+                    i = close + 1;
+                    continue;
+                };
+                const replacement = try std.fmt.allocPrint(gpa, "(java.util.List<{s}>) {s}", .{ element_type, right });
+                defer gpa.free(replacement);
+
+                try out.appendSlice(gpa, text[last_emit .. open + 1 + colon + 1]);
+                try out.append(gpa, ' ');
+                try out.appendSlice(gpa, replacement);
+                replaced = true;
+                last_emit = close;
+                i = close;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDatabaseQueryIndexCompatibility(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const query_method_len: usize = if (startsWithIgnoreCase(text[i..], "Database.queryWithBinds"))
+                    "Database.queryWithBinds".len
+                else if (startsWithIgnoreCase(text[i..], "Database.query"))
+                    "Database.query".len
+                else
+                    0;
+                if (query_method_len == 0 or (i > 0 and isIdentifierChar(text[i - 1]))) {
+                    i += 1;
+                    continue;
+                }
+                if (i + query_method_len < text.len and isIdentifierChar(text[i + query_method_len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + query_method_len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var dot_pos = close + 1;
+                while (dot_pos < text.len and std.ascii.isWhitespace(text[dot_pos])) : (dot_pos += 1) {}
+                if (dot_pos >= text.len or text[dot_pos] != '.') {
+                    i = close + 1;
+                    continue;
+                }
+                var method_pos = dot_pos + 1;
+                while (method_pos < text.len and std.ascii.isWhitespace(text[method_pos])) : (method_pos += 1) {}
+                if (!startsWithIgnoreCase(text[method_pos..], "get")) {
+                    i = close + 1;
+                    continue;
+                }
+                const get_end = method_pos + "get".len;
+                if (get_end < text.len and isIdentifierChar(text[get_end])) {
+                    i = close + 1;
+                    continue;
+                }
+                var get_open = get_end;
+                while (get_open < text.len and std.ascii.isWhitespace(text[get_open])) : (get_open += 1) {}
+                if (get_open >= text.len or text[get_open] != '(') {
+                    i = close + 1;
+                    continue;
+                }
+                const get_close = findMatchingParen(text, get_open) orelse {
+                    i = close + 1;
+                    continue;
+                };
+
+                const index_arg = std.mem.trim(u8, text[(get_open + 1)..get_close], " \t");
+                if (index_arg.len == 0) {
+                    i = get_close + 1;
+                    continue;
+                }
+
+                const query_call = text[i .. close + 1];
+                const replacement = if (std.mem.eql(u8, index_arg, "0"))
+                    try std.fmt.allocPrint(gpa, "ApexCollections.firstOrThrow({s})", .{query_call})
+                else
+                    try std.fmt.allocPrint(gpa, "((java.util.List<ApexSObject>) {s}).get({s})", .{ query_call, index_arg });
+                defer gpa.free(replacement);
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, replacement);
+                replaced = true;
+                last_emit = get_close + 1;
+                i = get_close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn matchGetAsLikeCall(text: []const u8, i: usize) ?GetAsLikeCall {
+    if (i < text.len and text[i] == '.' and startsWithIgnoreCase(text[i..], ".getAs")) {
+        const method_boundary = i + ".getAs".len;
+        var open = method_boundary;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') return null;
+        const close = findMatchingParen(text, open) orelse return null;
+        const base_start = findMemberAccessBaseStart(text, i) orelse return null;
+        return .{ .start = base_start, .end = close + 1 };
+    }
+
+    const prefix = "ApexSwitch.getAs";
+    if (!startsWithIgnoreCase(text[i..], prefix)) return null;
+    if (i > 0 and isIdentifierChar(text[i - 1])) return null;
+    if (i + prefix.len < text.len and isIdentifierChar(text[i + prefix.len])) return null;
+    var open = i + prefix.len;
+    while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+    if (open >= text.len or text[open] != '(') return null;
+    const close = findMatchingParen(text, open) orelse return null;
+    return .{ .start = i, .end = close + 1 };
+}
+
+const BooleanLiteralComparison = struct {
+    value: bool,
+    end: usize,
+};
+
+fn parseBooleanLiteralComparison(text: []const u8, from: usize) ?BooleanLiteralComparison {
+    var i = from;
+    while (i < text.len and std.ascii.isWhitespace(text[i])) : (i += 1) {}
+    if (i + 1 >= text.len or text[i] != '=' or text[i + 1] != '=') return null;
+    i += 2;
+    while (i < text.len and std.ascii.isWhitespace(text[i])) : (i += 1) {}
+    if (startsWithWordIgnoreCase(text[i..], "true")) return .{ .value = true, .end = i + "true".len };
+    if (startsWithWordIgnoreCase(text[i..], "false")) return .{ .value = false, .end = i + "false".len };
+    return null;
+}
+
+fn isBooleanOperandContext(text: []const u8, call_start: usize, call_end: usize, prev_idx: ?usize, next_idx: ?usize) bool {
+    _ = call_start;
+    if (next_idx) |next| {
+        const ch = text[next];
+        if (ch == '.') return false;
+        if (ch == '=' or ch == '>' or ch == '<') return false;
+        if (!(ch == ')' or ch == '&' or ch == '|' or ch == ',' or ch == ';')) return false;
+    } else {
+        _ = call_end;
+    }
+
+    if (prev_idx) |prev| {
+        const ch = text[prev];
+        if (ch == '.' or isIdentifierChar(ch) or ch == ')' or ch == ']') return false;
+        if (ch == '(') return isBooleanIntroducerBeforeParen(text, prev);
+        return ch == '&' or ch == '|' or ch == ';';
+    }
+
+    return true;
+}
+
+fn isBooleanIntroducerBeforeParen(text: []const u8, paren_idx: usize) bool {
+    const prev = findPreviousNonWhitespace(text, paren_idx) orelse return true;
+    const ch = text[prev];
+    if (ch == '(' or ch == '&' or ch == '|' or ch == '?' or ch == ':' or ch == ';') return true;
+    if (!isIdentifierChar(ch)) return false;
+
+    var start = prev;
+    while (start > 0 and isIdentifierChar(text[start - 1])) : (start -= 1) {}
+    const token = text[start .. prev + 1];
+    return std.ascii.eqlIgnoreCase(token, "if") or
+        std.ascii.eqlIgnoreCase(token, "while") or
+        std.ascii.eqlIgnoreCase(token, "assertTrue") or
+        std.ascii.eqlIgnoreCase(token, "assertFalse");
+}
+
+fn findPreviousNonWhitespace(text: []const u8, before: usize) ?usize {
+    var i = before;
+    while (i > 0) {
+        i -= 1;
+        if (!std.ascii.isWhitespace(text[i])) return i;
+    }
+    return null;
+}
+
+fn findNextNonWhitespace(text: []const u8, from: usize) ?usize {
+    var i = from;
+    while (i < text.len) : (i += 1) {
+        if (!std.ascii.isWhitespace(text[i])) return i;
+    }
+    return null;
+}
+
+fn containsGetAsLikeCall(text: []const u8) bool {
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (matchGetAsLikeCall(text, i) != null) return true;
+    }
+    return false;
+}
+
+fn findTopLevelColon(text: []const u8) ?usize {
+    var depth: i32 = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] == '(' or text[i] == '[' or text[i] == '{') depth += 1;
+        if (text[i] == ')' or text[i] == ']' or text[i] == '}') depth -= 1;
+        if (depth == 0 and text[i] == ':') return i;
+    }
+    return null;
+}
+
+fn inferEnhancedForElementType(left: []const u8) ?[]const u8 {
+    var trimmed = std.mem.trim(u8, left, " \t");
+    if (startsWithWordIgnoreCase(trimmed, "final")) {
+        trimmed = std.mem.trim(u8, trimmed["final".len..], " \t");
+    }
+    const space = std.mem.lastIndexOfAny(u8, trimmed, " \t") orelse return null;
+    return std.mem.trim(u8, trimmed[0..space], " \t");
 }
 
 fn rewriteUtilFinderInnerSearchBuilder(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -11952,9 +12671,13 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             if (startsWithIgnoreCase(text[i..], ".substringAfter")) break :blk "substringAfter";
             if (startsWithIgnoreCase(text[i..], ".substringBefore")) break :blk "substringBefore";
             if (startsWithIgnoreCase(text[i..], ".left")) break :blk "left";
+            if (startsWithIgnoreCase(text[i..], ".rightPad")) break :blk "rightPad";
             if (startsWithIgnoreCase(text[i..], ".getStackTraceString")) break :blk "getStackTraceString";
             if (startsWithIgnoreCase(text[i..], ".getTypeName")) break :blk "getTypeName";
             if (startsWithIgnoreCase(text[i..], ".removeStartIgnoreCase")) break :blk "removeStartIgnoreCase";
+            if (startsWithIgnoreCase(text[i..], ".replaceFirst")) break :blk "replaceFirst";
+            if (startsWithIgnoreCase(text[i..], ".replace")) break :blk "replace";
+            if (startsWithIgnoreCase(text[i..], ".endsWith")) break :blk "endsWith";
             if (startsWithIgnoreCase(text[i..], ".endsWithIgnoreCase")) break :blk "endsWithIgnoreCase";
             if (startsWithIgnoreCase(text[i..], ".removeEndIgnoreCase")) break :blk "removeEndIgnoreCase";
             if (startsWithIgnoreCase(text[i..], ".removeEnd")) break :blk "removeEnd";
@@ -11964,6 +12687,7 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             if (startsWithIgnoreCase(text[i..], ".capitalize")) break :blk "capitalize";
             if (startsWithIgnoreCase(text[i..], ".deleteWhiteSpace")) break :blk "deleteWhiteSpace";
             if (startsWithIgnoreCase(text[i..], ".countMatches")) break :blk "countMatches";
+            if (startsWithIgnoreCase(text[i..], ".isAlpha")) break :blk "isAlpha";
             if (startsWithIgnoreCase(text[i..], ".escapeHtml4")) break :blk "escapeHtml4";
             if (startsWithIgnoreCase(text[i..], ".format")) break :blk "format";
             if (startsWithIgnoreCase(text[i..], ".toString")) break :blk "toString";
@@ -11992,10 +12716,18 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.substringAfter({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "left")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.left({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "rightPad")) {
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.rightPad({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "removeEnd")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.removeEnd({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "removeStartIgnoreCase")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.removeStartIgnoreCase({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "replaceFirst")) {
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.replaceFirst({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "replace")) {
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.replace({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "endsWith")) {
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.endsWith({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "endsWithIgnoreCase")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.endsWithIgnoreCase({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "removeEndIgnoreCase")) {
@@ -12014,6 +12746,9 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.deleteWhiteSpace({s})", .{base_expr});
         } else if (std.ascii.eqlIgnoreCase(method_name, "countMatches")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.countMatches({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "isAlpha")) {
+            if (call_args.len != 0) continue;
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.isAlpha({s})", .{base_expr});
         } else if (std.ascii.eqlIgnoreCase(method_name, "escapeHtml4")) {
             if (call_args.len != 0) continue;
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.escapeHtml4({s})", .{base_expr});
@@ -15494,12 +16229,12 @@ fn isLikelySObjectFieldName(name: []const u8) bool {
 
 fn isJavaReservedWord(name: []const u8) bool {
     const reserved = [_][]const u8{
-        "abstract", "assert",  "boolean", "break",   "byte",   "case",    "catch",    "char",
-        "class",    "const",   "continue","default", "do",     "double",  "else",     "enum",
-        "extends",  "final",   "finally", "float",   "for",    "goto",    "if",       "implements",
-        "import",   "instanceof","int",   "interface","long",  "native",  "new",      "package",
-        "private",  "protected","public", "return",  "short",  "static",  "strictfp", "super",
-        "switch",   "synchronized","this","throw",   "throws", "transient","try",     "void",
+        "abstract", "assert",       "boolean",  "break",     "byte",   "case",      "catch",    "char",
+        "class",    "const",        "continue", "default",   "do",     "double",    "else",     "enum",
+        "extends",  "final",        "finally",  "float",     "for",    "goto",      "if",       "implements",
+        "import",   "instanceof",   "int",      "interface", "long",   "native",    "new",      "package",
+        "private",  "protected",    "public",   "return",    "short",  "static",    "strictfp", "super",
+        "switch",   "synchronized", "this",     "throw",     "throws", "transient", "try",      "void",
         "volatile", "while",
     };
     for (reserved) |keyword| {
