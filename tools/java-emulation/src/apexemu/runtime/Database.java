@@ -49,6 +49,13 @@ public final class Database {
     return Async.enqueueBatch(job, scopeSize);
   }
 
+  public static LeadConvertResult convertLead(LeadConvert leadConvert) {
+    if (leadConvert == null) {
+      return new LeadConvertResult(false, null, new Error[0], null);
+    }
+    return new LeadConvertResult(true, leadConvert.getContactId(), new Error[0], leadConvert.getLeadId());
+  }
+
   public static void insert(Collection<? extends ApexSObject> records) {
     ensureSuccess(insert(records, true), "insert");
   }
@@ -750,13 +757,18 @@ public final class Database {
     public Boolean AllowFieldTruncation;
   }
 
-  public static final class BatchableContext {
+  public interface BatchableContext {
+    String getJobId();
+  }
+
+  public static final class DefaultBatchableContext implements BatchableContext {
     private final String jobId;
 
-    public BatchableContext(String jobId) {
+    public DefaultBatchableContext(String jobId) {
       this.jobId = jobId == null ? "" : jobId;
     }
 
+    @Override
     public String getJobId() {
       return jobId;
     }
@@ -921,6 +933,81 @@ public final class Database {
 
     public String getLeadId() {
       return leadId;
+    }
+  }
+
+  public static final class LeadConvert {
+    private String leadId;
+    private String opportunityName;
+    private boolean doNotCreateOpportunity;
+    private String convertedStatus;
+    private String ownerId;
+    private boolean sendNotificationEmail;
+    private String contactId;
+    private String accountId;
+
+    public String getLeadId() {
+      return leadId;
+    }
+
+    public void setLeadId(String leadId) {
+      this.leadId = leadId;
+    }
+
+    public String getOpportunityName() {
+      return opportunityName;
+    }
+
+    public void setOpportunityName(String opportunityName) {
+      this.opportunityName = opportunityName;
+    }
+
+    public boolean isDoNotCreateOpportunity() {
+      return doNotCreateOpportunity;
+    }
+
+    public void setDoNotCreateOpportunity(boolean doNotCreateOpportunity) {
+      this.doNotCreateOpportunity = doNotCreateOpportunity;
+    }
+
+    public String getConvertedStatus() {
+      return convertedStatus;
+    }
+
+    public void setConvertedStatus(String convertedStatus) {
+      this.convertedStatus = convertedStatus;
+    }
+
+    public String getOwnerId() {
+      return ownerId;
+    }
+
+    public void setOwnerId(String ownerId) {
+      this.ownerId = ownerId;
+    }
+
+    public boolean isSendNotificationEmail() {
+      return sendNotificationEmail;
+    }
+
+    public void setSendNotificationEmail(boolean sendNotificationEmail) {
+      this.sendNotificationEmail = sendNotificationEmail;
+    }
+
+    public String getContactId() {
+      return contactId;
+    }
+
+    public void setContactId(String contactId) {
+      this.contactId = contactId;
+    }
+
+    public String getAccountId() {
+      return accountId;
+    }
+
+    public void setAccountId(String accountId) {
+      this.accountId = accountId;
     }
   }
 

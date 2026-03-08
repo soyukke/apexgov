@@ -9,6 +9,10 @@ public final class Date {
     this.value = value;
   }
 
+  public static Date newInstance(int year, int month, int day) {
+    return new Date(LocalDate.of(year, month, day));
+  }
+
   public static Date today() {
     return new Date(LocalDate.now());
   }
@@ -23,6 +27,18 @@ public final class Date {
 
   LocalDate value() {
     return value;
+  }
+
+  public Integer year() {
+    return value.getYear();
+  }
+
+  public Integer month() {
+    return value.getMonthValue();
+  }
+
+  public Integer day() {
+    return value.getDayOfMonth();
   }
 
   @Override

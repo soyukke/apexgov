@@ -468,6 +468,37 @@ public final class Schema {
       return new SObjectType(typeName);
     }
 
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosById() {
+      Map<String, apexemu.runtime.RecordTypeInfo> out = new LinkedHashMap<>();
+      for (RecordTypeInfo info : getRecordTypeInfos()) {
+        out.put(info.getRecordTypeId(), info);
+      }
+      return out;
+    }
+
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosByName() {
+      Map<String, apexemu.runtime.RecordTypeInfo> out = new LinkedHashMap<>();
+      for (RecordTypeInfo info : getRecordTypeInfos()) {
+        out.put(info.getName(), info);
+      }
+      return out;
+    }
+
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosByDeveloperName() {
+      Map<String, apexemu.runtime.RecordTypeInfo> out = new LinkedHashMap<>();
+      for (RecordTypeInfo info : getRecordTypeInfos()) {
+        out.put(info.getDeveloperName(), info);
+      }
+      return out;
+    }
+
+    public List<apexemu.runtime.RecordTypeInfo> getRecordTypeInfos() {
+      if (typeName == null || typeName.isBlank()) {
+        return List.of();
+      }
+      return List.of(DefaultRecordTypeInfo.defaultFor(typeName));
+    }
+
     public List<ChildRelationship> getChildRelationships() {
       List<ChildRelationship> out = new ArrayList<>();
       if (typeName == null || typeName.isBlank()) {
@@ -548,6 +579,22 @@ public final class Schema {
 
     public DescribeSObjectResult getDescribe(SObjectDescribeOptions options) {
       return getDescribe();
+    }
+
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosById() {
+      return getDescribe().getRecordTypeInfosById();
+    }
+
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosByName() {
+      return getDescribe().getRecordTypeInfosByName();
+    }
+
+    public Map<String, apexemu.runtime.RecordTypeInfo> getRecordTypeInfosByDeveloperName() {
+      return getDescribe().getRecordTypeInfosByDeveloperName();
+    }
+
+    public List<apexemu.runtime.RecordTypeInfo> getRecordTypeInfos() {
+      return getDescribe().getRecordTypeInfos();
     }
 
     public boolean isAccessible() {
@@ -995,8 +1042,8 @@ public final class Schema {
       return (T) get(fieldName);
     }
 
-    public Map<String, SObjectField> getMap() {
-      LazyFieldMap out = new LazyFieldMap(typeName);
+    public FieldMap getMap() {
+      FieldMap out = new FieldMap(typeName);
       addKnownField(out, Id);
       addSchemaDefinitionFields(out);
       addRuntimeClassFields(out);
@@ -1007,7 +1054,7 @@ public final class Schema {
       return new SObjectField(typeName, fieldName);
     }
 
-    private void addKnownField(LazyFieldMap out, SObjectField fieldToken) {
+    private void addKnownField(FieldMap out, SObjectField fieldToken) {
       if (out == null || fieldToken == null) {
         return;
       }
@@ -1018,7 +1065,7 @@ public final class Schema {
       out.putField(fieldName, fieldToken);
     }
 
-    private void addSchemaDefinitionFields(LazyFieldMap out) {
+    private void addSchemaDefinitionFields(FieldMap out) {
       if (out == null || typeName == null || typeName.isBlank()) {
         return;
       }
@@ -1034,7 +1081,7 @@ public final class Schema {
       }
     }
 
-    private void addRuntimeClassFields(LazyFieldMap out) {
+    private void addRuntimeClassFields(FieldMap out) {
       if (out == null || typeName == null || typeName.isBlank()) {
         return;
       }
@@ -1067,11 +1114,11 @@ public final class Schema {
     }
   }
 
-  private static final class LazyFieldMap extends LinkedHashMap<String, SObjectField> {
+  public static final class FieldMap extends LinkedHashMap<String, SObjectField> {
     private final String ownerType;
     private final Map<String, String> normalizedToCanonical = new LinkedHashMap<>();
 
-    LazyFieldMap(String ownerType) {
+    FieldMap(String ownerType) {
       this.ownerType = ownerType == null ? "" : ownerType.trim();
     }
 
@@ -1117,6 +1164,11 @@ public final class Schema {
       }
       return normalizedToCanonical.containsKey(normalize(textKey));
     }
+
+    @Override
+    public List<SObjectField> values() {
+      return new ArrayList<>(super.values());
+    }
   }
 
   public enum FieldType {
@@ -1132,13 +1184,103 @@ public final class Schema {
   }
 
   public enum SoapType {
+    BOOLEAN,
+    DOUBLE,
+    Integer,
+    DATE,
+    DATETIME,
     ID,
     STRING
   }
 
   public enum DisplayType {
+    ADDRESS,
+    BASE64,
+    BOOLEAN,
+    CURRENCY,
+    Currency,
     REFERENCE,
-    STRING
+    Reference,
+    STRING,
+    String,
+    TEXTAREA,
+    TextArea,
+    DATE,
+    Date,
+    DateTime,
+    DOUBLE,
+    Double,
+    EMAIL,
+    ENCRYPTEDSTRING,
+    ID,
+    Id,
+    Integer,
+    JSON,
+    LOCATION,
+    LONG,
+    MULTIPICKLIST,
+    PERCENT,
+    PHONE,
+    PICKLIST,
+    Picklist,
+    TIME,
+    URL
+  }
+
+  public static final class DefaultRecordTypeInfo extends ApexSObject implements apexemu.runtime.RecordTypeInfo {
+    public DefaultRecordTypeInfo(String typeName, String recordTypeId, String name, String developerName) {
+      super("RecordType");
+      withId(recordTypeId);
+      set("SObjectType", typeName);
+      set("RecordTypeId", recordTypeId);
+      set("Name", name);
+      set("DeveloperName", developerName);
+      set("IsAvailable", true);
+      set("IsDefaultRecordTypeMapping", true);
+    }
+
+    public static DefaultRecordTypeInfo defaultFor(String typeName) {
+      String canonicalType = typeName == null || typeName.isBlank() ? "SObject" : typeName.trim();
+      String keyPrefix = new DescribeSObjectResult(canonicalType).getKeyPrefix();
+      String recordTypeId = keyPrefix + "RT000000000000";
+      return new DefaultRecordTypeInfo(canonicalType, recordTypeId, "Master", "Master");
+    }
+
+    @Override
+    public ApexSObject getRecordTypeInfo() {
+      return this;
+    }
+
+    @Override
+    public String getRecordTypeId() {
+      return super.getRecordTypeId();
+    }
+
+    @Override
+    public boolean isAvailable() {
+      return super.isAvailable();
+    }
+
+    @Override
+    public boolean isDefaultRecordTypeMapping() {
+      return super.isDefaultRecordTypeMapping();
+    }
+
+    @Override
+    public String getName() {
+      Object value = get("Name");
+      return value == null ? null : String.valueOf(value);
+    }
+
+    @Override
+    public String getDeveloperName() {
+      return super.getDeveloperName();
+    }
+
+    @Override
+    public boolean isMaster() {
+      return super.isMaster();
+    }
   }
 
   public static final class FieldSetMember {

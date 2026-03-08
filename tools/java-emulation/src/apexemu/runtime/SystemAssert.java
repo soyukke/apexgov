@@ -51,6 +51,10 @@ public final class SystemAssert {
     }
   }
 
+  public static void assertTrue(boolean value, Object message) {
+    assertTrue(value, message == null ? null : String.valueOf(message));
+  }
+
   public static void assertTrue(boolean expected, boolean actual) {
     assertEquals(expected, actual, null);
   }
@@ -66,6 +70,10 @@ public final class SystemAssert {
     }
   }
 
+  public static void assertFalse(boolean value, Object message) {
+    assertFalse(value, message == null ? null : String.valueOf(message));
+  }
+
   public static void assertEquals(Object expected, Object actual) {
     assertEquals(expected, actual, null);
   }
@@ -79,6 +87,10 @@ public final class SystemAssert {
               "Expected <" + String.valueOf(expected) + "> but was <" + String.valueOf(actual) + ">",
               message));
     }
+  }
+
+  public static void assertEquals(Object expected, Object actual, Object message) {
+    assertEquals(expected, actual, message == null ? null : String.valueOf(message));
   }
 
   public static void assertNotEquals(Object expected, Object actual) {

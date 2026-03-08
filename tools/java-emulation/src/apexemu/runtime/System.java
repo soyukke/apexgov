@@ -212,7 +212,7 @@ public final class System {
     }
   }
 
-  public static final class SecurityException extends Exception {
+  public static class SecurityException extends Exception {
     public SecurityException(String message) {
       super(message);
     }
@@ -298,34 +298,50 @@ public final class System {
 
   public interface InstallHandler {}
 
+  public interface UninstallHandler {}
+
   public interface HttpCalloutMock extends apexemu.runtime.HttpCalloutMock {}
 
   public static final class InstallContext {}
 
-  public static final class FinalizerContext {
-    public enum ParentJobResult {
+  public static final class UninstallContext {}
+
+  public static String requestVersion() {
+    return "1.0";
+  }
+
+  public static boolean isFuture() {
+    return false;
+  }
+
+  public static boolean isBatch() {
+    return false;
+  }
+
+  public static boolean isQueueable() {
+    return false;
+  }
+
+  public interface FinalizerContext {
+    enum ParentJobResult {
       SUCCESS,
       UNHANDLED_EXCEPTION
     }
 
-    private final ParentJobResult result;
-    private final Exception exception;
-
-    public FinalizerContext() {
-      this(ParentJobResult.SUCCESS, null);
+    default ParentJobResult getResult() {
+      return ParentJobResult.SUCCESS;
     }
 
-    public FinalizerContext(ParentJobResult result, Exception exception) {
-      this.result = result == null ? ParentJobResult.SUCCESS : result;
-      this.exception = exception;
+    default Exception getException() {
+      return null;
     }
 
-    public ParentJobResult getResult() {
-      return result;
+    default String getRequestId() {
+      return null;
     }
 
-    public Exception getException() {
-      return exception;
+    default String getAsyncApexJobId() {
+      return null;
     }
   }
 

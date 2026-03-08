@@ -332,6 +332,34 @@ public final class ApexStrings {
     return text.substring(text.length() - n);
   }
 
+  public static String left(Object value, Object count) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    int n = toInt(count, 0);
+    if (n <= 0) {
+      return "";
+    }
+    if (n >= text.length()) {
+      return text;
+    }
+    return text.substring(0, n);
+  }
+
+  public static String escapeHtml4(Object value) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    return text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#39;");
+  }
+
   public static String format(String template, List<?> arguments) {
     if (arguments == null) {
       return formatInternal(template, new ArrayList<>());

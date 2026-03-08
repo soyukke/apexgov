@@ -205,7 +205,7 @@ public final class Async {
     }
 
     if (overridesBatchableMethod(batchJob, "execute", Database.BatchableContext.class, List.class)) {
-      Database.BatchableContext context = new Database.BatchableContext(jobId);
+      Database.BatchableContext context = new Database.DefaultBatchableContext(jobId);
       Object startResult =
           runBatchPhase(
               jobId,

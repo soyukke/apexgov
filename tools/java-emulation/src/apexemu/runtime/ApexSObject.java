@@ -52,6 +52,40 @@ public class ApexSObject {
     return this;
   }
 
+  public String getRecordTypeId() {
+    Object value = get("RecordTypeId");
+    if (value == null) {
+      value = get("Id");
+    }
+    return value == null ? null : String.valueOf(value);
+  }
+
+  public boolean isAvailable() {
+    Object value = get("IsAvailable");
+    if (value instanceof Boolean flag) {
+      return flag;
+    }
+    return true;
+  }
+
+  public boolean isDefaultRecordTypeMapping() {
+    Object value = get("IsDefaultRecordTypeMapping");
+    if (value instanceof Boolean flag) {
+      return flag;
+    }
+    return false;
+  }
+
+  public boolean isMaster() {
+    Object name = get("Name");
+    return name != null && "Master".equalsIgnoreCase(String.valueOf(name));
+  }
+
+  public String getDeveloperName() {
+    Object value = get("DeveloperName");
+    return value == null ? null : String.valueOf(value);
+  }
+
   public ApexSObject set(String field, Object value) {
     if (field == null || field.isBlank()) {
       throw new IllegalArgumentException("field cannot be blank");

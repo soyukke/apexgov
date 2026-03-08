@@ -2,6 +2,7 @@ package apexemu.runtime;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -25,10 +26,32 @@ public final class DateTime {
     return new DateTime(local.toInstant());
   }
 
+  public static DateTime newInstance(int year, int month, int day) {
+    return newInstance(year, month, day, 0, 0, 0);
+  }
+
+  public static DateTime newInstance(Date date, Time time) {
+    if (date == null) {
+      return null;
+    }
+    LocalDate localDate = date.value();
+    LocalTime localTime = time == null ? LocalTime.MIDNIGHT : time.value();
+    return new DateTime(ZonedDateTime.of(localDate, localTime, ZoneOffset.UTC).toInstant());
+  }
+
+  public static DateTime newInstance(long milliseconds) {
+    return new DateTime(Instant.ofEpochMilli(milliseconds));
+  }
+
   public static DateTime newInstanceGmt(
       int year, int month, int day, int hour, int minute, int second) {
     ZonedDateTime gmt = ZonedDateTime.of(year, month, day, hour, minute, second, 0, ZoneOffset.UTC);
     return new DateTime(gmt.toInstant());
+  }
+
+  public static DateTime newInstanceGMT(
+      int year, int month, int day, int hour, int minute, int second) {
+    return newInstanceGmt(year, month, day, hour, minute, second);
   }
 
   public static DateTime fromDate(Date value) {
@@ -49,6 +72,19 @@ public final class DateTime {
 
   public DateTime addDays(int days) {
     return new DateTime(instant.plusSeconds((long) days * 24L * 60L * 60L));
+  }
+
+  public DateTime addHours(int hours) {
+    return new DateTime(instant.plusSeconds((long) hours * 60L * 60L));
+  }
+
+  public DateTime addMonths(int months) {
+    return new DateTime(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).plusMonths(months).toInstant());
+  }
+
+  public Date date() {
+    ZonedDateTime utc = ZonedDateTime.ofInstant(instant, ZoneOffset.UTC);
+    return Date.newInstance(utc.getYear(), utc.getMonthValue(), utc.getDayOfMonth());
   }
 
   public String formatGMT(String pattern) {

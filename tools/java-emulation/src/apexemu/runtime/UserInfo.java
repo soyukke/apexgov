@@ -84,6 +84,10 @@ public final class UserInfo {
     return false;
   }
 
+  public static String getDefaultCurrency() {
+    return "USD";
+  }
+
   public static String getUiThemeDisplayed() {
     return "Theme4d";
   }
