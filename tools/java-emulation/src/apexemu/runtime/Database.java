@@ -490,16 +490,16 @@ public final class Database {
     return ApexStore.countQuery(soql);
   }
 
-  @SuppressWarnings("unchecked")
-  public static <T> T queryWithBinds(String soql, Map<String, Object> bindVariables) {
-    return (T) ApexStore.queryWithBinds(soql, bindVariables);
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List queryWithBinds(String soql, Map<String, Object> bindVariables) {
+    return ApexStore.queryWithBinds(soql, bindVariables);
   }
 
-  @SuppressWarnings("unchecked")
-  public static <T> T queryWithBinds(
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List queryWithBinds(
       String soql, Map<String, Object> bindVariables, System.AccessLevel accessLevel) {
     enforceUserModeQueryAccess(soql, accessLevel);
-    return (T) queryWithBinds(soql, bindVariables);
+    return queryWithBinds(soql, bindVariables);
   }
 
   public static int countQueryWithBinds(String soql, Map<String, Object> bindVariables) {

@@ -27,6 +27,11 @@ public final class JSONGenerator {
     out.append(JSON.serialize(value));
   }
 
+  public void writeStringField(String name, String value) {
+    writeFieldName(name);
+    out.append(JSON.serialize(value));
+  }
+
   public void writeNumberField(String name, Number value) {
     writeFieldName(name);
     out.append(value == null ? "null" : String.valueOf(value));

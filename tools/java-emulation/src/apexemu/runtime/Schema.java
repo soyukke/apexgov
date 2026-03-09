@@ -443,6 +443,10 @@ public final class Schema {
       return typeName;
     }
 
+    public String getLocalName() {
+      return typeName;
+    }
+
     public String getLabel() {
       return typeName;
     }
@@ -713,6 +717,18 @@ public final class Schema {
 
     public DescribeFieldResult getDescribe() {
       return new DescribeFieldResult(ownerType, fieldName);
+    }
+
+    public boolean isAccessible() {
+      return getDescribe().isAccessible();
+    }
+
+    public boolean isCreateable() {
+      return getDescribe().isCreateable();
+    }
+
+    public boolean isUpdateable() {
+      return getDescribe().isUpdateable();
     }
 
     public String getName() {

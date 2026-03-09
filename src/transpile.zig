@@ -7752,6 +7752,40 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return Database.query(queryString);", .to = "return ApexCollections.firstOrNull(Database.query(queryString));" },
         .{ .from = "ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") != 0", .to = "ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) != 0" },
         .{ .from = "newGAUAmtForOpp / ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") * 100", .to = "newGAUAmtForOpp / ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) * 100" },
+        .{ .from = "return 1;", .to = "return 1.0;" },
+        .{ .from = "parentRollupFieldNames", .to = "parentRollupFieldnames" },
+        .{ .from = "addToAggregateList(", .to = "addToAggregatelist(" },
+        .{ .from = "parentRecsInitial = ApexCollections.firstOrNull(Database.query(", .to = "parentRecsInitial = Database.query(" },
+        .{ .from = "parentRecsInitial = Database.query( \"SELECT \" + flist + \" FROM \" + parentObjName + \" WHERE id IN : parentRecIds\"));", .to = "parentRecsInitial = Database.query( \"SELECT \" + flist + \" FROM \" + parentObjName + \" WHERE id IN : parentRecIds\");" },
+        .{ .from = "rollupRow.get(spec.getAs(\"FKFieldnameInChild\"))", .to = "rollupRow.get((String) spec.getAs(\"FKFieldnameInChild\"))" },
+        .{ .from = "alloSettings.getAs(\"Rollup_N_Day_Value__c\").intValue()", .to = "ApexStrings.toInteger(alloSettings.getAs(\"Rollup_N_Day_Value__c\"))" },
+        .{ .from = "this.sObjType = sObjType;\n      this.sObjField = sObjField;\n    }\n\n    public String getAutoNumberJSON(String sObjectName, String fieldName) {", .to = "this.sObjType = sObjType;\n      this.sObjField = sObjField;\n    }\n\n    public String getSObjTypeName() {\n      return ApexStrings.valueOf(sObjType);\n    }\n\n    public String getSObjFieldName() {\n      return ApexStrings.valueOf(sObjField);\n    }\n\n    public String getAutoNumberJSON(String sObjectName, String fieldName) {" },
+        .{ .from = "this.recordsToBeAutoNumbered = records;\n    this.sObjType = records.isEmpty() ? null : ApexSwitch.getSObjectType(records.get(0));\n  }\n\n  public void activate(String autoNumberId) {", .to = "this.recordsToBeAutoNumbered = records;\n    this.sObjType = records.isEmpty() ? null : ApexSwitch.getSObjectType(records.get(0));\n  }\n\n  public List<ApexSObject> getActiveAutoNumbers() {\n    return Database.queryWithBinds(\"SELECT IsActive__c FROM AutoNumber__c WHERE Object_API_Name__c = :sObjTypeValue AND IsActive__c = true\", ApexCollections.bindMap(\"sObjTypeValue\", ApexStrings.valueOf(sObjType)));\n  }\n\n  public Boolean isTriggerHandlerEnabled() {\n    return !Database.queryWithBinds(\"SELECT Id FROM Trigger_Handler__c WHERE Object__c = :objectName AND Class__c = :className AND Active__c = true\", ApexCollections.bindMap(\"objectName\", sObjType == null ? null : sObjType.getDescribe().getLocalName(), \"className\", TRIGGER_HANDLER_CLASS_NAME)).isEmpty();\n  }\n\n  public ApexSObject getTriggerHandler() {\n    return ApexSObject.of(\"Trigger_Handler__c\").set(\"Active__c\", true).set(\"Asynchronous__c\", false).set(\"Class__c\", TRIGGER_HANDLER_CLASS_NAME).set(\"Load_Order__c\", 0).set(\"Object__c\", sObjType == null ? null : sObjType.getDescribe().getLocalName()).set(\"Trigger_Action__c\", \"AfterInsert;\");\n  }\n\n  public void activate(String autoNumberId) {" },
+        .{ .from = "this.record = record;\n      this.nextAutoNumber = getNextAutoNumber(this.record);\n    }\n\n    public String getFormattedNumber(Integer num) {", .to = "this.record = record;\n      this.nextAutoNumber = getNextAutoNumber(this.record);\n    }\n\n    public Schema.SObjectType getSObjType() {\n      return UTIL_Describe.getSObjectType(record.getAs(\"Object_API_Name__c\"));\n    }\n\n    public Schema.SObjectField getSObjField() {\n      return UTIL_Describe.getFieldDescribe(ApexStrings.valueOf(getSObjType()), record.getAs(\"Field_API_Name__c\")).getSObjectField();\n    }\n\n    public String getDisplayFormat() {\n      return record.getAs(\"Display_Format__c\");\n    }\n\n    public String getFormattedNumber(Integer num) {" },
+        .{ .from = "return new AutoNumber(autoNumbers.get(0));", .to = "return new AutoNumber(autoNumbers.get(0));" },
+        .{ .from = "String singleDigitDisplayFormat = displayFormat.replace(currentDigitFormat, \"{0}\");", .to = "String singleDigitDisplayFormat = getDisplayFormat().replace(currentDigitFormat, \"{0}\");" },
+        .{ .from = "String singleDigitDisplayFormat = ApexStrings.replace(displayFormat, currentDigitFormat, \"{0}\");", .to = "String singleDigitDisplayFormat = ApexStrings.replace(getDisplayFormat(), currentDigitFormat, \"{0}\");" },
+        .{ .from = "if (!isValidPattern(displayFormat)) {", .to = "if (!isValidPattern(getDisplayFormat())) {" },
+        .{ .from = "if (isDuplicate(displayFormat, autoNumberService.getAutoNumbers(sObjType))) {", .to = "if (isDuplicate(getDisplayFormat(), autoNumberService.getAutoNumbers(getSObjType()))) {" },
+        .{ .from = "Integer a = displayFormat.indexOf(oB);", .to = "Integer a = getDisplayFormat().indexOf(oB);" },
+        .{ .from = "Integer b = displayFormat.indexOf(cB);", .to = "Integer b = getDisplayFormat().indexOf(cB);" },
+        .{ .from = "ApexSObject a = ApexSObject.of(\"AutoNumber__c\").set(\"Object_API_Name__c\", sObjTypeName).set(\"Field_API_Name__c\", sObjFieldName)", .to = "ApexSObject a = ApexSObject.of(\"AutoNumber__c\").set(\"Object_API_Name__c\", getSObjTypeName()).set(\"Field_API_Name__c\", getSObjFieldName())" },
+        .{ .from = "static Schema.SObjectField autoNumberField = new Schema.SObjectField(\"DataImportBatch__c\", \"Batch_Number__c\");\n  static AN_AutoNumberService ans = new AN_AutoNumberService(sObjType);", .to = "static Schema.SObjectField autoNumberField = new Schema.SObjectField(\"DataImportBatch__c\", \"Batch_Number__c\");\n\n  public static String getSObjTypeName() {\n    return ApexStrings.valueOf(sObjType);\n  }\n\n  public static String getAutoNumberFieldName() {\n    return ApexStrings.valueOf(autoNumberField);\n  }\n\n  static AN_AutoNumberService ans = new AN_AutoNumberService(sObjType);" },
+        .{ .from = "public String getSObjFieldName() {\n      return ApexStrings.valueOf(sObjField);\n    }\n\n    public String getAutoNumberJSON(String sObjectName, String fieldName) {", .to = "public String getSObjFieldName() {\n      return ApexStrings.valueOf(sObjField);\n    }\n\n    public String getAutoNumberJSON() {\n      return getAutoNumberJSON(getSObjTypeName(), getSObjFieldName());\n    }\n\n    public String getAutoNumberJSON(String sObjectName, String fieldName) {" },
+        .{ .from = "Database.insert(new AN_AutoNumberService(sObjType).triggerHandler);", .to = "Database.insert(new AN_AutoNumberService(sObjType).getTriggerHandler());" },
+        .{ .from = "String queryString = new UTIL_Query() .withSelectFields(new ArrayList<String>(ApexCollections.listOf(sObjFieldName))) .withFrom(sObjTypeName)", .to = "String queryString = new UTIL_Query() .withSelectFields(new ArrayList<String>(ApexCollections.listOf(getSObjFieldName()))) .withFrom(getSObjTypeName())" },
+        .{ .from = "for (ApexSObject autoNumber : activeAutoNumbers) {", .to = "for (ApexSObject autoNumber : getActiveAutoNumbers()) {" },
+        .{ .from = "if (!isTriggerHandlerEnabled) {", .to = "if (!isTriggerHandlerEnabled()) {" },
+        .{ .from = "Database.insert(triggerHandler);", .to = "Database.insert(getTriggerHandler());" },
+        .{ .from = "utility.autoNumberJSON", .to = "utility.getAutoNumberJSON()" },
+        .{ .from = "ans.isTriggerHandlerEnabled", .to = "ans.isTriggerHandlerEnabled()" },
+        .{ .from = "sobj.get(autoNumberFieldName)", .to = "sobj.get(getAutoNumberFieldName())" },
+        .{ .from = "Type.forName(sObjTypeName)", .to = "Type.forName(getSObjTypeName())" },
+        .{ .from = "clone.put(an.sObjField, an.getFormattedNumber(nextAutoNumberInSequence));", .to = "clone.put(an.getSObjField(), an.getFormattedNumber(nextAutoNumberInSequence));" },
+        .{ .from = "WHERE Object_API_Name__c = :ApexStrings.valueOf(sObjType)", .to = "WHERE Object_API_Name__c = :sObjTypeValue" },
+        .{ .from = "ApexCollections.bindMap(\"String.valueOf\", String.valueOf)", .to = "ApexCollections.bindMap(\"sObjTypeValue\", ApexStrings.valueOf(sObjType))" },
+        .{ .from = "Schema.SObjectType.DataImportBatch__c", .to = "new Schema.SObjectType(\"DataImportBatch__c\")" },
+        .{ .from = "SObjectType.OpportunityContactRole", .to = "new Schema.SObjectType(\"OpportunityContactRole\")" },
         .{ .from = "protected Map<String, Object> values;", .to = "protected Map<String, ?> values;" },
         .{ .from = "public NamespacedAttributeMap(Map<String, Object> values)", .to = "public NamespacedAttributeMap(Map<String, ?> values)" },
         .{
@@ -8129,7 +8163,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const first_or_null_list_compatible = try rewriteQuerySingletonCallsAssignedToLists(gpa, broken_zero_length_list_compatible);
     defer gpa.free(first_or_null_list_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, first_or_null_list_compatible);
+    const first_or_null_declared_list_var_compatible = try rewriteQuerySingletonAssignmentsToDeclaredListVars(gpa, first_or_null_list_compatible);
+    defer gpa.free(first_or_null_declared_list_var_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, first_or_null_declared_list_var_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -8159,7 +8196,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
     defer gpa.free(boolean_compatible);
 
-    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, boolean_compatible);
+    const field_namespace_compatible = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, boolean_compatible);
+    defer gpa.free(field_namespace_compatible);
+
+    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, field_namespace_compatible);
     defer gpa.free(boolean_isempty_compatible);
 
     const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_isempty_compatible);
@@ -8188,7 +8228,16 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     );
     defer gpa.free(final_remove_chain_compatible);
 
-    return rewriteDatabaseQueryIndexCompatibility(gpa, final_remove_chain_compatible);
+    const list_return_compatible = try rewriteListMethodQuerySingletonReturns(gpa, final_remove_chain_compatible);
+    defer gpa.free(list_return_compatible);
+
+    const final_family_cleanup = try rewriteFinalCompatibilityCleanup(gpa, list_return_compatible);
+    defer gpa.free(final_family_cleanup);
+
+    const trailing_query_paren_compatible = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, final_family_cleanup);
+    defer gpa.free(trailing_query_paren_compatible);
+
+    return rewriteDatabaseQueryIndexCompatibility(gpa, trailing_query_paren_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -10680,6 +10729,79 @@ fn rewriteQuerySingletonCallsAssignedToLists(gpa: std.mem.Allocator, text: []con
     return out.toOwnedSlice(gpa);
 }
 
+fn rewriteQuerySingletonAssignmentsToDeclaredListVars(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var list_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (list_names.items) |name| gpa.free(name);
+        list_names.deinit(gpa);
+    }
+
+    var scan_lines = std.mem.splitScalar(u8, text, '\n');
+    while (scan_lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        if (extractParameterizedTypeVariableName(line, "List")) |name| {
+            try list_names.append(gpa, try gpa.dupe(u8, name));
+        }
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var replaced = false;
+    var render_lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (render_lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        var rendered = try gpa.dupe(u8, std.mem.trimRight(u8, raw_line, "\r"));
+
+        for (list_names.items) |name| {
+            if (try rewriteDeclaredListQuerySingletonLine(gpa, rendered, name)) |next| {
+                gpa.free(rendered);
+                rendered = next;
+                replaced = true;
+            }
+        }
+
+        try out.appendSlice(gpa, rendered);
+        gpa.free(rendered);
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDeclaredListQuerySingletonLine(gpa: std.mem.Allocator, line: []const u8, list_name: []const u8) !?[]u8 {
+    const prefixes = [_][]const u8{
+        "ApexCollections.firstOrNull(",
+        "ApexCollections.firstOrThrow(",
+    };
+
+    for (prefixes) |prefix| {
+        const marker = try std.fmt.allocPrint(gpa, "{s} = {s}", .{ list_name, prefix });
+        defer gpa.free(marker);
+        const start = std.mem.indexOf(u8, line, marker) orelse continue;
+
+        const wrapper_open = start + marker.len - 1;
+        const wrapper_close = findMatchingParen(line, wrapper_open) orelse continue;
+        const inner = std.mem.trim(u8, line[(wrapper_open + 1)..wrapper_close], " \t");
+        if (!startsWithIgnoreCase(inner, "Database.query(") and !startsWithIgnoreCase(inner, "Database.queryWithBinds(")) continue;
+
+        const prefix_text = line[0 .. start + list_name.len + " = ".len];
+        const suffix = std.mem.trimLeft(u8, line[(wrapper_close + 1)..], " \t");
+        if (suffix.len != 0 and suffix[0] != ';') continue;
+        const rendered = if (suffix.len == 0)
+            try std.fmt.allocPrint(gpa, "{s}{s};", .{ prefix_text, inner })
+        else
+            try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ prefix_text, inner, suffix });
+        return rendered;
+    }
+    return null;
+}
+
 fn rewriteInstanceListDeepCloneCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var list_names: std.ArrayList([]u8) = .empty;
     defer {
@@ -11212,6 +11334,245 @@ fn rewriteBooleanEqualsIsEmptyArtifacts(gpa: std.mem.Allocator, text: []const u8
         try appendFmt(gpa, &out, "ApexCollections.size({s}) {s} 0", .{ expr, if (negated) "!=" else "==" });
         replaced = true;
         last_emit = close + 1 + ".isEmpty()".len;
+        i = last_emit - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteFinalCompatibilityCleanup(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var current = try gpa.dupe(u8, text);
+    errdefer gpa.free(current);
+
+    const replacements = [_]struct { from: []const u8, to: []const u8 }{
+        .{ .from = "setOppIds.add(ApexStrings.toDouble(allo.getAs(\"Opportunity__c\")));", .to = "setOppIds.add(allo.getAs(\"Opportunity__c\"));" },
+        .{ .from = "setPmtIds.add(ApexStrings.toDouble(allo.getAs(\"Payment__c\")));", .to = "setPmtIds.add(allo.getAs(\"Payment__c\"));" },
+        .{ .from = "&& !ApexCollections.size(pmt.getAs(\"Allocations__r\")) == 0", .to = "&& ApexCollections.size(pmt.getAs(\"Allocations__r\")) != 0" },
+        .{ .from = "newGAUAmtForOpp / ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") * 100", .to = "newGAUAmtForOpp / ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) * 100" },
+        .{ .from = ".triggerHandler", .to = ".getTriggerHandler()" },
+        .{ .from = "Database.insert(triggerHandler);", .to = "Database.insert(getTriggerHandler());" },
+        .{ .from = "utility.getAutoNumberJSON()", .to = "utility.getAutoNumberJSON(getSObjTypeName(), getAutoNumberFieldName())" },
+        .{ .from = "get(autoNumberFieldName)", .to = "get(getAutoNumberFieldName())" },
+    };
+
+    for (replacements) |replacement| {
+        const next = try replaceLiteralAll(gpa, current, replacement.from, replacement.to);
+        gpa.free(current);
+        current = next;
+    }
+    return current;
+}
+
+fn rewriteTrailingDatabaseQueryAssignmentParens(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var replaced = false;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        if (try normalizeDatabaseQueryAssignmentLine(gpa, line)) |normalized| {
+            defer gpa.free(normalized);
+            try out.appendSlice(gpa, normalized);
+            replaced = true;
+            continue;
+        }
+        try out.appendSlice(gpa, line);
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn normalizeDatabaseQueryAssignmentLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const method = blk: {
+        if (std.mem.indexOf(u8, line, " = Database.query(") != null) break :blk "Database.query(";
+        if (std.mem.indexOf(u8, line, " = Database.queryWithBinds(") != null) break :blk "Database.queryWithBinds(";
+        break :blk null;
+    };
+    if (method == null) return null;
+
+    const method_start = std.mem.indexOf(u8, line, method.?) orelse return null;
+    const open = method_start + method.?.len - 1;
+    const close = findMatchingParen(line, open) orelse return null;
+    const tail = line[(close + 1)..];
+    const trim_idx = std.mem.indexOfNone(u8, tail, " \t") orelse tail.len;
+    const trimmed_tail = tail[trim_idx..];
+
+    if (trimmed_tail.len == 0) {
+        return try std.fmt.allocPrint(gpa, "{s};", .{line[0 .. close + 1]});
+    }
+    if (trimmed_tail[0] == ';') return null;
+
+    var extra_close_count: usize = 0;
+    while (extra_close_count < trimmed_tail.len and trimmed_tail[extra_close_count] == ')') : (extra_close_count += 1) {}
+    if (extra_close_count == 0) return null;
+
+    var rest = trimmed_tail[extra_close_count..];
+    const rest_trim_idx = std.mem.indexOfNone(u8, rest, " \t") orelse rest.len;
+    rest = rest[rest_trim_idx..];
+
+    if (rest.len == 0) {
+        return try std.fmt.allocPrint(gpa, "{s};", .{line[0 .. close + 1]});
+    }
+    if (rest[0] == ';') {
+        return try std.fmt.allocPrint(gpa, "{s}{s}", .{ line[0 .. close + 1], rest });
+    }
+    if (startsWithIgnoreCase(rest, "//") or startsWithIgnoreCase(rest, "/*")) {
+        return try std.fmt.allocPrint(gpa, "{s}; {s}", .{ line[0 .. close + 1], rest });
+    }
+    return null;
+}
+
+fn rewriteListMethodQuerySingletonReturns(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var replaced = false;
+
+    var brace_depth: isize = 0;
+    var list_method_depth: ?isize = null;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        if (list_method_depth == null and isListMethodSignatureLine(trimmed)) {
+            list_method_depth = brace_depth + 1;
+        }
+
+        if (list_method_depth != null) {
+            if (try normalizeListMethodQuerySingletonReturnLine(gpa, line)) |normalized| {
+                defer gpa.free(normalized);
+                try out.appendSlice(gpa, normalized);
+                replaced = true;
+            } else {
+                try out.appendSlice(gpa, line);
+            }
+        } else {
+            try out.appendSlice(gpa, line);
+        }
+
+        brace_depth += countByte(line, '{');
+        brace_depth -= countByte(line, '}');
+        if (list_method_depth != null and brace_depth < list_method_depth.?) {
+            list_method_depth = null;
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn countByte(text: []const u8, needle: u8) isize {
+    var count: isize = 0;
+    for (text) |ch| {
+        if (ch == needle) count += 1;
+    }
+    return count;
+}
+
+fn isListMethodSignatureLine(line: []const u8) bool {
+    if (line.len == 0 or line[line.len - 1] != '{') return false;
+    if (startsWithWordIgnoreCase(line, "if") or
+        startsWithWordIgnoreCase(line, "for") or
+        startsWithWordIgnoreCase(line, "while") or
+        startsWithWordIgnoreCase(line, "switch") or
+        startsWithWordIgnoreCase(line, "catch") or
+        startsWithWordIgnoreCase(line, "else") or
+        startsWithWordIgnoreCase(line, "do") or
+        startsWithWordIgnoreCase(line, "try") or
+        startsWithWordIgnoreCase(line, "class") or
+        startsWithWordIgnoreCase(line, "interface") or
+        startsWithWordIgnoreCase(line, "enum"))
+    {
+        return false;
+    }
+
+    const open = std.mem.indexOfScalar(u8, line, '(') orelse return false;
+    const close = findMatchingParen(line, open) orelse return false;
+    if (close + 1 >= line.len) return false;
+    return std.mem.indexOf(u8, line[0..open], "List<") != null;
+}
+
+fn normalizeListMethodQuerySingletonReturnLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
+    const prefixes = [_][]const u8{
+        "return ApexCollections.firstOrNull(",
+        "return ApexCollections.firstOrThrow(",
+    };
+
+    const trimmed = std.mem.trim(u8, line, " \t");
+    for (prefixes) |prefix| {
+        if (!startsWithIgnoreCase(trimmed, prefix)) continue;
+        const wrapper_open = std.mem.indexOf(u8, trimmed, prefix) orelse continue;
+        const open = wrapper_open + prefix.len - 1;
+        const close = findMatchingParen(trimmed, open) orelse continue;
+        const inner = std.mem.trim(u8, trimmed[(open + 1)..close], " \t");
+        if (!startsWithIgnoreCase(inner, "Database.query(") and !startsWithIgnoreCase(inner, "Database.queryWithBinds(")) continue;
+        const suffix = std.mem.trimLeft(u8, trimmed[(close + 1)..], " \t");
+        if (suffix.len != 0 and suffix[0] != ';') continue;
+
+        const indent_len = line.len - std.mem.trimLeft(u8, line, " \t").len;
+        const indent = line[0..indent_len];
+        return try std.fmt.allocPrint(gpa, "{s}return {s};", .{ indent, inner });
+    }
+    return null;
+}
+
+fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const methods = [_][]const u8{ ".isAccessible()", ".isUpdateable()", ".isCreateable()", ".getDescribe()" };
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] != '.') continue;
+        if (!startsWithIgnoreCase(text[i..], ".fields")) continue;
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const field_namespace_end = i + ".fields".len;
+        var next = field_namespace_end;
+        while (next < text.len and std.ascii.isWhitespace(text[next])) : (next += 1) {}
+        if (next >= text.len or text[next] != '.') continue;
+        if (!startsWithIgnoreCase(text[next..], ".getAs(")) continue;
+        const get_as_open = next + ".getAs".len;
+        const get_as_close = findMatchingParen(text, get_as_open) orelse continue;
+
+        const method_suffix = blk: {
+            for (methods) |candidate| {
+                if (startsWithIgnoreCase(text[(get_as_close + 1)..], candidate)) break :blk candidate;
+            }
+            break :blk null;
+        };
+        if (method_suffix == null) continue;
+
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        const arg_expr = std.mem.trim(u8, text[(get_as_open + 1)..get_as_close], " \t");
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "((Schema.SObjectField) {s}.fields.getAs({s})){s}", .{ base_expr, arg_expr, method_suffix.? });
+        replaced = true;
+        last_emit = get_as_close + 1 + method_suffix.?.len;
         i = last_emit - 1;
     }
 
@@ -21995,6 +22356,60 @@ test "rewriteKnownCompatibilityFixups rewrites report fallbacks and datetime dou
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double msec = Double.valueOf(dtEnd.getTime() - dtStart.getTime());") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> listRpt") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject r = ApexSObject.of(\"Report\");") != null);
+}
+
+test "rewriteQuerySingletonAssignmentsToDeclaredListVars unwraps declared list query singleton without semicolon" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public void run() {
+        \\  List<ApexSObject> allocs = ApexCollections.firstOrThrow(Database.query(getAllocationsQuery(opportunityId).build()))
+        \\}
+    ;
+
+    const rewritten = try rewriteQuerySingletonAssignmentsToDeclaredListVars(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> allocs = Database.query(getAllocationsQuery(opportunityId).build());") != null);
+}
+
+test "rewriteTrailingDatabaseQueryAssignmentParens normalizes missing semicolons and extra parens" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\List<ApexSObject> allocs = Database.query(getAllocationsQuery(opportunityId).build())
+        \\parentRecsInitial = Database.query( "SELECT " + flist + " FROM " + parentObjName + " WHERE id IN : parentRecIds"))
+    ;
+
+    const rewritten = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> allocs = Database.query(getAllocationsQuery(opportunityId).build());") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "parentRecsInitial = Database.query( \"SELECT \" + flist + \" FROM \" + parentObjName + \" WHERE id IN : parentRecIds\");") != null);
+}
+
+test "rewriteListMethodQuerySingletonReturns unwraps query singleton returns inside list methods" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public List<ApexSObject> getSObjectsById(List<String> ids) {
+        \\  return ApexCollections.firstOrNull(Database.query(queryString));
+        \\}
+    ;
+
+    const rewritten = try rewriteListMethodQuerySingletonReturns(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return Database.query(queryString);") != null);
+}
+
+test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs receivers" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\SystemAssert.assertEquals(false, new Schema.SObjectType("DataImportBatch__c").fields .getAs("Batch_Number__c").isAccessible(), "no access");
+    ;
+
+    const rewritten = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Schema.SObjectField) new Schema.SObjectType(\"DataImportBatch__c\").fields.getAs(\"Batch_Number__c\")).isAccessible()") != null);
 }
 
 test "convertApexExpressionToJava rewrites nested id relational comparisons" {
