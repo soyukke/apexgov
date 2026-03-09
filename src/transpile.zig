@@ -7713,6 +7713,22 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = ".GetRecordTypeId(", .to = ".getRecordTypeId(" },
         .{ .from = "processDefinitionType.getAs(\"OPP_ALLOC_UPD\")", .to = "processDefinitionType.OPP_ALLOC_UPD" },
         .{ .from = "processDefinitionType.getAs(\"PMT_ALLOC\")", .to = "processDefinitionType.PMT_ALLOC" },
+        .{ .from = "enablepaymentAllocations", .to = "enablePaymentAllocations" },
+        .{ .from = "ispaymentAllocationsEnabled", .to = "isPaymentAllocationsEnabled" },
+        .{ .from = "validatepaymentAllocationsConfiguration", .to = "validatePaymentAllocationsConfiguration" },
+        .{ .from = "processpaymentAllocations", .to = "processPaymentAllocations" },
+        .{ .from = "defaultgau", .to = "defaultGAU" },
+        .{ .from = "defaultGau", .to = "defaultGAU" },
+        .{ .from = "iddefaultGAU", .to = "idDefaultGAU" },
+        .{ .from = "userInfo.", .to = "UserInfo." },
+        .{ .from = "oppid", .to = "oppId" },
+        .{ .from = "allocationsByGAUID", .to = "allocationsByGAUId" },
+        .{ .from = "duplicateAllocationpaidUnpaidAmountRatio", .to = "duplicateAllocationPaidUnpaidAmountRatio" },
+        .{ .from = "newGAUAmtFOrOpp", .to = "newGAUAmtForOpp" },
+        .{ .from = "campaigngau", .to = "campaignGau" },
+        .{ .from = "Date.Today()", .to = "Date.today()" },
+        .{ .from = "ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()).remove(\"\\\"\")", .to = "ApexStrings.remove(ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()), \"\\\"\")" },
+        .{ .from = "ApexStrings.isBlank(ApexStrings.toDouble(newlist.get(i).getAs(\"Elevate_Payment_ID__c\")))", .to = "ApexStrings.isBlank(newlist.get(i).getAs(\"Elevate_Payment_ID__c\"))" },
         .{ .from = "return this.insRecordErrors.values();", .to = "return new ArrayList<ApexSObject>(this.insRecordErrors.values());" },
         .{ .from = "return this.updRecordErrors.values();", .to = "return new ArrayList<ApexSObject>(this.updRecordErrors.values());" },
         .{ .from = "listAlloForInsert = GAUtoAlloMapping.values();", .to = "listAlloForInsert = new ArrayList<ApexSObject>(GAUtoAlloMapping.values());" },
@@ -7721,6 +7737,21 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "getFirstDmlError(undeleteResult.getErrors())", .to = "getFirstDmlError(java.util.Arrays.asList(undeleteResult.getErrors()))" },
         .{ .from = "makeDefaultAllocation(targetObj, 0)", .to = "makeDefaultAllocation(targetObj, 0.0)" },
         .{ .from = "processDefaultAllocations(parentObj, parentAmount, parentCurrencyIsoCode, 0, nonDefaultAllocationsPresent, defaultAllocations);", .to = "processDefaultAllocations(parentObj, parentAmount, parentCurrencyIsoCode, 0.0, nonDefaultAllocationsPresent, defaultAllocations);" },
+        .{ .from = "currentTotal + oppAllocation.getAs(\"Amount__c\")", .to = "currentTotal + ApexStrings.toDouble(oppAllocation.getAs(\"Amount__c\"))" },
+        .{ .from = "currentTotal + pmtAllocation.getAs(\"Amount__c\")", .to = "currentTotal + ApexStrings.toDouble(pmtAllocation.getAs(\"Amount__c\"))" },
+        .{ .from = "totalPaymentsPaidUnpaid += payment.getAs(\"npe01__Payment_Amount__c\")", .to = "totalPaymentsPaidUnpaid += ApexStrings.toDouble(payment.getAs(\"npe01__Payment_Amount__c\"))" },
+        .{ .from = "context.totalUnpaidPayments += payment.getAs(\"npe01__Payment_Amount__c\")", .to = "context.totalUnpaidPayments += ApexStrings.toDouble(payment.getAs(\"npe01__Payment_Amount__c\"))" },
+        .{ .from = "context.scheduleRatio = context.totalUnpaidPayments / opportunity.getAs(\"Amount\")", .to = "context.scheduleRatio = context.totalUnpaidPayments / ApexStrings.toDouble(opportunity.getAs(\"Amount\"))" },
+        .{ .from = "context.scalingRatio = context.totalPaidUnpaidPayments / opportunity.getAs(\"Amount\")", .to = "context.scalingRatio = context.totalPaidUnpaidPayments / ApexStrings.toDouble(opportunity.getAs(\"Amount\"))" },
+        .{ .from = "totalAllocationAmount += alloc.getAs(\"Amount__c\")", .to = "totalAllocationAmount += ApexStrings.toDouble(alloc.getAs(\"Amount__c\"))" },
+        .{ .from = "remainder-=allo.getAs(\"Amount__c\")", .to = "remainder-=ApexStrings.toDouble(allo.getAs(\"Amount__c\"))" },
+        .{ .from = "setOppIds.add(ApexStrings.toDouble(allo.getAs(\"Opportunity__c\")))", .to = "setOppIds.add(allo.getAs(\"Opportunity__c\"))" },
+        .{ .from = "setPmtIds.add(ApexStrings.toDouble(allo.getAs(\"Payment__c\")))", .to = "setPmtIds.add(allo.getAs(\"Payment__c\"))" },
+        .{ .from = "!ApexCollections.size(pmt.getAs(\"Allocations__r\")) == 0", .to = "ApexCollections.size(pmt.getAs(\"Allocations__r\")) != 0" },
+        .{ .from = "return (((String)record) == null ? null : ((String)record).get(\"Name\"));", .to = "return (record == null ? null : (String)record.get(\"Name\"));" },
+        .{ .from = "return Database.query(queryString);", .to = "return ApexCollections.firstOrNull(Database.query(queryString));" },
+        .{ .from = "ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") != 0", .to = "ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) != 0" },
+        .{ .from = "newGAUAmtForOpp / ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") * 100", .to = "newGAUAmtForOpp / ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) * 100" },
         .{ .from = "protected Map<String, Object> values;", .to = "protected Map<String, ?> values;" },
         .{ .from = "public NamespacedAttributeMap(Map<String, Object> values)", .to = "public NamespacedAttributeMap(Map<String, ?> values)" },
         .{
@@ -8077,7 +8108,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, bare_custom_sobject_compatible);
     defer gpa.free(type_path_get_as_compatible);
 
-    const collection_view_compatible = try rewriteCollectionViewPropertyAccess(gpa, type_path_get_as_compatible);
+    const fieldset_get_as_compatible = try replaceLiteralAll(gpa, type_path_get_as_compatible, ".fieldSets.getAs(", ".fieldSets.get(");
+    defer gpa.free(fieldset_get_as_compatible);
+
+    const collection_view_compatible = try rewriteCollectionViewPropertyAccess(gpa, fieldset_get_as_compatible);
     defer gpa.free(collection_view_compatible);
 
     const values_field_compatible = try rewriteValuesFieldPseudoCalls(gpa, collection_view_compatible);
@@ -8089,7 +8123,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const string_instance_compatible = try rewriteApexStringInstanceMethods(gpa, valueof_remove_compatible);
     defer gpa.free(string_instance_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, string_instance_compatible);
+    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, string_instance_compatible);
+    defer gpa.free(broken_zero_length_list_compatible);
+
+    const first_or_null_list_compatible = try rewriteQuerySingletonCallsAssignedToLists(gpa, broken_zero_length_list_compatible);
+    defer gpa.free(first_or_null_list_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, first_or_null_list_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -8119,7 +8159,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
     defer gpa.free(boolean_compatible);
 
-    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_compatible);
+    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, boolean_compatible);
+    defer gpa.free(boolean_isempty_compatible);
+
+    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_isempty_compatible);
     defer gpa.free(object_equality_compatible);
 
     const numeric_valueof_object_compatible = try rewriteNumericValueOfObjectIdentifiers(gpa, object_equality_compatible);
@@ -8131,7 +8174,21 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_collection_compatible);
     defer gpa.free(get_errors_array_compatible);
 
-    return rewriteDatabaseQueryIndexCompatibility(gpa, get_errors_array_compatible);
+    const get_as_field_add_error_compatible = try rewriteGetAsFieldAddErrorCalls(gpa, get_errors_array_compatible);
+    defer gpa.free(get_as_field_add_error_compatible);
+
+    const substring_compatible = try replaceLiteralAll(gpa, get_as_field_add_error_compatible, ".subString(", ".substring(");
+    defer gpa.free(substring_compatible);
+
+    const final_remove_chain_compatible = try replaceLiteralAll(
+        gpa,
+        substring_compatible,
+        "ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()).remove(\"\\\"\")",
+        "ApexStrings.remove(ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()), \"\\\"\")",
+    );
+    defer gpa.free(final_remove_chain_compatible);
+
+    return rewriteDatabaseQueryIndexCompatibility(gpa, final_remove_chain_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -10415,9 +10472,13 @@ fn rewriteApexStringInstanceMethods(gpa: std.mem.Allocator, text: []const u8) ![
     const StringMethod = struct {
         suffix: []const u8,
         static_name: []const u8,
+        requires_string_like_base: bool = false,
     };
     const methods = [_]StringMethod{
         .{ .suffix = ".abbreviate", .static_name = "abbreviate" },
+        .{ .suffix = ".endsWithIgnoreCase", .static_name = "endsWithIgnoreCase", .requires_string_like_base = true },
+        .{ .suffix = ".leftPad", .static_name = "leftPad", .requires_string_like_base = true },
+        .{ .suffix = ".remove", .static_name = "remove", .requires_string_like_base = true },
         .{ .suffix = ".removeEnd", .static_name = "removeEnd" },
         .{ .suffix = ".removeEndIgnoreCase", .static_name = "removeEndIgnoreCase" },
         .{ .suffix = ".removeStart", .static_name = "removeStart" },
@@ -10425,6 +10486,20 @@ fn rewriteApexStringInstanceMethods(gpa: std.mem.Allocator, text: []const u8) ![
         .{ .suffix = ".deleteWhiteSpace", .static_name = "deleteWhiteSpace" },
         .{ .suffix = ".capitalize", .static_name = "capitalize" },
     };
+
+    var string_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (string_names.items) |name| gpa.free(name);
+        string_names.deinit(gpa);
+    }
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        if (extractTypedVariableName(line, "String")) |name| {
+            try string_names.append(gpa, try gpa.dupe(u8, name));
+        }
+    }
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -10476,6 +10551,7 @@ fn rewriteApexStringInstanceMethods(gpa: std.mem.Allocator, text: []const u8) ![
         const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
         if (base_expr.len == 0) continue;
         if (std.mem.indexOfScalar(u8, base_expr, '(') == null and isLikelyTypeReferencePathExpression(base_expr)) continue;
+        if (method.requires_string_like_base and !baseExprLikelyString(base_expr, string_names.items)) continue;
 
         const args = std.mem.trim(u8, text[(open + 1)..close], " \t");
         try out.appendSlice(gpa, text[last_emit..base_start]);
@@ -10494,6 +10570,113 @@ fn rewriteApexStringInstanceMethods(gpa: std.mem.Allocator, text: []const u8) ![
         return gpa.dupe(u8, text);
     }
     try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn baseExprLikelyString(base_expr: []const u8, string_names: []const []u8) bool {
+    const trimmed = std.mem.trim(u8, base_expr, " \t");
+    if (trimmed.len == 0) return false;
+    if (trimmed[0] == '"') return true;
+    if (containsIgnoreCaseNameSlice(string_names, trimmed)) return true;
+    return startsWithIgnoreCase(trimmed, "ApexStrings.") or
+        startsWithIgnoreCase(trimmed, "String.valueOf(") or
+        startsWithIgnoreCase(trimmed, "ApexStrings.valueOf(") or
+        startsWithIgnoreCase(trimmed, "Labels.get(");
+}
+
+fn rewriteBrokenZeroLengthListInitializers(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+        const lhs = line[0..eq_pos];
+        const rhs = std.mem.trim(u8, line[(eq_pos + 1)..], " \t");
+        if (std.mem.indexOf(u8, lhs, "List<") == null or
+            !startsWithIgnoreCase(rhs, "new ") or
+            !endsWithIgnoreCase(rhs, ".get(0);"))
+        {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        try out.appendSlice(gpa, line[0 .. eq_pos + 1]);
+        try out.appendSlice(gpa, " new ArrayList<>();");
+        replaced = true;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteQuerySingletonCallsAssignedToLists(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+        const lhs = line[0..eq_pos];
+        if (std.mem.indexOf(u8, lhs, "List<") == null) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        const prefix_first_or_null = "ApexCollections.firstOrNull(";
+        const prefix_first_or_throw = "ApexCollections.firstOrThrow(";
+        const rhs = std.mem.trim(u8, line[(eq_pos + 1)..], " \t");
+        const prefix = if (startsWithIgnoreCase(rhs, prefix_first_or_null))
+            prefix_first_or_null
+        else if (startsWithIgnoreCase(rhs, prefix_first_or_throw))
+            prefix_first_or_throw
+        else {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+
+        const open = eq_pos + 1 + std.mem.indexOf(u8, line[(eq_pos + 1)..], prefix).?;
+        const call_open = open + prefix.len - 1;
+        const call_close = findMatchingParen(line, call_open) orelse {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+        const inner = std.mem.trim(u8, line[(call_open + 1)..call_close], " \t");
+        if (!startsWithIgnoreCase(inner, "Database.query(") and !startsWithIgnoreCase(inner, "Database.queryWithBinds(")) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        try out.appendSlice(gpa, line[0 .. eq_pos + 1]);
+        try appendFmt(gpa, &out, " {s};", .{inner});
+        replaced = true;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
     return out.toOwnedSlice(gpa);
 }
 
@@ -10811,6 +10994,10 @@ fn rewriteNumericGetAsLine(gpa: std.mem.Allocator, line: []const u8, double_name
         }
 
         const call_text = line[call.start..call.end];
+        if (!getAsCallNeedsNumericCompatibility(gpa, line, call_text, double_names)) {
+            i = call.end;
+            continue;
+        }
         try out.appendSlice(gpa, line[last_emit..call.start]);
         try appendFmt(gpa, &out, "ApexStrings.toDouble({s})", .{call_text});
         replaced = true;
@@ -10826,16 +11013,107 @@ fn rewriteNumericGetAsLine(gpa: std.mem.Allocator, line: []const u8, double_name
     return out.toOwnedSlice(gpa);
 }
 
+fn getAsCallNeedsNumericCompatibility(gpa: std.mem.Allocator, line: []const u8, call_text: []const u8, double_names: []const []u8) bool {
+    if (extractGetAsCallStringLiteralFieldName(call_text)) |field_name| {
+        if (fieldNameLooksNumeric(field_name)) return true;
+        if (fieldNameLooksNonNumeric(field_name)) return false;
+    }
+
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (startsWithIgnoreCase(trimmed, "Double ")) return true;
+    for (double_names) |name| {
+        const add_eq = std.fmt.allocPrint(gpa, "{s} +=", .{name}) catch continue;
+        defer gpa.free(add_eq);
+        if (std.mem.indexOf(u8, trimmed, add_eq) != null) return true;
+
+        const sub_eq = std.fmt.allocPrint(gpa, "{s} -=", .{name}) catch continue;
+        defer gpa.free(sub_eq);
+        if (std.mem.indexOf(u8, trimmed, sub_eq) != null) return true;
+
+        const assign = std.fmt.allocPrint(gpa, "{s} =", .{name}) catch continue;
+        defer gpa.free(assign);
+        if (std.mem.indexOf(u8, trimmed, assign) != null) return true;
+    }
+    return false;
+}
+
+fn extractGetAsCallStringLiteralFieldName(call_text: []const u8) ?[]const u8 {
+    const open = blk: {
+        if (std.mem.indexOf(u8, call_text, ".getAs")) |dot| {
+            const open_idx = std.mem.indexOfScalarPos(u8, call_text, dot + ".getAs".len, '(') orelse return null;
+            break :blk open_idx;
+        }
+        if (startsWithIgnoreCase(call_text, "ApexSwitch.getAs")) {
+            const open_idx = std.mem.indexOfScalar(u8, call_text, '(') orelse return null;
+            break :blk open_idx;
+        }
+        return null;
+    };
+    const close = findMatchingParen(call_text, open) orelse return null;
+    const args = std.mem.trim(u8, call_text[(open + 1)..close], " \t");
+    if (args.len < 2 or args[0] != '"' or args[args.len - 1] != '"') return null;
+    return args[1 .. args.len - 1];
+}
+
+fn fieldNameLooksNumeric(field_name: []const u8) bool {
+    return containsIgnoreCaseSubstring(field_name, "amount") or
+        containsIgnoreCaseSubstring(field_name, "percent") or
+        containsIgnoreCaseSubstring(field_name, "total") or
+        containsIgnoreCaseSubstring(field_name, "balance") or
+        containsIgnoreCaseSubstring(field_name, "ratio") or
+        containsIgnoreCaseSubstring(field_name, "rate") or
+        containsIgnoreCaseSubstring(field_name, "cost") or
+        containsIgnoreCaseSubstring(field_name, "price") or
+        containsIgnoreCaseSubstring(field_name, "quantity") or
+        containsIgnoreCaseSubstring(field_name, "count") or
+        containsIgnoreCaseSubstring(field_name, "number");
+}
+
+fn fieldNameLooksNonNumeric(field_name: []const u8) bool {
+    return containsIgnoreCaseSubstring(field_name, "enabled") or
+        containsIgnoreCaseSubstring(field_name, "active") or
+        containsIgnoreCaseSubstring(field_name, "paid") or
+        containsIgnoreCaseSubstring(field_name, "written_off") or
+        containsIgnoreCaseSubstring(field_name, "_id") or
+        endsWithIgnoreCase(field_name, "Id") or
+        std.mem.eql(u8, field_name, "Id");
+}
+
+fn fieldNameLooksBoolean(field_name: []const u8) bool {
+    return containsIgnoreCaseSubstring(field_name, "enabled") or
+        containsIgnoreCaseSubstring(field_name, "active") or
+        containsIgnoreCaseSubstring(field_name, "paid") or
+        containsIgnoreCaseSubstring(field_name, "private") or
+        containsIgnoreCaseSubstring(field_name, "written_off") or
+        containsIgnoreCaseSubstring(field_name, "deleted") or
+        containsIgnoreCaseSubstring(field_name, "closed") or
+        containsIgnoreCaseSubstring(field_name, "won") or
+        containsIgnoreCaseSubstring(field_name, "html") or
+        startsWithIgnoreCase(field_name, "is") or
+        startsWithIgnoreCase(field_name, "has") or
+        startsWithIgnoreCase(field_name, "can");
+}
+
 fn lineLikelyNeedsNumericGetAsRewrite(gpa: std.mem.Allocator, line: []const u8, double_names: []const []u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (startsWithIgnoreCase(trimmed, "Double ")) return true;
     if ((startsWithIgnoreCase(trimmed, "if ") or startsWithIgnoreCase(trimmed, "if(") or
+        startsWithIgnoreCase(trimmed, "else if ") or startsWithIgnoreCase(trimmed, "else if(") or
         startsWithIgnoreCase(trimmed, "while ") or startsWithIgnoreCase(trimmed, "while(")) and
         (std.mem.indexOfScalar(u8, trimmed, '<') != null or std.mem.indexOfScalar(u8, trimmed, '>') != null))
     {
         return true;
     }
-    if (std.mem.indexOfScalar(u8, trimmed, '*') != null or std.mem.indexOfScalar(u8, trimmed, '/') != null) {
+    if (std.mem.indexOfScalar(u8, trimmed, '*') != null or
+        std.mem.indexOfScalar(u8, trimmed, '/') != null or
+        std.mem.indexOf(u8, trimmed, "+=") != null or
+        std.mem.indexOf(u8, trimmed, "-=") != null)
+    {
+        return true;
+    }
+    if ((std.mem.indexOf(u8, trimmed, " + ") != null or std.mem.indexOf(u8, trimmed, " - ") != null) and
+        (std.mem.indexOf(u8, trimmed, "\"Amount") != null or std.mem.indexOf(u8, trimmed, "\"Percent") != null))
+    {
         return true;
     }
     for (double_names) |name| {
@@ -10864,6 +11142,85 @@ fn getAsCallIsNullCompared(line: []const u8, call_end: usize) bool {
     }
     while (i < line.len and std.ascii.isWhitespace(line[i])) : (i += 1) {}
     return startsWithWordIgnoreCase(line[i..], "null");
+}
+
+fn rewriteGetAsFieldAddErrorCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".getAs")) continue;
+
+        const get_as_open = std.mem.indexOfScalarPos(u8, text, i + ".getAs".len, '(') orelse continue;
+        const get_as_close = findMatchingParen(text, get_as_open) orelse continue;
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        const field_arg = std.mem.trim(u8, text[(get_as_open + 1)..get_as_close], " \t");
+        if (field_arg.len < 2 or field_arg[0] != '"' or field_arg[field_arg.len - 1] != '"') continue;
+
+        const add_error_dot = nextNonSpace(text, get_as_close + 1);
+        if (add_error_dot >= text.len or text[add_error_dot] != '.') continue;
+        if (!startsWithIgnoreCase(text[add_error_dot..], ".addError")) continue;
+
+        var add_error_open = add_error_dot + ".addError".len;
+        while (add_error_open < text.len and std.ascii.isWhitespace(text[add_error_open])) : (add_error_open += 1) {}
+        if (add_error_open >= text.len or text[add_error_open] != '(') continue;
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(
+            gpa,
+            &out,
+            "{s}.addError(new Schema.SObjectField(ApexSwitch.getSObjectType({s}).getName(), {s}), ",
+            .{ base_expr, base_expr, field_arg },
+        );
+        replaced = true;
+        last_emit = add_error_open + 1;
+        i = add_error_open;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBooleanEqualsIsEmptyArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const negated = startsWithIgnoreCase(text[i..], "!Boolean.TRUE.equals(");
+        const prefix = if (negated) "!Boolean.TRUE.equals(" else if (startsWithIgnoreCase(text[i..], "Boolean.TRUE.equals(")) "Boolean.TRUE.equals(" else "";
+        if (prefix.len == 0) continue;
+        if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+
+        const open = i + prefix.len - 1;
+        const close = findMatchingParen(text, open) orelse continue;
+        const expr = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        if (expr.len == 0) continue;
+        if (!startsWithIgnoreCase(text[close + 1 ..], ".isEmpty()")) continue;
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "ApexCollections.size({s}) {s} 0", .{ expr, if (negated) "!=" else "==" });
+        replaced = true;
+        last_emit = close + 1 + ".isEmpty()".len;
+        i = last_emit - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 fn rewriteDecimalSetScaleCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -11254,19 +11611,23 @@ fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
                 const prev_idx = findPreviousNonWhitespace(text, call.start);
                 const next_idx = findNextNonWhitespace(text, call.end);
                 const call_text = text[call.start..call.end];
+                const field_name = extractGetAsCallStringLiteralFieldName(call_text);
+                const field_is_booleanish = if (field_name) |name| fieldNameLooksBoolean(name) else true;
 
                 var replacement: ?[]u8 = null;
                 var replace_start = call.start;
                 var replace_end = call.end;
 
-                if (prev_idx) |prev| {
-                    if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
-                        replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
-                        replace_start = prev;
+                if (field_is_booleanish) {
+                    if (prev_idx) |prev| {
+                        if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
+                            replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
+                            replace_start = prev;
+                        }
                     }
                 }
 
-                if (replacement == null) {
+                if (replacement == null and field_is_booleanish) {
                     if (parseBooleanLiteralComparison(text, call.end)) |comparison| {
                         if (comparison.negated) {
                             replacement = try std.fmt.allocPrint(
@@ -11285,7 +11646,7 @@ fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
                     }
                 }
 
-                if (replacement == null and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
+                if (replacement == null and field_is_booleanish and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
                     replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
                 }
 
@@ -11657,6 +12018,9 @@ fn isBooleanOperandContext(text: []const u8, call_start: usize, call_end: usize,
         const ch = text[prev];
         if (ch == '.' or isIdentifierChar(ch) or ch == ')' or ch == ']') return false;
         if (ch == '(') return isBooleanIntroducerBeforeParen(text, prev);
+        if (ch == '=') {
+            return assignmentContextExpectsBoolean(text, prev);
+        }
         return ch == '&' or ch == '|' or ch == ';';
     }
 
@@ -11676,6 +12040,16 @@ fn isBooleanIntroducerBeforeParen(text: []const u8, paren_idx: usize) bool {
         std.ascii.eqlIgnoreCase(token, "while") or
         std.ascii.eqlIgnoreCase(token, "assertTrue") or
         std.ascii.eqlIgnoreCase(token, "assertFalse");
+}
+
+fn assignmentContextExpectsBoolean(text: []const u8, eq_idx: usize) bool {
+    if (eq_idx > 0 and (text[eq_idx - 1] == '=' or text[eq_idx - 1] == '!' or text[eq_idx - 1] == '<' or text[eq_idx - 1] == '>')) {
+        return false;
+    }
+    const line_start = std.mem.lastIndexOfScalar(u8, text[0..eq_idx], '\n') orelse 0;
+    const lhs = std.mem.trim(u8, text[line_start..eq_idx], " \t\r\n");
+    return extractTypedVariableName(lhs, "Boolean") != null or
+        extractTypedVariableName(lhs, "boolean") != null;
 }
 
 fn findPreviousNonWhitespace(text: []const u8, before: usize) ?usize {

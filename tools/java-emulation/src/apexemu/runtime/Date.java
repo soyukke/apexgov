@@ -25,6 +25,10 @@ public final class Date {
     return new Date(value.plusMonths(months));
   }
 
+  public Date addYears(int years) {
+    return new Date(value.plusYears(years));
+  }
+
   LocalDate value() {
     return value;
   }

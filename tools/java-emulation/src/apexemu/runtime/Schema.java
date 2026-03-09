@@ -32,7 +32,7 @@ public final class Schema {
         if (fieldPath == null || fieldPath.isBlank()) {
           continue;
         }
-        members.add(new FieldSetMember(fieldPath.trim()));
+        members.add(new FieldSetMember(typeName, fieldPath.trim()));
       }
     }
     FieldSet fieldSet = new FieldSet(typeName.trim(), fieldSetName.trim(), members);
@@ -755,10 +755,16 @@ public final class Schema {
   public static final class DescribeFieldResult {
     private final String ownerType;
     private final String fieldName;
+    public final String name;
+    public final String label;
+    public final boolean permissionable;
 
     DescribeFieldResult(String ownerType, String fieldName) {
       this.ownerType = ownerType == null ? "" : ownerType.trim();
       this.fieldName = fieldName == null ? "" : fieldName.trim();
+      this.name = canonicalFieldName();
+      this.label = this.name == null ? this.fieldName : this.name;
+      this.permissionable = true;
     }
 
     public String getName() {
@@ -814,6 +820,14 @@ public final class Schema {
     }
 
     public String getDefaultValueFormula() {
+      return null;
+    }
+
+    public String getInlineHelpText() {
+      return null;
+    }
+
+    public Integer getRelationshipOrder() {
       return null;
     }
 
@@ -923,6 +937,23 @@ public final class Schema {
       return false;
     }
 
+    public boolean isCalculated() {
+      return false;
+    }
+
+    public boolean isHtmlFormatted() {
+      return false;
+    }
+
+    public boolean isUnique() {
+      FieldDefinition def = resolveFieldDefinition();
+      return def != null && def.unique;
+    }
+
+    public boolean isSortable() {
+      return !isHtmlFormatted();
+    }
+
     public String getLabel() {
       return fieldName;
     }
@@ -996,6 +1027,23 @@ public final class Schema {
 
     public SObjectField getSobjectField() {
       return getSObjectField();
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T> T getAs(String field) {
+      if (field == null || field.isBlank()) {
+        return null;
+      }
+      if ("name".equalsIgnoreCase(field)) {
+        return (T) name;
+      }
+      if ("label".equalsIgnoreCase(field)) {
+        return (T) label;
+      }
+      if ("permissionable".equalsIgnoreCase(field)) {
+        return (T) java.lang.Boolean.valueOf(permissionable);
+      }
+      return null;
     }
 
     private boolean isMinimumAccessProfile() {
@@ -1242,6 +1290,10 @@ public final class Schema {
     public boolean isActive() {
       return true;
     }
+
+    public boolean isDefaultValue() {
+      return false;
+    }
   }
 
   public enum SoapType {
@@ -1345,14 +1397,48 @@ public final class Schema {
   }
 
   public static final class FieldSetMember {
+    private final String ownerType;
     private final String fieldPath;
 
     public FieldSetMember(String fieldPath) {
-      this.fieldPath = fieldPath == null ? "" : fieldPath;
+      this("", fieldPath);
+    }
+
+    public FieldSetMember(String ownerType, String fieldPath) {
+      this.ownerType = ownerType == null ? "" : ownerType.trim();
+      this.fieldPath = fieldPath == null ? "" : fieldPath.trim();
     }
 
     public String getFieldPath() {
       return fieldPath;
+    }
+
+    public Boolean getDbRequired() {
+      return false;
+    }
+
+    public Boolean getRequired() {
+      return false;
+    }
+
+    public DisplayType getType() {
+      return getSObjectField().getDescribe().getType();
+    }
+
+    public SObjectField getSObjectField() {
+      if (fieldPath == null || fieldPath.isBlank()) {
+        return new SObjectField(ownerType, "");
+      }
+      String leaf = fieldPath;
+      int dot = leaf.lastIndexOf('.');
+      if (dot >= 0 && dot + 1 < leaf.length()) {
+        leaf = leaf.substring(dot + 1);
+      }
+      return new SObjectField(ownerType, leaf);
+    }
+
+    public SObjectField getSobjectField() {
+      return getSObjectField();
     }
   }
 
