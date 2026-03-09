@@ -1083,6 +1083,7 @@ const InnerTypeHeader = struct {
     type_name: []u8,
     suffix: []u8,
     kind: InnerTypeKind,
+    is_abstract: bool = false,
 };
 
 const InnerTypeKeyword = struct {
@@ -1178,6 +1179,7 @@ fn parseInnerTypeHeader(
     var header_kind: InnerTypeKind = .class;
     var header_visibility: []const u8 = "public";
     var header_type_name: ?[]u8 = null;
+    var header_is_abstract = false;
     errdefer if (header_type_name) |value| gpa.free(value);
     var saw_open_brace = false;
     var suffix_head: std.ArrayList(u8) = .empty;
@@ -1214,6 +1216,7 @@ fn parseInnerTypeHeader(
             found_header = true;
             header_kind = keyword.kind;
             header_visibility = visibilityModifierForInnerClass(prefix);
+            header_is_abstract = containsWordIgnoreCase(prefix, "abstract");
             header_type_name = try gpa.dupe(u8, type_name);
             if (saw_open_brace) break;
             continue;
@@ -1241,6 +1244,7 @@ fn parseInnerTypeHeader(
         .type_name = header_type_name.?,
         .suffix = suffix,
         .kind = header_kind,
+        .is_abstract = header_is_abstract,
     };
 }
 
@@ -1265,7 +1269,8 @@ fn normalizeInnerClassSuffix(gpa: std.mem.Allocator, suffix: []const u8) ![]u8 {
 
 fn extractRenderedJavaClassBody(rendered_java: []const u8) ?[]const u8 {
     const class_pos = std.mem.indexOf(u8, rendered_java, "public class") orelse
-        std.mem.indexOf(u8, rendered_java, "public final class") orelse return null;
+        std.mem.indexOf(u8, rendered_java, "public final class") orelse
+        std.mem.indexOf(u8, rendered_java, "public abstract class") orelse return null;
     const open_brace = std.mem.indexOfScalarPos(u8, rendered_java, class_pos, '{') orelse return null;
     const close_brace = std.mem.lastIndexOfScalar(u8, rendered_java, '}') orelse return null;
     if (close_brace <= open_brace) return null;
@@ -1562,7 +1567,7 @@ fn rewriteSchemaObjectNamespaceAccess(gpa: std.mem.Allocator, text: []const u8) 
         return gpa.dupe(u8, text);
     }
     try out.appendSlice(gpa, text[last_emit..]);
-    return out.toOwnedSlice(gpa);
+    return try out.toOwnedSlice(gpa);
 }
 
 fn rewriteFieldNamespacePropertyAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -2439,15 +2444,16 @@ fn transpileInnerTypeBlock(
             defer rendered_inner.deinit(gpa);
 
             const body = extractRenderedJavaClassBody(rendered_inner.java) orelse return null;
+            const abstract_keyword = if (header.is_abstract) " abstract" else "";
 
             if (header.suffix.len == 0) {
-                try appendFmt(gpa, &out, "{s} static class {s} {{\n", .{ header.visibility, header.type_name });
+                try appendFmt(gpa, &out, "{s} static{s} class {s} {{\n", .{ header.visibility, abstract_keyword, header.type_name });
             } else {
                 try appendFmt(
                     gpa,
                     &out,
-                    "{s} static class {s} {s} {{\n",
-                    .{ header.visibility, header.type_name, header.suffix },
+                    "{s} static{s} class {s} {s} {{\n",
+                    .{ header.visibility, abstract_keyword, header.type_name, header.suffix },
                 );
             }
             if (body.len > 0) {
@@ -6918,9 +6924,7 @@ fn convertApexExpressionToJava(gpa: std.mem.Allocator, expression: []const u8) a
     gpa.free(trigger_operation_constant_case);
     errdefer gpa.free(instanceof_converted);
 
-    const object_equality_converted = try rewriteObjectEqualityInConditions(gpa, instanceof_converted);
-    gpa.free(instanceof_converted);
-    return object_equality_converted;
+    return instanceof_converted;
 }
 
 fn rewriteCommonJavaMethodCase(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -7086,7 +7090,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
         .{ .from = "getRecords()ToUpdate", .to = "recordsToUpdate" },
+        .{ .from = "super(getIdList(objects));", .to = "super(new ArrayList<Object>((java.util.Collection<?>) getIdList(objects)));"},
         .{ .from = ".si size", .to = ".size()" },
+        .{ .from = ".getsObject(", .to = ".getSObject(" },
+        .{ .from = "List<String> names = new String.get(0);", .to = "List<String> names = new ArrayList<>();" },
+        .{ .from = "listFName", .to = "listFname" },
+        .{ .from = "strConFSpec(", .to = "strConFspec(" },
+        .{ .from = "strFName +=", .to = "strFname +=" },
         .{ .from = "DateTime typeCheck = (DateTime) obj;", .to = "DateTime typeCheck = ApexCompare.castDateTime(obj);" },
         .{ .from = "this.OrgShape", .to = "this.orgShape" },
         .{ .from = "new orgShape()", .to = "new OrgShape()" },
@@ -7206,6 +7216,15 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{
             .from = "methodReturnValueRecorder.set(\"Stubbing\", false);",
             .to = "ApexSwitch.set(methodReturnValueRecorder, \"Stubbing\", false);",
+        },
+        .{
+            .from = "evaluators.add(subCriteria);",
+            .to =
+            \\evaluators.add(new Evaluator() {
+            \\    public Boolean evaluate(Object obj) { return subCriteria.evaluate(obj); }
+            \\    public String toSOQL() { return subCriteria.toSOQL(); }
+            \\    });
+            ,
         },
         .{
             .from = "else if (Stubbing) {",
@@ -8050,7 +8069,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
     defer gpa.free(boolean_compatible);
 
-    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, boolean_compatible);
+    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_compatible);
+    defer gpa.free(object_equality_compatible);
+
+    const numeric_valueof_object_compatible = try rewriteNumericValueOfObjectIdentifiers(gpa, object_equality_compatible);
+    defer gpa.free(numeric_valueof_object_compatible);
+
+    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, numeric_valueof_object_compatible);
     defer gpa.free(get_as_collection_compatible);
 
     const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_collection_compatible);
@@ -8091,7 +8116,10 @@ fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []co
         last_emit = name_end + 2;
     }
 
-    if (!replaced) return gpa.dupe(u8, text);
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
 }
@@ -10164,6 +10192,11 @@ fn rewriteCollectionViewPropertyAccess(gpa: std.mem.Allocator, text: []const u8)
         }
         const next = nextNonSpace(text, accessor_end);
         if (next < text.len and text[next] == '(') {
+            try out.appendSlice(gpa, text[i..accessor_end]);
+            i = accessor_end;
+            continue;
+        }
+        if (next < text.len and (text[next] == '=' or text[next] == '.')) {
             try out.appendSlice(gpa, text[i..accessor_end]);
             i = accessor_end;
             continue;
@@ -12371,7 +12404,7 @@ const RelationalMatch = struct {
     len: usize,
 };
 
-fn rewriteStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+fn rewriteStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
     const trimmed = std.mem.trim(u8, text, " \t");
     if (startsWithWordIgnoreCase(trimmed, "if") or startsWithWordIgnoreCase(trimmed, "while")) {
         const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return gpa.dupe(u8, text);
@@ -12388,10 +12421,34 @@ fn rewriteStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) 
         }
     }
 
+    if (findTopLevelLogicalOperator(text)) |lp| {
+        const left = text[0..lp.start];
+        const op_text = text[lp.start .. lp.start + 2];
+        const right = text[lp.start + 2 ..];
+        const left_rewritten = try rewriteStringRelationalComparisons(gpa, left);
+        defer gpa.free(left_rewritten);
+        const right_rewritten = try rewriteStringRelationalComparisons(gpa, right);
+        defer gpa.free(right_rewritten);
+        if (!std.mem.eql(u8, left_rewritten, left) or !std.mem.eql(u8, right_rewritten, right)) {
+            return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ left_rewritten, op_text, right_rewritten });
+        }
+    }
+
+    if (try rewriteTernaryStringRelationalComparisons(gpa, text)) |rewritten| {
+        return rewritten;
+    }
+
+    if (try rewriteNestedParenStringRelationalComparisons(gpa, text)) |rewritten| {
+        return rewritten;
+    }
+
     const op_match = findTopLevelRelationalMatch(text) orelse return gpa.dupe(u8, text);
     const lhs = std.mem.trim(u8, text[0..op_match.start], " \t");
     const rhs = std.mem.trim(u8, text[(op_match.start + op_match.len)..], " \t");
     if (lhs.len == 0 or rhs.len == 0) return gpa.dupe(u8, text);
+    if (findTopLevelLogicalOperator(lhs) != null or findTopLevelLogicalOperator(rhs) != null) {
+        return gpa.dupe(u8, text);
+    }
     if (!isLikelyStringishComparisonOperand(lhs) and !isLikelyStringishComparisonOperand(rhs)) {
         return gpa.dupe(u8, text);
     }
@@ -12403,6 +12460,166 @@ fn rewriteStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) 
         .lte => "<= 0",
     };
     return std.fmt.allocPrint(gpa, "ApexStrings.compareTo({s}, {s}) {s}", .{ lhs, rhs, predicate });
+}
+
+fn rewriteNestedParenStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) anyerror!?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_single = false;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_single) {
+            if (ch == '\'' and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            continue;
+        }
+        if (ch != '(') continue;
+
+        const close = findMatchingParen(text, i) orelse continue;
+        const inner = text[(i + 1)..close];
+        const rewritten_inner = try rewriteStringRelationalComparisons(gpa, inner);
+        defer gpa.free(rewritten_inner);
+        if (std.mem.eql(u8, rewritten_inner, inner)) {
+            i = close;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit .. i + 1]);
+        try out.appendSlice(gpa, rewritten_inner);
+        replaced = true;
+        last_emit = close;
+        i = close;
+    }
+
+    if (!replaced) return null;
+    try out.appendSlice(gpa, text[last_emit..]);
+    return try out.toOwnedSlice(gpa);
+}
+
+fn rewriteTernaryStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) anyerror!?[]u8 {
+    const ternary = findTopLevelTernary(text) orelse return null;
+
+    const condition = text[0..ternary.question];
+    const when_true = text[(ternary.question + 1)..ternary.colon];
+    const when_false = text[ternary.colon + 1 ..];
+
+    const rewritten_condition = try rewriteStringRelationalComparisons(gpa, condition);
+    defer gpa.free(rewritten_condition);
+    const rewritten_true = try rewriteStringRelationalComparisons(gpa, when_true);
+    defer gpa.free(rewritten_true);
+    const rewritten_false = try rewriteStringRelationalComparisons(gpa, when_false);
+    defer gpa.free(rewritten_false);
+
+    if (std.mem.eql(u8, rewritten_condition, condition) and
+        std.mem.eql(u8, rewritten_true, when_true) and
+        std.mem.eql(u8, rewritten_false, when_false))
+    {
+        return null;
+    }
+
+    return try std.fmt.allocPrint(gpa, "{s}?{s}:{s}", .{ rewritten_condition, rewritten_true, rewritten_false });
+}
+
+fn findTopLevelTernary(text: []const u8) ?struct { question: usize, colon: usize } {
+    var in_single = false;
+    var in_double = false;
+    var escaped = false;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var ternary_depth: i32 = 0;
+    var question_pos: ?usize = null;
+
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_single) {
+            if (ch == '\'' and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        switch (ch) {
+            '\'' => in_single = true,
+            '"' => {
+                in_double = true;
+                escaped = false;
+            },
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '?' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    ternary_depth += 1;
+                    if (question_pos == null) question_pos = i;
+                }
+            },
+            ':' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and ternary_depth > 0) {
+                    ternary_depth -= 1;
+                    if (ternary_depth == 0 and question_pos != null) {
+                        return .{ .question = question_pos.?, .colon = i };
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn findTopLevelRelationalMatch(text: []const u8) ?RelationalMatch {
@@ -12541,11 +12758,22 @@ fn hasWhitespaceAroundOperator(text: []const u8, start: usize, len: usize) bool 
 fn isLikelyStringishComparisonOperand(expr: []const u8) bool {
     const trimmed = std.mem.trim(u8, expr, " \t");
     if (trimmed.len == 0) return false;
-    if (trimmed[0] == '"' or trimmed[trimmed.len - 1] == '"') return true;
+    if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') return true;
     if (std.mem.indexOf(u8, trimmed, ".name") != null or std.mem.indexOf(u8, trimmed, ".Name") != null) return true;
     if (std.mem.indexOf(u8, trimmed, "DeveloperName") != null) return true;
     if (std.mem.indexOf(u8, trimmed, "Label") != null) return true;
     if (std.mem.indexOf(u8, trimmed, "String.valueOf") != null or std.mem.indexOf(u8, trimmed, "ApexStrings.") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, ".substring(") != null or
+        std.mem.indexOf(u8, trimmed, ".trim(") != null or
+        std.mem.indexOf(u8, trimmed, ".toUpperCase(") != null or
+        std.mem.indexOf(u8, trimmed, ".toLowerCase(") != null)
+        return true;
+    if (lastIdentifier(trimmed)) |identifier| {
+        if (endsWithIgnoreCase(identifier, "Id") or
+            endsWithIgnoreCase(identifier, "Name") or
+            endsWithIgnoreCase(identifier, "Label"))
+            return true;
+    }
     return std.ascii.eqlIgnoreCase(trimmed, "name") or std.ascii.eqlIgnoreCase(trimmed, "label");
 }
 
@@ -15453,6 +15681,87 @@ fn containsGetAsCall(arg: []const u8) bool {
     return false;
 }
 
+fn rewriteNumericValueOfObjectIdentifiers(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var object_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (object_names.items) |name| gpa.free(name);
+        object_names.deinit(gpa);
+    }
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        if (extractTypedVariableName(line, "Object")) |name| {
+            try object_names.append(gpa, try gpa.dupe(u8, name));
+        }
+    }
+    if (object_names.items.len == 0) return gpa.dupe(u8, text);
+
+    const RewriteSpec = struct {
+        marker: []const u8,
+        replacement: []const u8,
+    };
+    const specs = [_]RewriteSpec{
+        .{ .marker = "Integer.valueOf", .replacement = "ApexStrings.toInteger" },
+        .{ .marker = "Long.valueOf", .replacement = "ApexStrings.toLong" },
+        .{ .marker = "Double.valueOf", .replacement = "ApexStrings.toDouble" },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            continue;
+        }
+
+        for (specs) |spec| {
+            if (!startsWithIgnoreCase(text[i..], spec.marker)) continue;
+            if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+
+            var open = i + spec.marker.len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') continue;
+            const close = findMatchingParen(text, open) orelse continue;
+
+            const arg_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            if (!isSimpleIdentifier(arg_raw) or !containsKnownObjectIdentifier(object_names.items, arg_raw)) continue;
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try appendFmt(gpa, &out, "{s}({s})", .{ spec.replacement, arg_raw });
+            replaced = true;
+            last_emit = close + 1;
+            i = close;
+            break;
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn convertBracketIndexAccessPass(gpa: std.mem.Allocator, text: []const u8) anyerror!?[]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -15994,44 +16303,93 @@ fn convertInlineSObjectConstructors(gpa: std.mem.Allocator, text: []const u8) an
 }
 
 /// Rewrites `a == b` to `ApexEquals.eq(a, b)` and `a != b` to `ApexEquals.ne(a, b)`
-/// when at least one operand looks like a method call result (contains balanced parentheses).
-/// Skips comparisons against `null`, numeric literals, and `true`/`false`.
-/// Only operates within `if (...)` and `while (...)` condition expressions.
-fn rewriteObjectEqualityInConditions(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
-    const trimmed = std.mem.trim(u8, text, " \t");
-
-    // Only process if/while conditions
-    if (!startsWithWordIgnoreCase(trimmed, "if") and !startsWithWordIgnoreCase(trimmed, "while")) {
-        return gpa.dupe(u8, text);
+/// when operands involve declared `Object` identifiers or method-call results.
+fn rewriteObjectEqualityWithDeclaredObjects(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var object_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (object_names.items) |name| gpa.free(name);
+        object_names.deinit(gpa);
     }
 
-    const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return gpa.dupe(u8, text);
-    const close = findMatchingParen(trimmed, open) orelse return gpa.dupe(u8, text);
-    if (close <= open + 1) return gpa.dupe(u8, text);
-
-    const condition = trimmed[open + 1 .. close];
-    const rewritten = try rewriteEqualityOperators(gpa, condition);
-    defer gpa.free(rewritten);
-
-    if (std.mem.eql(u8, rewritten, condition)) {
-        return gpa.dupe(u8, text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        if (extractTypedVariableName(line, "Object")) |name| {
+            try object_names.append(gpa, try gpa.dupe(u8, name));
+        }
     }
 
-    // Reconstruct: leading whitespace + keyword + "(" + rewritten + ")" + rest
-    const leading = text[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(text.ptr)];
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
-    try out.appendSlice(gpa, leading);
-    try out.appendSlice(gpa, trimmed[0 .. open + 1]);
-    try out.appendSlice(gpa, rewritten);
-    try out.append(gpa, ')');
-    if (close + 1 < trimmed.len) {
-        try out.appendSlice(gpa, trimmed[close + 1 ..]);
+
+    var changed = false;
+    var render_lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (render_lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const rendered = try rewriteObjectEqualityLine(gpa, line, object_names.items);
+        defer gpa.free(rendered);
+        if (!std.mem.eql(u8, rendered, line)) changed = true;
+        try out.appendSlice(gpa, rendered);
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
     }
     return out.toOwnedSlice(gpa);
 }
 
-fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8) ![]u8 {
+fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_names: []const []u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return gpa.dupe(u8, line);
+
+    if (startsWithWordIgnoreCase(trimmed, "if") or startsWithWordIgnoreCase(trimmed, "while")) {
+        const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return gpa.dupe(u8, line);
+        const close = findMatchingParen(trimmed, open) orelse return gpa.dupe(u8, line);
+        if (close <= open + 1) return gpa.dupe(u8, line);
+
+        const condition = trimmed[open + 1 .. close];
+        const rewritten = try rewriteEqualityOperators(gpa, condition, object_names);
+        defer gpa.free(rewritten);
+        if (std.mem.eql(u8, rewritten, condition)) return gpa.dupe(u8, line);
+
+        const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try out.appendSlice(gpa, leading);
+        try out.appendSlice(gpa, trimmed[0 .. open + 1]);
+        try out.appendSlice(gpa, rewritten);
+        try out.append(gpa, ')');
+        if (close + 1 < trimmed.len) try out.appendSlice(gpa, trimmed[close + 1 ..]);
+        return out.toOwnedSlice(gpa);
+    }
+
+    if (startsWithIgnoreCase(trimmed, "return ") and std.mem.endsWith(u8, trimmed, ";")) {
+        const expr = std.mem.trim(u8, trimmed["return ".len .. trimmed.len - 1], " \t");
+        if (expr.len == 0) return gpa.dupe(u8, line);
+        const rewritten = try rewriteEqualityOperators(gpa, expr, object_names);
+        defer gpa.free(rewritten);
+        if (std.mem.eql(u8, rewritten, expr)) {
+            if (try rewriteSimpleObjectEqualityExpression(gpa, expr, object_names)) |fallback| {
+                defer gpa.free(fallback);
+                const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+                return std.fmt.allocPrint(gpa, "{s}return {s};", .{ leading, fallback });
+            }
+            return gpa.dupe(u8, line);
+        }
+
+        const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+        return std.fmt.allocPrint(gpa, "{s}return {s};", .{ leading, rewritten });
+    }
+
+    return gpa.dupe(u8, line);
+}
+
+fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8, object_names: []const []u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var replaced = false;
@@ -16093,24 +16451,25 @@ fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8) ![]u8
         // Skip if either side is null
         if (std.mem.eql(u8, left_raw, "null") or std.mem.eql(u8, right_raw, "null")) continue;
 
-        // Skip if either side is a bare numeric literal
-        if (isNumericLiteral(left_raw) or isNumericLiteral(right_raw)) continue;
-
-        // Skip if either side is true/false
-        if (std.mem.eql(u8, left_raw, "true") or std.mem.eql(u8, left_raw, "false")) continue;
-        if (std.mem.eql(u8, right_raw, "true") or std.mem.eql(u8, right_raw, "false")) continue;
-
-        // At least one side must look like a method call (contains "()")
+        const left_has_object = containsKnownObjectIdentifier(object_names, left_raw);
+        const right_has_object = containsKnownObjectIdentifier(object_names, right_raw);
         const left_has_call = std.mem.indexOfScalar(u8, left_raw, '(') != null;
         const right_has_call = std.mem.indexOfScalar(u8, right_raw, '(') != null;
-        if (!left_has_call and !right_has_call) continue;
+        if (!left_has_object and !right_has_object and !left_has_call and !right_has_call) continue;
+
+        // Skip if either side is true/false unless this is an object comparison.
+        if (!left_has_object and !right_has_object) {
+            if (std.mem.eql(u8, left_raw, "true") or std.mem.eql(u8, left_raw, "false")) continue;
+            if (std.mem.eql(u8, right_raw, "true") or std.mem.eql(u8, right_raw, "false")) continue;
+            if (isNumericLiteral(left_raw) or isNumericLiteral(right_raw)) continue;
+        }
 
         // Extract the real left operand from last_emit (might include && or ||)
         const left_start = findLeftOperandStart(condition, i);
         const left_operand = std.mem.trim(u8, condition[left_start..i], " \t");
         if (left_operand.len == 0) continue;
         if (std.mem.eql(u8, left_operand, "null")) continue;
-        if (isNumericLiteral(left_operand)) continue;
+        if (isNumericLiteral(left_operand) and !containsKnownObjectIdentifier(object_names, left_operand)) continue;
 
         try out.appendSlice(gpa, condition[last_emit..left_start]);
         const method = if (is_ne) "ApexEquals.ne" else "ApexEquals.eq";
@@ -16126,6 +16485,92 @@ fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8) ![]u8
     }
     try out.appendSlice(gpa, condition[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn containsKnownObjectIdentifier(object_names: []const []u8, expr: []const u8) bool {
+    for (object_names) |name| {
+        if (containsStandaloneIdentifier(expr, name)) return true;
+    }
+    return false;
+}
+
+fn rewriteSimpleObjectEqualityExpression(
+    gpa: std.mem.Allocator,
+    expr: []const u8,
+    object_names: []const []u8,
+) !?[]u8 {
+    const op = findSimpleEqualityOperator(expr) orelse return null;
+    const lhs = std.mem.trim(u8, expr[0..op.start], " \t");
+    const rhs = std.mem.trim(u8, expr[(op.start + 2)..], " \t");
+    if (lhs.len == 0 or rhs.len == 0) return null;
+    if (std.mem.eql(u8, lhs, "null") or std.mem.eql(u8, rhs, "null")) return null;
+    if (!containsKnownObjectIdentifier(object_names, lhs) and !containsKnownObjectIdentifier(object_names, rhs)) return null;
+
+    const method = if (op.is_ne) "ApexEquals.ne" else "ApexEquals.eq";
+    return try std.fmt.allocPrint(gpa, "{s}({s}, {s})", .{ method, lhs, rhs });
+}
+
+fn findSimpleEqualityOperator(expr: []const u8) ?struct { start: usize, is_ne: bool } {
+    var in_single = false;
+    var in_double = false;
+    var escaped = false;
+    var paren_depth: i32 = 0;
+
+    var i: usize = 0;
+    while (i + 1 < expr.len) : (i += 1) {
+        const ch = expr[i];
+        if (in_single) {
+            if (ch == '\'' and i + 1 < expr.len and expr[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        switch (ch) {
+            '\'' => in_single = true,
+            '"' => {
+                in_double = true;
+                escaped = false;
+            },
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            else => {},
+        }
+        if (paren_depth != 0) continue;
+        if (ch == '!' and expr[i + 1] == '=') return .{ .start = i, .is_ne = true };
+        if (ch == '=' and expr[i + 1] == '=' and (i == 0 or (expr[i - 1] != '<' and expr[i - 1] != '>' and expr[i - 1] != '!'))) {
+            return .{ .start = i, .is_ne = false };
+        }
+    }
+    return null;
+}
+
+fn containsStandaloneIdentifier(text: []const u8, identifier: []const u8) bool {
+    if (identifier.len == 0 or text.len < identifier.len) return false;
+    var i: usize = 0;
+    while (i + identifier.len <= text.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(text[i .. i + identifier.len], identifier)) continue;
+        if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+        const after = i + identifier.len;
+        if (after < text.len and isIdentifierChar(text[after])) continue;
+        return true;
+    }
+    return false;
 }
 
 fn findLeftOperandStart(text: []const u8, op_pos: usize) usize {
@@ -20609,6 +21054,79 @@ test "rewriteKnownCompatibilityFixups rewrites report fallbacks and datetime dou
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double msec = Double.valueOf(dtEnd.getTime() - dtStart.getTime());") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> listRpt") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject r = ApexSObject.of(\"Report\");") != null);
+}
+
+test "convertApexExpressionToJava rewrites nested id relational comparisons" {
+    const gpa = std.testing.allocator;
+    const input = "(currentEndId == null || lastIdInScope > currentEndId) ? lastIdInScope : currentEndId";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.compareTo(lastIdInScope, currentEndId) > 0") != null);
+}
+
+test "convertApexExpressionToJava keeps numeric guards out of string relational rewrites" {
+    const gpa = std.testing.allocator;
+    const input = "ich < strNameSpec.length()-1 && strNameSpec.substring(ich+1, ich+2) != \" \"";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.compareTo(ich,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ich < strNameSpec.length()-1") != null);
+}
+
+test "rewriteNumericValueOfObjectIdentifiers rewrites object valueOf calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public void run() {
+        \\  Object fieldValue = record.get(field);
+        \\  result.add(Integer.valueOf(fieldValue));
+        \\}
+    ;
+
+    const rewritten = try rewriteNumericValueOfObjectIdentifiers(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.toInteger(fieldValue)") != null);
+}
+
+test "rewriteObjectEqualityWithDeclaredObjects rewrites object numeric equality" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public void run() {
+        \\  Object currentValue = record.get('Count__c');
+        \\  if (currentValue != null && currentValue != 0) {
+        \\    return currentValue != members.size();
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteObjectEqualityWithDeclaredObjects(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.ne(currentValue, 0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexEquals.ne(currentValue, members.size());") != null);
+}
+
+test "renderJavaClass preserves abstract inner class modifier" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class Demo {
+        \\  private abstract class InnerBase {
+        \\    protected abstract String render();
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "private static abstract class InnerBase") != null);
 }
 
 test "run promotes multiline test visible inner type visibility" {
