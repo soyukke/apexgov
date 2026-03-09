@@ -475,6 +475,11 @@ public final class Database {
     return ApexStore.query(soql);
   }
 
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List Query(String soql) {
+    return query(soql);
+  }
+
   @SuppressWarnings("unchecked")
   public static <T> T query(String soql, System.AccessLevel accessLevel) {
     enforceUserModeQueryAccess(soql, accessLevel);
@@ -853,6 +858,10 @@ public final class Database {
 
     public String getId() {
       return id;
+    }
+
+    public String getID() {
+      return getId();
     }
 
     public Error[] getErrors() {

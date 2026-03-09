@@ -4,6 +4,7 @@ import java.util.AbstractMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -175,6 +176,25 @@ public final class ApexCollections {
       return null;
     }
     return new ArrayList<>(values);
+  }
+
+  public static Integer size(Object value) {
+    if (value == null) {
+      return 0;
+    }
+    if (value instanceof Collection<?> collection) {
+      return collection.size();
+    }
+    if (value instanceof Map<?, ?> map) {
+      return map.size();
+    }
+    if (value.getClass().isArray()) {
+      return java.lang.reflect.Array.getLength(value);
+    }
+    if (value instanceof CharSequence sequence) {
+      return sequence.length();
+    }
+    return 0;
   }
 
   public static List<ApexSObject> deepClone(

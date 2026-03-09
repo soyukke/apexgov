@@ -322,6 +322,31 @@ public class ApexSObject {
     return clone(preserveId, isDeepClone, preserveReadonlyTimestamps, false);
   }
 
+  public ApexSObject Clone(
+      boolean preserveId,
+      boolean isDeepClone,
+      boolean preserveReadonlyTimestamps,
+      boolean preserveAutonumber) {
+    return clone(preserveId, isDeepClone, preserveReadonlyTimestamps, preserveAutonumber);
+  }
+
+  public ApexSObject Clone(boolean preserveId) {
+    return clone(preserveId);
+  }
+
+  public ApexSObject Clone(boolean preserveId, boolean isDeepClone) {
+    return clone(preserveId, isDeepClone);
+  }
+
+  public ApexSObject Clone(
+      boolean preserveId, boolean isDeepClone, boolean preserveReadonlyTimestamps) {
+    return clone(preserveId, isDeepClone, preserveReadonlyTimestamps);
+  }
+
+  public ApexSObject Clone() {
+    return clone();
+  }
+
   public void addError(String message) {
     validationErrors.add(
         new Database.Error(

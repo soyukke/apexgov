@@ -7068,6 +7068,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = ".GetRecordTypeId(", .to = ".getRecordTypeId(" },
         .{ .from = ".GetRecordTypeIdSet(", .to = ".getRecordTypeIdSet(" },
         .{ .from = ".canDisplaytypesCopy(", .to = ".canDisplayTypesCopy(" },
+        .{ .from = ".containskey(", .to = ".containsKey(" },
+        .{ .from = "database.", .to = "Database." },
         .{ .from = "List<Report>", .to = "List<ApexSObject>" },
         .{ .from = "Report r = null;", .to = "ApexSObject r = null;" },
         .{ .from = "Report r = new Report();", .to = "ApexSObject r = ApexSObject.of(\"Report\");" },
@@ -8048,7 +8050,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
     defer gpa.free(boolean_compatible);
 
-    return rewriteDatabaseQueryIndexCompatibility(gpa, boolean_compatible);
+    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, boolean_compatible);
+    defer gpa.free(get_as_collection_compatible);
+
+    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_collection_compatible);
+    defer gpa.free(get_errors_array_compatible);
+
+    return rewriteDatabaseQueryIndexCompatibility(gpa, get_errors_array_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -10275,6 +10283,85 @@ fn rewriteDoubleDateTimeDeltaAssignments(gpa: std.mem.Allocator, text: []const u
         out.deinit(gpa);
         return gpa.dupe(u8, text);
     }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetAsCollectionAccessors(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".getAs")) continue;
+
+        const open = std.mem.indexOfScalarPos(u8, text, i + ".getAs".len, '(') orelse continue;
+        const close = findMatchingParen(text, open) orelse continue;
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const get_as_call = std.mem.trim(u8, text[base_start .. close + 1], " \t");
+
+        const accessor_start = nextNonSpace(text, close + 1);
+        if (accessor_start >= text.len or text[accessor_start] != '.') continue;
+
+        if (startsWithIgnoreCase(text[accessor_start..], ".size()")) {
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "ApexCollections.size({s})", .{get_as_call});
+            replaced = true;
+            last_emit = accessor_start + ".size()".len;
+            i = last_emit - 1;
+            continue;
+        }
+
+        if (startsWithIgnoreCase(text[accessor_start..], ".isEmpty()")) {
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "ApexCollections.size({s}) == 0", .{get_as_call});
+            replaced = true;
+            last_emit = accessor_start + ".isEmpty()".len;
+            i = last_emit - 1;
+            continue;
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetErrorsArrayAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".getErrors")) continue;
+
+        const open = std.mem.indexOfScalarPos(u8, text, i + ".getErrors".len, '(') orelse continue;
+        const close = findMatchingParen(text, open) orelse continue;
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+
+        const accessor_start = nextNonSpace(text, close + 1);
+        if (accessor_start >= text.len or text[accessor_start] != '.') continue;
+        if (!startsWithIgnoreCase(text[accessor_start..], ".get(")) continue;
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "java.util.Arrays.asList({s}.getErrors())", .{base_expr});
+        replaced = true;
+        last_emit = accessor_start;
+        i = accessor_start - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
 }
 
@@ -12993,9 +13080,14 @@ fn rewriteSObjectGetAsLengthFallback(gpa: std.mem.Allocator, text: []const u8) !
         while (dot_pos < text.len and text[dot_pos] == ')') : (dot_pos += 1) {
             while (dot_pos < text.len and std.ascii.isWhitespace(text[dot_pos])) : (dot_pos += 1) {}
         }
-        if (!startsWithIgnoreCase(text[dot_pos..], ".length")) continue;
+        const accessor = blk: {
+            if (startsWithIgnoreCase(text[dot_pos..], ".length")) break :blk ".length";
+            if (startsWithIgnoreCase(text[dot_pos..], ".size")) break :blk ".size";
+            break :blk "";
+        };
+        if (accessor.len == 0) continue;
 
-        var len_open = dot_pos + ".length".len;
+        var len_open = dot_pos + accessor.len;
         while (len_open < text.len and std.ascii.isWhitespace(text[len_open])) : (len_open += 1) {}
         if (len_open >= text.len or text[len_open] != '(') continue;
         const len_close = findMatchingParen(text, len_open) orelse continue;
@@ -13006,7 +13098,11 @@ fn rewriteSObjectGetAsLengthFallback(gpa: std.mem.Allocator, text: []const u8) !
         const get_as_call = std.mem.trim(u8, text[base_start .. close + 1], " \t");
 
         try out.appendSlice(gpa, text[last_emit..base_start]);
-        try appendFmt(gpa, &out, "ApexStrings.length({s})", .{get_as_call});
+        if (std.ascii.eqlIgnoreCase(accessor, ".length")) {
+            try appendFmt(gpa, &out, "ApexStrings.length({s})", .{get_as_call});
+        } else {
+            try appendFmt(gpa, &out, "ApexCollections.size({s})", .{get_as_call});
+        }
         replaced = true;
         i = len_close;
         last_emit = len_close + 1;
