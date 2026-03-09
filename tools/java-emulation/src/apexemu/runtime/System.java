@@ -117,16 +117,30 @@ public final class System {
   }
 
   public static class Exception extends RuntimeException {
+    private String message;
+
     public Exception() {
       super();
+      this.message = null;
     }
 
     public Exception(String message) {
       super(message);
+      this.message = message;
     }
 
     public Exception(String message, Throwable cause) {
       super(message, cause);
+      this.message = message;
+    }
+
+    public void setMessage(String message) {
+      this.message = message;
+    }
+
+    @Override
+    public String getMessage() {
+      return message != null ? message : super.getMessage();
     }
 
     public String getStackTraceString() {

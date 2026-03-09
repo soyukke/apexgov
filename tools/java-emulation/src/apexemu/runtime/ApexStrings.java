@@ -287,6 +287,20 @@ public final class ApexStrings {
     return text.substring(0, text.length() - suffix.length());
   }
 
+  public static String removeStart(Object value, String prefix) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    if (prefix == null || prefix.isEmpty()) {
+      return text;
+    }
+    if (!text.startsWith(prefix)) {
+      return text;
+    }
+    return text.substring(prefix.length());
+  }
+
   public static String removeStartIgnoreCase(Object value, String prefix) {
     if (value == null) {
       return null;
@@ -381,6 +395,27 @@ public final class ApexStrings {
     return text.substring(0, n);
   }
 
+  public static String leftPad(Object value, Object size, String padStr) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    int targetSize = toInt(size, text.length());
+    if (targetSize <= text.length()) {
+      return text;
+    }
+    String pad = (padStr == null || padStr.isEmpty()) ? " " : padStr;
+    StringBuilder out = new StringBuilder(targetSize);
+    while (out.length() + text.length() < targetSize) {
+      out.append(pad);
+    }
+    if (out.length() + text.length() > targetSize) {
+      out.setLength(targetSize - text.length());
+    }
+    out.append(text);
+    return out.toString();
+  }
+
   public static String rightPad(Object value, Object size, String padStr) {
     if (value == null) {
       return null;
@@ -416,6 +451,41 @@ public final class ApexStrings {
       }
     }
     return true;
+  }
+
+  public static String escapeEcmaScript(Object value) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    StringBuilder out = new StringBuilder(text.length() + 8);
+    for (int i = 0; i < text.length(); i++) {
+      char ch = text.charAt(i);
+      switch (ch) {
+        case '\\':
+          out.append("\\\\");
+          break;
+        case '"':
+          out.append("\\\"");
+          break;
+        case '\'':
+          out.append("\\'");
+          break;
+        case '\n':
+          out.append("\\n");
+          break;
+        case '\r':
+          out.append("\\r");
+          break;
+        case '\t':
+          out.append("\\t");
+          break;
+        default:
+          out.append(ch);
+          break;
+      }
+    }
+    return out.toString();
   }
 
   public static String escapeHtml4(Object value) {

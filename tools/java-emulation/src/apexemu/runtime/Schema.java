@@ -370,10 +370,12 @@ public final class Schema {
   public static final class DescribeSObjectResult {
     private final String typeName;
     public final FieldNamespace fields;
+    public final FieldSetNamespace fieldSets;
 
     DescribeSObjectResult(String typeName) {
       this.typeName = typeName == null ? "" : typeName.trim();
       this.fields = new FieldNamespace(this.typeName);
+      this.fieldSets = new FieldSetNamespace(this.typeName);
     }
 
     public boolean isAccessible() {
@@ -439,6 +441,25 @@ public final class Schema {
 
     public String getName() {
       return typeName;
+    }
+
+    public String getLabel() {
+      return typeName;
+    }
+
+    public String getLabelPlural() {
+      if (typeName == null || typeName.isBlank()) {
+        return "";
+      }
+      if (typeName.endsWith("y")
+          && !typeName.endsWith("ay")
+          && !typeName.endsWith("ey")
+          && !typeName.endsWith("iy")
+          && !typeName.endsWith("oy")
+          && !typeName.endsWith("uy")) {
+        return typeName.substring(0, typeName.length() - 1) + "ies";
+      }
+      return typeName + "s";
     }
 
     public String getKeyPrefix() {
@@ -567,10 +588,12 @@ public final class Schema {
 
     private final String name;
     public final FieldNamespace fields;
+    public final FieldSetNamespace fieldSets;
 
     public SObjectType(String name) {
       this.name = name == null ? "" : name.trim();
       this.fields = new FieldNamespace(this.name);
+      this.fieldSets = new FieldSetNamespace(this.name);
     }
 
     public DescribeSObjectResult getDescribe() {
@@ -635,6 +658,14 @@ public final class Schema {
 
     public String getName() {
       return name;
+    }
+
+    public String getLabel() {
+      return getDescribe().getLabel();
+    }
+
+    public String getLabelPlural() {
+      return getDescribe().getLabelPlural();
     }
 
     @SuppressWarnings("unchecked")

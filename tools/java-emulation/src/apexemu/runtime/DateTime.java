@@ -66,6 +66,18 @@ public final class DateTime {
     return instant.toEpochMilli();
   }
 
+  public Long hourGmt() {
+    return Long.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getHour());
+  }
+
+  public Long minuteGmt() {
+    return Long.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getMinute());
+  }
+
+  public Long secondGmt() {
+    return Long.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getSecond());
+  }
+
   public DateTime addSeconds(int seconds) {
     return new DateTime(instant.plusSeconds(seconds));
   }
