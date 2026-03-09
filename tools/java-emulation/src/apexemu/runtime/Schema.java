@@ -813,6 +813,10 @@ public final class Schema {
       return false;
     }
 
+    public String getDefaultValueFormula() {
+      return null;
+    }
+
     public boolean isNameField() {
       return "Name".equalsIgnoreCase(fieldName);
     }

@@ -1,5 +1,8 @@
 package apexemu.runtime;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
 public final class ApexMath {
   private ApexMath() {}
 
@@ -47,5 +50,12 @@ public final class ApexMath {
     if (value == null || divisor == null) return null;
     if (divisor == 0L) return 0L;
     return value % divisor;
+  }
+
+  public static Double setScale(Number value, int scale) {
+    if (value == null) {
+      return null;
+    }
+    return BigDecimal.valueOf(value.doubleValue()).setScale(scale, RoundingMode.HALF_UP).doubleValue();
   }
 }

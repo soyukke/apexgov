@@ -273,6 +273,17 @@ public final class ApexStrings {
     return text.substring(0, text.length() - suffix.length());
   }
 
+  public static String remove(Object value, String target) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    if (target == null || target.isEmpty()) {
+      return text;
+    }
+    return text.replace(target, "");
+  }
+
   public static String removeEndIgnoreCase(Object value, String suffix) {
     if (value == null) {
       return null;
@@ -327,6 +338,20 @@ public final class ApexStrings {
       return null;
     }
     return String.valueOf(value).replaceFirst(regex, replacement);
+  }
+
+  public static String abbreviate(Object value, Integer maxWidth) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    if (maxWidth == null || maxWidth <= 0 || text.length() <= maxWidth) {
+      return text;
+    }
+    if (maxWidth <= 3) {
+      return text.substring(0, maxWidth);
+    }
+    return text.substring(0, maxWidth - 3) + "...";
   }
 
   public static String capitalize(Object value) {
