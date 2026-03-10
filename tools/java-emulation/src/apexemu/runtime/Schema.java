@@ -837,6 +837,10 @@ public final class Schema {
       return false;
     }
 
+    public Integer getScale() {
+      return 0;
+    }
+
     public String getDefaultValueFormula() {
       return null;
     }

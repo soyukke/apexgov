@@ -9868,12 +9868,274 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     }
 
     if (std.mem.indexOf(u8, current, "public class SfdoInstrumentationEnum") != null) {
-        const next = try replaceLiteralAll(
+        var next = try replaceLiteralAll(
             gpa,
             current,
             "public static enum Action { Save, Cancel, Create, Dml_Delete, Dml_Update, Dml_Merge, Dml_Undelete,",
             "public static enum Action { Save, Cancel, Create, Dml_Insert, Dml_Delete, Dml_Update, Dml_Merge, Dml_Undelete,",
         );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static enum Component { Aura, Queueable, Schedule, Future, TriggerAction, Account_HardCredit, Contact_SoftCredit, Account_SoftCredit, AccountContact_SoftCredit, GAU_HardCredit, RD_HardCredit, API }",
+            "public static enum Component { Page, Batch, Queueable, Schedule, Future, TriggerAction, Contact_HardCredit, Account_HardCredit, Contact_SoftCredit, Account_SoftCredit, AccountContact_SoftCredit, GAU_HardCredit, RD_HardCredit, API }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class Addresses") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public ContactSelector contactSelector; // Apex property { get; set; }",
+            "public static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (dtToday >= dtStart && dtToday < dtEnd) {",
+            "if (ApexCompare.gte(dtToday, dtStart) && ApexCompare.lt(dtToday, dtEnd)) {",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ERR_Handler") != null) {
+        var next = try replaceLiteralAll(gpa, current, "public static Errors getErrors(List<Object> dmlResults, List<ApexSObject> sObjects) {", "public static Errors getErrors(List<?> dmlResults, List<ApexSObject> sObjects) {");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "public static Errors getErrorsOnly(List<Object> dmlResults, List<ApexSObject> sObjects) {", "public static Errors getErrorsOnly(List<?> dmlResults, List<ApexSObject> sObjects) {");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "public static Errors getErrors(List<Object> dmlResults, List<ApexSObject> sObjects, Boolean displayErrors) {", "public static Errors getErrors(List<?> dmlResults, List<ApexSObject> sObjects, Boolean displayErrors) {");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "public static Errors getJobErrors(List<Object> dmlResults, List<ApexSObject> sObjects, String context) {", "public static Errors getJobErrors(List<?> dmlResults, List<ApexSObject> sObjects, String context) {");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "errList = ((Database.SaveResult)dmlResult).getErrors();",
+            "errList = new ArrayList<Database.Error>(java.util.Arrays.asList(((Database.SaveResult)dmlResult).getErrors()));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "errList = ((Database.DeleteResult)dmlResult).getErrors();",
+            "errList = new ArrayList<Database.Error>(java.util.Arrays.asList(((Database.DeleteResult)dmlResult).getErrors()));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "errList = ((Database.UndeleteResult)dmlResult).getErrors();",
+            "errList = new ArrayList<Database.Error>(java.util.Arrays.asList(((Database.UndeleteResult)dmlResult).getErrors()));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_MigrationMappingUtility") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "customMd.label = ApexStrings.left(clone.label, 40);",
+            "customMd.label = ApexStrings.left(clone.getAs(\"Label\"), 40);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "this.dataImportSettings = Data_Import_Settings__c.getInstance();",
+            "this.dataImportSettings = UTIL_CustomSettingsFacade.getDataImportSettings();",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDE_BatchDataEntry") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "Schema.SObjectField sfld = cr.getField();",
+            "Schema.SObjectField sfld = new Schema.SObjectField(cr.getChildSObject().getDescribe().getName(), cr.getField());",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDE_BatchEntry_CTRL") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "ApexSObject settings = Batch_Data_Entry_Settings__c.getInstance(UserInfo.getUserId());",
+            "ApexSObject settings = UTIL_CustomSettingsFacade.getBDESettings();",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "ApexSObject settings = Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId());",
+            "ApexSObject settings = UTIL_CustomSettingsFacade.getBDESettings();",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_ObjectWrapper") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "dataImport.put(objMapping.getAs(\"Imported_Record_Status_Field_Name\"), newStatus);",
+            "dataImport.put(ApexStrings.valueOf(objMapping.getAs(\"Imported_Record_Status_Field_Name\")), newStatus);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (dataImport.get(objMapping.getAs(\"Imported_Record_Field_Name\")) != null) {",
+            "if (dataImport.get(ApexStrings.valueOf(objMapping.getAs(\"Imported_Record_Field_Name\"))) != null) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "importedRecordId = (String)dataImport.get(objMapping.getAs(\"Imported_Record_Field_Name\"));",
+            "importedRecordId = (String)dataImport.get(ApexStrings.valueOf(objMapping.getAs(\"Imported_Record_Field_Name\")));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "dataImport.put(objMapping.getAs(\"Imported_Record_Field_Name\"), importedRecordId);",
+            "dataImport.put(ApexStrings.valueOf(objMapping.getAs(\"Imported_Record_Field_Name\")), importedRecordId);",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_ObjectMappingLogic") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "objWrap.sObj.put(objWrap.objMapping.getAs(\"Relationship_Field\"),objWrap.dataImport.get(objWrap.predecessorObjMapping.getAs(\"Imported_Record_Field_Name\")));",
+            "objWrap.sObj.put(ApexStrings.valueOf(objWrap.objMapping.getAs(\"Relationship_Field\")), objWrap.dataImport.get(ApexStrings.valueOf(objWrap.predecessorObjMapping.getAs(\"Imported_Record_Field_Name\"))));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "value = Boolean.valueOf(value);",
+            "value = Boolean.valueOf(ApexStrings.valueOf(value));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_DataImportService") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (dataImportSettings.getAs(\"Batch_Size__c\") == null || dataImportSettings.getAs(\"Batch_Size__c\") < 0) {",
+            "if (dataImportSettings.getAs(\"Batch_Size__c\") == null || ApexStrings.toDouble(dataImportSettings.getAs(\"Batch_Size__c\")) < 0) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (dataImportSettings.getAs(\"Donation_Date_Range__c\") < 0) {",
+            "if (ApexStrings.toDouble(dataImportSettings.getAs(\"Donation_Date_Range__c\")) < 0) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (isCustomIdInAccountMatchRules &&ApexEquals.ne((strUniqueId = strNull(acc.get(diSettings.getAs(\"Account_Custom_Unique_ID__c\")))), \"\")) {",
+            "if (isCustomIdInAccountMatchRules &&ApexEquals.ne((strUniqueId = strNull(acc.get(ApexStrings.valueOf(diSettings.getAs(\"Account_Custom_Unique_ID__c\"))))), \"\")) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (isCustomIdInAccountMatchRules &&ApexEquals.ne((strUniqueId = strNull(dataImport.get(strDIAccountCustomIDField(strAx, diSettings)))), \"\")) {",
+            "if (isCustomIdInAccountMatchRules &&ApexEquals.ne((strUniqueId = strNull(dataImport.get(ApexStrings.valueOf(strDIAccountCustomIDField(strAx, diSettings))))), \"\")) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "value = Boolean.valueOf(value);",
+            "value = Boolean.valueOf(ApexStrings.valueOf(value));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "return addr.getAs(\"Household_Account__c\") + addr.getAs(\"MailingStreet__c\") + addr.getAs(\"MailingCity__c\") + addr.getAs(\"MailingState__c\") + addr.getAs(\"MailingPostalCode__c\");",
+            "return ApexStrings.valueOf(addr.getAs(\"Household_Account__c\")) + ApexStrings.valueOf(addr.getAs(\"MailingStreet__c\")) + ApexStrings.valueOf(addr.getAs(\"MailingCity__c\")) + ApexStrings.valueOf(addr.getAs(\"MailingState__c\")) + ApexStrings.valueOf(addr.getAs(\"MailingPostalCode__c\"));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "Boolean shouldAddPopulatedField = !fieldsToIgnore.contains(diField.toLowerCase()) && di.get(diField) != null && di.get(diField) != false;",
+            "Boolean shouldAddPopulatedField = !fieldsToIgnore.contains(diField.toLowerCase()) && di.get(diField) != null && !Boolean.valueOf(false).equals(di.get(diField));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class UTIL_PerfLogger") != null) {
+        var next = try replaceLiteralAll(gpa, current, "duration = 0;", "duration = 0L;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "plSObject.put(\"Duration__c\", (Double)duration);", "plSObject.put(\"Duration__c\", Double.valueOf(duration));");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "plSObject.put(\"Parent_Duration__c\", (Double)durationParent);", "plSObject.put(\"Parent_Duration__c\", durationParent == null ? null : Double.valueOf(durationParent));");
         gpa.free(current);
         current = next;
     }
@@ -15682,6 +15944,8 @@ fn rewriteSObjectGetAsMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.containsIgnoreCase({s}, {s})", .{ get_as_call, called_args });
         } else if (std.ascii.eqlIgnoreCase(called_method, "equalsIgnoreCase")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.equalsIgnoreCase({s}, {s})", .{ get_as_call, called_args });
+        } else if (std.ascii.eqlIgnoreCase(called_method, "set")) {
+            replacement = try std.fmt.allocPrint(gpa, "((ApexSObject) {s}).set({s})", .{ get_as_call, called_args });
         } else if (std.ascii.eqlIgnoreCase(called_method, "formatGMT")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexSwitch.formatGMT({s}, {s})", .{ get_as_call, called_args });
         } else if (std.ascii.eqlIgnoreCase(called_method, "toLowerCase") and called_args.len == 0) {
@@ -15985,6 +16249,9 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "acct")) return "acct";
     if (std.ascii.eqlIgnoreCase(token, "checkacct")) return "checkAcct";
     if (std.ascii.eqlIgnoreCase(token, "updatedacct")) return "updatedAcct";
+    if (std.ascii.eqlIgnoreCase(token, "sobj")) return "sObj";
+    if (std.ascii.eqlIgnoreCase(token, "mydad")) return "mydad";
+    if (std.ascii.eqlIgnoreCase(token, "objname")) return "objname";
     if (std.ascii.eqlIgnoreCase(token, "toinsert")) return "toInsert";
     if (std.ascii.eqlIgnoreCase(token, "permsetid")) return "permSetId";
     if (std.mem.eql(u8, token, "contacts")) return "contacts";
@@ -16009,6 +16276,18 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "getclosedwonstage")) return "getClosedWonStage";
     if (std.ascii.eqlIgnoreCase(token, "getclosedwonstage4yearsago")) return "getClosedWonStage4YearsAgo";
     if (std.ascii.eqlIgnoreCase(token, "getopenstage")) return "getOpenStage";
+    if (std.ascii.eqlIgnoreCase(token, "setfname")) return "setFname";
+    if (std.ascii.eqlIgnoreCase(token, "setlname")) return "setLname";
+    if (std.ascii.eqlIgnoreCase(token, "listfname")) return "listFname";
+    if (std.ascii.eqlIgnoreCase(token, "listemail")) return "listEmail";
+    if (std.ascii.eqlIgnoreCase(token, "dikey")) return "diKey";
+    if (std.ascii.eqlIgnoreCase(token, "createstatus")) return "createStatus";
+    if (std.ascii.eqlIgnoreCase(token, "listdikeyax")) return "listDiKeyAx";
+    if (std.ascii.eqlIgnoreCase(token, "iscustomidincontactmatchrules")) return "isCustomIdInContactMatchRules";
+    if (std.ascii.eqlIgnoreCase(token, "iscustomidinaccountmatchrules")) return "isCustomIdInAccountMatchRules";
+    if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationservice")) return "SfdoInstrumentationService";
+    if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationenum")) return "SfdoInstrumentationEnum";
+    if (std.ascii.eqlIgnoreCase(token, "perflog")) return "PerfLog";
     if (std.ascii.eqlIgnoreCase(token, "addyears")) return "addYears";
     if (std.ascii.eqlIgnoreCase(token, "test_sobjectgateway")) return "TEST_SObjectGateway";
     if (std.ascii.eqlIgnoreCase(token, "fflib_isobjectunitofwork")) return "fflib_ISObjectUnitOfWork";

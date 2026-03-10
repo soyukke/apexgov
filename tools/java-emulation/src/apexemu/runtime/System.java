@@ -227,6 +227,10 @@ public final class System {
   }
 
   public static class SecurityException extends Exception {
+    public SecurityException() {
+      super();
+    }
+
     public SecurityException(String message) {
       super(message);
     }
@@ -264,6 +268,10 @@ public final class System {
 
   public static PageReference currentPageReference() {
     return ApexPages.currentPage();
+  }
+
+  public static Long currentTimeMillis() {
+    return java.lang.System.currentTimeMillis();
   }
 
   public static final class Crypto {

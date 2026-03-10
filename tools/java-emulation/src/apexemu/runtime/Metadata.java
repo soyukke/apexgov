@@ -53,7 +53,10 @@ public final class Metadata {
     CANCELING
   }
 
-  public static class DeployMessage extends Record {}
+  public static class DeployMessage extends Record {
+    public String fullName;
+    public String problem;
+  }
 
   public static class DeployDetails extends Record {
     public List<DeployMessage> componentFailures = new ArrayList<>();
@@ -84,6 +87,8 @@ public final class Metadata {
   public static class CustomMetadata extends Record {
     public String fullName;
     public String label;
+    public String description;
+    public boolean protected_x;
     public List<CustomMetadataValue> values = new ArrayList<>();
     public Origin origin;
   }
