@@ -7,7 +7,7 @@ import apexemu.runtime.URL;
 
 public final class UrlAndStringsCompatibilityTest {
   @Test
-  public void supportsSalesforceBaseUrlAliasAndSubstringAfterLast() {
+  public void supportsSalesforceBaseUrlAliasAndSubstringHelpers() {
     SystemAssert.assertEquals(
         "http://localhost",
         URL.getSalesforceBaseUrl().toExternalForm(),
@@ -16,5 +16,9 @@ public final class UrlAndStringsCompatibilityTest {
         "001xx0000000001",
         ApexStrings.substringAfterLast("https://example.invalid/001xx0000000001", "/"),
         "substringAfterLast mismatch");
+    SystemAssert.assertEquals(
+        "Mapping_Name",
+        ApexStrings.substringBeforeLast("Mapping_Name_v2", "_"),
+        "substringBeforeLast mismatch");
   }
 }

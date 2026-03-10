@@ -355,6 +355,21 @@ public final class ApexStrings {
     return text.substring(index + separator.length());
   }
 
+  public static String substringBeforeLast(Object value, String separator) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    if (separator == null || separator.isEmpty()) {
+      return text;
+    }
+    int index = text.lastIndexOf(separator);
+    if (index < 0) {
+      return text;
+    }
+    return text.substring(0, index);
+  }
+
   public static String abbreviate(Object value, Integer maxWidth) {
     if (value == null) {
       return null;
