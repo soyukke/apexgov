@@ -3,6 +3,7 @@ package samples;
 import apexemu.annotations.Test;
 import apexemu.runtime.CampaignMember;
 import apexemu.runtime.Date;
+import apexemu.runtime.ApexPages;
 import apexemu.runtime.Metadata;
 import apexemu.runtime.Schema;
 import apexemu.runtime.System;
@@ -23,6 +24,9 @@ public final class RuntimeCompatibilityTest {
     Long now = System.currentTimeMillis();
     Schema.SObjectField campaignId = CampaignMember.CampaignId;
     Date today = Date.Today();
+    ApexPages.addmessage(new ApexPages.Message(ApexPages.Severity.ERROR, "compat"));
+    ApexPages.StandardSetController setController =
+        new ApexPages.StandardSetController(java.util.List.of());
 
     SystemAssert.assertEquals("Pkg.Member", message.fullName, "Deploy message fullName alias mismatch");
     SystemAssert.assertEquals("Broken", message.problem, "Deploy message problem alias mismatch");
@@ -35,5 +39,8 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertEquals(today.year(), today.Year(), "Date Year alias mismatch");
     SystemAssert.assertEquals(today.month(), today.Month(), "Date Month alias mismatch");
     SystemAssert.assertEquals(today.day(), today.Day(), "Date Day alias mismatch");
+    SystemAssert.assertTrue(ApexPages.hasMessages(ApexPages.Severity.ERROR), "ApexPages addmessage alias should record messages");
+    setController.setSelected(java.util.List.of());
+    SystemAssert.assertEquals(0, setController.getSelected().size(), "StandardSetController setSelected alias mismatch");
   }
 }

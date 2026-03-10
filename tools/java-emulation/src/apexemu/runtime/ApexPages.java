@@ -25,7 +25,7 @@ public final class ApexPages {
     public static final Severity Confirm = CONFIRM;
   }
 
-  public static final class Message {
+  public static class Message {
     private final Severity severity;
     private final String summary;
 
@@ -47,6 +47,18 @@ public final class ApexPages {
     }
   }
 
+  public static final class Action {
+    private final String expression;
+
+    public Action(String expression) {
+      this.expression = expression == null ? "" : expression;
+    }
+
+    public PageReference invoke() {
+      return new PageReference(expression);
+    }
+  }
+
   static void setCurrentPage(PageReference pageReference) {
     CURRENT_PAGE.set(pageReference == null ? new PageReference("") : pageReference);
   }
@@ -55,6 +67,10 @@ public final class ApexPages {
     if (message != null) {
       MESSAGES.get().add(message);
     }
+  }
+
+  public static void addmessage(Message message) {
+    addMessage(message);
   }
 
   public static void addMessages(Exception error) {
@@ -96,10 +112,12 @@ public final class ApexPages {
 
   public static final class StandardSetController {
     private final java.util.List<ApexSObject> records;
+    private java.util.List<ApexSObject> selected;
 
     public StandardSetController(java.util.List<ApexSObject> records) {
       this.records =
           records == null ? java.util.List.of() : new java.util.ArrayList<>(records);
+      this.selected = new java.util.ArrayList<>(this.records);
     }
 
     public java.util.List<ApexSObject> getRecords() {
@@ -107,7 +125,12 @@ public final class ApexPages {
     }
 
     public java.util.List<ApexSObject> getSelected() {
-      return getRecords();
+      return new java.util.ArrayList<>(selected);
+    }
+
+    public void setSelected(java.util.List<ApexSObject> selected) {
+      this.selected =
+          selected == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(selected);
     }
   }
 
