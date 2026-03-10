@@ -87,6 +87,8 @@ public final class ApexPages {
       return record == null ? null : record.id();
     }
 
+    public void addFields(java.util.List<String> fieldNames) {}
+
     public PageReference view() {
       return new PageReference("");
     }

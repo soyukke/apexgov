@@ -274,6 +274,14 @@ public final class System {
     return java.lang.System.currentTimeMillis();
   }
 
+  public static final class Date {
+    private Date() {}
+
+    public static apexemu.runtime.Date today() {
+      return apexemu.runtime.Date.today();
+    }
+  }
+
   public static final class Crypto {
     private Crypto() {}
 
@@ -1047,8 +1055,8 @@ public final class System {
         });
   }
 
-  public static Date today() {
-    return Date.today();
+  public static apexemu.runtime.Date today() {
+    return apexemu.runtime.Date.today();
   }
 
   public static DateTime now() {

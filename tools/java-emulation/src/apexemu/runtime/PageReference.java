@@ -24,6 +24,10 @@ public final class PageReference {
     this.redirect = redirect;
   }
 
+  public boolean getRedirect() {
+    return redirect;
+  }
+
   public boolean isRedirect() {
     return redirect;
   }

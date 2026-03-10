@@ -7066,6 +7066,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "catch(exception ", .to = "catch(apexemu.runtime.System.Exception " },
         .{ .from = "throws Exception", .to = "throws apexemu.runtime.System.Exception" },
         .{ .from = " instanceof Id", .to = " instanceof String" },
+        .{ .from = "System.Date.", .to = "Date." },
         .{ .from = "apexemu.runtime.getAs(\"RecordTypeInfo\")", .to = "apexemu.runtime.RecordTypeInfo" },
         .{ .from = "Math.roundToLong(", .to = "Math.round(" },
         .{ .from = ".GetRecordTypeName(", .to = ".getRecordTypeName(" },
@@ -7087,6 +7088,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "LoggerStacktrace", .to = "LoggerStackTrace" },
         .{ .from = "Database.DMLOptions", .to = "Database.DmlOptions" },
         .{ .from = " instanceOf ", .to = " instanceof " },
+        .{ .from = "Batch_Data_Entry_Settings__c.getInstance(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
+        .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
         .{ .from = "getRecords()ToUpdate", .to = "recordsToUpdate" },
@@ -10101,6 +10104,24 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         next = try replaceLiteralAll(
             gpa,
             current,
+            "SfdoInstrumentationService.getInstance().log( ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Feature\"), \"GiftEntry\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Component\"), \"Page\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Action\"), \"Save\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"SourceClass\", \"BDI_DataImportService\"))), insertedGifts);",
+            "SfdoInstrumentationService.getInstance().log( ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Feature\"), \"GiftEntry\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Component\"), \"Page\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Action\"), \"Save\"), new LinkedHashMap<String, Object>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"SourceClass\", \"BDI_DataImportService\"))), insertedGifts);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "acc.get(diSettings.getAs(\"Account_Custom_Unique_ID__c\"))",
+            "acc.get(ApexStrings.valueOf(diSettings.getAs(\"Account_Custom_Unique_ID__c\")))",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
             "value = Boolean.valueOf(value);",
             "value = Boolean.valueOf(ApexStrings.valueOf(value));",
         );
@@ -10121,6 +10142,64 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
             current,
             "Boolean shouldAddPopulatedField = !fieldsToIgnore.contains(diField.toLowerCase()) && di.get(diField) != null && di.get(diField) != false;",
             "Boolean shouldAddPopulatedField = !fieldsToIgnore.contains(diField.toLowerCase()) && di.get(diField) != null && !Boolean.valueOf(false).equals(di.get(diField));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_AdditionalObjectService") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "objWrap.dataImport.get(objWrap.predecessorObjMapping.getAs(\"Imported_Record_Field_Name\"))",
+            "objWrap.dataImport.get(ApexStrings.valueOf(objWrap.predecessorObjMapping.getAs(\"Imported_Record_Field_Name\")))",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "sObjForUpdate.put(objWrap.objMapping.getAs(\"Relationship_Field\"),objWrap.sObj.getAs(\"Id\"));",
+            "sObjForUpdate.put(ApexStrings.valueOf(objWrap.objMapping.getAs(\"Relationship_Field\")), objWrap.sObj.getAs(\"Id\"));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "objWrap.dataImport.get(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"RecurringDonationImported__c\"), \"Name\"))",
+            "objWrap.dataImport.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"RecurringDonationImported__c\"), \"Name\")))",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "objWrap.dataImport.get(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\"))",
+            "objWrap.dataImport.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\")))",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "objWrap.dataImport.get(predecessor.getAs(\"Imported_Record_Field_Name\"))",
+            "objWrap.dataImport.get(ApexStrings.valueOf(predecessor.getAs(\"Imported_Record_Field_Name\")))",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_ContactService") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "con.get(bdi.diSettings.getAs(\"Contact_Custom_Unique_ID__c\"))",
+            "con.get(ApexStrings.valueOf(bdi.diSettings.getAs(\"Contact_Custom_Unique_ID__c\")))",
         );
         gpa.free(current);
         current = next;
@@ -16283,6 +16362,10 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "dikey")) return "diKey";
     if (std.ascii.eqlIgnoreCase(token, "createstatus")) return "createStatus";
     if (std.ascii.eqlIgnoreCase(token, "listdikeyax")) return "listDiKeyAx";
+    if (std.ascii.eqlIgnoreCase(token, "listdikeycx")) return "listDiKeyCx";
+    if (std.ascii.eqlIgnoreCase(token, "contactfromdi")) return "contactFromDi";
+    if (std.ascii.eqlIgnoreCase(token, "newdi")) return "newDi";
+    if (std.ascii.eqlIgnoreCase(token, "math")) return "Math";
     if (std.ascii.eqlIgnoreCase(token, "iscustomidincontactmatchrules")) return "isCustomIdInContactMatchRules";
     if (std.ascii.eqlIgnoreCase(token, "iscustomidinaccountmatchrules")) return "isCustomIdInAccountMatchRules";
     if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationservice")) return "SfdoInstrumentationService";
