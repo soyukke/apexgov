@@ -7087,9 +7087,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return days > MAX_DAYS_EXCEEDED ? MAX_DAYS_EXCEEDED : Integer.valueOf(days);", .to = "return days > MAX_DAYS_EXCEEDED ? MAX_DAYS_EXCEEDED : Integer.valueOf(days.intValue());" },
         .{ .from = "LoggerStacktrace", .to = "LoggerStackTrace" },
         .{ .from = "Database.DMLOptions", .to = "Database.DmlOptions" },
+        .{ .from = "Boolean.false", .to = "Boolean.FALSE" },
+        .{ .from = "Boolean.true", .to = "Boolean.TRUE" },
         .{ .from = " instanceOf ", .to = " instanceof " },
         .{ .from = "Batch_Data_Entry_Settings__c.getInstance(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
+        .{ .from = ".toLowercase()", .to = ".toLowerCase()" },
+        .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
         .{ .from = "getRecords()ToUpdate", .to = "recordsToUpdate" },
@@ -8148,7 +8152,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, bare_custom_sobject_compatible);
     defer gpa.free(type_path_get_as_compatible);
 
-    const fieldset_get_as_compatible = try replaceLiteralAll(gpa, type_path_get_as_compatible, ".fieldSets.getAs(", ".fieldSets.get(");
+    const sobjecttype_var_get_as_compatible = try rewriteSObjectTypeVariableGetAsAccess(gpa, type_path_get_as_compatible);
+    defer gpa.free(sobjecttype_var_get_as_compatible);
+
+    const fieldset_get_as_compatible = try replaceLiteralAll(gpa, sobjecttype_var_get_as_compatible, ".fieldSets.getAs(", ".fieldSets.get(");
     defer gpa.free(fieldset_get_as_compatible);
 
     const collection_view_compatible = try rewriteCollectionViewPropertyAccess(gpa, fieldset_get_as_compatible);
@@ -8178,7 +8185,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const declared_sobject_query_compatible = try rewriteDeclaredSObjectQueryAssignments(gpa, first_or_null_declared_list_var_compatible);
     defer gpa.free(declared_sobject_query_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, declared_sobject_query_compatible);
+    const querywithbinds_list_chain_compatible = try rewriteQueryWithBindsListChaining(gpa, declared_sobject_query_compatible);
+    defer gpa.free(querywithbinds_list_chain_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, querywithbinds_list_chain_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -8187,7 +8197,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const numeric_get_as_compatible = try rewriteGetAsNumericCompatibility(gpa, deepclone_compatible);
     defer gpa.free(numeric_get_as_compatible);
 
-    const setscale_compatible = try rewriteDecimalSetScaleCalls(gpa, numeric_get_as_compatible);
+    const date_get_as_compatible = try rewriteGetAsDateMethodCalls(gpa, numeric_get_as_compatible);
+    defer gpa.free(date_get_as_compatible);
+
+    const setscale_compatible = try rewriteDecimalSetScaleCalls(gpa, date_get_as_compatible);
     defer gpa.free(setscale_compatible);
 
     const double_datetime_delta_compatible = try rewriteDoubleDateTimeDeltaAssignments(gpa, setscale_compatible);
@@ -8214,7 +8227,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
     defer gpa.free(boolean_compatible);
 
-    const field_namespace_compatible = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, boolean_compatible);
+    const boolean_wrapper_compatible = try replaceLiteralAll(gpa, boolean_compatible, "Boolean.false", "Boolean.FALSE");
+    defer gpa.free(boolean_wrapper_compatible);
+
+    const boolean_wrapper_compatible2 = try replaceLiteralAll(gpa, boolean_wrapper_compatible, "Boolean.true", "Boolean.TRUE");
+    defer gpa.free(boolean_wrapper_compatible2);
+
+    const field_namespace_compatible = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, boolean_wrapper_compatible2);
     defer gpa.free(field_namespace_compatible);
 
     const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, field_namespace_compatible);
@@ -10105,7 +10124,7 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
             gpa,
             current,
             "SfdoInstrumentationService.getInstance().log( ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Feature\"), \"GiftEntry\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Component\"), \"Page\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Action\"), \"Save\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"SourceClass\", \"BDI_DataImportService\"))), insertedGifts);",
-            "SfdoInstrumentationService.getInstance().log( ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Feature\"), \"GiftEntry\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Component\"), \"Page\"), ApexSwitch.getAs(new Schema.SObjectField(\"SfdoInstrumentationEnum\", \"Action\"), \"Save\"), new LinkedHashMap<String, Object>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"SourceClass\", \"BDI_DataImportService\"))), insertedGifts);",
+            "SfdoInstrumentationService.getInstance().log(SfdoInstrumentationEnum.Feature.GiftEntry, SfdoInstrumentationEnum.Component.Page, SfdoInstrumentationEnum.Action.Save, new LinkedHashMap<String, Object>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"SourceClass\", \"BDI_DataImportService\"))), insertedGifts);",
         );
         gpa.free(current);
         current = next;
@@ -10187,6 +10206,15 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         next = try replaceLiteralAll(
             gpa,
             current,
+            "if (objWrap.dataImport.get(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"RecurringDonationImported__c\"), \"Name\")) == null && objWrap.dataImport.get(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\")) == null){",
+            "if (objWrap.dataImport.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"RecurringDonationImported__c\"), \"Name\"))) == null && objWrap.dataImport.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\"))) == null) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
             "objWrap.dataImport.get(predecessor.getAs(\"Imported_Record_Field_Name\"))",
             "objWrap.dataImport.get(ApexStrings.valueOf(predecessor.getAs(\"Imported_Record_Field_Name\")))",
         );
@@ -10200,6 +10228,109 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
             current,
             "con.get(bdi.diSettings.getAs(\"Contact_Custom_Unique_ID__c\"))",
             "con.get(ApexStrings.valueOf(bdi.diSettings.getAs(\"Contact_Custom_Unique_ID__c\")))",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_DataImportFLSService") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "Set<apexemu.runtime.System.AccessLevel> accessLevels;",
+            "Set<AccessLevel> accessLevels;",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public BDI_DataImportFLSService(Set<apexemu.runtime.System.AccessLevel> accessLevels) {",
+            "public BDI_DataImportFLSService(Set<AccessLevel> accessLevels) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public BDI_DataImportFLSService(List<ApexSObject> dataImports, BDI_MappingService mappingService, Set<apexemu.runtime.System.AccessLevel> accessLevels) {",
+            "public BDI_DataImportFLSService(List<ApexSObject> dataImports, BDI_MappingService mappingService, Set<AccessLevel> accessLevels) {",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_ContactService_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "match1a.confidenceScore = 50;", "match1a.confidenceScore = 50.0;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "match1b.confidenceScore = 50;", "match1b.confidenceScore = 50.0;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "match1b.confidenceScore = 100;", "match1b.confidenceScore = 100.0;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "match1c.confidenceScore = 100;", "match1c.confidenceScore = 100.0;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "match2.confidenceScore = 100;", "match2.confidenceScore = 100.0;");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class UTIL_DuplicateMgmt") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "match.confidenceScore = (matchRecord != null ? matchRecord.getMatchConfidence() : null);",
+            "match.confidenceScore = (matchRecord != null ? Double.valueOf(matchRecord.getMatchConfidence()) : null);",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class AN_AutoNumberService_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "sobj.get(", "sObj.get(");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "ApexStrings.valueOf(sobj.get(", "ApexStrings.valueOf(sObj.get(");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_BatchNumberSettingsController_TEST") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "  static Schema.SObjectField autoNumberField = new Schema.SObjectField(\"DataImportBatch__c\", \"Batch_Number__c\");\n  static AN_AutoNumberService.TestUtility utility = new AN_AutoNumberService.TestUtility(sObjType, autoNumberField);",
+            "  static Schema.SObjectField autoNumberField = new Schema.SObjectField(\"DataImportBatch__c\", \"Batch_Number__c\");\n\n  public static String getSObjTypeName() {\n    return ApexStrings.valueOf(sObjType);\n  }\n\n  public static String getAutoNumberFieldName() {\n    return ApexStrings.valueOf(autoNumberField);\n  }\n\n  static AN_AutoNumberService.TestUtility utility = new AN_AutoNumberService.TestUtility(sObjType, autoNumberField);",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_DataImportService_TEST") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "handlerByKey.put(handler.getAs(\"Object__c\") + handler.getAs(\"Class__c\"), handler);",
+            "handlerByKey.put(ApexStrings.valueOf(handler.getAs(\"Object__c\")) + ApexStrings.valueOf(handler.getAs(\"Class__c\")), handler);",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "handlerByKey.get(handler.getAs(\"Object__c\") + handler.getAs(\"Class__c\")).getAs(\"Active__c\")",
+            "handlerByKey.get(ApexStrings.valueOf(handler.getAs(\"Object__c\")) + ApexStrings.valueOf(handler.getAs(\"Class__c\"))).getAs(\"Active__c\")",
         );
         gpa.free(current);
         current = next;
@@ -10745,6 +10876,50 @@ fn rewriteTypePathGetAsAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
 
         try out.appendSlice(gpa, text[last_emit..base_start]);
         try appendFmt(gpa, &out, "{s}.{s}", .{ base_expr, member });
+        replaced = true;
+        last_emit = close + 1;
+        i = close;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteSObjectTypeVariableGetAsAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) : (i += 1) {
+        if (text[i] != '.') continue;
+        if (!startsWithIgnoreCase(text[i..], ".getAs")) continue;
+
+        const method_end = i + ".getAs".len;
+        var open = method_end;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') continue;
+        const close = findMatchingParen(text, open) orelse continue;
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (!std.ascii.eqlIgnoreCase(base_expr, "sObjectType")) continue;
+
+        const arg = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        if (arg.len < 3 or arg[0] != '"' or arg[arg.len - 1] != '"') continue;
+        const member = arg[1 .. arg.len - 1];
+        if (member.len == 0 or !isSimpleIdentifierOrPath(member)) continue;
+        if (std.mem.indexOfScalar(u8, member, '.') != null) continue;
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "Schema.SObjectType.{s}", .{member});
         replaced = true;
         last_emit = close + 1;
         i = close;
@@ -12443,7 +12618,15 @@ fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []c
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
-    const methods = [_][]const u8{ ".isAccessible()", ".isUpdateable()", ".isCreateable()", ".getDescribe()" };
+    const methods = [_][]const u8{
+        ".isAccessible()",
+        ".isUpdateable()",
+        ".isCreateable()",
+        ".isEncrypted()",
+        ".isFilterable()",
+        ".getSObjectField()",
+        ".getDescribe()",
+    };
     var replaced = false;
     var last_emit: usize = 0;
     var i: usize = 0;
@@ -12481,6 +12664,110 @@ fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []c
         out.deinit(gpa);
         return gpa.dupe(u8, text);
     }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteQueryWithBindsListChaining(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const chain_methods = [_][]const u8{ ".isEmpty()", ".size()", ".get(" };
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], "Database.queryWithBinds(")) continue;
+
+        if (i >= 24) {
+            const prefix = text[(i - 24)..i];
+            if (std.mem.indexOf(u8, prefix, "List<ApexSObject>)") != null or
+                std.mem.indexOf(u8, prefix, "java.util.List<ApexSObject>)") != null)
+            {
+                continue;
+            }
+        }
+
+        const open = i + "Database.queryWithBinds".len;
+        const close = findMatchingParen(text, open) orelse continue;
+
+        const method_suffix = blk: {
+            for (chain_methods) |candidate| {
+                if (startsWithIgnoreCase(text[(close + 1)..], candidate)) break :blk candidate;
+            }
+            break :blk null;
+        };
+        if (method_suffix == null) continue;
+
+        var suffix_end = close + 1 + method_suffix.?.len;
+        if (std.mem.eql(u8, method_suffix.?, ".get(")) {
+            const get_open = close + 1 + ".get".len;
+            const get_close = findMatchingParen(text, get_open) orelse continue;
+            suffix_end = get_close + 1;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "((List<ApexSObject>) {s}){s}", .{ text[i .. close + 1], text[(close + 1)..suffix_end] });
+        replaced = true;
+        last_emit = suffix_end;
+        i = suffix_end - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetAsDateMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const methods = [_][]const u8{ ".addDays(", ".addMonths(", ".addYears(", ".daysBetween(", ".year()", ".month()", ".day()" };
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".getAs(")) continue;
+        const open = i + ".getAs".len;
+        const close = findMatchingParen(text, open) orelse continue;
+
+        const method_suffix = blk: {
+            for (methods) |candidate| {
+                if (startsWithIgnoreCase(text[(close + 1)..], candidate)) break :blk candidate;
+            }
+            break :blk null;
+        };
+        if (method_suffix == null) continue;
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        const field_expr = std.mem.trim(u8, text[(open + 1)..close], " \t");
+
+        var suffix_end = close + 1 + method_suffix.?.len;
+        if (method_suffix.?[method_suffix.?.len - 1] == '(') {
+            const method_open = close + 1 + method_suffix.?.len - 1;
+            const method_close = findMatchingParen(text, method_open) orelse continue;
+            suffix_end = method_close + 1;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "Date.valueOf({s}.getAs({s})){s}", .{ base_expr, field_expr, text[(close + 1)..suffix_end] });
+        replaced = true;
+        last_emit = suffix_end;
+        i = suffix_end - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
 }
@@ -16329,6 +16616,9 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "checkacct")) return "checkAcct";
     if (std.ascii.eqlIgnoreCase(token, "updatedacct")) return "updatedAcct";
     if (std.ascii.eqlIgnoreCase(token, "sobj")) return "sObj";
+    if (std.ascii.eqlIgnoreCase(token, "sobj1")) return "sObj1";
+    if (std.ascii.eqlIgnoreCase(token, "sobj2")) return "sObj2";
+    if (std.ascii.eqlIgnoreCase(token, "sobj3")) return "sObj3";
     if (std.ascii.eqlIgnoreCase(token, "mydad")) return "mydad";
     if (std.ascii.eqlIgnoreCase(token, "objname")) return "objname";
     if (std.ascii.eqlIgnoreCase(token, "toinsert")) return "toInsert";
@@ -16363,6 +16653,7 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "createstatus")) return "createStatus";
     if (std.ascii.eqlIgnoreCase(token, "listdikeyax")) return "listDiKeyAx";
     if (std.ascii.eqlIgnoreCase(token, "listdikeycx")) return "listDiKeyCx";
+    if (std.ascii.eqlIgnoreCase(token, "listidbatches")) return "listIdBatches";
     if (std.ascii.eqlIgnoreCase(token, "contactfromdi")) return "contactFromDi";
     if (std.ascii.eqlIgnoreCase(token, "newdi")) return "newDi";
     if (std.ascii.eqlIgnoreCase(token, "math")) return "Math";
@@ -23631,6 +23922,59 @@ test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs re
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Schema.SObjectField) new Schema.SObjectType(\"DataImportBatch__c\").fields.getAs(\"Batch_Number__c\")).isAccessible()") != null);
+}
+
+test "rewriteSchemaFieldNamespaceGetAsMethodCalls rewrites extra field helper methods" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (!Schema.SObjectType.Contact.fields.getAs("Name").isEncrypted()) {}
+        \\field = new Schema.SObjectType("Allocation__c").fields.getAs("Id").getSObjectField();
+    ;
+
+    const rewritten = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Schema.SObjectField) Schema.SObjectType.Contact.fields.getAs(\"Name\")).isEncrypted()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Schema.SObjectField) new Schema.SObjectType(\"Allocation__c\").fields.getAs(\"Id\")).getSObjectField()") != null);
+}
+
+test "rewriteQueryWithBindsListChaining casts chained list accessors" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\return !Database.queryWithBinds("SELECT Id FROM Trigger_Handler__c", ApexCollections.bindMap()).isEmpty();
+        \\Object row = Database.queryWithBinds("SELECT Id FROM Account LIMIT 1", ApexCollections.bindMap()).get(0);
+    ;
+
+    const rewritten = try rewriteQueryWithBindsListChaining(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "!((List<ApexSObject>) Database.queryWithBinds(\"SELECT Id FROM Trigger_Handler__c\", ApexCollections.bindMap())).isEmpty()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((List<ApexSObject>) Database.queryWithBinds(\"SELECT Id FROM Account LIMIT 1\", ApexCollections.bindMap())).get(0)") != null);
+}
+
+test "rewriteSObjectTypeVariableGetAsAccess rewrites namespace-like variable access" {
+    const gpa = std.testing.allocator;
+    const input = \\if (!sObjectType.getAs("Contact").fields.getAs("Name").isEncrypted()) {}
+    ;
+
+    const rewritten = try rewriteSObjectTypeVariableGetAsAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType.Contact.fields.getAs(\"Name\").isEncrypted()") != null);
+}
+
+test "rewriteGetAsDateMethodCalls wraps date-like chained calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\record.getAs("CloseDate").addDays(2);
+        \\Integer days = record.getAs("CloseDate").daysBetween(otherDate);
+    ;
+
+    const rewritten = try rewriteGetAsDateMethodCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.valueOf(record.getAs(\"CloseDate\")).addDays(2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.valueOf(record.getAs(\"CloseDate\")).daysBetween(otherDate)") != null);
 }
 
 test "convertApexExpressionToJava rewrites nested id relational comparisons" {

@@ -731,6 +731,22 @@ public final class Schema {
       return getDescribe().isUpdateable();
     }
 
+    public boolean isEncrypted() {
+      return getDescribe().isEncrypted();
+    }
+
+    public boolean isFilterable() {
+      return getDescribe().isFilterable();
+    }
+
+    public SObjectField getSObjectField() {
+      return this;
+    }
+
+    public String getLabel() {
+      return getDescribe().getLabel();
+    }
+
     public String getName() {
       return fieldName;
     }
@@ -859,6 +875,10 @@ public final class Schema {
 
     public boolean isEncrypted() {
       return false;
+    }
+
+    public boolean isFilterable() {
+      return isAccessible();
     }
 
     public boolean isAccessible() {

@@ -2,6 +2,7 @@ package samples;
 
 import apexemu.annotations.Test;
 import apexemu.runtime.CampaignMember;
+import apexemu.runtime.Date;
 import apexemu.runtime.Metadata;
 import apexemu.runtime.Schema;
 import apexemu.runtime.System;
@@ -21,6 +22,7 @@ public final class RuntimeCompatibilityTest {
     System.SecurityException ex = new System.SecurityException();
     Long now = System.currentTimeMillis();
     Schema.SObjectField campaignId = CampaignMember.CampaignId;
+    Date today = Date.Today();
 
     SystemAssert.assertEquals("Pkg.Member", message.fullName, "Deploy message fullName alias mismatch");
     SystemAssert.assertEquals("Broken", message.problem, "Deploy message problem alias mismatch");
@@ -30,5 +32,8 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertTrue(
         now != null && now > 0L, "currentTimeMillis alias should return a positive timestamp");
     SystemAssert.assertEquals("CampaignId", campaignId.getDescribe().getName(), "CampaignId token alias mismatch");
+    SystemAssert.assertEquals(today.year(), today.Year(), "Date Year alias mismatch");
+    SystemAssert.assertEquals(today.month(), today.Month(), "Date Month alias mismatch");
+    SystemAssert.assertEquals(today.day(), today.Day(), "Date Day alias mismatch");
   }
 }
