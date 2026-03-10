@@ -2,14 +2,17 @@ package apexemu.runtime;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Locale;
 import java.util.Objects;
 
-public final class DateTime {
+public final class DateTime implements Comparable<DateTime> {
   private final Instant instant;
 
   private DateTime(Instant instant) {
@@ -18,6 +21,10 @@ public final class DateTime {
 
   public static DateTime now() {
     return new DateTime(Instant.now());
+  }
+
+  public static DateTime Now() {
+    return now();
   }
 
   public static DateTime newInstance(
@@ -60,6 +67,34 @@ public final class DateTime {
     }
     LocalDate date = value.value();
     return new DateTime(date.atStartOfDay(ZoneOffset.UTC).toInstant());
+  }
+
+  public static DateTime valueOf(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    Instant parsed = parseInstant(value.trim());
+    return parsed == null ? null : new DateTime(parsed);
+  }
+
+  public static DateTime valueOf(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof DateTime dateTime) {
+      return dateTime;
+    }
+    if (value instanceof Date date) {
+      return fromDate(date);
+    }
+    if (value instanceof Number number) {
+      return newInstance(number.longValue());
+    }
+    return valueOf(String.valueOf(value));
+  }
+
+  public static DateTime valueOfGMT(String value) {
+    return valueOf(value);
   }
 
   public long getTime() {
@@ -111,8 +146,20 @@ public final class DateTime {
     }
   }
 
+  public String formatGmt(String pattern) {
+    return formatGMT(pattern);
+  }
+
   public String format(String pattern) {
     return formatGMT(pattern);
+  }
+
+  @Override
+  public int compareTo(DateTime other) {
+    if (other == null) {
+      return 1;
+    }
+    return instant.compareTo(other.instant);
   }
 
   @Override
@@ -134,5 +181,47 @@ public final class DateTime {
   @Override
   public int hashCode() {
     return Objects.hash(instant);
+  }
+
+  private static Instant parseInstant(String text) {
+    try {
+      return Instant.parse(text);
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant();
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return LocalDateTime.parse(text, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return LocalDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+          .toInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return LocalDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"))
+          .toInstant(ZoneOffset.UTC);
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
+          .toInstant();
+    } catch (DateTimeParseException ignored) {
+      // fall through
+    }
+    try {
+      return OffsetDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ"))
+          .toInstant();
+    } catch (DateTimeParseException ignored) {
+      return null;
+    }
   }
 }

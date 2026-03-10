@@ -4,7 +4,7 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
 
-public final class Date {
+public final class Date implements Comparable<Date> {
   private final LocalDate value;
 
   private Date(LocalDate value) {
@@ -67,6 +67,13 @@ public final class Date {
     return new Date(value.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)));
   }
 
+  public Boolean isSameDay(Date other) {
+    if (other == null) {
+      return false;
+    }
+    return value.equals(other.value);
+  }
+
   LocalDate value() {
     return value;
   }
@@ -93,6 +100,14 @@ public final class Date {
 
   public Integer Day() {
     return day();
+  }
+
+  @Override
+  public int compareTo(Date other) {
+    if (other == null) {
+      return 1;
+    }
+    return value.compareTo(other.value);
   }
 
   @Override

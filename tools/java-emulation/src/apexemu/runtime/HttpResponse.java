@@ -1,6 +1,7 @@
 package apexemu.runtime;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class HttpResponse {
@@ -58,5 +59,9 @@ public final class HttpResponse {
 
   public Map<String, String> getHeaders() {
     return Map.copyOf(headers);
+  }
+
+  public List<String> getHeaderKeys() {
+    return List.copyOf(headers.keySet());
   }
 }

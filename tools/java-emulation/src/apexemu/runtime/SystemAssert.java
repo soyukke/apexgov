@@ -105,6 +105,10 @@ public final class SystemAssert {
     }
   }
 
+  public static void assertNotEquals(Object expected, Object actual, Object message) {
+    assertNotEquals(expected, actual, message == null ? null : String.valueOf(message));
+  }
+
   public static void assertNull(Object value) {
     assertNull(value, null);
   }

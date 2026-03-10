@@ -576,6 +576,7 @@ public final class Schema {
     public static final SObjectType Contact = new SObjectType("Contact");
     public static final SObjectType Lead = new SObjectType("Lead");
     public static final SObjectType Opportunity = new SObjectType("Opportunity");
+    public static final SObjectType OpportunityContactRole = new SObjectType("OpportunityContactRole");
     public static final SObjectType Case = new SObjectType("Case");
     public static final SObjectType Task = new SObjectType("Task");
     public static final SObjectType Event = new SObjectType("Event");
@@ -600,8 +601,9 @@ public final class Schema {
     public static final SObjectType Profile = new SObjectType("Profile");
     public static final SObjectType PermissionSet = new SObjectType("PermissionSet");
     public static final SObjectType PermissionSetAssignment = new SObjectType("PermissionSetAssignment");
+    public static final SObjectType RecordType = new SObjectType("RecordType");
 
-    private final String name;
+    public final String name;
     public final FieldNamespace fields;
     public final FieldSetNamespace fieldSets;
 
@@ -1352,9 +1354,12 @@ public final class Schema {
   public enum SoapType {
     BOOLEAN,
     DOUBLE,
+    INTEGER,
     Integer,
     DATE,
+    Date,
     DATETIME,
+    DateTime,
     ID,
     STRING
   }

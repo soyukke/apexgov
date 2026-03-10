@@ -220,6 +220,20 @@ public final class System {
     }
   }
 
+  public static class CalloutException extends Exception {
+    public CalloutException() {
+      super();
+    }
+
+    public CalloutException(String message) {
+      super(message);
+    }
+
+    public CalloutException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
   public static final class NoAccessException extends Exception {
     public NoAccessException(String message) {
       super(message);

@@ -20,5 +20,8 @@ public final class UrlAndStringsCompatibilityTest {
         "Mapping_Name",
         ApexStrings.substringBeforeLast("Mapping_Name_v2", "_"),
         "substringBeforeLast mismatch");
+    SystemAssert.assertTrue(
+        ApexStrings.startsWithIgnoreCase("RecurringDonation", "recurring"),
+        "startsWithIgnoreCase mismatch");
   }
 }

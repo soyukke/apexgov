@@ -7160,6 +7160,29 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "Data_Import_Settings__c.getInstance()", .to = "UTIL_CustomSettingsFacade.getDataImportSettings()" },
         .{ .from = ".toLowercase()", .to = ".toLowerCase()" },
         .{ .from = "if (d != null && d.getAs(\"Is_Deleted__c\")) {", .to = "if (d != null && Boolean.TRUE.equals(d.getAs(\"Is_Deleted__c\"))) {" },
+        .{ .from = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {", .to = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && opp.getAs(\"Primary_Contact__c\") != null) {" },
+        .{ .from = "fflib_SecurityUtils.checkRead(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS);", .to = "fflib_SecurityUtils.checkReadByToken(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS);" },
+        .{ .from = "fflib_SecurityUtils.checkUpdate(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS);", .to = "fflib_SecurityUtils.checkUpdateByToken(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS);" },
+        .{ .from = "if ((schedule.frequency = elevateFrequencyByInstallmentPeriod) != null) { schedule.frequency = elevateFrequencyByInstallmentPeriod.get( ApexStrings.valueOf(((scheduleUntyped) == null ? null : (scheduleUntyped).get(installmentPeriodFieldName))) ); }", .to = "if (elevateFrequencyByInstallmentPeriod != null) { schedule.frequency = elevateFrequencyByInstallmentPeriod.get(ApexStrings.valueOf(((scheduleUntyped) == null ? null : (scheduleUntyped).get(installmentPeriodFieldName)))); }" },
+        .{ .from = "schedule.firstOccurrenceOnTimestamp = startDateTime.formatGmt(\"yyyy-MM-dd'T'HH:mm:ss'Z'\");", .to = "schedule.firstOccurrenceOnTimestamp = startDateTime.formatGmt(\"yyyy-MM-dd'T'HH:mm:ss'Z'\");" },
+        .{ .from = "Integer.valueOf((int) (batchItemRequestDTO.amount))", .to = "ApexStrings.toInteger(batchItemRequestDTO.amount)" },
+        .{ .from = "public static enum FilterOperation { Equals, Not_Equals, Greater, Less, Greater_or_Equal, Less_or_Equal, Starts_With, Contains, Does_Not_Contain, In_List, Not_In_List, Is_Included, Is_Not_Included }", .to = "public static enum FilterOperation { EQUALS, NOT_EQUALS, GREATER, LESS, GREATER_OR_EQUAL, LESS_OR_EQUAL, STARTS_WITH, CONTAINS, DOES_NOT_CONTAIN, IN_LIST, NOT_IN_LIST, IS_INCLUDED, IS_NOT_INCLUDED }" },
+        .{ .from = "private static final String recordTypeIdPrefix = SObjectType.RecordType.getKeyPrefix();", .to = "private static final String recordTypeIdPrefix = Schema.SObjectType.RecordType.getKeyPrefix();" },
+        .{ .from = "fieldValue = 0;", .to = "fieldValue = 0.0;" },
+        .{ .from = "this.objectType = ApexSwitch.getSObjectType(UTIL_Describe.getObjectDescribe(ApexSwitch.getAs(filterRule.getAs(\"Object__r\"), \"QualifiedApiName\")));", .to = "this.objectType = ApexSwitch.getSObjectType(UTIL_Describe.getObjectDescribe(ApexStrings.valueOf(ApexSwitch.getAs(filterRule.getAs(\"Object__r\"), \"QualifiedApiName\"))));" },
+        .{ .from = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.FiscalYearStartMonth, 1 );", .to = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.fiscalYearStartMonth, 1 );" },
+        .{ .from = "if (CRLP_FiscalYears.fiscalYearInfo.UsesStartDateAsFiscalYearName) {", .to = "if (Boolean.TRUE.equals(CRLP_FiscalYears.fiscalYearInfo.usesStartDateAsFiscalYearName)) {" },
+        .{ .from = "RecordType rtDonation = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :donationRTId LIMIT 1\", ApexCollections.bindMap(\"donationRTId\", donationRTId)));", .to = "ApexSObject rtDonation = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :donationRTId LIMIT 1\", ApexCollections.bindMap(\"donationRTId\", donationRTId)));" },
+        .{ .from = "return fieldValue > compareValue;", .to = "return ApexCompare.gt(fieldValue, compareValue);" },
+        .{ .from = "return fieldValue < compareValue;", .to = "return ApexCompare.lt(fieldValue, compareValue);" },
+        .{ .from = "return fieldValue >= compareValue;", .to = "return ApexCompare.gte(fieldValue, compareValue);" },
+        .{ .from = "return fieldValue <= compareValue;", .to = "return ApexCompare.lte(fieldValue, compareValue);" },
+        .{ .from = "return (fieldDateValue >= compareStartDate && fieldDateValue <= compareEndDate);", .to = "return (ApexCompare.gte(fieldDateValue, compareStartDate) && ApexCompare.lte(fieldDateValue, compareEndDate));" },
+        .{ .from = "return !(fieldDateValue >= compareStartDate && fieldDateValue <= compareEndDate);", .to = "return !(ApexCompare.gte(fieldDateValue, compareStartDate) && ApexCompare.lte(fieldDateValue, compareEndDate));" },
+        .{ .from = "return fieldDateValue > compareEndDate;", .to = "return ApexCompare.gt(fieldDateValue, compareEndDate);" },
+        .{ .from = "return fieldDateValue < compareStartDate;", .to = "return ApexCompare.lt(fieldDateValue, compareStartDate);" },
+        .{ .from = "return fieldDateValue >= compareEndDate;", .to = "return ApexCompare.gte(fieldDateValue, compareEndDate);" },
+        .{ .from = "return fieldDateValue <= compareStartDate;", .to = "return ApexCompare.lte(fieldDateValue, compareStartDate);" },
         .{ .from = "return ApexCollections.firstOrThrow(Database.query(\"SELECT Key__c, Value__c, Service__c, LastModifiedById, LastModifiedDate FROM Payment_Services_Configuration__c ORDER BY LastModifiedDate DESC LIMIT 1\"));", .to = "return Database.query(\"SELECT Key__c, Value__c, Service__c, LastModifiedById, LastModifiedDate FROM Payment_Services_Configuration__c ORDER BY LastModifiedDate DESC LIMIT 1\");" },
         .{ .from = "openOpptIdByDIId.put(diByCreatedRDId.get(ApexSwitch.getAs(oppt.getAs(\"npe03__Recurring_Donation__c\"), \"Id\")),oppt.getAs(\"Id\"));", .to = "openOpptIdByDIId.put(diByCreatedRDId.get(ApexSwitch.getAs(oppt.getAs(\"npe03__Recurring_Donation__c\"), \"Id\")).getAs(\"Id\"),oppt.getAs(\"Id\"));" },
         .{ .from = "private static enum matchType { ID_MATCH, FIELD_MATCH, NO_MATCH }", .to = "private static enum MATCHTYPE { ID_MATCH, FIELD_MATCH, NO_MATCH }" },
@@ -8415,7 +8438,15 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const trailing_query_paren_compatible = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, final_family_cleanup);
     defer gpa.free(trailing_query_paren_compatible);
 
-    return rewriteDatabaseQueryIndexCompatibility(gpa, trailing_query_paren_compatible);
+    const primary_contact_compatible = try replaceLiteralAll(
+        gpa,
+        trailing_query_paren_compatible,
+        "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {",
+        "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && opp.getAs(\"Primary_Contact__c\") != null) {",
+    );
+    defer gpa.free(primary_contact_compatible);
+
+    return rewriteDatabaseQueryIndexCompatibility(gpa, primary_contact_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -17332,6 +17363,7 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             if (startsWithIgnoreCase(text[i..], ".removeEndIgnoreCase")) break :blk "removeEndIgnoreCase";
             if (startsWithIgnoreCase(text[i..], ".removeEnd")) break :blk "removeEnd";
             if (startsWithIgnoreCase(text[i..], ".right")) break :blk "right";
+            if (startsWithIgnoreCase(text[i..], ".startsWithIgnoreCase")) break :blk "startsWithIgnoreCase";
             if (startsWithIgnoreCase(text[i..], ".startsWith")) break :blk "startsWith";
             if (startsWithIgnoreCase(text[i..], ".containsIgnoreCase")) break :blk "containsIgnoreCase";
             if (startsWithIgnoreCase(text[i..], ".capitalize")) break :blk "capitalize";
@@ -17397,6 +17429,8 @@ fn rewriteStringInstanceMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.removeEndIgnoreCase({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "right")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.right({s}, {s})", .{ base_expr, call_args });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "startsWithIgnoreCase")) {
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.startsWithIgnoreCase({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "startsWith")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.startsWith({s}, {s})", .{ base_expr, call_args });
         } else if (std.ascii.eqlIgnoreCase(method_name, "containsIgnoreCase")) {
@@ -25243,6 +25277,36 @@ test "rewriteKnownCompatibilityFixups rewrites bare sobject types and legacy lit
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "record == null || enabled == true || disabled == false") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Allocation__c\").getName()") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites NPSP filter and request compatibility fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public static enum FilterOperation { Equals, Not_Equals, Greater, Less, Greater_or_Equal, Less_or_Equal, Starts_With, Contains, Does_Not_Contain, In_List, Not_In_List, Is_Included, Is_Not_Included }
+        \\  private static final String recordTypeIdPrefix = SObjectType.RecordType.getKeyPrefix();
+        \\  public void run(ApexSObject opp, Map<String, String> elevateFrequencyByInstallmentPeriod, Map<String, Object> scheduleUntyped, String installmentPeriodFieldName, DateTime startDateTime, List<Schema.SObjectField> GIFT_SCHEDULE_FIELDS, Date fieldDateValue, Date compareStartDate, Date compareEndDate, DateTime fieldValue, DateTime compareValue, String fieldText, Object batchItemRequestDTO) {
+        \\    if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs("Account"), "npe01__SYSTEMIsIndividual__c")) && Boolean.TRUE.equals(opp.getAs("Primary_Contact__c")) != null) {
+        \\    }
+        \\    fflib_SecurityUtils.checkRead(new Schema.SObjectType("DataImportBatch__c"), GIFT_SCHEDULE_FIELDS);
+        \\    if ((schedule.frequency = elevateFrequencyByInstallmentPeriod) != null) { schedule.frequency = elevateFrequencyByInstallmentPeriod.get(ApexStrings.valueOf(((scheduleUntyped) == null ? null : (scheduleUntyped).get(installmentPeriodFieldName)))); }
+        \\    Integer amount = Integer.valueOf((int) (batchItemRequestDTO.amount));
+        \\    if (fieldText.startsWithIgnoreCase("abc")) {}
+        \\    return fieldValue > compareValue;
+        \\    return (fieldDateValue >= compareStartDate && fieldDateValue <= compareEndDate);
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum FilterOperation { EQUALS, NOT_EQUALS, GREATER, LESS, GREATER_OR_EQUAL, LESS_OR_EQUAL, STARTS_WITH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType.RecordType.getKeyPrefix()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "checkReadByToken(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.toInteger(batchItemRequestDTO.amount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexCompare.gt(fieldValue, compareValue);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return (ApexCompare.gte(fieldDateValue, compareStartDate) && ApexCompare.lte(fieldDateValue, compareEndDate));") != null);
 }
 
 test "rewriteBareSObjectTypeAccess skips method calls on SObjectType namespace" {

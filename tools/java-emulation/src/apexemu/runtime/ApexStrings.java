@@ -142,6 +142,14 @@ public final class ApexStrings {
     return String.valueOf(value).toLowerCase().contains(needle.toLowerCase());
   }
 
+  public static boolean startsWithIgnoreCase(Object value, String prefix) {
+    if (value == null || prefix == null) {
+      return false;
+    }
+    String text = String.valueOf(value);
+    return text.regionMatches(true, 0, prefix, 0, prefix.length());
+  }
+
   public static boolean equalsIgnoreCase(Object value, String other) {
     if (value == null || other == null) {
       return false;

@@ -2,8 +2,10 @@ package samples;
 
 import apexemu.annotations.Test;
 import apexemu.runtime.CampaignMember;
-import apexemu.runtime.Date;
 import apexemu.runtime.ApexPages;
+import apexemu.runtime.Date;
+import apexemu.runtime.DateTime;
+import apexemu.runtime.HttpResponse;
 import apexemu.runtime.Metadata;
 import apexemu.runtime.Schema;
 import apexemu.runtime.System;
@@ -27,6 +29,12 @@ public final class RuntimeCompatibilityTest {
     ApexPages.addmessage(new ApexPages.Message(ApexPages.Severity.ERROR, "compat"));
     ApexPages.StandardSetController setController =
         new ApexPages.StandardSetController(java.util.List.of());
+    HttpResponse response = new HttpResponse();
+    response.setHeader("X-Test", "ok");
+    DateTime parsedDateTime = DateTime.valueOfGMT("2024-03-04 05:06:07");
+    System.CalloutException callout = new System.CalloutException("timeout");
+    Metadata.CustomMetadata customMetadata = new Metadata.CustomMetadata();
+    customMetadata.values.add(new Metadata.CustomMetadataValue());
 
     SystemAssert.assertEquals("Pkg.Member", message.fullName, "Deploy message fullName alias mismatch");
     SystemAssert.assertEquals("Broken", message.problem, "Deploy message problem alias mismatch");
@@ -39,6 +47,15 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertEquals(today.year(), today.Year(), "Date Year alias mismatch");
     SystemAssert.assertEquals(today.month(), today.Month(), "Date Month alias mismatch");
     SystemAssert.assertEquals(today.day(), today.Day(), "Date Day alias mismatch");
+    SystemAssert.assertTrue(today.isSameDay(Date.valueOf(today.toString())), "Date isSameDay alias mismatch");
+    SystemAssert.assertEquals("2024-03-04T05:06:07Z", String.valueOf(parsedDateTime), "DateTime valueOfGMT alias mismatch");
+    SystemAssert.assertEquals("2024", parsedDateTime.formatGmt("yyyy"), "DateTime formatGmt alias mismatch");
+    SystemAssert.assertEquals("2024-03-04T00:00:00Z", String.valueOf(DateTime.valueOf(Date.valueOf("2024-03-04"))), "DateTime valueOf(Date) alias mismatch");
+    SystemAssert.assertTrue(DateTime.Now() != null, "DateTime Now alias mismatch");
+    SystemAssert.assertEquals(java.util.List.of("X-Test"), response.getHeaderKeys(), "HttpResponse header key alias mismatch");
+    SystemAssert.assertEquals("timeout", callout.getMessage(), "CalloutException alias mismatch");
+    SystemAssert.assertEquals(1, customMetadata.values().size(), "Metadata CustomMetadata values() alias mismatch");
+    SystemAssert.assertNotEquals(null, "ok", java.util.Map.of("status", "ok"));
     SystemAssert.assertTrue(ApexPages.hasMessages(ApexPages.Severity.ERROR), "ApexPages addmessage alias should record messages");
     setController.setSelected(java.util.List.of());
     SystemAssert.assertEquals(0, setController.getSelected().size(), "StandardSetController setSelected alias mismatch");

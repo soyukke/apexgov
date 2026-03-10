@@ -91,6 +91,10 @@ public final class Metadata {
     public boolean protected_x;
     public List<CustomMetadataValue> values = new ArrayList<>();
     public Origin origin;
+
+    public List<CustomMetadataValue> values() {
+      return values;
+    }
   }
 
   public static class DeployContainer extends Record {
