@@ -11,6 +11,10 @@ public final class URL {
     return new URL("http://localhost");
   }
 
+  public static URL getSalesforceBaseUrl() {
+    return getOrgDomainUrl();
+  }
+
   public String toExternalForm() {
     return externalForm;
   }

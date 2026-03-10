@@ -12534,6 +12534,8 @@ fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
                 const call_text = text[call.start..call.end];
                 const field_name = extractGetAsCallStringLiteralFieldName(call_text);
                 const field_is_booleanish = if (field_name) |name| fieldNameLooksBoolean(name) else true;
+                const field_allows_boolean_context = if (field_name) |name| !fieldNameLooksNonNumeric(name) else true;
+                const return_context = isReturnKeywordContext(text, prev_idx);
 
                 var replacement: ?[]u8 = null;
                 var replace_start = call.start;
@@ -12567,7 +12569,7 @@ fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
                     }
                 }
 
-                if (replacement == null and field_is_booleanish and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
+                if (replacement == null and field_allows_boolean_context and (!return_context or field_is_booleanish) and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
                     replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
                 }
 
@@ -12631,6 +12633,7 @@ fn rewriteGetAsStringMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8
     };
     const methods = [_]StringMethod{
         .{ .suffix = ".indexOf", .method_name = "indexOf", .kind = .wrap_valueof },
+        .{ .suffix = ".substringAfterLast", .method_name = "substringAfterLast", .kind = .apex_static },
         .{ .suffix = ".substring", .method_name = "substring", .kind = .wrap_valueof },
         .{ .suffix = ".contains", .method_name = "contains", .kind = .wrap_valueof },
         .{ .suffix = ".startsWith", .method_name = "startsWith", .kind = .wrap_valueof },
@@ -13109,7 +13112,13 @@ fn isBooleanOperandContext(text: []const u8, call_start: usize, call_end: usize,
 
     if (prev_idx) |prev| {
         const ch = text[prev];
-        if (ch == '.' or isIdentifierChar(ch) or ch == ')' or ch == ']') return false;
+        if (ch == '.' or ch == ')' or ch == ']') return false;
+        if (isIdentifierChar(ch)) {
+            var start = prev;
+            while (start > 0 and isIdentifierChar(text[start - 1])) : (start -= 1) {}
+            const token = text[start .. prev + 1];
+            return std.ascii.eqlIgnoreCase(token, "return");
+        }
         if (ch == '(') return isBooleanIntroducerBeforeParen(text, prev);
         if (ch == '=') {
             return assignmentContextExpectsBoolean(text, prev);
@@ -13118,6 +13127,15 @@ fn isBooleanOperandContext(text: []const u8, call_start: usize, call_end: usize,
     }
 
     return true;
+}
+
+fn isReturnKeywordContext(text: []const u8, prev_idx: ?usize) bool {
+    const prev = prev_idx orelse return false;
+    if (!isIdentifierChar(text[prev])) return false;
+
+    var start = prev;
+    while (start > 0 and isIdentifierChar(text[start - 1])) : (start -= 1) {}
+    return std.ascii.eqlIgnoreCase(text[start .. prev + 1], "return");
 }
 
 fn isBooleanIntroducerBeforeParen(text: []const u8, paren_idx: usize) bool {
@@ -13131,6 +13149,7 @@ fn isBooleanIntroducerBeforeParen(text: []const u8, paren_idx: usize) bool {
     const token = text[start .. prev + 1];
     return std.ascii.eqlIgnoreCase(token, "if") or
         std.ascii.eqlIgnoreCase(token, "while") or
+        std.ascii.eqlIgnoreCase(token, "return") or
         std.ascii.eqlIgnoreCase(token, "assertTrue") or
         std.ascii.eqlIgnoreCase(token, "assertFalse");
 }
@@ -23061,6 +23080,39 @@ test "rewriteKnownCompatibilityFixups rewrites getAs boolean inequality and reco
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(contactRecord.getAs(\"npe01__Private__c\"))") != null);
 }
 
+test "rewriteKnownCompatibilityFixups rewrites boolean getAs in return and logical contexts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public Boolean isDefault() {
+        \\  return address.getAs("Default_Address__c");
+        \\}
+        \\public Boolean shouldProcess(List<ApexSObject> listBatch) {
+        \\  return listBatch.size() > 0 && listBatch.get(0).getAs("GiftBatch__c");
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return Boolean.TRUE.equals(address.getAs(\"Default_Address__c\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "listBatch.size() > 0 && Boolean.TRUE.equals(listBatch.get(0).getAs(\"GiftBatch__c\"))") != null);
+}
+
+test "rewriteKnownCompatibilityFixups does not rewrite string getAs return values as booleans" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public String householdAccountId() {
+        \\  return address.getAs("Household_Account__c");
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return address.getAs(\"Household_Account__c\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean.TRUE.equals(address.getAs(\"Household_Account__c\"))") == null);
+}
+
 test "rewriteKnownCompatibilityFixups rewrites type path getAs and keySet property access" {
     const gpa = std.testing.allocator;
     const input =
@@ -23194,6 +23246,7 @@ test "rewriteGetAsStringMethodCalls wraps string-like methods on getAs calls" {
         \\ApexSwitch.set(addr, "MailingStreet2__c", addr.getAs("MailingStreet__c").substring(ich+1));
         \\if (recurringDonation.getAs("npe03__Installment_Period__c").isAlpha()) {}
         \\item.operation = rlp.getAs("Operation__c").replace("_", " ");
+        \\String recordId = error.getAs("Record_URL__c").substringAfterLast("/");
     ;
 
     const rewritten = try rewriteGetAsStringMethodCalls(gpa, input);
@@ -23203,6 +23256,7 @@ test "rewriteGetAsStringMethodCalls wraps string-like methods on getAs calls" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(addr.getAs(\"MailingStreet__c\")).substring(ich+1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.isAlpha(recurringDonation.getAs(\"npe03__Installment_Period__c\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(rlp.getAs(\"Operation__c\")).replace(\"_\", \" \")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.substringAfterLast(error.getAs(\"Record_URL__c\"), \"/\")") != null);
 }
 
 test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs receivers" {

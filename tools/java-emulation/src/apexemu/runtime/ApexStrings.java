@@ -340,6 +340,21 @@ public final class ApexStrings {
     return String.valueOf(value).replaceFirst(regex, replacement);
   }
 
+  public static String substringAfterLast(Object value, String separator) {
+    if (value == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    if (separator == null || separator.isEmpty()) {
+      return text;
+    }
+    int index = text.lastIndexOf(separator);
+    if (index < 0) {
+      return "";
+    }
+    return text.substring(index + separator.length());
+  }
+
   public static String abbreviate(Object value, Integer maxWidth) {
     if (value == null) {
       return null;
