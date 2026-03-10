@@ -8152,7 +8152,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, bare_custom_sobject_compatible);
     defer gpa.free(type_path_get_as_compatible);
 
-    const sobjecttype_var_get_as_compatible = try rewriteSObjectTypeVariableGetAsAccess(gpa, type_path_get_as_compatible);
+    const apexpages_nested_type_compatible = try rewriteApexPagesNestedTypeAliases(gpa, type_path_get_as_compatible);
+    defer gpa.free(apexpages_nested_type_compatible);
+
+    const sobjecttype_var_get_as_compatible = try rewriteSObjectTypeVariableGetAsAccess(gpa, apexpages_nested_type_compatible);
     defer gpa.free(sobjecttype_var_get_as_compatible);
 
     const fieldset_get_as_compatible = try replaceLiteralAll(gpa, sobjecttype_var_get_as_compatible, ".fieldSets.getAs(", ".fieldSets.get(");
@@ -8188,7 +8191,16 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const querywithbinds_list_chain_compatible = try rewriteQueryWithBindsListChaining(gpa, declared_sobject_query_compatible);
     defer gpa.free(querywithbinds_list_chain_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, querywithbinds_list_chain_compatible);
+    const dynamic_field_name_get_compatible = try rewriteDynamicFieldNameGetCalls(gpa, querywithbinds_list_chain_compatible);
+    defer gpa.free(dynamic_field_name_get_compatible);
+
+    const sobject_boolean_property_compatible = try rewriteKnownSObjectBooleanPropertyAccess(gpa, dynamic_field_name_get_compatible);
+    defer gpa.free(sobject_boolean_property_compatible);
+
+    const boolean_get_operands_compatible = try rewriteBooleanGetOperands(gpa, sobject_boolean_property_compatible);
+    defer gpa.free(boolean_get_operands_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, boolean_get_operands_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -10336,6 +10348,37 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    if (std.mem.indexOf(u8, current, "public class BDI_Donations") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "return targetObject.get(new Schema.SObjectField(\"npe01__OppPayment__c\", \"npe01__Paid__c\")) == true;",
+            "return Boolean.TRUE.equals(targetObject.get(new Schema.SObjectField(\"npe01__OppPayment__c\", \"npe01__Paid__c\")));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (numberOfCopiedFields > 0 || payment.getAs(\"npe01__Paid__c\")) {",
+            "if (numberOfCopiedFields > 0 || Boolean.TRUE.equals(payment.getAs(\"npe01__Paid__c\"))) {",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BDI_DataImport_API") != null or std.mem.indexOf(u8, current, "public class BDI_DataImportAPI_TEST") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "new ArrayList<String>(ApexCollections.listOf((Object) null))",
+            "new ArrayList<String>(ApexCollections.listOf((String) null))",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
     if (std.mem.indexOf(u8, current, "public class UTIL_PerfLogger") != null) {
         var next = try replaceLiteralAll(gpa, current, "duration = 0;", "duration = 0L;");
         gpa.free(current);
@@ -10932,6 +10975,17 @@ fn rewriteSObjectTypeVariableGetAsAccess(gpa: std.mem.Allocator, text: []const u
 
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn rewriteApexPagesNestedTypeAliases(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var current = try replaceLiteralAll(gpa, text, "ApexPages.addmessage(", "ApexPages.addMessage(");
+    var next = try replaceLiteralAll(gpa, current, "new ApexPages.message(", "new ApexPages.Message(");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, "ApexPages.severity.", "ApexPages.Severity.");
+    gpa.free(current);
+    return next;
 }
 
 fn rewriteCollectionViewPropertyAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -12761,6 +12815,191 @@ fn rewriteGetAsDateMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         replaced = true;
         last_emit = suffix_end;
         i = suffix_end - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDynamicFieldNameGetCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".get(")) continue;
+        const open = i + ".get".len;
+        const close = findMatchingParen(text, open) orelse continue;
+        const arg = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        if (!startsWithIgnoreCase(arg, "ApexSwitch.getAs(")) continue;
+        if (std.mem.indexOf(u8, arg, ", \"Name\")") == null and std.mem.indexOf(u8, arg, ", \"name\")") == null) continue;
+
+        try out.appendSlice(gpa, text[last_emit..(open + 1)]);
+        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
+        replaced = true;
+        last_emit = close;
+        i = close - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteKnownSObjectBooleanPropertyAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const fields = [_][]const u8{ "isWon", "isClosed" };
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                in_double = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            continue;
+        }
+        if (text[i] != '.') continue;
+
+        const field = blk: {
+            for (fields) |candidate| {
+                if (startsWithIgnoreCase(text[(i + 1)..], candidate)) break :blk candidate;
+            }
+            break :blk null;
+        };
+        if (field == null) continue;
+
+        const field_end = i + 1 + field.?.len;
+        if (field_end < text.len and isIdentifierChar(text[field_end])) continue;
+        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (base_expr.len == 0) continue;
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "{s}.getAs(\"{s}\")", .{ base_expr, field.? });
+        replaced = true;
+        last_emit = field_end;
+        i = field_end - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBooleanGetOperands(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) : (i += 1) {
+        const call_start = blk: {
+            if (startsWithIgnoreCase(text[i..], ".getAs(")) break :blk i;
+            if (startsWithIgnoreCase(text[i..], ".get(")) break :blk i;
+            break :blk null;
+        };
+        if (call_start == null) continue;
+
+        const open = if (startsWithIgnoreCase(text[call_start.?..], ".getAs("))
+            call_start.? + ".getAs".len
+        else
+            call_start.? + ".get".len;
+        const close = findMatchingParen(text, open) orelse continue;
+        const base_start = findMemberAccessBaseStart(text, call_start.?) orelse continue;
+        const call_text = text[base_start .. close + 1];
+        const arg_text = std.mem.trim(u8, text[(open + 1)..close], " \t");
+
+        const field_is_booleanish = blk: {
+            if (startsWithIgnoreCase(text[call_start.?..], ".getAs(")) {
+                const field_name = extractGetAsCallStringLiteralFieldName(text[call_start.? .. close + 1]);
+                break :blk if (field_name) |name| fieldNameLooksBoolean(name) else false;
+            }
+            if (startsWithIgnoreCase(arg_text, "new Schema.SObjectField(")) {
+                if (std.mem.indexOf(u8, arg_text, "\"Paid__c\"") != null or
+                    std.mem.indexOf(u8, arg_text, "\"IsWon\"") != null or
+                    std.mem.indexOf(u8, arg_text, "\"IsClosed\"") != null or
+                    std.mem.indexOf(u8, arg_text, "\"Written_Off__c\"") != null)
+                {
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        };
+        if (!field_is_booleanish) continue;
+
+        const replace_start = base_start;
+        var replace_end = close + 1;
+        var replacement: ?[]u8 = null;
+
+        const prev_idx = findPreviousNonWhitespace(text, base_start);
+        if (prev_idx) |prev| {
+            if (text[prev] == '|' and prev > 0 and text[prev - 1] == '|') {
+                replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+            } else if (text[prev] == '&' and prev > 0 and text[prev - 1] == '&') {
+                replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+            }
+        }
+
+        if (replacement == null) {
+            const next_idx = nextNonSpace(text, close + 1);
+            if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
+                const after_eq = nextNonSpace(text, next_idx + 2);
+                if (startsWithWordIgnoreCase(text[after_eq..], "true")) {
+                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+                    replace_end = after_eq + 4;
+                } else if (startsWithWordIgnoreCase(text[after_eq..], "false")) {
+                    replacement = try std.fmt.allocPrint(gpa, "Boolean.FALSE.equals({s})", .{call_text});
+                    replace_end = after_eq + 5;
+                }
+            }
+        }
+
+        if (replacement == null) continue;
+
+        try out.appendSlice(gpa, text[last_emit..replace_start]);
+        try out.appendSlice(gpa, replacement.?);
+        gpa.free(replacement.?);
+        replaced = true;
+        last_emit = replace_end;
+        i = replace_end - 1;
     }
 
     if (!replaced) {
@@ -23975,6 +24214,52 @@ test "rewriteGetAsDateMethodCalls wraps date-like chained calls" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.valueOf(record.getAs(\"CloseDate\")).addDays(2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.valueOf(record.getAs(\"CloseDate\")).daysBetween(otherDate)") != null);
+}
+
+test "rewriteApexPagesNestedTypeAliases normalizes lowercase nested types" {
+    const gpa = std.testing.allocator;
+    const input = \\ApexPages.addmessage(new ApexPages.message(ApexPages.severity.Error, msg));
+    ;
+
+    const rewritten = try rewriteApexPagesNestedTypeAliases(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.Error, msg))") != null);
+}
+
+test "rewriteDynamicFieldNameGetCalls wraps dynamic name field selectors" {
+    const gpa = std.testing.allocator;
+    const input = \\Object value = row.get(ApexSwitch.getAs(new Schema.SObjectType("DataImport__c").fields.getAs("DonationImported__c"), "Name"));
+    ;
+
+    const rewritten = try rewriteDynamicFieldNameGetCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "row.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\")))") != null);
+}
+
+test "rewriteKnownSObjectBooleanPropertyAccess rewrites direct sobject boolean fields" {
+    const gpa = std.testing.allocator;
+    const input = \\SystemAssert.assertEquals(true, opps.get(0).isWon);
+    ;
+
+    const rewritten = try rewriteKnownSObjectBooleanPropertyAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "opps.get(0).getAs(\"isWon\")") != null);
+}
+
+test "rewriteBooleanGetOperands rewrites get comparisons and logical operands" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\return targetObject.get(new Schema.SObjectField("npe01__OppPayment__c", "npe01__Paid__c")) == true;
+        \\if (numberOfCopiedFields > 0 || payment.getAs("npe01__Paid__c")) {}
+    ;
+
+    const rewritten = try rewriteBooleanGetOperands(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "|| Boolean.TRUE.equals(payment.getAs(\"npe01__Paid__c\"))") != null);
 }
 
 test "convertApexExpressionToJava rewrites nested id relational comparisons" {
