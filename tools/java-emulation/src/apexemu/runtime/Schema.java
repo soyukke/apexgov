@@ -429,6 +429,17 @@ public final class Schema {
       return isDeletable();
     }
 
+    public boolean isCustomSetting() {
+      if (typeName == null || typeName.isBlank()) {
+        return false;
+      }
+      String normalized = typeName.toLowerCase();
+      return normalized.endsWith("_settings__c")
+          || normalized.endsWith("_settings__mdt")
+          || normalized.endsWith("settings__c")
+          || normalized.endsWith("settings__mdt");
+    }
+
     private boolean isMinimumAccessProfile() {
       String profileId = CURRENT_PROFILE_ID.get();
       return profileId != null && profileId.equalsIgnoreCase(MINIMUM_ACCESS_PROFILE_ID);

@@ -6554,6 +6554,71 @@ fn hasTopLevelComma(text: []const u8) bool {
     return false;
 }
 
+fn splitTopLevelCommaExpressions(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0) return out;
+
+    var in_single = false;
+    var in_double = false;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var token_start: usize = 0;
+
+    var i: usize = 0;
+    while (i < trimmed.len) : (i += 1) {
+        const ch = trimmed[i];
+        if (ch == '\'' and !in_double) {
+            if (in_single and i + 1 < trimmed.len and trimmed[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            in_single = !in_single;
+            continue;
+        }
+        if (ch == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+
+        switch (ch) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '<' => angle_depth += 1,
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            ',' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+                    const piece = std.mem.trim(u8, trimmed[token_start..i], " \t");
+                    if (piece.len > 0) try out.append(gpa, piece);
+                    token_start = i + 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const tail = std.mem.trim(u8, trimmed[token_start..], " \t");
+    if (tail.len > 0) try out.append(gpa, tail);
+    return out;
+}
+
 fn splitTopLevelWhitespaceExpressions(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(gpa);
@@ -7092,12 +7157,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = " instanceOf ", .to = " instanceof " },
         .{ .from = "Batch_Data_Entry_Settings__c.getInstance(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
+        .{ .from = "Data_Import_Settings__c.getInstance()", .to = "UTIL_CustomSettingsFacade.getDataImportSettings()" },
         .{ .from = ".toLowercase()", .to = ".toLowerCase()" },
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
         .{ .from = "getRecords()ToUpdate", .to = "recordsToUpdate" },
-        .{ .from = "super(getIdList(objects));", .to = "super(new ArrayList<Object>((java.util.Collection<?>) getIdList(objects)));"},
+        .{ .from = "super(getIdList(objects));", .to = "super(new ArrayList<Object>((java.util.Collection<?>) getIdList(objects)));" },
         .{ .from = ".si size", .to = ".size()" },
         .{ .from = ".getsObject(", .to = ".getSObject(" },
         .{ .from = "List<String> names = new String.get(0);", .to = "List<String> names = new ArrayList<>();" },
@@ -8204,7 +8270,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const boolean_get_operands_compatible = try rewriteBooleanGetOperands(gpa, sobject_boolean_property_compatible);
     defer gpa.free(boolean_get_operands_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, boolean_get_operands_compatible);
+    const test_inner_visibility_compatible = try rewritePrivateStaticNestedTestClasses(gpa, boolean_get_operands_compatible);
+    defer gpa.free(test_inner_visibility_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, test_inner_visibility_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -8261,7 +8330,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const describe_get_as_compatible = try rewriteDescribeGetAsAliases(gpa, field_namespace_compatible);
     defer gpa.free(describe_get_as_compatible);
 
-    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, describe_get_as_compatible);
+    const enum_name_compatible = try rewriteGetAsEnumNameCalls(gpa, describe_get_as_compatible);
+    defer gpa.free(enum_name_compatible);
+
+    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, enum_name_compatible);
     defer gpa.free(boolean_isempty_compatible);
 
     const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_isempty_compatible);
@@ -8276,7 +8348,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, map_values_compatible);
     defer gpa.free(get_as_collection_compatible);
 
-    const get_as_string_method_compatible = try rewriteGetAsStringMethodCalls(gpa, get_as_collection_compatible);
+    const negated_size_compatible = try rewriteNegatedSizeEqualityArtifacts(gpa, get_as_collection_compatible);
+    defer gpa.free(negated_size_compatible);
+
+    const get_as_string_method_compatible = try rewriteGetAsStringMethodCalls(gpa, negated_size_compatible);
     defer gpa.free(get_as_string_method_compatible);
 
     const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_string_method_compatible);
@@ -8288,9 +8363,18 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const substring_compatible = try replaceLiteralAll(gpa, get_as_field_add_error_compatible, ".subString(", ".substring(");
     defer gpa.free(substring_compatible);
 
+    const broken_inline_set_compatible = try rewriteBrokenInlineMethodAssignmentsInSObjectSet(gpa, substring_compatible);
+    defer gpa.free(broken_inline_set_compatible);
+
+    const compareto_return_compatible = try rewriteIntegerCompareToDoubleReturns(gpa, broken_inline_set_compatible);
+    defer gpa.free(compareto_return_compatible);
+
+    const local_wait_compatible = try rewriteLocalStaticWaitCalls(gpa, compareto_return_compatible);
+    defer gpa.free(local_wait_compatible);
+
     const final_remove_chain_compatible = try replaceLiteralAll(
         gpa,
-        substring_compatible,
+        local_wait_compatible,
         "ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()).remove(\"\\\"\")",
         "ApexStrings.remove(ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()), \"\\\"\")",
     );
@@ -12138,6 +12222,18 @@ fn rewriteGetAsCollectionAccessors(gpa: std.mem.Allocator, text: []const u8) ![]
             i = accessor_start - 1;
             continue;
         }
+
+        if (startsWithIgnoreCase(text[accessor_start..], ".add(") or
+            startsWithIgnoreCase(text[accessor_start..], ".addAll(") or
+            startsWithIgnoreCase(text[accessor_start..], ".clear()"))
+        {
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "((java.util.List<Object>) {s})", .{get_as_call});
+            replaced = true;
+            last_emit = accessor_start;
+            i = accessor_start - 1;
+            continue;
+        }
     }
 
     if (!replaced) {
@@ -12817,6 +12913,21 @@ fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []c
     return out.toOwnedSlice(gpa);
 }
 
+fn rewriteDescribeFieldNamespaceAliases(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var current = try replaceLiteralAll(gpa, text, ".getDescribe().getAs(\"Fields\")", ".getDescribe().fields");
+    var next = try replaceLiteralAll(gpa, current, ".getDescribe().getAs(\"fields\")", ".getDescribe().fields");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, ".getDescribe().getAs(\"FieldSets\")", ".getDescribe().fieldSets");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, ".getDescribe().getAs(\"fieldsets\")", ".getDescribe().fieldSets");
+    gpa.free(current);
+    return next;
+}
+
 fn rewriteDescribeGetAsAliases(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var current = try replaceLiteralAll(gpa, text, ".getDescribe().getAs(\"name\")", ".getDescribe().getName()");
     var next = try replaceLiteralAll(gpa, current, ".getDescribe().getAs(\"Name\")", ".getDescribe().getName()");
@@ -12829,7 +12940,37 @@ fn rewriteDescribeGetAsAliases(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
 
     next = try replaceLiteralAll(gpa, current, ".getDescribe().getAs(\"Label\")", ".getDescribe().getLabel()");
     gpa.free(current);
+    current = next;
+
+    next = try rewriteDescribeFieldNamespaceAliases(gpa, current);
+    gpa.free(current);
     return next;
+}
+
+fn rewriteGetAsEnumNameCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const call = matchGetAsLikeCall(text, i) orelse continue;
+        if (!startsWithIgnoreCase(text[call.end..], ".name()")) continue;
+
+        try out.appendSlice(gpa, text[last_emit..call.start]);
+        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{text[call.start..call.end]});
+        replaced = true;
+        last_emit = call.end + ".name()".len;
+        i = last_emit - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 fn rewriteQueryWithBindsListChaining(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -13125,6 +13266,327 @@ fn rewriteBooleanGetOperands(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     }
 
     try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn extractGeneratedJavaClassName(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        const prefixes = [_][]const u8{ "public class ", "public interface ", "public enum " };
+        for (prefixes) |prefix| {
+            if (!startsWithIgnoreCase(line, prefix)) continue;
+            return leadingIdentifier(line[prefix.len..]);
+        }
+    }
+    return null;
+}
+
+fn rewritePrivateStaticNestedTestClasses(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const class_name = extractGeneratedJavaClassName(text) orelse return gpa.dupe(u8, text);
+    if (!endsWithIgnoreCase(class_name, "_TEST") and !endsWithIgnoreCase(class_name, "Test") and !endsWithIgnoreCase(class_name, "Tests")) {
+        return gpa.dupe(u8, text);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var changed = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const indent_len = line.len - trimmed.len;
+        const indent = line[0..indent_len];
+
+        if (startsWithIgnoreCase(trimmed, "private static class ")) {
+            try appendFmt(gpa, &out, "{s}public static class {s}", .{ indent, trimmed["private static class ".len..] });
+            changed = true;
+            continue;
+        }
+        if (startsWithIgnoreCase(trimmed, "private static final class ")) {
+            try appendFmt(gpa, &out, "{s}public static final class {s}", .{ indent, trimmed["private static final class ".len..] });
+            changed = true;
+            continue;
+        }
+
+        try out.appendSlice(gpa, line);
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteLocalStaticWaitCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const class_name = extractGeneratedJavaClassName(text) orelse return gpa.dupe(u8, text);
+    if (std.mem.indexOf(u8, text, " static ") == null or std.mem.indexOf(u8, text, " wait(") == null) {
+        return gpa.dupe(u8, text);
+    }
+
+    var declares_wait = false;
+    var decl_lines = std.mem.splitScalar(u8, text, '\n');
+    while (decl_lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        if (std.mem.indexOf(u8, line, " static ") != null and std.mem.indexOf(u8, line, " wait(") != null) {
+            declares_wait = true;
+            break;
+        }
+    }
+    if (!declares_wait) return gpa.dupe(u8, text);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var changed = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.indexOf(u8, trimmed, " static ") != null and std.mem.indexOf(u8, trimmed, " wait(") != null) {
+            const renamed = try replaceLiteralAll(gpa, line, " wait(", " waitForDuration(");
+            defer gpa.free(renamed);
+            try out.appendSlice(gpa, renamed);
+            changed = true;
+            continue;
+        }
+
+        var line_out: std.ArrayList(u8) = .empty;
+        defer line_out.deinit(gpa);
+
+        var replaced_line = false;
+        var last_emit: usize = 0;
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            if (!startsWithIgnoreCase(line[i..], "wait(")) continue;
+            if (i > 0 and (isIdentifierChar(line[i - 1]) or line[i - 1] == '.')) continue;
+            try line_out.appendSlice(gpa, line[last_emit..i]);
+            const arg_open = i + "wait".len;
+            const arg_close = findMatchingParen(line, arg_open) orelse {
+                try line_out.appendSlice(gpa, "wait(");
+                last_emit = arg_open + 1;
+                continue;
+            };
+            const arg_text = std.mem.trim(u8, line[(arg_open + 1)..arg_close], " \t");
+            if (arg_text.len > 0 and std.mem.indexOfAny(u8, arg_text, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_") == null) {
+                try appendFmt(gpa, &line_out, "{s}.waitForDuration(Long.valueOf({s}))", .{ class_name, arg_text });
+                last_emit = arg_close + 1;
+                i = arg_close;
+                replaced_line = true;
+                continue;
+            }
+            try appendFmt(gpa, &line_out, "{s}.waitForDuration(", .{class_name});
+            replaced_line = true;
+            last_emit = i + "wait(".len;
+            i = last_emit - 1;
+        }
+
+        if (!replaced_line) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        try line_out.appendSlice(gpa, line[last_emit..]);
+        try out.appendSlice(gpa, line_out.items);
+        changed = true;
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBrokenInlineMethodAssignmentsInSObjectSet(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const method_suffixes = [_][]const u8{ ".addDays(", ".addMonths(", ".addYears(" };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], ".set(")) continue;
+
+        const open = i + ".set".len;
+        const close = findMatchingParen(text, open) orelse continue;
+        var set_args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+        defer set_args.deinit(gpa);
+        if (set_args.items.len != 2) continue;
+
+        const field_expr = std.mem.trim(u8, set_args.items[0], " \t");
+        const value_expr = std.mem.trim(u8, set_args.items[1], " \t");
+
+        var method_suffix: ?[]const u8 = null;
+        var method_pos: usize = 0;
+        for (method_suffixes) |candidate| {
+            if (std.mem.lastIndexOf(u8, value_expr, candidate)) |idx| {
+                method_suffix = candidate;
+                method_pos = idx;
+                break;
+            }
+        }
+        if (method_suffix == null) continue;
+
+        const method_open = method_pos + method_suffix.?.len - 1;
+        const method_close = findMatchingParen(value_expr, method_open) orelse continue;
+        if (std.mem.trim(u8, value_expr[(method_close + 1)..], " \t").len != 0) continue;
+
+        var method_args = try splitTopLevelCommaExpressions(gpa, value_expr[(method_open + 1)..method_close]);
+        defer method_args.deinit(gpa);
+        if (method_args.items.len <= 1) continue;
+
+        var all_assignments = true;
+        for (method_args.items[1..]) |arg| {
+            const eq = findTopLevelAssignmentOperator(arg) orelse {
+                all_assignments = false;
+                break;
+            };
+            const name = std.mem.trim(u8, arg[0..eq], " \t");
+            const value = std.mem.trim(u8, arg[(eq + 1)..], " \t");
+            var name_is_identifier = name.len > 0;
+            for (name) |ch| {
+                if (!isIdentifierChar(ch)) {
+                    name_is_identifier = false;
+                    break;
+                }
+            }
+            if (!name_is_identifier or value.len == 0) {
+                all_assignments = false;
+                break;
+            }
+        }
+        if (!all_assignments) continue;
+
+        try out.appendSlice(gpa, text[last_emit .. open + 1]);
+        try out.appendSlice(gpa, field_expr);
+        try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, value_expr[0 .. method_open + 1]);
+        try out.appendSlice(gpa, std.mem.trim(u8, method_args.items[0], " \t"));
+        try out.append(gpa, ')');
+        try out.append(gpa, ')');
+        for (method_args.items[1..]) |arg| {
+            const eq = findTopLevelAssignmentOperator(arg).?;
+            const name = std.mem.trim(u8, arg[0..eq], " \t");
+            const value = std.mem.trim(u8, arg[(eq + 1)..], " \t");
+            try appendFmt(gpa, &out, ".set(\"{s}\", {s})", .{ name, value });
+        }
+        replaced = true;
+        last_emit = close + 1;
+        i = close;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteNegatedSizeEqualityArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (!startsWithIgnoreCase(text[i..], "!ApexCollections.size(")) continue;
+        const open = i + "!ApexCollections.size".len;
+        const close = findMatchingParen(text, open) orelse continue;
+
+        var cmp = close + 1;
+        while (cmp < text.len and std.ascii.isWhitespace(text[cmp])) : (cmp += 1) {}
+        if (cmp + 1 >= text.len or text[cmp] != '=' or text[cmp + 1] != '=') continue;
+        cmp += 2;
+        while (cmp < text.len and std.ascii.isWhitespace(text[cmp])) : (cmp += 1) {}
+        if (cmp >= text.len or text[cmp] != '0') continue;
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "{s} != 0", .{text[(i + 1) .. close + 1]});
+        replaced = true;
+        last_emit = cmp + 1;
+        i = cmp;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteIntegerCompareToDoubleReturns(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var in_compare_to = false;
+    var brace_depth: i32 = 0;
+    var changed = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        if (!in_compare_to and std.mem.indexOf(u8, trimmed, "compareTo(") != null and
+            (std.mem.indexOf(u8, trimmed, " Integer ") != null or startsWithIgnoreCase(trimmed, "public Integer ") or startsWithIgnoreCase(trimmed, "public int ")))
+        {
+            in_compare_to = true;
+            brace_depth = 0;
+        }
+
+        if (in_compare_to and (std.mem.indexOf(u8, line, "return 1.0;") != null or
+            std.mem.indexOf(u8, line, "return -1.0;") != null or
+            std.mem.indexOf(u8, line, "return 0.0;") != null))
+        {
+            var rewritten_line = try replaceLiteralAll(gpa, line, "return 1.0;", "return 1;");
+            var next = try replaceLiteralAll(gpa, rewritten_line, "return -1.0;", "return -1;");
+            gpa.free(rewritten_line);
+            rewritten_line = next;
+            next = try replaceLiteralAll(gpa, rewritten_line, "return 0.0;", "return 0;");
+            gpa.free(rewritten_line);
+            rewritten_line = next;
+            defer gpa.free(rewritten_line);
+            try out.appendSlice(gpa, rewritten_line);
+            changed = true;
+        } else {
+            try out.appendSlice(gpa, line);
+        }
+
+        if (in_compare_to) {
+            for (line) |ch| {
+                if (ch == '{') brace_depth += 1;
+                if (ch == '}') brace_depth -= 1;
+            }
+            if (brace_depth <= 0) {
+                in_compare_to = false;
+                brace_depth = 0;
+            }
+        }
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
     return out.toOwnedSlice(gpa);
 }
 
@@ -13838,7 +14300,8 @@ fn rewriteEnhancedForGetAsIterables(gpa: std.mem.Allocator, text: []const u8) ![
                 };
                 const left = std.mem.trim(u8, header[0..colon], " \t");
                 const right = std.mem.trim(u8, header[(colon + 1)..], " \t");
-                if (right.len == 0 or !containsGetAsLikeCall(right)) {
+                const right_is_query = startsWithIgnoreCase(right, "Database.query(") or startsWithIgnoreCase(right, "Database.queryWithBinds(");
+                if (right.len == 0 or (!containsGetAsLikeCall(right) and !right_is_query)) {
                     i = close + 1;
                     continue;
                 }
@@ -17094,6 +17557,9 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationservice")) return "SfdoInstrumentationService";
     if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationenum")) return "SfdoInstrumentationEnum";
     if (std.ascii.eqlIgnoreCase(token, "perflog")) return "PerfLog";
+    if (std.ascii.eqlIgnoreCase(token, "matchtype")) return "matchType";
+    if (std.ascii.eqlIgnoreCase(token, "numofdis")) return "numOfDis";
+    if (std.ascii.eqlIgnoreCase(token, "defaultdonationrecordtypemapping")) return "defaultDonationRecordTypeMapping";
     if (std.ascii.eqlIgnoreCase(token, "addyears")) return "addYears";
     if (std.ascii.eqlIgnoreCase(token, "test_sobjectgateway")) return "TEST_SObjectGateway";
     if (std.ascii.eqlIgnoreCase(token, "fflib_isobjectunitofwork")) return "fflib_ISObjectUnitOfWork";
@@ -24413,7 +24879,8 @@ test "rewriteQueryWithBindsListChaining casts chained list accessors" {
 
 test "rewriteEnhancedForCompareArtifacts restores generic enhanced for headers" {
     const gpa = std.testing.allocator;
-    const input = \\for (ApexStrings.compareTo(List<Id, chunk : dummyGiftBatchForProcessing.chunkedIds) > 0) {
+    const input =
+        \\for (ApexStrings.compareTo(List<Id, chunk : dummyGiftBatchForProcessing.chunkedIds) > 0) {
     ;
 
     const rewritten = try rewriteEnhancedForCompareArtifacts(gpa, input);
@@ -24424,7 +24891,8 @@ test "rewriteEnhancedForCompareArtifacts restores generic enhanced for headers" 
 
 test "rewriteSObjectTypeVariableGetAsAccess rewrites namespace-like variable access" {
     const gpa = std.testing.allocator;
-    const input = \\if (!sObjectType.getAs("Contact").fields.getAs("Name").isEncrypted()) {}
+    const input =
+        \\if (!sObjectType.getAs("Contact").fields.getAs("Name").isEncrypted()) {}
     ;
 
     const rewritten = try rewriteSObjectTypeVariableGetAsAccess(gpa, input);
@@ -24449,7 +24917,8 @@ test "rewriteGetAsDateMethodCalls wraps date-like chained calls" {
 
 test "rewriteApexPagesNestedTypeAliases normalizes lowercase nested types" {
     const gpa = std.testing.allocator;
-    const input = \\ApexPages.addmessage(new ApexPages.message(ApexPages.severity.Error, msg));
+    const input =
+        \\ApexPages.addmessage(new ApexPages.message(ApexPages.severity.Error, msg));
     ;
 
     const rewritten = try rewriteApexPagesNestedTypeAliases(gpa, input);
@@ -24460,7 +24929,8 @@ test "rewriteApexPagesNestedTypeAliases normalizes lowercase nested types" {
 
 test "rewriteBareCustomSObjectTypeArgCalls wraps custom object tokens" {
     const gpa = std.testing.allocator;
-    const input = \\utilPerm.canRead(ApexSwitch.getSObjectType(npe01__OppPayment__c), paymentFields);
+    const input =
+        \\utilPerm.canRead(ApexSwitch.getSObjectType(npe01__OppPayment__c), paymentFields);
     ;
 
     const rewritten = try rewriteBareCustomSObjectTypeArgCalls(gpa, input);
@@ -24471,7 +24941,8 @@ test "rewriteBareCustomSObjectTypeArgCalls wraps custom object tokens" {
 
 test "rewriteFieldDisplayTypeCalls rewrites display type helpers via describe" {
     const gpa = std.testing.allocator;
-    const input = \\Schema.DisplayType dt = UTIL_Describe.getFieldDisplaytype("Opportunity", fieldName);
+    const input =
+        \\Schema.DisplayType dt = UTIL_Describe.getFieldDisplaytype("Opportunity", fieldName);
     ;
 
     const rewritten = try rewriteFieldDisplayTypeCalls(gpa, input);
@@ -24482,7 +24953,8 @@ test "rewriteFieldDisplayTypeCalls rewrites display type helpers via describe" {
 
 test "rewriteDynamicFieldNameGetCalls wraps dynamic name field selectors" {
     const gpa = std.testing.allocator;
-    const input = \\Object value = row.get(ApexSwitch.getAs(new Schema.SObjectType("DataImport__c").fields.getAs("DonationImported__c"), "Name"));
+    const input =
+        \\Object value = row.get(ApexSwitch.getAs(new Schema.SObjectType("DataImport__c").fields.getAs("DonationImported__c"), "Name"));
     ;
 
     const rewritten = try rewriteDynamicFieldNameGetCalls(gpa, input);
@@ -24493,7 +24965,8 @@ test "rewriteDynamicFieldNameGetCalls wraps dynamic name field selectors" {
 
 test "rewriteKnownSObjectBooleanPropertyAccess rewrites direct sobject boolean fields" {
     const gpa = std.testing.allocator;
-    const input = \\SystemAssert.assertEquals(true, opps.get(0).isWon);
+    const input =
+        \\SystemAssert.assertEquals(true, opps.get(0).isWon);
     ;
 
     const rewritten = try rewriteKnownSObjectBooleanPropertyAccess(gpa, input);
@@ -24519,9 +24992,139 @@ test "rewriteBooleanGetOperands rewrites get comparisons and logical operands" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(payment.getAs(\"npe01__Paid__c\"))") != null);
 }
 
+test "rewritePrivateStaticNestedTestClasses promotes nested private static test helpers" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Demo_TEST {
+        \\  private static class MockService implements apexemu.runtime.System.StubProvider {
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewritePrivateStaticNestedTestClasses(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static class MockService") != null);
+}
+
+test "rewriteDescribeGetAsAliases rewrites describe field namespace aliases" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Map<String, Schema.SObjectField> fields = obj.getDescribe().getAs("Fields").getMap();
+        \\Map<String, Schema.FieldSet> fieldSets = obj.getDescribe().getAs("fieldsets").getMap();
+    ;
+
+    const rewritten = try rewriteDescribeGetAsAliases(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "obj.getDescribe().fields.getMap()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "obj.getDescribe().fieldSets.getMap()") != null);
+}
+
+test "rewriteGetAsEnumNameCalls converts enum name access to string value" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\String status = deployResult.getAs("status").name();
+    ;
+
+    const rewritten = try rewriteGetAsEnumNameCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(deployResult.getAs(\"status\"))") != null);
+}
+
+test "rewriteGetAsCollectionAccessors casts collection mutators" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\objectMapping.getAs("Field_Mappings").add(fieldMapping);
+    ;
+
+    const rewritten = try rewriteGetAsCollectionAccessors(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((java.util.List<Object>) objectMapping.getAs(\"Field_Mappings\")).add(fieldMapping)") != null);
+}
+
+test "rewriteBrokenInlineMethodAssignmentsInSObjectSet repairs leaked assignments from date arithmetic" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Database.insert(ApexSObject.of("DataImport__c").set("Donation_Date__c", apexemu.runtime.System.today().addDays(1, Payment_Method__c = "Check", Donation_Donor__c="contact1")));
+    ;
+
+    const rewritten = try rewriteBrokenInlineMethodAssignmentsInSObjectSet(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".set(\"Donation_Date__c\", apexemu.runtime.System.today().addDays(1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".set(\"Payment_Method__c\", \"Check\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".set(\"Donation_Donor__c\", \"contact1\")") != null);
+}
+
+test "rewriteNegatedSizeEqualityArtifacts removes misplaced negation on size comparisons" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (!ApexCollections.size(objectMapping.getAs("Field_Mappings")) == 0) {
+        \\}
+    ;
+
+    const rewritten = try rewriteNegatedSizeEqualityArtifacts(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexCollections.size(objectMapping.getAs(\"Field_Mappings\")) != 0") != null);
+}
+
+test "rewriteIntegerCompareToDoubleReturns normalizes compareTo return literals" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public Integer compareTo(Object other) {
+        \\  if (true) { return 1.0; }
+        \\  return -1.0;
+        \\}
+    ;
+
+    const rewritten = try rewriteIntegerCompareToDoubleReturns(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return 1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return -1;") != null);
+}
+
+test "rewriteLocalStaticWaitCalls qualifies bare wait helper invocations" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Demo_TEST {
+        \\  public static Long wait(Long duration) {
+        \\    return duration;
+        \\  }
+        \\  public static void run() {
+        \\    Long delta = wait(1000);
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteLocalStaticWaitCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static Long waitForDuration(Long duration)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Long delta = Demo_TEST.waitForDuration(Long.valueOf(1000));") != null);
+}
+
+test "rewriteEnhancedForGetAsIterables casts query with binds for aggregate results" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\for (AggregateResult result : Database.queryWithBinds("SELECT COUNT(Id) cnt FROM Account GROUP BY Name", ApexCollections.bindMap())) {
+        \\}
+    ;
+
+    const rewritten = try rewriteEnhancedForGetAsIterables(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "(java.util.List<AggregateResult>) Database.queryWithBinds(") != null);
+}
+
 test "rewriteNumericValueOfObjectIdentifiers rewrites object accessors" {
     const gpa = std.testing.allocator;
-    const input = \\Double duration = Double.valueOf(logs.get(0).get("Parent_Duration__c"));
+    const input =
+        \\Double duration = Double.valueOf(logs.get(0).get("Parent_Duration__c"));
     ;
 
     const rewritten = try rewriteNumericValueOfObjectIdentifiers(gpa, input);
