@@ -7784,6 +7784,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "clone.put(an.sObjField, an.getFormattedNumber(nextAutoNumberInSequence));", .to = "clone.put(an.getSObjField(), an.getFormattedNumber(nextAutoNumberInSequence));" },
         .{ .from = ".get(fieldMapping.getAs(\"Target_Field_API_Name\"))", .to = ".get((String) fieldMapping.getAs(\"Target_Field_API_Name\"))" },
         .{ .from = ".put(fieldMapping.getAs(\"Source_Field_API_Name\"),", .to = ".put((String) fieldMapping.getAs(\"Source_Field_API_Name\")," },
+        .{ .from = "Schema.Displaytype", .to = "Schema.DisplayType" },
         .{ .from = "WHERE Object_API_Name__c = :ApexStrings.valueOf(sObjType)", .to = "WHERE Object_API_Name__c = :sObjTypeValue" },
         .{ .from = "ApexCollections.bindMap(\"String.valueOf\", String.valueOf)", .to = "ApexCollections.bindMap(\"sObjTypeValue\", ApexStrings.valueOf(sObjType))" },
         .{ .from = "Schema.SObjectType.DataImportBatch__c", .to = "new Schema.SObjectType(\"DataImportBatch__c\")" },
@@ -8159,7 +8160,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const string_instance_compatible = try rewriteApexStringInstanceMethods(gpa, valueof_remove_compatible);
     defer gpa.free(string_instance_compatible);
 
-    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, string_instance_compatible);
+    const legacy_tokens_compatible = try rewriteLegacyLiteralTokens(gpa, string_instance_compatible);
+    defer gpa.free(legacy_tokens_compatible);
+
+    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, legacy_tokens_compatible);
     defer gpa.free(broken_zero_length_list_compatible);
 
     const first_or_null_list_compatible = try rewriteQuerySingletonCallsAssignedToLists(gpa, broken_zero_length_list_compatible);
@@ -8189,7 +8193,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const page_compatible = try rewritePageNamespaceAccess(gpa, double_datetime_delta_compatible);
     defer gpa.free(page_compatible);
 
-    const record_type_info_compatible = try rewriteRecordTypeInfoMapDeclarations(gpa, page_compatible);
+    const bare_sobjecttype_compatible = try rewriteBareSObjectTypeAccess(gpa, page_compatible);
+    defer gpa.free(bare_sobjecttype_compatible);
+
+    const sobject_name_token_compatible = try rewriteSObjectFieldNameObjectNameUses(gpa, bare_sobjecttype_compatible);
+    defer gpa.free(sobject_name_token_compatible);
+
+    const record_type_info_compatible = try rewriteRecordTypeInfoMapDeclarations(gpa, sobject_name_token_compatible);
     defer gpa.free(record_type_info_compatible);
 
     const record_type_info_usage_compatible = try rewriteRecordTypeInfoUsages(gpa, record_type_info_compatible);
@@ -8219,7 +8229,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, map_values_compatible);
     defer gpa.free(get_as_collection_compatible);
 
-    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_collection_compatible);
+    const get_as_string_method_compatible = try rewriteGetAsStringMethodCalls(gpa, get_as_collection_compatible);
+    defer gpa.free(get_as_string_method_compatible);
+
+    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_string_method_compatible);
     defer gpa.free(get_errors_array_compatible);
 
     const get_as_field_add_error_compatible = try rewriteGetAsFieldAddErrorCalls(gpa, get_errors_array_compatible);
@@ -10902,6 +10915,99 @@ fn rewriteDeclaredSObjectQueryAssignmentLine(gpa: std.mem.Allocator, line: []con
     return try std.fmt.allocPrint(gpa, "{s}ApexCollections.firstOrNull({s}){s}", .{ prefix_text, expr, suffix });
 }
 
+fn rewriteLegacyLiteralTokens(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!isIdentifierChar(text[i])) {
+                    i += 1;
+                    continue;
+                }
+
+                const start = i;
+                while (i < text.len and isIdentifierChar(text[i])) : (i += 1) {}
+                const token = text[start..i];
+                const replacement: ?[]const u8 = if (std.ascii.eqlIgnoreCase(token, "NULL") or std.ascii.eqlIgnoreCase(token, "Null"))
+                    "null"
+                else if (std.ascii.eqlIgnoreCase(token, "TRUE"))
+                    "true"
+                else if (std.ascii.eqlIgnoreCase(token, "FALSE"))
+                    "false"
+                else
+                    null;
+                if (replacement) |next| {
+                    try out.appendSlice(gpa, text[last_emit..start]);
+                    try out.appendSlice(gpa, next);
+                    replaced = true;
+                    last_emit = i;
+                }
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn isMethodLikeSignatureLine(line: []const u8) bool {
     if (line.len == 0 or line[line.len - 1] != '{') return false;
     if (startsWithWordIgnoreCase(line, "if") or
@@ -10922,6 +11028,238 @@ fn isMethodLikeSignatureLine(line: []const u8) bool {
     const open = std.mem.indexOfScalar(u8, line, '(') orelse return false;
     const close = findMatchingParen(line, open) orelse return false;
     return close + 1 < line.len;
+}
+
+fn rewriteBareSObjectTypeAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    const prefix = "SObjectType.";
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], prefix)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+                    i += 1;
+                    continue;
+                }
+
+                const name_start = i + prefix.len;
+                var cursor = name_start;
+                while (cursor < text.len and isIdentifierChar(text[cursor])) : (cursor += 1) {}
+                if (cursor == name_start) {
+                    i += 1;
+                    continue;
+                }
+                const after_type = nextNonSpace(text, cursor);
+                if (after_type < text.len and text[after_type] == '(') {
+                    i += 1;
+                    continue;
+                }
+                const type_name = text[name_start..cursor];
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{type_name});
+                replaced = true;
+                last_emit = cursor;
+                i = cursor;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteSObjectFieldNameObjectNameUses(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const prefix = "new Schema.SObjectField";
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], prefix)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + prefix.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var args = try splitCallArguments(gpa, text[(open + 1)..close]);
+                defer args.deinit(gpa);
+                if (args.items.len != 2) {
+                    i = close + 1;
+                    continue;
+                }
+                const owner_arg = std.mem.trim(u8, args.items[0], " \t");
+                const field_arg = std.mem.trim(u8, args.items[1], " \t");
+                if (field_arg.len < 2 or field_arg[0] != '"' or field_arg[field_arg.len - 1] != '"') {
+                    i = close + 1;
+                    continue;
+                }
+                const field_name = field_arg[1 .. field_arg.len - 1];
+                if (!std.ascii.eqlIgnoreCase(field_name, "name")) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const line_start = if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| pos + 1 else 0;
+                const prefix_line = std.mem.trim(u8, text[line_start..i], " \t");
+                const expects_object_name =
+                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldName(") != null or
+                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldDescribe(") != null or
+                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getAllFieldsDescribe(") != null or
+                    std.mem.indexOf(u8, prefix_line, "constructSimulatedObjectMapping(") != null or
+                    blk: {
+                        const eq_pos = std.mem.lastIndexOfScalar(u8, prefix_line, '=') orelse break :blk false;
+                        const lhs = std.mem.trim(u8, prefix_line[0..eq_pos], " \t");
+                        break :blk extractTypedVariableName(lhs, "String") != null;
+                    };
+                if (!expects_object_name) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try appendFmt(gpa, &out, "new Schema.SObjectType({s}).getName()", .{owner_arg});
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 fn rewriteInstanceListDeepCloneCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -11327,6 +11665,11 @@ fn fieldNameLooksBoolean(field_name: []const u8) bool {
     return containsIgnoreCaseSubstring(field_name, "enabled") or
         containsIgnoreCaseSubstring(field_name, "active") or
         containsIgnoreCaseSubstring(field_name, "paid") or
+        containsIgnoreCaseSubstring(field_name, "primary") or
+        containsIgnoreCaseSubstring(field_name, "default") or
+        containsIgnoreCaseSubstring(field_name, "individual") or
+        containsIgnoreCaseSubstring(field_name, "viewed") or
+        containsIgnoreCaseSubstring(field_name, "_on") or
         containsIgnoreCaseSubstring(field_name, "private") or
         containsIgnoreCaseSubstring(field_name, "written_off") or
         containsIgnoreCaseSubstring(field_name, "deleted") or
@@ -12239,6 +12582,178 @@ fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
                 }
 
                 i = call.end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetAsStringMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const RewriteKind = enum {
+        wrap_valueof,
+        apex_static,
+    };
+    const StringMethod = struct {
+        suffix: []const u8,
+        method_name: []const u8,
+        kind: RewriteKind,
+    };
+    const methods = [_]StringMethod{
+        .{ .suffix = ".indexOf", .method_name = "indexOf", .kind = .wrap_valueof },
+        .{ .suffix = ".substring", .method_name = "substring", .kind = .wrap_valueof },
+        .{ .suffix = ".contains", .method_name = "contains", .kind = .wrap_valueof },
+        .{ .suffix = ".startsWith", .method_name = "startsWith", .kind = .wrap_valueof },
+        .{ .suffix = ".endsWith", .method_name = "endsWith", .kind = .wrap_valueof },
+        .{ .suffix = ".trim", .method_name = "trim", .kind = .wrap_valueof },
+        .{ .suffix = ".toLowerCase", .method_name = "toLowerCase", .kind = .wrap_valueof },
+        .{ .suffix = ".toUpperCase", .method_name = "toUpperCase", .kind = .wrap_valueof },
+        .{ .suffix = ".replaceFirst", .method_name = "replaceFirst", .kind = .wrap_valueof },
+        .{ .suffix = ".replace", .method_name = "replace", .kind = .wrap_valueof },
+        .{ .suffix = ".charAt", .method_name = "charAt", .kind = .wrap_valueof },
+        .{ .suffix = ".length", .method_name = "length", .kind = .wrap_valueof },
+        .{ .suffix = ".isAlpha", .method_name = "isAlpha", .kind = .apex_static },
+        .{ .suffix = ".abbreviate", .method_name = "abbreviate", .kind = .apex_static },
+        .{ .suffix = ".endsWithIgnoreCase", .method_name = "endsWithIgnoreCase", .kind = .apex_static },
+        .{ .suffix = ".leftPad", .method_name = "leftPad", .kind = .apex_static },
+        .{ .suffix = ".rightPad", .method_name = "rightPad", .kind = .apex_static },
+        .{ .suffix = ".removeEndIgnoreCase", .method_name = "removeEndIgnoreCase", .kind = .apex_static },
+        .{ .suffix = ".removeEnd", .method_name = "removeEnd", .kind = .apex_static },
+        .{ .suffix = ".removeStartIgnoreCase", .method_name = "removeStartIgnoreCase", .kind = .apex_static },
+        .{ .suffix = ".removeStart", .method_name = "removeStart", .kind = .apex_static },
+        .{ .suffix = ".remove", .method_name = "remove", .kind = .apex_static },
+        .{ .suffix = ".deleteWhiteSpace", .method_name = "deleteWhiteSpace", .kind = .apex_static },
+        .{ .suffix = ".capitalize", .method_name = "capitalize", .kind = .apex_static },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const call = matchGetAsLikeCall(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                if (call.start < last_emit) {
+                    i = @max(i + 1, call.end);
+                    continue;
+                }
+
+                const method_dot = findNextNonWhitespace(text, call.end) orelse {
+                    i = call.end;
+                    continue;
+                };
+                if (method_dot >= text.len or text[method_dot] != '.') {
+                    i = call.end;
+                    continue;
+                }
+
+                var matched: ?StringMethod = null;
+                for (methods) |method| {
+                    if (startsWithIgnoreCase(text[method_dot..], method.suffix)) {
+                        matched = method;
+                        break;
+                    }
+                }
+                if (matched == null) {
+                    i = call.end;
+                    continue;
+                }
+
+                const method = matched.?;
+                const method_end = method_dot + method.suffix.len;
+                if (method_end < text.len and isIdentifierChar(text[method_end])) {
+                    i = call.end;
+                    continue;
+                }
+
+                var open = method_end;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i = call.end;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i = call.end;
+                    continue;
+                };
+
+                const call_text = text[call.start..call.end];
+                const args = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                const replacement = switch (method.kind) {
+                    .wrap_valueof => if (args.len == 0)
+                        try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}()", .{ call_text, method.method_name })
+                    else
+                        try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}({s})", .{ call_text, method.method_name, args }),
+                    .apex_static => if (args.len == 0)
+                        try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s})", .{ method.method_name, call_text })
+                    else
+                        try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s}, {s})", .{ method.method_name, call_text, args }),
+                };
+                defer gpa.free(replacement);
+
+                try out.appendSlice(gpa, text[last_emit..call.start]);
+                try out.appendSlice(gpa, replacement);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
             },
             .line_comment => {
                 if (text[i] == '\n') state = .normal;
@@ -17963,6 +18478,7 @@ fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8, objec
 
         // Skip if either side is null
         if (std.mem.eql(u8, left_raw, "null") or std.mem.eql(u8, right_raw, "null")) continue;
+        if (startsWithWordIgnoreCase(right_raw, "null")) continue;
 
         const left_has_object = containsKnownObjectIdentifier(object_names, left_raw);
         const right_has_object = containsKnownObjectIdentifier(object_names, right_raw);
@@ -18014,11 +18530,13 @@ fn rewriteSimpleObjectEqualityExpression(
     expr: []const u8,
     object_names: []const []u8,
 ) !?[]u8 {
+    if (std.mem.indexOf(u8, expr, "&&") != null or std.mem.indexOf(u8, expr, "||") != null) return null;
     const op = findSimpleEqualityOperator(expr) orelse return null;
     const lhs = std.mem.trim(u8, expr[0..op.start], " \t");
     const rhs = std.mem.trim(u8, expr[(op.start + 2)..], " \t");
     if (lhs.len == 0 or rhs.len == 0) return null;
     if (std.mem.eql(u8, lhs, "null") or std.mem.eql(u8, rhs, "null")) return null;
+    if (startsWithWordIgnoreCase(rhs, "null")) return null;
     if (!containsKnownObjectIdentifier(object_names, lhs) and
         !containsKnownObjectIdentifier(object_names, rhs) and
         !containsGetAsLikeCall(lhs) and
@@ -22669,6 +23187,24 @@ test "rewriteValuesMethodCollectionViews wraps values calls in array list views"
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return new ArrayList<>(mappingService.objectMappingByDevName.values());") != null);
 }
 
+test "rewriteGetAsStringMethodCalls wraps string-like methods on getAs calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Integer ich = addr.getAs("MailingStreet__c").indexOf("\\n");
+        \\ApexSwitch.set(addr, "MailingStreet2__c", addr.getAs("MailingStreet__c").substring(ich+1));
+        \\if (recurringDonation.getAs("npe03__Installment_Period__c").isAlpha()) {}
+        \\item.operation = rlp.getAs("Operation__c").replace("_", " ");
+    ;
+
+    const rewritten = try rewriteGetAsStringMethodCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(addr.getAs(\"MailingStreet__c\")).indexOf(\"\\\\n\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(addr.getAs(\"MailingStreet__c\")).substring(ich+1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.isAlpha(recurringDonation.getAs(\"npe03__Installment_Period__c\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(rlp.getAs(\"Operation__c\")).replace(\"_\", \" \")") != null);
+}
+
 test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs receivers" {
     const gpa = std.testing.allocator;
     const input =
@@ -22733,6 +23269,66 @@ test "rewriteObjectEqualityWithDeclaredObjects rewrites object numeric equality"
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.ne(currentValue, 0)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexEquals.ne(currentValue, members.size());") != null);
+}
+
+test "rewriteObjectEqualityWithDeclaredObjects skips null guard comparisons" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public void run() {
+        \\  if (diom.getAs("Data_Import_Field_Mappings__r") != null && ApexCollections.size(diom.getAs("Data_Import_Field_Mappings__r")) > 0) {
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteObjectEqualityWithDeclaredObjects(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.ne(diom.getAs(\"Data_Import_Field_Mappings__r\"),") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "diom.getAs(\"Data_Import_Field_Mappings__r\") != null &&") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites bare sobject types and legacy literal tokens" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (record == NULL || enabled == TRUE || disabled == FALSE) {}
+        \\String apiName = SObjectType.Allocation__c.getName();
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "record == null || enabled == true || disabled == false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Allocation__c\").getName()") != null);
+}
+
+test "rewriteBareSObjectTypeAccess skips method calls on SObjectType namespace" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Schema.SObjectType contactType = SObjectType.getAs("Contact");
+        \\Schema.DescribeSObjectResult describe = SObjectType.getDescribe();
+    ;
+
+    const rewritten = try rewriteBareSObjectTypeAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"getAs\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"getDescribe\")") == null);
+}
+
+test "rewriteSObjectFieldNameObjectNameUses rewrites object name contexts only" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\String dataImport = new Schema.SObjectField("DataImport__c", "name");
+        \\Schema.DescribeFieldResult dfr = UTIL_Describe.getFieldDescribe(new Schema.SObjectField("DataImport__c", "Name"), fieldName);
+        \\List<Schema.SObjectField> fields = new ArrayList<Schema.SObjectField>(ApexCollections.listOf(new Schema.SObjectField("Account", "Name")));
+    ;
+
+    const rewritten = try rewriteSObjectFieldNameObjectNameUses(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "String dataImport = new Schema.SObjectType(\"DataImport__c\").getName();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "UTIL_Describe.getFieldDescribe(new Schema.SObjectType(\"DataImport__c\").getName(), fieldName)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new ArrayList<Schema.SObjectField>(ApexCollections.listOf(new Schema.SObjectField(\"Account\", \"Name\")))") != null);
 }
 
 test "renderJavaClass preserves abstract inner class modifier" {

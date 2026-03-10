@@ -774,6 +774,7 @@ public final class Schema {
     public final String name;
     public final String label;
     public final boolean permissionable;
+    public final DisplayType type;
 
     DescribeFieldResult(String ownerType, String fieldName) {
       this.ownerType = ownerType == null ? "" : ownerType.trim();
@@ -781,6 +782,7 @@ public final class Schema {
       this.name = canonicalFieldName();
       this.label = this.name == null ? this.fieldName : this.name;
       this.permissionable = true;
+      this.type = getType();
     }
 
     public String getName() {
