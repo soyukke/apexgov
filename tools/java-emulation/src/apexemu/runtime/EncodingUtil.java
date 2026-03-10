@@ -58,6 +58,14 @@ public final class EncodingUtil {
     return out.toString();
   }
 
+  public static String ConvertToHex(byte[] value) {
+    return convertToHex(value);
+  }
+
+  public static String ConvertTohex(byte[] value) {
+    return convertToHex(value);
+  }
+
   public static byte[] convertFromHex(String value) {
     if (value == null || value.isBlank()) {
       return new byte[0];

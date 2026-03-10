@@ -24,6 +24,10 @@ public final class Crypto {
     return out;
   }
 
+  public static byte[] GenerateAESKey(int bits) {
+    return generateAESKey(bits);
+  }
+
   public static byte[] generateAesKey(int bits) {
     return generateAESKey(bits);
   }

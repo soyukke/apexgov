@@ -7782,6 +7782,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "sobj.get(autoNumberFieldName)", .to = "sobj.get(getAutoNumberFieldName())" },
         .{ .from = "Type.forName(sObjTypeName)", .to = "Type.forName(getSObjTypeName())" },
         .{ .from = "clone.put(an.sObjField, an.getFormattedNumber(nextAutoNumberInSequence));", .to = "clone.put(an.getSObjField(), an.getFormattedNumber(nextAutoNumberInSequence));" },
+        .{ .from = ".get(fieldMapping.getAs(\"Target_Field_API_Name\"))", .to = ".get((String) fieldMapping.getAs(\"Target_Field_API_Name\"))" },
+        .{ .from = ".put(fieldMapping.getAs(\"Source_Field_API_Name\"),", .to = ".put((String) fieldMapping.getAs(\"Source_Field_API_Name\")," },
         .{ .from = "WHERE Object_API_Name__c = :ApexStrings.valueOf(sObjType)", .to = "WHERE Object_API_Name__c = :sObjTypeValue" },
         .{ .from = "ApexCollections.bindMap(\"String.valueOf\", String.valueOf)", .to = "ApexCollections.bindMap(\"sObjTypeValue\", ApexStrings.valueOf(sObjType))" },
         .{ .from = "Schema.SObjectType.DataImportBatch__c", .to = "new Schema.SObjectType(\"DataImportBatch__c\")" },
@@ -8166,7 +8168,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const first_or_null_declared_list_var_compatible = try rewriteQuerySingletonAssignmentsToDeclaredListVars(gpa, first_or_null_list_compatible);
     defer gpa.free(first_or_null_declared_list_var_compatible);
 
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, first_or_null_declared_list_var_compatible);
+    const declared_sobject_query_compatible = try rewriteDeclaredSObjectQueryAssignments(gpa, first_or_null_declared_list_var_compatible);
+    defer gpa.free(declared_sobject_query_compatible);
+
+    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, declared_sobject_query_compatible);
     defer gpa.free(long_assignment_compatible);
 
     const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
@@ -8208,7 +8213,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const numeric_valueof_object_compatible = try rewriteNumericValueOfObjectIdentifiers(gpa, object_equality_compatible);
     defer gpa.free(numeric_valueof_object_compatible);
 
-    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, numeric_valueof_object_compatible);
+    const map_values_compatible = try rewriteValuesMethodCollectionViews(gpa, numeric_valueof_object_compatible);
+    defer gpa.free(map_values_compatible);
+
+    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, map_values_compatible);
     defer gpa.free(get_as_collection_compatible);
 
     const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_collection_compatible);
@@ -10802,6 +10810,120 @@ fn rewriteDeclaredListQuerySingletonLine(gpa: std.mem.Allocator, line: []const u
     return null;
 }
 
+fn rewriteDeclaredSObjectQueryAssignments(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var sobject_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (sobject_names.items) |name| gpa.free(name);
+        sobject_names.deinit(gpa);
+    }
+
+    var list_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (list_names.items) |name| gpa.free(name);
+        list_names.deinit(gpa);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var replaced = false;
+    var brace_depth: isize = 0;
+    var method_depth: ?isize = null;
+    var render_lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (render_lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        if (method_depth == null and brace_depth == 1 and isMethodLikeSignatureLine(trimmed)) {
+            method_depth = brace_depth + 1;
+            for (sobject_names.items) |name| gpa.free(name);
+            sobject_names.clearRetainingCapacity();
+            for (list_names.items) |name| gpa.free(name);
+            list_names.clearRetainingCapacity();
+        }
+
+        if (method_depth != null) {
+            if (extractParameterizedTypeVariableName(trimmed, "List")) |name| {
+                try list_names.append(gpa, try gpa.dupe(u8, name));
+            }
+            if (extractTypedVariableName(trimmed, "ApexSObject")) |name| {
+                try sobject_names.append(gpa, try gpa.dupe(u8, name));
+            }
+        }
+
+        var rendered = try gpa.dupe(u8, line);
+        if (method_depth != null) {
+            for (sobject_names.items) |name| {
+                if (containsIgnoreCaseNameSlice(list_names.items, name)) continue;
+                if (try rewriteDeclaredSObjectQueryAssignmentLine(gpa, rendered, name)) |next| {
+                    gpa.free(rendered);
+                    rendered = next;
+                    replaced = true;
+                }
+            }
+        }
+
+        try out.appendSlice(gpa, rendered);
+        gpa.free(rendered);
+
+        brace_depth += countByte(line, '{');
+        brace_depth -= countByte(line, '}');
+        if (method_depth != null and brace_depth < method_depth.?) {
+            method_depth = null;
+            for (sobject_names.items) |name| gpa.free(name);
+            sobject_names.clearRetainingCapacity();
+            for (list_names.items) |name| gpa.free(name);
+            list_names.clearRetainingCapacity();
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDeclaredSObjectQueryAssignmentLine(gpa: std.mem.Allocator, line: []const u8, var_name: []const u8) !?[]u8 {
+    const marker = try std.fmt.allocPrint(gpa, "{s} = ", .{var_name});
+    defer gpa.free(marker);
+    const start = std.mem.indexOf(u8, line, marker) orelse return null;
+
+    const rhs = std.mem.trim(u8, line[(start + marker.len)..], " \t");
+    if (rhs.len == 0) return null;
+    const expr = std.mem.trimRight(u8, rhs, "; \t");
+    const suffix = rhs[expr.len..];
+    if (!startsWithIgnoreCase(expr, "Database.query(") and !startsWithIgnoreCase(expr, "Database.queryWithBinds(")) return null;
+
+    const prefix_text = line[0 .. start + marker.len];
+    return try std.fmt.allocPrint(gpa, "{s}ApexCollections.firstOrNull({s}){s}", .{ prefix_text, expr, suffix });
+}
+
+fn isMethodLikeSignatureLine(line: []const u8) bool {
+    if (line.len == 0 or line[line.len - 1] != '{') return false;
+    if (startsWithWordIgnoreCase(line, "if") or
+        startsWithWordIgnoreCase(line, "for") or
+        startsWithWordIgnoreCase(line, "while") or
+        startsWithWordIgnoreCase(line, "switch") or
+        startsWithWordIgnoreCase(line, "catch") or
+        startsWithWordIgnoreCase(line, "else") or
+        startsWithWordIgnoreCase(line, "do") or
+        startsWithWordIgnoreCase(line, "try") or
+        startsWithWordIgnoreCase(line, "class") or
+        startsWithWordIgnoreCase(line, "interface") or
+        startsWithWordIgnoreCase(line, "enum"))
+    {
+        return false;
+    }
+
+    const open = std.mem.indexOfScalar(u8, line, '(') orelse return false;
+    const close = findMatchingParen(line, open) orelse return false;
+    return close + 1 < line.len;
+}
+
 fn rewriteInstanceListDeepCloneCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var list_names: std.ArrayList([]u8) = .empty;
     defer {
@@ -11536,6 +11658,101 @@ fn normalizeListMethodQuerySingletonReturnLine(gpa: std.mem.Allocator, line: []c
         return try std.fmt.allocPrint(gpa, "{s}return {s};", .{ indent, inner });
     }
     return null;
+}
+
+fn rewriteValuesMethodCollectionViews(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] != '.') {
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], ".values()")) {
+                    i += 1;
+                    continue;
+                }
+
+                const base_start = findMemberAccessBaseStart(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+                if (base_expr.len == 0) {
+                    i += 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..base_start]);
+                try appendFmt(gpa, &out, "new ArrayList<>({s}.values())", .{base_expr});
+                replaced = true;
+                last_emit = i + ".values()".len;
+                i = last_emit;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -22372,6 +22589,44 @@ test "rewriteQuerySingletonAssignmentsToDeclaredListVars unwraps declared list q
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> allocs = Database.query(getAllocationsQuery(opportunityId).build());") != null);
 }
 
+test "rewriteDeclaredSObjectQueryAssignments wraps direct query assignment for declared sobject vars" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Demo {
+        \\public void run() {
+        \\ApexSObject acc = null;
+        \\acc = Database.queryWithBinds("SELECT Id FROM Account WHERE Id = :accId", ApexCollections.bindMap("accId", accId));
+        \\}
+        \\}
+    ;
+
+    const rewritten = try rewriteDeclaredSObjectQueryAssignments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "acc = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id FROM Account WHERE Id = :accId\", ApexCollections.bindMap(\"accId\", accId)));") != null);
+}
+
+test "rewriteDeclaredSObjectQueryAssignments respects method-local list names" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Demo {
+        \\public static void listMethod() {
+        \\List<ApexSObject> queryAffl = Database.queryWithBinds("SELECT Id FROM Account", ApexCollections.bindMap());
+        \\}
+        \\public static void objectMethod() {
+        \\ApexSObject queryAffl = null;
+        \\queryAffl = Database.queryWithBinds("SELECT Id FROM Account LIMIT 1", ApexCollections.bindMap());
+        \\}
+        \\}
+    ;
+
+    const rewritten = try rewriteDeclaredSObjectQueryAssignments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> queryAffl = Database.queryWithBinds(\"SELECT Id FROM Account\", ApexCollections.bindMap());") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "queryAffl = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id FROM Account LIMIT 1\", ApexCollections.bindMap()));") != null);
+}
+
 test "rewriteTrailingDatabaseQueryAssignmentParens normalizes missing semicolons and extra parens" {
     const gpa = std.testing.allocator;
     const input =
@@ -22398,6 +22653,20 @@ test "rewriteListMethodQuerySingletonReturns unwraps query singleton returns ins
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return Database.query(queryString);") != null);
+}
+
+test "rewriteValuesMethodCollectionViews wraps values calls in array list views" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\ApexSObject oldAccount = (oldMap.values() != null ? (ApexSObject) oldMap.values().get(i) : null);
+        \\return mappingService.objectMappingByDevName.values();
+    ;
+
+    const rewritten = try rewriteValuesMethodCollectionViews(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new ArrayList<>(oldMap.values()).get(i)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return new ArrayList<>(mappingService.objectMappingByDevName.values());") != null);
 }
 
 test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs receivers" {
