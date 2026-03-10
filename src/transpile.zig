@@ -7159,6 +7159,32 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Data_Import_Settings__c.getInstance()", .to = "UTIL_CustomSettingsFacade.getDataImportSettings()" },
         .{ .from = ".toLowercase()", .to = ".toLowerCase()" },
+        .{ .from = "if (d != null && d.getAs(\"Is_Deleted__c\")) {", .to = "if (d != null && Boolean.TRUE.equals(d.getAs(\"Is_Deleted__c\"))) {" },
+        .{ .from = "return ApexCollections.firstOrThrow(Database.query(\"SELECT Key__c, Value__c, Service__c, LastModifiedById, LastModifiedDate FROM Payment_Services_Configuration__c ORDER BY LastModifiedDate DESC LIMIT 1\"));", .to = "return Database.query(\"SELECT Key__c, Value__c, Service__c, LastModifiedById, LastModifiedDate FROM Payment_Services_Configuration__c ORDER BY LastModifiedDate DESC LIMIT 1\");" },
+        .{ .from = "openOpptIdByDIId.put(diByCreatedRDId.get(ApexSwitch.getAs(oppt.getAs(\"npe03__Recurring_Donation__c\"), \"Id\")),oppt.getAs(\"Id\"));", .to = "openOpptIdByDIId.put(diByCreatedRDId.get(ApexSwitch.getAs(oppt.getAs(\"npe03__Recurring_Donation__c\"), \"Id\")).getAs(\"Id\"),oppt.getAs(\"Id\"));" },
+        .{ .from = "private static enum matchType { ID_MATCH, FIELD_MATCH, NO_MATCH }", .to = "private static enum MATCHTYPE { ID_MATCH, FIELD_MATCH, NO_MATCH }" },
+        .{ .from = "matchType matchType;", .to = "MATCHTYPE matchType;" },
+        .{ .from = "public MatchInfo(matchType matchType, Integer dateVariance)", .to = "public MatchInfo(MATCHTYPE matchType, Integer dateVariance)" },
+        .{ .from = "new MatchInfo(matchType.getAs(\"NO_MATCH\"), 0)", .to = "new MatchInfo(MATCHTYPE.NO_MATCH, 0)" },
+        .{ .from = "new MatchInfo(matchType.getAs(\"ID_MATCH\"), 0)", .to = "new MatchInfo(MATCHTYPE.ID_MATCH, 0)" },
+        .{ .from = "new MatchInfo(matchType.getAs(\"FIELD_MATCH\"), dtVariance)", .to = "new MatchInfo(MATCHTYPE.FIELD_MATCH, dtVariance)" },
+        .{ .from = "matchInfo.matchType = matchType.getAs(\"ID_MATCH\");", .to = "matchInfo.matchType = MATCHTYPE.ID_MATCH;" },
+        .{ .from = "matchInfo.matchType = matchType.getAs(\"FIELD_MATCH\");", .to = "matchInfo.matchType = MATCHTYPE.FIELD_MATCH;" },
+        .{ .from = "matchType.getAs(\"NO_MATCH\")", .to = "MATCHTYPE.NO_MATCH" },
+        .{ .from = "matchType.getAs(\"ID_MATCH\")", .to = "MATCHTYPE.ID_MATCH" },
+        .{ .from = "matchType.getAs(\"FIELD_MATCH\")", .to = "MATCHTYPE.FIELD_MATCH" },
+        .{ .from = "ctrl.isReadOnlyMode", .to = "ctrl.getIsReadOnlyMode()" },
+        .{
+            .from = "public List<SelectOption> listSOForObject(String strObject) {",
+            .to = "public Boolean getIsReadOnlyMode() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    return !Boolean.TRUE.equals(isEditMode);\n  }\n\n  public List<SelectOption> listSOForObject(String strObject) {",
+        },
+        .{ .from = "defaultDonationRecordTypeMapping", .to = "getDefaultDonationRecordTypeMapping()" },
+        .{
+            .from = "public Map<String, String> getFieldMap(String dataImportObjectName, String targetObjectName, List<String> dataImportFields) {",
+            .to = "private BDI_TargetFields getDefaultDonationRecordTypeMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    BDI_TargetFields defaultTargetFieldForDonationRecordType = new BDI_TargetFields();\n    defaultTargetFieldForDonationRecordType.addTargetField(new Schema.SObjectType(\"Opportunity\").getDescribe().getName(), new Schema.SObjectField(\"Opportunity\", \"RecordTypeId\").getDescribe().getName());\n    return defaultTargetFieldForDonationRecordType;\n  }\n\n  public Map<String, String> getFieldMap(String dataImportObjectName, String targetObjectName, List<String> dataImportFields) {",
+        },
+        .{ .from = ":giftBatchId.value()", .to = ":giftBatchIdValue" },
+        .{ .from = "\"giftBatchId.value\", giftBatchId.value", .to = "\"giftBatchIdValue\", giftBatchId.value()" },
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
@@ -17557,7 +17583,9 @@ fn specificIdentifierReplacement(text: []const u8, token: []const u8, token_star
     if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationservice")) return "SfdoInstrumentationService";
     if (std.ascii.eqlIgnoreCase(token, "sfdoinstrumentationenum")) return "SfdoInstrumentationEnum";
     if (std.ascii.eqlIgnoreCase(token, "perflog")) return "PerfLog";
-    if (std.ascii.eqlIgnoreCase(token, "matchtype")) return "matchType";
+    if (std.mem.eql(u8, token, "MATCHTYPE")) return "MATCHTYPE";
+    if (std.mem.eql(u8, token, "matchType")) return "matchType";
+    if (std.mem.eql(u8, token, "matchtype")) return "matchType";
     if (std.ascii.eqlIgnoreCase(token, "numofdis")) return "numOfDis";
     if (std.ascii.eqlIgnoreCase(token, "defaultdonationrecordtypemapping")) return "defaultDonationRecordTypeMapping";
     if (std.ascii.eqlIgnoreCase(token, "addyears")) return "addYears";
