@@ -33,6 +33,7 @@ public final class Datacloud {
   public static class DuplicateResult {
     private List<MatchResult> matchResults = new ArrayList<>();
     private String duplicateRule;
+    private boolean allowSave = false;
 
     public List<MatchResult> getMatchResults() {
       return matchResults;
@@ -40,6 +41,10 @@ public final class Datacloud {
 
     public String getDuplicateRule() {
       return duplicateRule;
+    }
+
+    public boolean isAllowSave() {
+      return allowSave;
     }
   }
 

@@ -115,9 +115,9 @@ public final class JSON {
       return (T) deserializeUntyped(payload);
     }
     String normalizedType = typeName.trim();
-    if (normalizedType.equalsIgnoreCase("List")
-        || normalizedType.regionMatches(true, 0, "List<", 0, "List<".length())) {
-      return (T) deserializeList(payload, ApexSObject.class);
+    if (isListTypeName(normalizedType)) {
+      Class<?> listElementClass = resolveListElementClass(normalizedType);
+      return (T) deserializeList(payload, (Class<Object>) listElementClass);
     }
 
     if (containsSObjectType(normalizedType)) {
@@ -340,6 +340,87 @@ public final class JSON {
       }
     }
     return false;
+  }
+
+  private static boolean isListTypeName(String typeName) {
+    if (typeName == null || typeName.isBlank()) {
+      return false;
+    }
+    String normalized = typeName.trim();
+    return normalized.equalsIgnoreCase("List")
+        || normalized.regionMatches(true, 0, "List<", 0, "List<".length());
+  }
+
+  private static boolean isMapTypeName(String typeName) {
+    if (typeName == null || typeName.isBlank()) {
+      return false;
+    }
+    String normalized = typeName.trim();
+    return normalized.equalsIgnoreCase("Map")
+        || normalized.regionMatches(true, 0, "Map<", 0, "Map<".length());
+  }
+
+  private static Class<?> resolveListElementClass(String listTypeName) {
+    if (listTypeName == null || listTypeName.isBlank()) {
+      return Object.class;
+    }
+    String elementTypeName = extractFirstGenericTypeArgument(listTypeName.trim());
+    if (elementTypeName == null || elementTypeName.isBlank()) {
+      return Object.class;
+    }
+    if (elementTypeName.equalsIgnoreCase("Object") || isMapTypeName(elementTypeName)) {
+      return Object.class;
+    }
+    if (elementTypeName.equalsIgnoreCase("ApexSObject")
+        || elementTypeName.equalsIgnoreCase("SObject")
+        || containsSObjectType(elementTypeName)) {
+      return ApexSObject.class;
+    }
+    try {
+      System.Type elementType = System.Type.forName(elementTypeName);
+      Class<?> resolved = resolveTypeClass(elementType);
+      if (resolved != null) {
+        return resolved;
+      }
+    } catch (RuntimeException ignored) {
+      // fall through to generic object
+    }
+    return Object.class;
+  }
+
+  private static String extractFirstGenericTypeArgument(String collectionTypeName) {
+    if (collectionTypeName == null || collectionTypeName.isBlank()) {
+      return null;
+    }
+    int open = collectionTypeName.indexOf('<');
+    if (open < 0) {
+      return null;
+    }
+    int close = collectionTypeName.lastIndexOf('>');
+    if (close <= open) {
+      return null;
+    }
+    int depth = 0;
+    int end = close;
+    for (int i = open + 1; i < close; i += 1) {
+      char ch = collectionTypeName.charAt(i);
+      if (ch == '<') {
+        depth += 1;
+        continue;
+      }
+      if (ch == '>') {
+        if (depth > 0) {
+          depth -= 1;
+        }
+        continue;
+      }
+      if (ch == ',' && depth == 0) {
+        end = i;
+        break;
+      }
+    }
+    String argument = collectionTypeName.substring(open + 1, end).trim();
+    return argument.isEmpty() ? null : argument;
   }
 
   private static Object deserializeSObjectPayload(String payload, String typeName) {

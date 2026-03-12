@@ -104,6 +104,15 @@ public final class ApexCollections {
     return list;
   }
 
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static List listOf(Object first, Object second, Object third) {
+    List list = new ArrayList(3);
+    list.add(first);
+    list.add(second);
+    list.add(third);
+    return list;
+  }
+
   @SafeVarargs
   @SuppressWarnings("varargs")
   public static <T> List<T> listOf(T first, T... rest) {

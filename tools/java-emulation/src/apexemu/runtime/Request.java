@@ -1,13 +1,19 @@
 package apexemu.runtime;
 
 public final class Request {
+  private static final Request CURRENT = new Request();
+
   private Request() {}
 
-  public static System.Request getCurrent() {
-    return System.Request.getCurrent();
+  public static Request getCurrent() {
+    return CURRENT;
   }
 
   public static String getRequestId() {
-    return getCurrent().getRequestId();
+    return System.Request.getCurrent().getRequestId();
+  }
+
+  public static System.Quiddity getQuiddity() {
+    return System.Request.getCurrent().getQuiddity();
   }
 }

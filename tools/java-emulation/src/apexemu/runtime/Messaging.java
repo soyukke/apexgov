@@ -3,6 +3,7 @@ package apexemu.runtime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class Messaging {
   private Messaging() {}
@@ -17,6 +18,7 @@ public final class Messaging {
     private String htmlBody;
     private String replyTo;
     private String senderDisplayName;
+    private boolean useSignature = true;
     private List<String> toAddresses = new ArrayList<>();
 
     public void setTargetObjectId(String value) {
@@ -81,6 +83,74 @@ public final class Messaging {
 
     public List<String> getToAddresses() {
       return new ArrayList<>(toAddresses);
+    }
+
+    public void setUseSignature(boolean value) {
+      this.useSignature = value;
+    }
+
+    public boolean getUseSignature() {
+      return useSignature;
+    }
+  }
+
+  public static final class CustomNotification {
+    private String title;
+    private String body;
+    private String notificationTypeId;
+    private String targetId;
+    private String targetPageRef;
+
+    public void setTitle(String title) {
+      this.title = title;
+    }
+
+    public String getTitle() {
+      return title;
+    }
+
+    public void setBody(String body) {
+      this.body = body;
+    }
+
+    public String getBody() {
+      return body;
+    }
+
+    public void setNotificationTypeId(String notificationTypeId) {
+      this.notificationTypeId = notificationTypeId;
+    }
+
+    public void setNotificationTypeId(Object notificationTypeId) {
+      this.notificationTypeId = notificationTypeId == null ? null : String.valueOf(notificationTypeId);
+    }
+
+    public String getNotificationTypeId() {
+      return notificationTypeId;
+    }
+
+    public void setTargetId(String targetId) {
+      this.targetId = targetId;
+    }
+
+    public String getTargetId() {
+      return targetId;
+    }
+
+    public void setTargetPageRef(String targetPageRef) {
+      this.targetPageRef = targetPageRef;
+    }
+
+    public String getTargetPageRef() {
+      return targetPageRef;
+    }
+
+    public void send(Set<String> recipientIds) {
+      // best-effort emulation: no-op
+    }
+
+    public void send(List<String> recipientIds) {
+      // best-effort emulation: no-op
     }
   }
 

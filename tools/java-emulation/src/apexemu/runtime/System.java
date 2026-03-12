@@ -235,6 +235,10 @@ public final class System {
   }
 
   public static final class NoAccessException extends Exception {
+    public NoAccessException() {
+      super();
+    }
+
     public NoAccessException(String message) {
       super(message);
     }
@@ -306,6 +310,53 @@ public final class System {
     public static Long getRandomLong() {
       return apexemu.runtime.Crypto.getRandomLong();
     }
+
+    public static byte[] generateDigest(String algorithm, byte[] data) {
+      return apexemu.runtime.Crypto.generateDigest(algorithm, data);
+    }
+  }
+
+  public enum RoundingMode {
+    HALF_UP(java.math.RoundingMode.HALF_UP),
+    HALF_DOWN(java.math.RoundingMode.HALF_DOWN),
+    CEILING(java.math.RoundingMode.CEILING),
+    FLOOR(java.math.RoundingMode.FLOOR),
+    DOWN(java.math.RoundingMode.DOWN),
+    UP(java.math.RoundingMode.UP);
+
+    private final java.math.RoundingMode javaMode;
+
+    RoundingMode(java.math.RoundingMode javaMode) {
+      this.javaMode = javaMode;
+    }
+
+    public java.math.RoundingMode toJavaMode() {
+      return javaMode;
+    }
+  }
+
+  public static final class ApexMath {
+    private ApexMath() {}
+
+    public static Integer mod(Integer left, Integer right) {
+      return apexemu.runtime.ApexMath.mod(left, right);
+    }
+
+    public static Long mod(Long left, Long right) {
+      return apexemu.runtime.ApexMath.mod(left, right);
+    }
+  }
+
+  public static final class URL {
+    private URL() {}
+
+    public static apexemu.runtime.URL getOrgDomainUrl() {
+      return apexemu.runtime.URL.getOrgDomainUrl();
+    }
+
+    public static apexemu.runtime.URL getSalesforceBaseUrl() {
+      return apexemu.runtime.URL.getSalesforceBaseUrl();
+    }
   }
 
   public static class SObjectException extends apexemu.runtime.SObjectException {
@@ -362,9 +413,97 @@ public final class System {
 
   public interface HttpCalloutMock extends apexemu.runtime.HttpCalloutMock {}
 
-  public static final class InstallContext {}
+  public static class InstallContext {
+    public String installerID;
+    private apexemu.runtime.Version previousVersion;
+    private boolean upgrade;
+    private boolean push;
+
+    public InstallContext() {}
+
+    public apexemu.runtime.Version previousVersion() {
+      return previousVersion;
+    }
+
+    public boolean isUpgrade() {
+      return upgrade;
+    }
+
+    public boolean isPush() {
+      return push;
+    }
+
+    public String installerID() {
+      if (installerID == null || installerID.isBlank()) {
+        return UserInfo.getUserId();
+      }
+      return installerID;
+    }
+
+    public void setPreviousVersion(apexemu.runtime.Version previousVersion) {
+      this.previousVersion = previousVersion;
+    }
+
+    public void setUpgrade(boolean upgrade) {
+      this.upgrade = upgrade;
+    }
+
+    public void setPush(boolean push) {
+      this.push = push;
+    }
+  }
 
   public static final class UninstallContext {}
+
+  public static final class SavePoint {
+    private final Database.Savepoint delegate;
+
+    public SavePoint(Database.Savepoint delegate) {
+      this.delegate = delegate;
+    }
+
+    public Database.Savepoint asDatabaseSavepoint() {
+      return delegate;
+    }
+  }
+
+  public static final class SelectOption {
+    private final String value;
+    private final String label;
+    private final boolean disabled;
+
+    public SelectOption(String value, String label) {
+      this(value, label, false);
+    }
+
+    public SelectOption(String value, String label, boolean disabled) {
+      this.value = value;
+      this.label = label;
+      this.disabled = disabled;
+    }
+
+    public String getValue() {
+      return value;
+    }
+
+    public String getLabel() {
+      return label;
+    }
+
+    public boolean getDisabled() {
+      return disabled;
+    }
+  }
+
+  public static class NoDataFoundException extends Exception {
+    public NoDataFoundException() {
+      super();
+    }
+
+    public NoDataFoundException(String message) {
+      super(message);
+    }
+  }
 
   public static String requestVersion() {
     return "1.0";
@@ -691,15 +830,15 @@ public final class System {
     }
 
     private static boolean isListType(String normalized) {
-      return startsWithType(normalized, "List<");
+      return equalsTypeToken(normalized, "List") || startsWithType(normalized, "List<");
     }
 
     private static boolean isSetType(String normalized) {
-      return startsWithType(normalized, "Set<");
+      return equalsTypeToken(normalized, "Set") || startsWithType(normalized, "Set<");
     }
 
     private static boolean isMapType(String normalized) {
-      return startsWithType(normalized, "Map<");
+      return equalsTypeToken(normalized, "Map") || startsWithType(normalized, "Map<");
     }
 
     private static boolean startsWithType(String normalized, String prefix) {
@@ -711,6 +850,17 @@ public final class System {
         return false;
       }
       return trimmed.regionMatches(true, 0, prefix, 0, prefix.length());
+    }
+
+    private static boolean equalsTypeToken(String normalized, String token) {
+      if (normalized == null || token == null) {
+        return false;
+      }
+      String trimmed = normalized.trim();
+      if (trimmed.isEmpty()) {
+        return false;
+      }
+      return trimmed.equalsIgnoreCase(token);
     }
 
     private Object instantiateWithFallbackConstructor(Class<?> klass) {
@@ -844,7 +994,14 @@ public final class System {
 
     @Override
     public String toString() {
-      return typeName;
+      String normalized = normalizeTypeIdentity(typeName);
+      if (normalized.startsWith("java.lang.")) {
+        return normalized.substring("java.lang.".length());
+      }
+      if (normalized.startsWith("generated.")) {
+        return normalized.substring("generated.".length());
+      }
+      return normalized;
     }
 
     private static String normalizeTypeIdentity(String value) {
@@ -1075,6 +1232,22 @@ public final class System {
 
   public static DateTime now() {
     return DateTime.now();
+  }
+
+  public static DateTime Now() {
+    return now();
+  }
+
+  public static boolean isScheduled() {
+    return false;
+  }
+
+  public static void abortJob(String jobId) {
+    // No-op in local emulation.
+  }
+
+  public static void abortJob(Object jobId) {
+    abortJob(jobId == null ? null : String.valueOf(jobId));
   }
 
   public static void attachFinalizer(Finalizer finalizer) {

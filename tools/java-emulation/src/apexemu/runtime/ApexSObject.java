@@ -9,8 +9,9 @@ import java.util.Objects;
 import java.util.Set;
 
 public class ApexSObject {
-  private final String type;
+  public final String type;
   public String Id;
+  public Object description;
   private final Map<String, Object> fields = new LinkedHashMap<>();
   private boolean strictQueryAccess = false;
   private final Set<String> queriedFieldsLower = new LinkedHashSet<>();
@@ -23,12 +24,66 @@ public class ApexSObject {
     this.type = type.trim();
   }
 
-  public static ApexSObject of(String type) {
-    return new ApexSObject(type);
+  @SuppressWarnings("unchecked")
+  public static <T extends ApexSObject> T of(String type) {
+    return (T) instantiateByType(type);
+  }
+
+  private static ApexSObject instantiateByType(String type) {
+    if (type == null || type.isBlank()) {
+      return new ApexSObject(type);
+    }
+    String normalizedType = type.trim();
+    try {
+      Class<?> runtimeType = Class.forName("apexemu.runtime." + normalizedType);
+      if (ApexSObject.class.isAssignableFrom(runtimeType)) {
+        java.lang.reflect.Constructor<?> ctor = runtimeType.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return (ApexSObject) ctor.newInstance();
+      }
+    } catch (ReflectiveOperationException | LinkageError ignored) {
+      // Fallback to generic dynamic record when no concrete runtime type exists.
+    }
+    return new ApexSObject(normalizedType);
+  }
+
+  public static Map<String, ApexSObject> getAll(String type) {
+    if (type == null || type.isBlank()) {
+      return new LinkedHashMap<>();
+    }
+    List<ApexSObject> rows;
+    try {
+      rows = ApexStore.query("SELECT Id, Name FROM " + type.trim());
+    } catch (RuntimeException ignored) {
+      return new LinkedHashMap<>();
+    }
+    Map<String, ApexSObject> out = new LinkedHashMap<>();
+    for (ApexSObject row : rows) {
+      if (row == null) {
+        continue;
+      }
+      Object key = row.get("Name");
+      if (key == null) {
+        key = row.get("Id");
+      }
+      if (key == null) {
+        continue;
+      }
+      out.put(String.valueOf(key), row);
+    }
+    return out;
   }
 
   public String type() {
     return type;
+  }
+
+  public int size() {
+    Object records = get("records");
+    if (records instanceof java.util.Collection<?> collection) {
+      return collection.size();
+    }
+    return fields.size();
   }
 
   public String id() {
@@ -60,6 +115,11 @@ public class ApexSObject {
     return value == null ? null : String.valueOf(value);
   }
 
+  public String getName() {
+    Object value = get("Name");
+    return value == null ? null : String.valueOf(value);
+  }
+
   public boolean isAvailable() {
     Object value = get("IsAvailable");
     if (value instanceof Boolean flag) {
@@ -74,6 +134,14 @@ public class ApexSObject {
       return flag;
     }
     return false;
+  }
+
+  public boolean isActive() {
+    Object value = get("IsActive");
+    if (value instanceof Boolean flag) {
+      return flag;
+    }
+    return isAvailable();
   }
 
   public boolean isMaster() {
@@ -99,6 +167,9 @@ public class ApexSObject {
         this.Id = nextId.isEmpty() ? null : nextId;
       }
       return this;
+    }
+    if (normalizedField.equalsIgnoreCase("description")) {
+      this.description = value;
     }
     // Remove existing key with different case to prevent duplicates
     fields.keySet().removeIf(key -> key.equalsIgnoreCase(normalizedField) && !key.equals(normalizedField));
@@ -130,6 +201,9 @@ public class ApexSObject {
     if (field.equalsIgnoreCase("id")) {
       return Id;
     }
+    if (field.equalsIgnoreCase("description")) {
+      return description;
+    }
     for (Map.Entry<String, Object> entry : fields.entrySet()) {
       if (entry.getKey().equalsIgnoreCase(field)) {
         return entry.getValue();
@@ -149,6 +223,13 @@ public class ApexSObject {
       if (isKnownChildRelationship(field)) {
         return new ArrayList<ApexSObject>();
       }
+      String normalized = field.trim();
+      if (normalized.endsWith("__r")) {
+        return new ArrayList<ApexSObject>();
+      }
+      if (normalized.endsWith("__c") || normalized.contains("__r.")) {
+        return null;
+      }
       throw new SObjectException(
           "row was retrieved via SOQL without querying the requested field: " + field);
     }
@@ -160,8 +241,14 @@ public class ApexSObject {
     return (T) get(field);
   }
 
-  public Object get(Schema.SObjectField field) {
-    return get(resolveFieldName(field));
+  public Object get(Object field) {
+    if (field instanceof Schema.SObjectField token) {
+      return get(resolveFieldName(token));
+    }
+    if (field == null) {
+      return null;
+    }
+    return get(String.valueOf(field));
   }
 
   public boolean hasField(String field) {
@@ -354,6 +441,14 @@ public class ApexSObject {
             message == null ? "sobject validation error" : message));
   }
 
+  public void addError(Object message) {
+    addError(message == null ? null : String.valueOf(message));
+  }
+
+  public void addError(String message, boolean escape) {
+    addError(message);
+  }
+
   public void addError(Schema.SObjectField field, String message) {
     addError(message);
   }
@@ -382,8 +477,15 @@ public class ApexSObject {
     set(field, value);
   }
 
-  public void put(Schema.SObjectField field, Object value) {
-    set(field, value);
+  public void put(Object field, Object value) {
+    if (field instanceof Schema.SObjectField token) {
+      set(resolveFieldName(token), value);
+      return;
+    }
+    if (field == null) {
+      return;
+    }
+    put(String.valueOf(field), value);
   }
 
   public void putSObject(String relationshipName, ApexSObject value) {

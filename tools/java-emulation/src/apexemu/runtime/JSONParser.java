@@ -37,6 +37,30 @@ public final class JSONParser {
     return null;
   }
 
+  public Integer getIntegerValue() {
+    String text = getText();
+    if (text == null) {
+      return null;
+    }
+    String trimmed = text.trim();
+    if (trimmed.isEmpty()) {
+      return null;
+    }
+    try {
+      return Integer.valueOf(trimmed);
+    } catch (NumberFormatException ignored) {
+      try {
+        return (int) Double.parseDouble(trimmed);
+      } catch (NumberFormatException ignoredAgain) {
+        return null;
+      }
+    }
+  }
+
+  public Integer getIntValue() {
+    return getIntegerValue();
+  }
+
   public String getPayload() {
     return payload;
   }

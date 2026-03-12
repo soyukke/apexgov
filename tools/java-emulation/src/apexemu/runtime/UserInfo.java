@@ -80,12 +80,37 @@ public final class UserInfo {
     return "00D000000000001";
   }
 
+  public static String getOrganizationName() {
+    return "Local Org";
+  }
+
+  public static String getSessionId() {
+    return "SESSION_ID_PLACEHOLDER";
+  }
+
   public static boolean isMultiCurrencyOrganization() {
     return false;
   }
 
   public static String getDefaultCurrency() {
     return "USD";
+  }
+
+  public static String getLocale() {
+    return java.util.Locale.getDefault().toLanguageTag();
+  }
+
+  public static String getLanguage() {
+    return java.util.Locale.getDefault().getLanguage();
+  }
+
+  public static String getTimeZone() {
+    return java.util.TimeZone.getDefault().getID();
+  }
+
+  public static Boolean isCurrentUserLicensed(String namespaceOrFeature) {
+    // Local emulation does not track package licenses.
+    return true;
   }
 
   public static String getUiThemeDisplayed() {

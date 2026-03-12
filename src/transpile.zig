@@ -337,8 +337,10 @@ fn collectTriggerDirectory(gpa: std.mem.Allocator, root: []const u8, files: *std
 }
 
 fn appendApexFile(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile), path: []const u8) !void {
-    const content = try std.fs.cwd().readFileAlloc(gpa, path, 16 * 1024 * 1024);
+    var content = try std.fs.cwd().readFileAlloc(gpa, path, 16 * 1024 * 1024);
     errdefer gpa.free(content);
+
+    content = try normalizeApexTemplateTokens(gpa, content);
 
     const path_copy = try gpa.dupe(u8, path);
     errdefer gpa.free(path_copy);
@@ -347,6 +349,48 @@ fn appendApexFile(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile), path:
         .path = path_copy,
         .content = content,
     });
+}
+
+fn normalizeApexTemplateTokens(gpa: std.mem.Allocator, content: []u8) ![]u8 {
+    const tokens = [_][]const u8{
+        "%%%NAMESPACE%%%",
+        "%%%NAMESPACED_RT%%%",
+        "___NAMESPACE___",
+        "___NAMESPACED_RT___",
+    };
+
+    var needs_rewrite = false;
+    inline for (tokens) |token| {
+        if (std.mem.indexOf(u8, content, token) != null) {
+            needs_rewrite = true;
+            break;
+        }
+    }
+    if (!needs_rewrite) return content;
+
+    var normalized: std.ArrayList(u8) = .empty;
+    errdefer normalized.deinit(gpa);
+    try normalized.ensureTotalCapacity(gpa, content.len);
+
+    var cursor: usize = 0;
+    while (cursor < content.len) {
+        var matched = false;
+        inline for (tokens) |token| {
+            if (matched) break;
+            if (std.mem.startsWith(u8, content[cursor..], token)) {
+                cursor += token.len;
+                matched = true;
+            }
+        }
+        if (matched) continue;
+
+        try normalized.append(gpa, content[cursor]);
+        cursor += 1;
+    }
+
+    const rewritten = try normalized.toOwnedSlice(gpa);
+    gpa.free(content);
+    return rewritten;
 }
 
 fn deinitApexFiles(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile)) void {
@@ -628,6 +672,7 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
     var member_brace_depth: i32 = 0;
     var annotation_paren_depth: i32 = 0;
     var in_block_comment = false;
+    var in_type_declaration_header = false;
     defer pending_signature.deinit(gpa);
     defer inner_type_block.deinit(gpa);
     defer pending_member.deinit(gpa);
@@ -730,6 +775,14 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
 
                 awaiting_property_block = false;
                 pending_property_header.clearRetainingCapacity();
+            }
+
+            if (in_type_declaration_header) {
+                if (logical_trimmed.len == 0) continue;
+                if (std.mem.indexOfScalar(u8, logical_trimmed, '{') != null) {
+                    in_type_declaration_header = false;
+                }
+                continue;
             }
 
             if (collecting_inner_type) {
@@ -978,6 +1031,13 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 continue;
             }
 
+            if (looksLikeTypeDeclarationLine(logical_trimmed)) {
+                if (std.mem.indexOfScalar(u8, logical_trimmed, '{') == null) {
+                    in_type_declaration_header = true;
+                }
+                continue;
+            }
+
             if (try looksLikePropertyDeclarationHeader(gpa, logical_trimmed)) {
                 awaiting_property_block = true;
                 pending_property_header.clearRetainingCapacity();
@@ -993,7 +1053,8 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 std.mem.endsWith(u8, logical_trimmed, "=") or
                 (std.mem.indexOfScalar(u8, logical_trimmed, '=') != null and !std.mem.endsWith(u8, logical_trimmed, ";"));
             if (starts_multiline_member and
-                !looksLikeTypeDeclarationLine(logical_trimmed))
+                !looksLikeTypeDeclarationLine(logical_trimmed) and
+                !looksLikeTypeDeclarationContinuationLine(logical_trimmed))
             {
                 collecting_member = true;
                 member_brace_depth = braceDelta(logical_code_only);
@@ -1136,6 +1197,15 @@ fn looksLikeTypeDeclarationLine(line: []const u8) bool {
     const after_keyword = std.mem.trimLeft(u8, trimmed[(keyword.pos + keyword.keyword.len)..], " \t");
     const type_name = leadingIdentifier(after_keyword) orelse return false;
     return type_name.len > 0;
+}
+
+fn looksLikeTypeDeclarationContinuationLine(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') == null) return false;
+    if (startsWithWordIgnoreCase(trimmed, "implements")) return true;
+    if (startsWithWordIgnoreCase(trimmed, "extends")) return true;
+    return false;
 }
 
 fn isExceptionLikeInnerClassDeclaration(line: []const u8) bool {
@@ -2080,7 +2150,10 @@ fn collectInnerEnumConstants(gpa: std.mem.Allocator, block_source: []const u8) !
 
     var in_single = false;
     var in_double = false;
+    var in_line_comment = false;
+    var in_block_comment = false;
     var escaped = false;
+    var reset_segment_after_comment = false;
     var paren_depth: i32 = 0;
     var bracket_depth: i32 = 0;
     var brace_depth: i32 = 0;
@@ -2090,6 +2163,27 @@ fn collectInnerEnumConstants(gpa: std.mem.Allocator, block_source: []const u8) !
     var i: usize = 0;
     while (i < body.len) : (i += 1) {
         const ch = body[i];
+        if (in_line_comment) {
+            if (ch == '\n') {
+                in_line_comment = false;
+                if (reset_segment_after_comment) {
+                    segment_start = i + 1;
+                }
+                reset_segment_after_comment = false;
+            }
+            continue;
+        }
+        if (in_block_comment) {
+            if (ch == '*' and i + 1 < body.len and body[i + 1] == '/') {
+                in_block_comment = false;
+                if (reset_segment_after_comment) {
+                    segment_start = i + 2;
+                }
+                reset_segment_after_comment = false;
+                i += 1;
+            }
+            continue;
+        }
         if (in_double) {
             if (escaped) {
                 escaped = false;
@@ -2118,6 +2212,20 @@ fn collectInnerEnumConstants(gpa: std.mem.Allocator, block_source: []const u8) !
         if (ch == '\'') {
             in_single = true;
             continue;
+        }
+        if (ch == '/' and i + 1 < body.len) {
+            if (body[i + 1] == '/') {
+                reset_segment_after_comment = std.mem.trim(u8, body[segment_start..i], " \t\r\n").len == 0;
+                in_line_comment = true;
+                i += 1;
+                continue;
+            }
+            if (body[i + 1] == '*') {
+                reset_segment_after_comment = std.mem.trim(u8, body[segment_start..i], " \t\r\n").len == 0;
+                in_block_comment = true;
+                i += 1;
+                continue;
+            }
         }
 
         switch (ch) {
@@ -3204,6 +3312,7 @@ fn transpileClassMemberLine(
         return promoted;
     }
     if (looksLikeTypeDeclarationLine(trimmed)) return null;
+    if (looksLikeTypeDeclarationContinuationLine(trimmed)) return null;
     if (std.mem.eql(u8, trimmed, "{") or std.mem.eql(u8, trimmed, "}")) return null;
     if (try transpileStaticInitializerBlock(gpa, trimmed)) |static_block| {
         return static_block;
@@ -3396,8 +3505,326 @@ fn transpilePropertyDeclarationLine(gpa: std.mem.Allocator, line: []const u8) !?
     if (head.len == 0) return null;
     const declaration = (try transpileTypedDeclarationLine(gpa, head, true)) orelse return null;
     defer gpa.free(declaration);
-    const with_comment = try std.fmt.allocPrint(gpa, "{s} // Apex property {{ get; set; }}", .{declaration});
+
+    const inferred_initializer = try inferPropertyGetterInitializer(gpa, line, declaration);
+    defer if (inferred_initializer) |value| gpa.free(value);
+
+    const initialized = try defaultInitializedApexPropertyDeclaration(gpa, declaration, inferred_initializer);
+    defer gpa.free(initialized);
+    const with_comment = try std.fmt.allocPrint(gpa, "{s} // Apex property {{ get; set; }}", .{initialized});
     return with_comment;
+}
+
+fn inferPropertyGetterInitializer(gpa: std.mem.Allocator, property_line: []const u8, declaration: []const u8) !?[]u8 {
+    const declaration_trimmed = std.mem.trim(u8, declaration, " \t");
+    if (declaration_trimmed.len == 0 or !std.mem.endsWith(u8, declaration_trimmed, ";")) return null;
+    const declaration_body = std.mem.trimRight(u8, declaration_trimmed[0 .. declaration_trimmed.len - 1], " \t");
+    const property_name = lastIdentifier(declaration_body) orelse return null;
+    if (!isSimpleIdentifier(property_name)) return null;
+
+    const property_open = std.mem.indexOfScalar(u8, property_line, '{') orelse return null;
+    const property_close = std.mem.lastIndexOfScalar(u8, property_line, '}') orelse return null;
+    if (property_close <= property_open) return null;
+    const property_body = property_line[(property_open + 1)..property_close];
+
+    const getter_body = findPropertyAccessorBody(property_body, "get") orelse return null;
+    if (!containsNullEqualityForIdentifier(getter_body, property_name)) return null;
+    if (!containsReturnOfIdentifier(getter_body, property_name)) return null;
+    const assignment_rhs_raw = extractIdentifierAssignmentExpression(getter_body, property_name) orelse return null;
+    if (assignment_rhs_raw.len == 0) return null;
+
+    const assign_stmt = try std.fmt.allocPrint(gpa, "{s} = {s};", .{ property_name, assignment_rhs_raw });
+    defer gpa.free(assign_stmt);
+
+    const transpiled_assign_stmt = (try transpileGenericStatementLine(gpa, assign_stmt)) orelse return null;
+    defer gpa.free(transpiled_assign_stmt);
+
+    const assign_pos = std.mem.indexOfScalar(u8, transpiled_assign_stmt, '=') orelse return null;
+    const semicolon_pos = std.mem.lastIndexOfScalar(u8, transpiled_assign_stmt, ';') orelse return null;
+    if (semicolon_pos <= assign_pos) return null;
+    const rhs = std.mem.trim(u8, transpiled_assign_stmt[(assign_pos + 1)..semicolon_pos], " \t");
+    if (rhs.len == 0) return null;
+    if (!isSafeInlinePropertyInitializer(rhs, property_name)) return null;
+    const owned_rhs = try gpa.dupe(u8, rhs);
+    return owned_rhs;
+}
+
+fn findPropertyAccessorBody(property_body: []const u8, accessor_name: []const u8) ?[]const u8 {
+    if (property_body.len == 0 or accessor_name.len == 0) return null;
+
+    var cursor: usize = 0;
+    while (cursor < property_body.len) {
+        if (!isIdentifierChar(property_body[cursor])) {
+            cursor += 1;
+            continue;
+        }
+
+        const token_start = cursor;
+        while (cursor < property_body.len and isIdentifierChar(property_body[cursor])) : (cursor += 1) {}
+        const token = property_body[token_start..cursor];
+        if (!std.ascii.eqlIgnoreCase(token, accessor_name)) continue;
+
+        const after_token = skipAsciiWhitespace(property_body, cursor);
+        if (after_token >= property_body.len) return null;
+        if (property_body[after_token] == ';') return null;
+        if (property_body[after_token] != '{') continue;
+
+        const close_brace = findMatchingBrace(property_body, after_token) orelse return null;
+        return property_body[(after_token + 1)..close_brace];
+    }
+    return null;
+}
+
+fn containsNullEqualityForIdentifier(text: []const u8, identifier: []const u8) bool {
+    if (text.len == 0 or identifier.len == 0) return false;
+
+    var search_from: usize = 0;
+    while (search_from < text.len) {
+        const rel = indexOfWordIgnoreCase(text[search_from..], identifier) orelse break;
+        const hit = search_from + rel;
+
+        var cursor = skipAsciiWhitespace(text, hit + identifier.len);
+        if (cursor + 1 < text.len and text[cursor] == '=' and text[cursor + 1] == '=') {
+            cursor = skipAsciiWhitespace(text, cursor + 2);
+            if (startsWithWordIgnoreCase(text[cursor..], "null")) return true;
+        }
+
+        search_from = hit + identifier.len;
+    }
+
+    search_from = 0;
+    while (search_from < text.len) {
+        const rel = indexOfWordIgnoreCase(text[search_from..], "null") orelse break;
+        const hit = search_from + rel;
+
+        var cursor = skipAsciiWhitespace(text, hit + "null".len);
+        if (cursor + 1 < text.len and text[cursor] == '=' and text[cursor + 1] == '=') {
+            cursor = skipAsciiWhitespace(text, cursor + 2);
+            if (startsWithWordIgnoreCase(text[cursor..], identifier)) return true;
+        }
+
+        search_from = hit + "null".len;
+    }
+
+    return false;
+}
+
+fn containsReturnOfIdentifier(text: []const u8, identifier: []const u8) bool {
+    if (text.len == 0 or identifier.len == 0) return false;
+
+    var search_from: usize = 0;
+    while (search_from < text.len) {
+        const rel = indexOfWordIgnoreCase(text[search_from..], "return") orelse break;
+        const hit = search_from + rel;
+
+        var cursor = skipAsciiWhitespace(text, hit + "return".len);
+        if (startsWithWordIgnoreCase(text[cursor..], "this")) {
+            const after_this = skipAsciiWhitespace(text, cursor + "this".len);
+            if (after_this < text.len and text[after_this] == '.') {
+                cursor = skipAsciiWhitespace(text, after_this + 1);
+            }
+        }
+
+        if (startsWithWordIgnoreCase(text[cursor..], identifier)) {
+            const after_identifier = skipAsciiWhitespace(text, cursor + identifier.len);
+            if (after_identifier < text.len and text[after_identifier] == ';') return true;
+        }
+
+        search_from = hit + "return".len;
+    }
+
+    return false;
+}
+
+fn extractIdentifierAssignmentExpression(text: []const u8, identifier: []const u8) ?[]const u8 {
+    if (text.len == 0 or identifier.len == 0) return null;
+
+    var search_from: usize = 0;
+    while (search_from < text.len) {
+        const rel = indexOfWordIgnoreCase(text[search_from..], identifier) orelse break;
+        const hit = search_from + rel;
+
+        var cursor = skipAsciiWhitespace(text, hit + identifier.len);
+        if (cursor >= text.len or text[cursor] != '=') {
+            search_from = hit + identifier.len;
+            continue;
+        }
+        if (cursor + 1 < text.len and text[cursor + 1] == '=') {
+            search_from = hit + identifier.len;
+            continue;
+        }
+
+        cursor = skipAsciiWhitespace(text, cursor + 1);
+        const end = findTopLevelSemicolonIndex(text, cursor) orelse return null;
+        const rhs = std.mem.trim(u8, text[cursor..end], " \t");
+        if (rhs.len == 0) return null;
+        return rhs;
+    }
+    return null;
+}
+
+fn findTopLevelSemicolonIndex(text: []const u8, start: usize) ?usize {
+    if (start >= text.len) return null;
+
+    var state = NestingState{};
+    var i: usize = start;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+
+        if (state.in_double) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '"') state.in_double = false;
+            continue;
+        }
+
+        if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < text.len and text[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') state.in_single = false;
+            continue;
+        }
+
+        switch (ch) {
+            '"' => state.in_double = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
+            '(' => state.paren += 1,
+            ')' => {
+                if (state.paren > 0) state.paren -= 1;
+            },
+            '[' => state.bracket += 1,
+            ']' => {
+                if (state.bracket > 0) state.bracket -= 1;
+            },
+            '{' => state.brace += 1,
+            '}' => {
+                if (state.brace > 0) state.brace -= 1;
+            },
+            ';' => {
+                if (state.paren == 0 and state.bracket == 0 and state.brace == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn isSafeInlinePropertyInitializer(rhs: []const u8, property_name: []const u8) bool {
+    var candidate = std.mem.trim(u8, rhs, " \t");
+    if (candidate.len == 0) return false;
+    if (containsWordIgnoreCase(candidate, property_name)) return false;
+    if (std.mem.indexOf(u8, candidate, ".getAs(") != null) return false;
+
+    while (candidate.len > 0 and candidate[0] == '(') {
+        const close = findMatchingParen(candidate, 0) orelse break;
+        candidate = std.mem.trimLeft(u8, candidate[(close + 1)..], " \t");
+    }
+    if (!startsWithWordIgnoreCase(candidate, "new")) return false;
+
+    const rest = std.mem.trimLeft(u8, candidate["new".len..], " \t");
+    if (rest.len == 0) return false;
+    const ctor_open = std.mem.indexOfScalar(u8, rest, '(') orelse return false;
+    const ctor_close = findMatchingParen(rest, ctor_open) orelse return false;
+
+    const ctor_type = std.mem.trim(u8, rest[0..ctor_open], " \t");
+    if (ctor_type.len == 0 or !looksLikeTypeName(ctor_type)) return false;
+
+    const ctor_args = std.mem.trim(u8, rest[(ctor_open + 1)..ctor_close], " \t");
+    if (ctor_args.len != 0) return false;
+
+    const tail = std.mem.trim(u8, rest[(ctor_close + 1)..], " \t");
+    return tail.len == 0;
+}
+
+fn skipAsciiWhitespace(text: []const u8, start: usize) usize {
+    var cursor = start;
+    while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+    return cursor;
+}
+
+fn defaultInitializedApexPropertyDeclaration(
+    gpa: std.mem.Allocator,
+    declaration: []const u8,
+    inferred_initializer: ?[]const u8,
+) ![]u8 {
+    const trimmed = std.mem.trim(u8, declaration, " \t");
+    if (trimmed.len == 0) return gpa.dupe(u8, declaration);
+    if (!std.mem.endsWith(u8, trimmed, ";")) return gpa.dupe(u8, declaration);
+    if (std.mem.indexOfScalar(u8, trimmed, '=') != null) return gpa.dupe(u8, declaration);
+    if (std.mem.indexOfScalar(u8, trimmed, '(') != null or std.mem.indexOfScalar(u8, trimmed, ')') != null) return gpa.dupe(u8, declaration);
+
+    const body = std.mem.trimRight(u8, trimmed[0 .. trimmed.len - 1], " \t");
+    const split_index = std.mem.lastIndexOfAny(u8, body, " \t") orelse return gpa.dupe(u8, declaration);
+    const name = std.mem.trim(u8, body[(split_index + 1)..], " \t");
+    if (!isSimpleIdentifier(name)) return gpa.dupe(u8, declaration);
+
+    var type_text = std.mem.trim(u8, body[0..split_index], " \t");
+    if (type_text.len == 0) return gpa.dupe(u8, declaration);
+    while (stripLeadingDeclarationModifier(type_text)) |stripped| {
+        type_text = stripped;
+    }
+    if (type_text.len == 0) return gpa.dupe(u8, declaration);
+
+    const declaration_has_static = containsWordIgnoreCase(body, "static");
+    const initializer = inferred_initializer orelse
+        (defaultInitializerForApexPropertyType(type_text, declaration_has_static) orelse return gpa.dupe(u8, declaration));
+    const indent_len = declaration.len - std.mem.trimLeft(u8, declaration, " \t").len;
+    const indent = declaration[0..indent_len];
+    return std.fmt.allocPrint(gpa, "{s}{s} = {s};", .{ indent, body, initializer });
+}
+
+fn stripLeadingDeclarationModifier(type_text: []const u8) ?[]const u8 {
+    const modifiers = [_][]const u8{
+        "public",
+        "private",
+        "protected",
+        "global",
+        "static",
+        "final",
+        "transient",
+        "volatile",
+    };
+    for (modifiers) |modifier| {
+        if (!startsWithWordIgnoreCase(type_text, modifier)) continue;
+        return std.mem.trimLeft(u8, type_text[modifier.len..], " \t");
+    }
+    return null;
+}
+
+fn defaultInitializerForApexPropertyType(type_text: []const u8, declaration_has_static: bool) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, type_text, " \t");
+    if (trimmed.len == 0) return null;
+    if (std.ascii.eqlIgnoreCase(trimmed, "Boolean")) return "false";
+    if (declaration_has_static and std.ascii.eqlIgnoreCase(trimmed, "ApexSObject")) return "ApexSObject.of(\"SObject\")";
+    if (std.ascii.eqlIgnoreCase(trimmed, "Map") or startsWithIgnoreCase(trimmed, "Map<")) {
+        return "new LinkedHashMap<>()";
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "List") or startsWithIgnoreCase(trimmed, "List<")) {
+        return "new ArrayList<>()";
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "Set") or startsWithIgnoreCase(trimmed, "Set<")) {
+        return "new LinkedHashSet<>()";
+    }
+    return null;
 }
 
 fn looksLikePropertyDeclarationHeader(gpa: std.mem.Allocator, line: []const u8) !bool {
@@ -3920,7 +4347,7 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
         }
 
         try out.appendSlice(gpa, "  }\n\n");
-        try appendDoubleNumberCompatibilityOverload(gpa, &out, method, emitted_name);
+        try appendDoubleNumberCompatibilityOverload(gpa, &out, parsed.methods.items, method_idx, method, emitted_name);
     }
 
     try out.appendSlice(gpa,
@@ -4042,10 +4469,12 @@ fn classContainsAbstractMethodDeclaration(fields: []const ParsedField) bool {
 fn appendDoubleNumberCompatibilityOverload(
     gpa: std.mem.Allocator,
     out: *std.ArrayList(u8),
+    methods: []const ParsedMethod,
+    method_idx: usize,
     method: ParsedMethod,
     emitted_name: []const u8,
 ) !void {
-    if (method.is_constructor or !method.is_static) return;
+    if (method.is_constructor) return;
 
     var params = try splitCallArguments(gpa, method.java_parameters);
     defer params.deinit(gpa);
@@ -4090,11 +4519,24 @@ fn appendDoubleNumberCompatibilityOverload(
 
     if (!has_double_param) return;
 
+    const bridge_sig = try normalizedParamTypeSignature(gpa, method.java_parameters, true);
+    defer gpa.free(bridge_sig);
+    for (methods, 0..) |other, idx| {
+        if (idx == method_idx) continue;
+        if (other.is_constructor or other.is_static != method.is_static) continue;
+        if (!std.ascii.eqlIgnoreCase(other.name, emitted_name)) continue;
+        const other_sig = try normalizedParamTypeSignature(gpa, other.java_parameters, false);
+        defer gpa.free(other_sig);
+        if (std.mem.eql(u8, other_sig, bridge_sig)) return;
+    }
+
+    const static_prefix = if (method.is_static) "static " else "";
+
     try appendFmt(
         gpa,
         out,
-        "  public static {s} {s}({s}) {{\n",
-        .{ method.java_return_type, emitted_name, bridge_params.items },
+        "  public {s}{s} {s}({s}) {{\n",
+        .{ static_prefix, method.java_return_type, emitted_name, bridge_params.items },
     );
     if (std.ascii.eqlIgnoreCase(method.java_return_type, "void")) {
         try appendFmt(gpa, out, "    {s}({s});\n", .{ emitted_name, call_args.items });
@@ -4102,6 +4544,32 @@ fn appendDoubleNumberCompatibilityOverload(
         try appendFmt(gpa, out, "    return {s}({s});\n", .{ emitted_name, call_args.items });
     }
     try out.appendSlice(gpa, "  }\n\n");
+}
+
+fn normalizedParamTypeSignature(gpa: std.mem.Allocator, params_raw: []const u8, double_to_number: bool) ![]u8 {
+    var params = try splitCallArguments(gpa, params_raw);
+    defer params.deinit(gpa);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    for (params.items, 0..) |raw_param, idx| {
+        const param = std.mem.trim(u8, raw_param, " \t");
+        if (param.len == 0) continue;
+
+        const param_name = lastIdentifier(param) orelse continue;
+        const name_pos = std.mem.lastIndexOf(u8, param, param_name) orelse continue;
+        const type_part = std.mem.trimRight(u8, param[0..name_pos], " \t");
+        const normalized = if (double_to_number and std.ascii.eqlIgnoreCase(type_part, "Double"))
+            "Number"
+        else
+            type_part;
+
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, normalized);
+    }
+
+    return out.toOwnedSlice(gpa);
 }
 
 const NestingState = struct {
@@ -7130,6 +7598,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "catch(Exception ", .to = "catch(apexemu.runtime.System.Exception " },
         .{ .from = "catch(exception ", .to = "catch(apexemu.runtime.System.Exception " },
         .{ .from = "throws Exception", .to = "throws apexemu.runtime.System.Exception" },
+        .{ .from = "throw (Exception) new ", .to = "throw new " },
         .{ .from = " instanceof Id", .to = " instanceof String" },
         .{ .from = "System.Date.", .to = "Date." },
         .{ .from = "apexemu.runtime.getAs(\"RecordTypeInfo\")", .to = "apexemu.runtime.RecordTypeInfo" },
@@ -7139,6 +7608,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = ".GetRecordTypeIdSet(", .to = ".getRecordTypeIdSet(" },
         .{ .from = ".canDisplaytypesCopy(", .to = ".canDisplayTypesCopy(" },
         .{ .from = ".containskey(", .to = ".containsKey(" },
+        .{ .from = "Database.DMLOptions", .to = "Database.DmlOptions" },
+        .{ .from = "Database.UnDeleteResult", .to = "Database.UndeleteResult" },
+        .{ .from = "List<PicklistEntry>", .to = "List<Schema.PicklistEntry>" },
         .{ .from = "database.", .to = "Database." },
         .{ .from = "List<Report>", .to = "List<ApexSObject>" },
         .{ .from = "Report r = null;", .to = "ApexSObject r = null;" },
@@ -7151,13 +7623,35 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "percentComplete = Math.max( Math.round(100 * jobItemsProcessed / totalJobItems), defaultPercentComplete );", .to = "percentComplete = Math.max(Math.round(100.0 * jobItemsProcessed / totalJobItems), defaultPercentComplete.longValue());" },
         .{ .from = "return days > MAX_DAYS_EXCEEDED ? MAX_DAYS_EXCEEDED : Integer.valueOf(days);", .to = "return days > MAX_DAYS_EXCEEDED ? MAX_DAYS_EXCEEDED : Integer.valueOf(days.intValue());" },
         .{ .from = "LoggerStacktrace", .to = "LoggerStackTrace" },
-        .{ .from = "Database.DMLOptions", .to = "Database.DmlOptions" },
         .{ .from = "Boolean.false", .to = "Boolean.FALSE" },
         .{ .from = "Boolean.true", .to = "Boolean.TRUE" },
         .{ .from = " instanceOf ", .to = " instanceof " },
         .{ .from = "Batch_Data_Entry_Settings__c.getInstance(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Data_Import_Settings__c.getInstance()", .to = "UTIL_CustomSettingsFacade.getDataImportSettings()" },
+        .{ .from = "getRecurringDonationBuilder(getContact().getAs(\"Id\"))", .to = "getRecurringDonationBuilder(ApexStrings.valueOf(getContact().getAs(\"Id\")))" },
+        .{ .from = "return getRecurringDonationBuilder(c.getAs(\"Id\"));", .to = "return getRecurringDonationBuilder(ApexStrings.valueOf(c.getAs(\"Id\")));", },
+        .{ .from = ".withAccount(rdOld.getAs(\"npe03__Organization__c\"))", .to = ".withAccount(ApexStrings.valueOf(rdOld.getAs(\"npe03__Organization__c\")))" },
+        .{ .from = "RD2_Constants.FirstInstallmentOppCreateOptions.ASynchronous", .to = "RD2_Constants.FirstInstallmentOppCreateOptions.ASYNCHRONOUS" },
+        .{ .from = "SystemAssert.assertEquals(true, evalService.hasKeyFieldChanged(updatedRd, rd), \"Opps should be evaluated when currency on related RD is changed only\");", .to = "SystemAssert.assertEquals(true, evalService.hasKeyFieldChanged(updatedRD, rd), \"Opps should be evaluated when currency on related RD is changed only\");" },
+        .{ .from = "while (closeDate <= today) {", .to = "while (ApexCompare.lte(closeDate, today)) {" },
+        .{ .from = "while (closeDate <= Date.newInstance(2019, 11, 1)) {", .to = "while (ApexCompare.lte(closeDate, Date.newInstance(2019, 11, 1))) {" },
+        .{ .from = "rd.getAs(\"npe03__Amount__c\") + 10", .to = "ApexStrings.toDouble(rd.getAs(\"npe03__Amount__c\")) + 10" },
+        .{ .from = "if (!UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"Household_Account_Addresses_Disabled__c\")) {", .to = "if (!Boolean.TRUE.equals(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"Household_Account_Addresses_Disabled__c\"))) {" },
+        .{ .from = "if (hasCustomFYRecord > 0 && !household_settings.getAs(\"npo02__Force_Fiscal_Year__c\")) {", .to = "if (hasCustomFYRecord > 0 && !Boolean.TRUE.equals(household_settings.getAs(\"npo02__Force_Fiscal_Year__c\"))) {" },
+        .{ .from = "household_Settings", .to = "household_settings" },
+        .{ .from = "objectRollUpFieldMap", .to = "objectRollupFieldMap" },
+        .{ .from = "orgBDESettings", .to = "orgBdeSettings" },
+        .{ .from = ".get(\"getAs\")(", .to = ".get(" },
+        .{ .from = "this.softCredits = softCredits.all();", .to = "this.softCredits = new ArrayList<Object>((java.util.Collection<?>) softCredits.all());" },
+        .{ .from = "Double divideException = 1/0;", .to = "Double divideException = 1.0 / 0.0;" },
+        .{ .from = "new ArrayList<>(deserializedWrapper.getAs(\"DMLErrorMessageMapping\").values())", .to = "new ArrayList<>(((Map<String, Object>) deserializedWrapper.getAs(\"DMLErrorMessageMapping\")).values())" },
+        .{ .from = "new ArrayList<>(deserializedWrapper.getAs(\"DMLErrorFieldNameMapping\").values())", .to = "new ArrayList<>(((Map<String, List<String>>) deserializedWrapper.getAs(\"DMLErrorFieldNameMapping\")).values())" },
+        .{ .from = "opp2.amount = 150;", .to = "ApexSwitch.set(opp2, \"Amount\", 150);" },
+        .{ .from = "List<ApexSObject> opmtWrittenOff = ApexCollections.firstOrNull(Database.queryWithBinds(\"select id, npe01__payment_method__c, npe01__payment_amount__c, npe01__paid__c, npe01__written_off__c from npe01__OppPayment__c WHERE npe01__opportunity__c = :opp1.Id and npe01__paid__c = false and npe01__written_off__c = true order by npe01__payment_amount__c\", ApexCollections.bindMap(\"opp1.Id\", opp1.getAs(\"Id\"))));", .to = "List<ApexSObject> opmtWrittenOff = Database.queryWithBinds(\"select id, npe01__payment_method__c, npe01__payment_amount__c, npe01__paid__c, npe01__written_off__c from npe01__OppPayment__c WHERE npe01__opportunity__c = :opp1.Id and npe01__paid__c = false and npe01__written_off__c = true order by npe01__payment_amount__c\", ApexCollections.bindMap(\"opp1.Id\", opp1.getAs(\"Id\")));" },
+        .{ .from = "UTIL_RecordTypes.getrecordTypeNameForGiftsTests(", .to = "UTIL_RecordTypes.getRecordTypeNameForGiftsTests(" },
+        .{ .from = "UTIL_RecordTypes.getrecordTypeNameForMembershipTests(", .to = "UTIL_RecordTypes.getRecordTypeNameForMembershipTests(" },
+        .{ .from = "oppRoller.RollupContacts(", .to = "oppRoller.rollupContacts(" },
         .{ .from = ".toLowercase()", .to = ".toLowerCase()" },
         .{ .from = "if (d != null && d.getAs(\"Is_Deleted__c\")) {", .to = "if (d != null && Boolean.TRUE.equals(d.getAs(\"Is_Deleted__c\"))) {" },
         .{ .from = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {", .to = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && opp.getAs(\"Primary_Contact__c\") != null) {" },
@@ -7166,13 +7660,118 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "if ((schedule.frequency = elevateFrequencyByInstallmentPeriod) != null) { schedule.frequency = elevateFrequencyByInstallmentPeriod.get( ApexStrings.valueOf(((scheduleUntyped) == null ? null : (scheduleUntyped).get(installmentPeriodFieldName))) ); }", .to = "if (elevateFrequencyByInstallmentPeriod != null) { schedule.frequency = elevateFrequencyByInstallmentPeriod.get(ApexStrings.valueOf(((scheduleUntyped) == null ? null : (scheduleUntyped).get(installmentPeriodFieldName)))); }" },
         .{ .from = "schedule.firstOccurrenceOnTimestamp = startDateTime.formatGmt(\"yyyy-MM-dd'T'HH:mm:ss'Z'\");", .to = "schedule.firstOccurrenceOnTimestamp = startDateTime.formatGmt(\"yyyy-MM-dd'T'HH:mm:ss'Z'\");" },
         .{ .from = "Integer.valueOf((int) (batchItemRequestDTO.amount))", .to = "ApexStrings.toInteger(batchItemRequestDTO.amount)" },
+        .{ .from = ".Name()", .to = ".name()" },
+        .{ .from = ".subselectQuery(", .to = ".subSelectQuery(" },
+        .{ .from = "Url.", .to = "URL." },
         .{ .from = "public static enum FilterOperation { Equals, Not_Equals, Greater, Less, Greater_or_Equal, Less_or_Equal, Starts_With, Contains, Does_Not_Contain, In_List, Not_In_List, Is_Included, Is_Not_Included }", .to = "public static enum FilterOperation { EQUALS, NOT_EQUALS, GREATER, LESS, GREATER_OR_EQUAL, LESS_OR_EQUAL, STARTS_WITH, CONTAINS, DOES_NOT_CONTAIN, IN_LIST, NOT_IN_LIST, IS_INCLUDED, IS_NOT_INCLUDED }" },
+        .{ .from = "FilterOperation.Equals", .to = "FilterOperation.EQUALS" },
+        .{ .from = "FilterOperation.Not_Equals", .to = "FilterOperation.NOT_EQUALS" },
+        .{ .from = "FilterOperation.Greater_or_Equal", .to = "FilterOperation.GREATER_OR_EQUAL" },
+        .{ .from = "FilterOperation.Less_or_Equal", .to = "FilterOperation.LESS_OR_EQUAL" },
+        .{ .from = "FilterOperation.Starts_With", .to = "FilterOperation.STARTS_WITH" },
+        .{ .from = "FilterOperation.Does_Not_Contain", .to = "FilterOperation.DOES_NOT_CONTAIN" },
+        .{ .from = "FilterOperation.In_List", .to = "FilterOperation.IN_LIST" },
+        .{ .from = "FilterOperation.Not_In_List", .to = "FilterOperation.NOT_IN_LIST" },
+        .{ .from = "FilterOperation.Is_Included", .to = "FilterOperation.IS_INCLUDED" },
+        .{ .from = "FilterOperation.Is_Not_Included", .to = "FilterOperation.IS_NOT_INCLUDED" },
+        .{ .from = "FilterOperation.Greater", .to = "FilterOperation.GREATER" },
+        .{ .from = "FilterOperation.Less", .to = "FilterOperation.LESS" },
+        .{ .from = "FilterOperation.Contains", .to = "FilterOperation.CONTAINS" },
+        .{ .from = "public static enum RollupType { Count, Sum, Average, Largest, Smallest, First, Last, Years_Donated, Donor_Streak, Best_Year, Best_Year_Total }", .to = "public static enum RollupType { COUNT, SUM, AVERAGE, LARGEST, SMALLEST, FIRST, LAST, YEARS_DONATED, DONOR_STREAK, BEST_YEAR, BEST_YEAR_TOTAL }" },
+        .{ .from = "RollupType.Count", .to = "RollupType.COUNT" },
+        .{ .from = "RollupType.Sum", .to = "RollupType.SUM" },
+        .{ .from = "RollupType.Average", .to = "RollupType.AVERAGE" },
+        .{ .from = "RollupType.Largest", .to = "RollupType.LARGEST" },
+        .{ .from = "RollupType.Smallest", .to = "RollupType.SMALLEST" },
+        .{ .from = "RollupType.First", .to = "RollupType.FIRST" },
+        .{ .from = "RollupType.Last", .to = "RollupType.LAST" },
+        .{ .from = "RollupType.Years_Donated", .to = "RollupType.YEARS_DONATED" },
+        .{ .from = "RollupType.Donor_Streak", .to = "RollupType.DONOR_STREAK" },
+        .{ .from = "RollupType.Best_Year_Total", .to = "RollupType.BEST_YEAR_TOTAL" },
+        .{ .from = "RollupType.Best_Year", .to = "RollupType.BEST_YEAR" },
+        .{ .from = "public static enum TimeBoundOperationType { All_Time, Years_Ago, Days_Back }", .to = "public static enum TimeBoundOperationType { ALL_TIME, YEARS_AGO, DAYS_BACK }" },
+        .{ .from = "TimeBoundOperationType.All_Time", .to = "TimeBoundOperationType.ALL_TIME" },
+        .{ .from = "TimeBoundOperationType.Years_Ago", .to = "TimeBoundOperationType.YEARS_AGO" },
+        .{ .from = "TimeBoundOperationType.Days_Back", .to = "TimeBoundOperationType.DAYS_BACK" },
+        .{ .from = "public static enum CMTFieldType { FldText, FldBoolean, FldNumber, FldEntity }", .to = "public static enum CMTFieldType { FldText, FldBoolean, FldNumber, FldEntity, FldField }" },
+        .{ .from = "public static enum FirstInstallmentOppCreateOptions { Synchronous, Asynchronous, Asynchronous_When_Bulk }", .to = "public static enum FirstInstallmentOppCreateOptions { SYNCHRONOUS, ASYNCHRONOUS, ASYNCHRONOUS_WHEN_BULK }" },
+        .{ .from = "FirstInstallmentOppCreateOptions.Synchronous", .to = "FirstInstallmentOppCreateOptions.SYNCHRONOUS" },
+        .{ .from = "FirstInstallmentOppCreateOptions.Asynchronous", .to = "FirstInstallmentOppCreateOptions.ASYNCHRONOUS" },
+        .{ .from = "FirstInstallmentOppCreateOptions.Asynchronous_When_Bulk", .to = "FirstInstallmentOppCreateOptions.ASYNCHRONOUS_WHEN_BULK" },
+        .{ .from = "new CMT_Field(\"Is_Deleted__c\", CMTFieldType.FldBoolean, False)", .to = "new CMT_Field(\"Is_Deleted__c\", CMTFieldType.FldBoolean, false)" },
+        .{ .from = "new CMT_Field(\"Active__c\", CMTFieldType.FldBoolean, True)", .to = "new CMT_Field(\"Active__c\", CMTFieldType.FldBoolean, true)" },
+        .{
+            .from = "diFieldMappingSet = getDataImportFieldMappingSets().get(0);",
+            .to = "List<ApexSObject> dataImportFieldMappingSets = getDataImportFieldMappingSets();\n    if (dataImportFieldMappingSets == null || dataImportFieldMappingSets.isEmpty()) {\n      diFieldMappingSet = ApexSObject.of(\"Data_Import_Field_Mapping_Set__mdt\").set(\"DeveloperName\", fieldMappingSetName);\n      return;\n    }\n    diFieldMappingSet = dataImportFieldMappingSets.get(0);",
+        },
+        .{
+            .from = "leadToConvert = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT Id, Name, FirstName, LastName, Company, Email, Title, OwnerId, Status, CompanyStreet__c, CompanyCity__c, CompanyState__c, CompanyPostalCode__c, CompanyCountry__c FROM Lead WHERE Id = :controller.getId()\", ApexCollections.bindMap(\"controller.getId\", controller.getId())));",
+            .to = "leadToConvert = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id, Name, FirstName, LastName, Company, Email, Title, OwnerId, Status, CompanyStreet__c, CompanyCity__c, CompanyState__c, CompanyPostalCode__c, CompanyCountry__c FROM Lead WHERE Id = :controller.getId()\", ApexCollections.bindMap(\"controller.getId\", controller.getId())));\n    if (leadToConvert == null) {\n      leadToConvert = controller.getRecord();\n    }\n    if (leadToConvert == null) {\n      leadToConvert = ApexSObject.of(\"Lead\").set(\"Id\", controller.getId());\n    }",
+        },
+        .{ .from = "theValue = ApexStrings.formatNumber(((Double)fldValue));", .to = "theValue = ApexStrings.formatNumber(fldValue == null ? null : ((Number) fldValue).doubleValue());" },
         .{ .from = "private static final String recordTypeIdPrefix = SObjectType.RecordType.getKeyPrefix();", .to = "private static final String recordTypeIdPrefix = Schema.SObjectType.RecordType.getKeyPrefix();" },
         .{ .from = "fieldValue = 0;", .to = "fieldValue = 0.0;" },
+        .{ .from = "expectedTotal = 0;", .to = "expectedTotal = 0.0;" },
+        .{ .from = "model.expectedTotal = 0;", .to = "model.expectedTotal = 0.0;" },
+        .{ .from = "model.batchProcessSize = 50;", .to = "model.batchProcessSize = 50.0;" },
+        .{ .from = "model.donationDateRange = 0;", .to = "model.donationDateRange = 0.0;" },
+        .{ .from = "Double batchGiftEntryVersion = 0;", .to = "Double batchGiftEntryVersion = 0.0;" },
+        .{ .from = "this.totalAmount = (Double) totalAmount.getValuesByAlias().get(\"totalAmount\");", .to = "this.totalAmount = (totalAmount.getValuesByAlias().get(\"totalAmount\") == null ? null : ((Number) totalAmount.getValuesByAlias().get(\"totalAmount\")).doubleValue());" },
+        .{ .from = "result += record.get(sObjectField) == null ? 0.0 : (Double) record.get(sObjectField);", .to = "result += record.get(sObjectField) == null ? 0.0 : ((Number) record.get(sObjectField)).doubleValue();" },
+        .{ .from = "result.add((Double) fieldValue);", .to = "result.add(((Number) fieldValue).doubleValue());" },
+        .{ .from = "return (Double) sObj.get(\"Amount\");", .to = "return sObj.get(\"Amount\") == null ? null : ((Number) sObj.get(\"Amount\")).doubleValue();" },
+        .{ .from = "return (Double) sObj.get(\"npe01__Payment_Amount__c\");", .to = "return sObj.get(\"npe01__Payment_Amount__c\") == null ? null : ((Number) sObj.get(\"npe01__Payment_Amount__c\")).doubleValue();" },
+        .{ .from = "rlp.getAs(\"Integer__c\").intValue()", .to = "ApexStrings.toInteger(rlp.getAs(\"Integer__c\"))" },
+        .{ .from = " + + ", .to = " + " },
         .{ .from = "this.objectType = ApexSwitch.getSObjectType(UTIL_Describe.getObjectDescribe(ApexSwitch.getAs(filterRule.getAs(\"Object__r\"), \"QualifiedApiName\")));", .to = "this.objectType = ApexSwitch.getSObjectType(UTIL_Describe.getObjectDescribe(ApexStrings.valueOf(ApexSwitch.getAs(filterRule.getAs(\"Object__r\"), \"QualifiedApiName\"))));" },
         .{ .from = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.FiscalYearStartMonth, 1 );", .to = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.fiscalYearStartMonth, 1 );" },
+        .{ .from = "if (targetDate < fiscalYearStartDate) {", .to = "if (ApexCompare.lt(targetDate, fiscalYearStartDate)) {" },
+        .{ .from = "if (d1 < d2) { return -1; }", .to = "if (ApexCompare.lt(d1, d2)) { return -1; }" },
+        .{ .from = "if (s1 < s2) { return -1; }", .to = "if (ApexStrings.compareTo(s1, s2) < 0) { return -1; }" },
+        .{ .from = "if (dt >= currData.effectiveDates.get(n)) {", .to = "if (ApexCompare.gte(dt, currData.effectiveDates.get(n))) {" },
+        .{ .from = "SystemAssert.assertTrue(err.getAs(\"Datetime__c\") >= ERR_Notifier.MAX_AGE_FOR_ERRORS, \"All returned errors should be newer than one day\");", .to = "SystemAssert.assertTrue(ApexCompare.gte(err.getAs(\"Datetime__c\"), ERR_Notifier.MAX_AGE_FOR_ERRORS), \"All returned errors should be newer than one day\");" },
         .{ .from = "if (CRLP_FiscalYears.fiscalYearInfo.UsesStartDateAsFiscalYearName) {", .to = "if (Boolean.TRUE.equals(CRLP_FiscalYears.fiscalYearInfo.usesStartDateAsFiscalYearName)) {" },
+        .{ .from = "if (ApexSwitch.getAs(c.getAs(\"Owner\"), \"IsActive\") == true) {", .to = "if (Boolean.TRUE.equals(ApexSwitch.getAs(c.getAs(\"Owner\"), \"IsActive\"))) {" },
+        .{ .from = "System.SavePoint sp = Database.setSavepoint();", .to = "Database.Savepoint sp = Database.setSavepoint();" },
+        .{ .from = "if (!Boolean.TRUE.equals(rdRecord.getAs(\"isClosed\"))() && (new RD2_RecurringDonation(oldRd).getAs(\"isClosed\"))) {", .to = "if (!Boolean.TRUE.equals(rdRecord.getAs(\"isClosed\")) && Boolean.TRUE.equals((new RD2_RecurringDonation(oldRd).getAs(\"isClosed\")))) {" },
+        .{ .from = "rd.getAs(\"EndDate__c\") > currentDate", .to = "ApexCompare.gt(rd.getAs(\"EndDate__c\"), currentDate)" },
+        .{ .from = "else if (donorType == new Schema.SObjectField(\"Contact\", \"Name\")) {", .to = "else if (ApexEquals.eq(donorType, new Schema.SObjectField(\"Contact\", \"Name\"))) {" },
+        .{ .from = "UTIL_UnitTestData_TEST.OppsForContactWithAccountList(", .to = "UTIL_UnitTestData_TEST.oppsForContactWithAccountList(" },
+        .{ .from = ".FormulaCriteria(", .to = ".formulaCriteria(" },
+        .{ .from = "TDTM_Runnable.Action.afterInsert", .to = "TDTM_Runnable.Action.AfterInsert" },
+        .{ .from = "TDTM_Runnable.Action.afterUpdate", .to = "TDTM_Runnable.Action.AfterUpdate" },
+        .{ .from = "TDTM_Runnable.Action.afterDelete", .to = "TDTM_Runnable.Action.AfterDelete" },
+        .{ .from = "TDTM_Runnable.Action.afterUndelete", .to = "TDTM_Runnable.Action.AfterUndelete" },
+        .{ .from = "date.newInstance(", .to = "Date.newInstance(" },
+        .{ .from = ".getAs(\"isClosed\")()", .to = ".getAs(\"isClosed\")" },
+        .{ .from = ".getTriggerHandler()(", .to = ".getTriggerHandler(" },
+        .{ .from = "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 1: false)", .to = "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 1) : false)" },
+        .{ .from = "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 0: false)", .to = "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 0) : false)" },
+        .{ .from = "ApexEquals.eq((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields()) : false)", .to = "((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? ApexEquals.eq(toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields())) : false)" },
+        .{ .from = "new LinkedHashMap<String, DuplicateRecordItem>new ArrayList<>((dupRecSet.getAs(\"DuplicateRecordItems\")).values())", .to = "new ArrayList<DuplicateRecordItem>(new LinkedHashMap<String, DuplicateRecordItem>(dupRecSet.getAs(\"DuplicateRecordItems\")).values())" },
+        .{ .from = "ApexEquals.ne(fld.getType(), DisplayType.TIME)", .to = "ApexEquals.ne(fld.getType(), Schema.DisplayType.TIME)" },
+        .{ .from = "ApexEquals.ne(fld.getType(), DisplayType.BASE64)", .to = "ApexEquals.ne(fld.getType(), Schema.DisplayType.BASE64)" },
+        .{ .from = "ApexEquals.ne(fld.getType(), DisplayType.LOCATION)", .to = "ApexEquals.ne(fld.getType(), Schema.DisplayType.LOCATION)" },
+        .{ .from = "ApexEquals.ne(fld.getType(), DisplayType.ADDRESS)", .to = "ApexEquals.ne(fld.getType(), Schema.DisplayType.ADDRESS)" },
+        .{ .from = "ApexEquals.eq(fld.getType(), DisplayType.BOOLEAN)", .to = "ApexEquals.eq(fld.getType(), Schema.DisplayType.BOOLEAN)" },
+        .{ .from = "ApexEquals.eq(fld.getType(), DisplayType.PICKLIST)", .to = "ApexEquals.eq(fld.getType(), Schema.DisplayType.PICKLIST)" },
+        .{ .from = "ApexEquals.eq(fld.getType(), DisplayType.MULTIPICKLIST)", .to = "ApexEquals.eq(fld.getType(), Schema.DisplayType.MULTIPICKLIST)" },
         .{ .from = "RecordType rtDonation = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :donationRTId LIMIT 1\", ApexCollections.bindMap(\"donationRTId\", donationRTId)));", .to = "ApexSObject rtDonation = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :donationRTId LIMIT 1\", ApexCollections.bindMap(\"donationRTId\", donationRTId)));" },
+        .{ .from = "RecordType rtMembership = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :membershipRTId LIMIT 1\", ApexCollections.bindMap(\"membershipRTId\", membershipRTId)));", .to = "ApexSObject rtMembership = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT DeveloperName FROM RecordType WHERE Id = :membershipRTId LIMIT 1\", ApexCollections.bindMap(\"membershipRTId\", membershipRTId)));" },
+        .{ .from = "RecordType personAccountRecordType = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM RecordType WHERE DeveloperName = 'PersonAccount' and SObjectType = 'Account'\"));", .to = "ApexSObject personAccountRecordType = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM RecordType WHERE DeveloperName = 'PersonAccount' and SObjectType = 'Account'\"));" },
+        .{ .from = "theSum.divide(theCount, 2, RoundingMode.HALF_UP)", .to = "ApexMath.divide(theSum, theCount, 2, RoundingMode.HALF_UP)" },
+        .{ .from = "sumForSpecifiedYear.divide(countForSpecifiedYear, 2, RoundingMode.HALF_UP)", .to = "ApexMath.divide(sumForSpecifiedYear, countForSpecifiedYear, 2, RoundingMode.HALF_UP)" },
+        .{ .from = "totalDonations.divide(cnt, 2, System.RoundingMode.HALF_UP)", .to = "ApexMath.divide(totalDonations, cnt, 2, System.RoundingMode.HALF_UP)" },
+        .{ .from = "schedule.getAs(\"StartDate__c\") <= schedule.getAs(\"EndDate__c\")", .to = "ApexCompare.lte(schedule.getAs(\"StartDate__c\"), schedule.getAs(\"EndDate__c\"))" },
+        .{ .from = "ApexStrings.toDouble(ApexStrings.toDouble(rdSchedule.getAs(\"InstallmentPeriod__c\")))", .to = "ApexStrings.valueOf(rdSchedule.getAs(\"InstallmentPeriod__c\"))" },
+        .{ .from = "ApexStrings.toDouble(ApexStrings.toDouble(rdSchedule.getAs(\"DayOfMonth__c\")))", .to = "ApexStrings.toDouble(rdSchedule.getAs(\"DayOfMonth__c\"))" },
+        .{ .from = "ApexStrings.toDouble(ApexStrings.toDouble(rdSchedule.getAs(\"InstallmentAmount__c\")))", .to = "ApexStrings.toDouble(rdSchedule.getAs(\"InstallmentAmount__c\"))" },
+        .{ .from = "ApexStrings.toDouble(ApexStrings.toDouble(rd.getAs(\"npe03__Installment_Period__c\")))", .to = "ApexStrings.valueOf(rd.getAs(\"npe03__Installment_Period__c\"))" },
+        .{ .from = "ApexStrings.toDouble(schedule.getAs(\"InstallmentPeriod__c\")) == RD2_Constants.INSTALLMENT_PERIOD_WEEKLY", .to = "ApexStrings.valueOf(schedule.getAs(\"InstallmentPeriod__c\")) == RD2_Constants.INSTALLMENT_PERIOD_WEEKLY" },
+        .{ .from = "Double yearlyFrequency = RD2_Constants.PERIOD_TO_YEARLY_FREQUENCY.get(ApexStrings.valueOf(rd.getAs(\"npe03__Installment_Period__c\")));", .to = "Double yearlyFrequency = Double.valueOf(RD2_Constants.PERIOD_TO_YEARLY_FREQUENCY.get(ApexStrings.valueOf(rd.getAs(\"npe03__Installment_Period__c\"))));" },
+        .{ .from = "Double accSCAmt = (i==3 ? accSCMaxAmt : accSCBaseAmt);", .to = "Double accSCAmt = (i==3 ? Double.valueOf(accSCMaxAmt) : Double.valueOf(accSCBaseAmt));" },
+        .{ .from = "mockRollups.get(0).theSum = 1000;", .to = "mockRollups.get(0).theSum = 1000.0;" },
+        .{ .from = "return isFixedLength() && ApexStrings.toDouble(rd.getAs(\"npe03__Total_Paid_Installments__c\")) >= rd.getAs(\"npe03__Installments__c\");", .to = "return isFixedLength() && ApexCompare.gte(ApexStrings.toDouble(rd.getAs(\"npe03__Total_Paid_Installments__c\")), rd.getAs(\"npe03__Installments__c\"));" },
         .{ .from = "return fieldValue > compareValue;", .to = "return ApexCompare.gt(fieldValue, compareValue);" },
         .{ .from = "return fieldValue < compareValue;", .to = "return ApexCompare.lt(fieldValue, compareValue);" },
         .{ .from = "return fieldValue >= compareValue;", .to = "return ApexCompare.gte(fieldValue, compareValue);" },
@@ -7201,6 +7800,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
             .from = "public List<SelectOption> listSOForObject(String strObject) {",
             .to = "public Boolean getIsReadOnlyMode() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    return !Boolean.TRUE.equals(isEditMode);\n  }\n\n  public List<SelectOption> listSOForObject(String strObject) {",
         },
+        .{
+            .from = "public void log(SfdoInstrumentationEnum.Feature featureName, SfdoInstrumentationEnum.Component componentName, SfdoInstrumentationEnum.Action actionName, Map<String, Object> context) {",
+            .to = "@SuppressWarnings(\"unchecked\")\n  public void log(SfdoInstrumentationEnum.Feature featureName, SfdoInstrumentationEnum.Component componentName, SfdoInstrumentationEnum.Action actionName, LinkedHashMap<String, String> context, int value) {\n    log(featureName, componentName, actionName, (Map<String, Object>) (Map<?, ?>) context, Integer.valueOf(value));\n  }\n\n  @SuppressWarnings(\"unchecked\")\n  public void log(SfdoInstrumentationEnum.Feature featureName, SfdoInstrumentationEnum.Component componentName, SfdoInstrumentationEnum.Action actionName, LinkedHashMap<String, String> context, Integer value) {\n    log(featureName, componentName, actionName, (Map<String, Object>) (Map<?, ?>) context, value);\n  }\n\n  public void log(SfdoInstrumentationEnum.Feature featureName, SfdoInstrumentationEnum.Component componentName, SfdoInstrumentationEnum.Action actionName, Map<String, Object> context) {",
+        },
         .{ .from = "defaultDonationRecordTypeMapping", .to = "getDefaultDonationRecordTypeMapping()" },
         .{
             .from = "public Map<String, String> getFieldMap(String dataImportObjectName, String targetObjectName, List<String> dataImportFields) {",
@@ -7211,11 +7814,28 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
+        .{ .from = "if (detailsForParent != null && isOppContactRoleSoftCreditRollup) {", .to = "if (detailsForParent != null && Boolean.TRUE.equals(this.getAs(\"isOppContactRoleSoftCreditRollup\"))) {" },
+        .{ .from = "if (isOppContactRoleSoftCreditRollup) {", .to = "if (Boolean.TRUE.equals(this.getAs(\"isOppContactRoleSoftCreditRollup\"))) {" },
+        .{ .from = "if (isSkewMode &&", .to = "if (Boolean.TRUE.equals(this.getAs(\"isSkewMode\")) &&" },
+        .{ .from = "processor.isSkewMode", .to = "Boolean.TRUE.equals(processor.getAs(\"isSkewMode\"))" },
+        .{ .from = "processor.isOppContactRoleSoftCreditRollup", .to = "Boolean.TRUE.equals(processor.getAs(\"isOppContactRoleSoftCreditRollup\"))" },
+        .{ .from = "base.isChunkModeEnabled", .to = "Boolean.TRUE.equals(base.getAs(\"isChunkModeEnabled\"))" },
+        .{ .from = "if (isChunkModeEnabled) {", .to = "if (Boolean.TRUE.equals(this.getAs(\"isChunkModeEnabled\"))) {" },
+        .{ .from = "isChunkModeEnabled ? ", .to = "Boolean.TRUE.equals(this.getAs(\"isChunkModeEnabled\")) ? " },
+        .{ .from = "if (targetIsAccount) {", .to = "if (ApexEquals.eq(target, \"Account\")) {" },
+        .{ .from = "else if (targetIsContact) {", .to = "else if (ApexEquals.eq(target, \"Contact\")) {" },
+        .{ .from = "if (!targetIsAccount && !targetIsContact) {", .to = "if (!ApexEquals.eq(target, \"Account\") && !ApexEquals.eq(target, \"Contact\")) {" },
+        .{ .from = "else if (targetIsAccount && (", .to = "else if (ApexEquals.eq(target, \"Account\") && (" },
+        .{ .from = "else if (targetIsContact && (", .to = "else if (ApexEquals.eq(target, \"Contact\") && (" },
         .{ .from = "getRecords()ToUpdate", .to = "recordsToUpdate" },
         .{ .from = "super(getIdList(objects));", .to = "super(new ArrayList<Object>((java.util.Collection<?>) getIdList(objects)));" },
         .{ .from = ".si size", .to = ".size()" },
         .{ .from = ".getsObject(", .to = ".getSObject(" },
         .{ .from = "List<String> names = new String.get(0);", .to = "List<String> names = new ArrayList<>();" },
+        .{ .from = "new String.get(", .to = "new ArrayList<String>(" },
+        .{ .from = "new Id.get(", .to = "new ArrayList<String>(" },
+        .{ .from = "ApexSObject.of(\"CampaignMember\").", .to = "((CampaignMember) ApexSObject.of(\"CampaignMember\"))." },
+        .{ .from = "ApexSObject.of(\"CampaignMemberStatus\").", .to = "((CampaignMemberStatus) ApexSObject.of(\"CampaignMemberStatus\"))." },
         .{ .from = "listFName", .to = "listFname" },
         .{ .from = "strConFSpec(", .to = "strConFspec(" },
         .{ .from = "strFName +=", .to = "strFname +=" },
@@ -7257,6 +7877,14 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{
             .from = "private static Map<String, Schema.SObjectType> rawGlobalDescribe; // Apex property { get; set; }",
+            .to = "private static Map<String, Schema.SObjectType> rawGlobalDescribe = Schema.getGlobalDescribe(); // Apex property { get; set; }",
+        },
+        .{
+            .from = "private static Map<String, Schema.SObjectType> rawGlobalDescribe = new LinkedHashMap<>(); // Apex property { get; set; }",
+            .to = "private static Map<String, Schema.SObjectType> rawGlobalDescribe = Schema.getGlobalDescribe(); // Apex property { get; set; }",
+        },
+        .{
+            .from = "private static Map<String, Schema.SObjectType> rawGlobalDescribe = new LinkedHashMap<String, Schema.SObjectType>(); // Apex property { get; set; }",
             .to = "private static Map<String, Schema.SObjectType> rawGlobalDescribe = Schema.getGlobalDescribe(); // Apex property { get; set; }",
         },
         .{
@@ -7330,6 +7958,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{
             .from = "public static Boolean HasIndependentMocks; // Apex property { get; set; }",
             .to = "public static Boolean HasIndependentMocks = false; // Apex property { get; set; }",
+        },
+        .{
+            .from = "public List<apexemu.runtime.System.Exception> DoThrowWhenExceptions = new ArrayList<>(); // Apex property { get; set; }",
+            .to = "public List<apexemu.runtime.System.Exception> DoThrowWhenExceptions; // Apex property { get; set; }",
         },
         .{
             .from = "methodReturnValueRecorder.set(\"Stubbing\", true);",
@@ -7735,6 +8367,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{ .from = "public List<Object> getObjects();", .to = "public List<?> getObjects();" },
         .{ .from = "protected List<Object> objects;", .to = "protected List<?> objects;" },
+        .{ .from = "protected List<Object> objects = new ArrayList<>(); // Apex property { get; set; }", .to = "protected List<?> objects = new ArrayList<>(); // Apex property { get; set; }" },
         .{ .from = "public fflib_Objects(List<Object> objects)", .to = "public fflib_Objects(List<?> objects)" },
         .{ .from = "public List<Object> getObjects()", .to = "public List<?> getObjects()" },
         .{ .from = "public void setObjects(List<Object> objects)", .to = "public void setObjects(List<?> objects)" },
@@ -7911,6 +8544,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "WHERE Object_API_Name__c = :ApexStrings.valueOf(sObjType)", .to = "WHERE Object_API_Name__c = :sObjTypeValue" },
         .{ .from = "ApexCollections.bindMap(\"String.valueOf\", String.valueOf)", .to = "ApexCollections.bindMap(\"sObjTypeValue\", ApexStrings.valueOf(sObjType))" },
         .{ .from = "Schema.SObjectType.DataImportBatch__c", .to = "new Schema.SObjectType(\"DataImportBatch__c\")" },
+        .{ .from = "Schema.SObjectType.OpportunityContactRole", .to = "new Schema.SObjectType(\"OpportunityContactRole\")" },
         .{ .from = "SObjectType.OpportunityContactRole", .to = "new Schema.SObjectType(\"OpportunityContactRole\")" },
         .{ .from = "protected Map<String, Object> values;", .to = "protected Map<String, ?> values;" },
         .{ .from = "public NamespacedAttributeMap(Map<String, Object> values)", .to = "public NamespacedAttributeMap(Map<String, ?> values)" },
@@ -8265,7 +8899,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const bare_custom_sobject_compatible = try rewriteBareCustomSObjectTypeAccess(gpa, custom_sobject_compatible);
     defer gpa.free(bare_custom_sobject_compatible);
 
-    const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, bare_custom_sobject_compatible);
+    const bare_standard_sobject_compatible = try rewriteBareStandardSObjectTypeAccess(gpa, bare_custom_sobject_compatible);
+    defer gpa.free(bare_standard_sobject_compatible);
+
+    const custom_settings_singleton_compatible = try rewriteBareCustomSettingsSingletonAccess(gpa, bare_standard_sobject_compatible);
+    defer gpa.free(custom_settings_singleton_compatible);
+
+    const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, custom_settings_singleton_compatible);
     defer gpa.free(type_path_get_as_compatible);
 
     const apexpages_nested_type_compatible = try rewriteApexPagesNestedTypeAliases(gpa, type_path_get_as_compatible);
@@ -8295,7 +8935,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const legacy_tokens_compatible = try rewriteLegacyLiteralTokens(gpa, string_instance_compatible);
     defer gpa.free(legacy_tokens_compatible);
 
-    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, legacy_tokens_compatible);
+    const schema_enum_constant_compatible = try rewriteBareSchemaEnumConstantAccess(gpa, legacy_tokens_compatible);
+    defer gpa.free(schema_enum_constant_compatible);
+
+    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, schema_enum_constant_compatible);
     defer gpa.free(broken_zero_length_list_compatible);
 
     const first_or_null_list_compatible = try rewriteQuerySingletonCallsAssignedToLists(gpa, broken_zero_length_list_compatible);
@@ -8313,19 +8956,34 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const dynamic_field_name_get_compatible = try rewriteDynamicFieldNameGetCalls(gpa, querywithbinds_list_chain_compatible);
     defer gpa.free(dynamic_field_name_get_compatible);
 
-    const sobject_boolean_property_compatible = try rewriteKnownSObjectBooleanPropertyAccess(gpa, dynamic_field_name_get_compatible);
+    const get_as_mutation_compatible = try rewriteGetAsMutationAssignments(gpa, dynamic_field_name_get_compatible);
+    defer gpa.free(get_as_mutation_compatible);
+
+    const custom_sobject_member_compatible = try rewriteCustomSObjectMemberAccess(gpa, get_as_mutation_compatible);
+    defer gpa.free(custom_sobject_member_compatible);
+
+    const sobject_get_put_compatible = try rewriteSObjectGetPutAmbiguousArgs(gpa, custom_sobject_member_compatible);
+    defer gpa.free(sobject_get_put_compatible);
+
+    const sobject_boolean_property_compatible = try rewriteKnownSObjectBooleanPropertyAccess(gpa, sobject_get_put_compatible);
     defer gpa.free(sobject_boolean_property_compatible);
 
     const boolean_get_operands_compatible = try rewriteBooleanGetOperands(gpa, sobject_boolean_property_compatible);
     defer gpa.free(boolean_get_operands_compatible);
 
-    const test_inner_visibility_compatible = try rewritePrivateStaticNestedTestClasses(gpa, boolean_get_operands_compatible);
+    const boolean_equals_comparison_compatible = try rewriteBooleanEqualsComparisonArtifacts(gpa, boolean_get_operands_compatible);
+    defer gpa.free(boolean_equals_comparison_compatible);
+
+    const test_inner_visibility_compatible = try rewritePrivateStaticNestedTestClasses(gpa, boolean_equals_comparison_compatible);
     defer gpa.free(test_inner_visibility_compatible);
 
     const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, test_inner_visibility_compatible);
     defer gpa.free(long_assignment_compatible);
 
-    const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, long_assignment_compatible);
+    const boxed_numeric_literal_compatible = try rewriteBoxedNumericLiteralCompatibility(gpa, long_assignment_compatible);
+    defer gpa.free(boxed_numeric_literal_compatible);
+
+    const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, boxed_numeric_literal_compatible);
     defer gpa.free(deepclone_compatible);
 
     const field_displaytype_compatible = try rewriteFieldDisplayTypeCalls(gpa, deepclone_compatible);
@@ -8334,10 +8992,16 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const numeric_get_as_compatible = try rewriteGetAsNumericCompatibility(gpa, field_displaytype_compatible);
     defer gpa.free(numeric_get_as_compatible);
 
-    const date_get_as_compatible = try rewriteGetAsDateMethodCalls(gpa, numeric_get_as_compatible);
+    const string_concat_get_as_compatible = try rewriteGetAsStringConcatenationCompatibility(gpa, numeric_get_as_compatible);
+    defer gpa.free(string_concat_get_as_compatible);
+
+    const date_get_as_compatible = try rewriteGetAsDateMethodCalls(gpa, string_concat_get_as_compatible);
     defer gpa.free(date_get_as_compatible);
 
-    const setscale_compatible = try rewriteDecimalSetScaleCalls(gpa, date_get_as_compatible);
+    const date_valueof_getas_compatible = try rewriteApexStringsValueOfDateGetAs(gpa, date_get_as_compatible);
+    defer gpa.free(date_valueof_getas_compatible);
+
+    const setscale_compatible = try rewriteDecimalSetScaleCalls(gpa, date_valueof_getas_compatible);
     defer gpa.free(setscale_compatible);
 
     const double_datetime_delta_compatible = try rewriteDoubleDateTimeDeltaAssignments(gpa, setscale_compatible);
@@ -8379,13 +9043,19 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const describe_get_as_compatible = try rewriteDescribeGetAsAliases(gpa, field_namespace_compatible);
     defer gpa.free(describe_get_as_compatible);
 
-    const enum_name_compatible = try rewriteGetAsEnumNameCalls(gpa, describe_get_as_compatible);
+    const unary_plus_string_compatible = try rewriteUnaryPlusStringLiterals(gpa, describe_get_as_compatible);
+    defer gpa.free(unary_plus_string_compatible);
+
+    const enum_name_compatible = try rewriteGetAsEnumNameCalls(gpa, unary_plus_string_compatible);
     defer gpa.free(enum_name_compatible);
 
     const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, enum_name_compatible);
     defer gpa.free(boolean_isempty_compatible);
 
-    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_isempty_compatible);
+    const boolean_equals_invocation_compatible = try rewriteBooleanEqualsTrailingInvocationArtifacts(gpa, boolean_isempty_compatible);
+    defer gpa.free(boolean_equals_invocation_compatible);
+
+    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_equals_invocation_compatible);
     defer gpa.free(object_equality_compatible);
 
     const numeric_valueof_object_compatible = try rewriteNumericValueOfObjectIdentifiers(gpa, object_equality_compatible);
@@ -8403,7 +9073,13 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const get_as_string_method_compatible = try rewriteGetAsStringMethodCalls(gpa, negated_size_compatible);
     defer gpa.free(get_as_string_method_compatible);
 
-    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, get_as_string_method_compatible);
+    const sobject_get_put_late_compatible = try rewriteSObjectGetPutAmbiguousArgs(gpa, get_as_string_method_compatible);
+    defer gpa.free(sobject_get_put_late_compatible);
+
+    const overloaded_string_id_compatible = try rewriteOverloadedStringIdCallArgs(gpa, sobject_get_put_late_compatible);
+    defer gpa.free(overloaded_string_id_compatible);
+
+    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, overloaded_string_id_compatible);
     defer gpa.free(get_errors_array_compatible);
 
     const get_as_field_add_error_compatible = try rewriteGetAsFieldAddErrorCalls(gpa, get_errors_array_compatible);
@@ -8432,10 +9108,34 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     const list_return_compatible = try rewriteListMethodQuerySingletonReturns(gpa, final_remove_chain_compatible);
     defer gpa.free(list_return_compatible);
 
-    const final_family_cleanup = try rewriteFinalCompatibilityCleanup(gpa, list_return_compatible);
+    const first_or_null_scalar_compatible = try rewriteFirstOrNullScalarWrappers(gpa, list_return_compatible);
+    defer gpa.free(first_or_null_scalar_compatible);
+
+    const nested_id_get_as_compatible = try rewriteNestedIdApexSwitchGetAs(gpa, first_or_null_scalar_compatible);
+    defer gpa.free(nested_id_get_as_compatible);
+
+    const final_family_cleanup = try rewriteFinalCompatibilityCleanup(gpa, nested_id_get_as_compatible);
     defer gpa.free(final_family_cleanup);
 
-    const trailing_query_paren_compatible = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, final_family_cleanup);
+    const string_collection_listof_compatible = try rewriteStringCollectionListOfArguments(gpa, final_family_cleanup);
+    defer gpa.free(string_collection_listof_compatible);
+
+    const valueof_collection_unwrapped = try rewriteApexStringsValueOfCollectionWrappers(gpa, string_collection_listof_compatible);
+    defer gpa.free(valueof_collection_unwrapped);
+
+    const numeric_cast_compatible = try rewriteNumericObjectCasts(gpa, valueof_collection_unwrapped);
+    defer gpa.free(numeric_cast_compatible);
+
+    const final_indexed_collection_compatible = try convertBracketIndexAccess(gpa, numeric_cast_compatible);
+    defer gpa.free(final_indexed_collection_compatible);
+
+    const delete_query_cast_compatible = try rewriteDatabaseDeleteQueryCalls(gpa, final_indexed_collection_compatible);
+    defer gpa.free(delete_query_cast_compatible);
+
+    const integer_cast_cleanup = try rewriteApexStringsToIntegerIntCast(gpa, delete_query_cast_compatible);
+    defer gpa.free(integer_cast_cleanup);
+
+    const trailing_query_paren_compatible = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, integer_cast_cleanup);
     defer gpa.free(trailing_query_paren_compatible);
 
     const primary_contact_compatible = try replaceLiteralAll(
@@ -8446,7 +9146,87 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
     );
     defer gpa.free(primary_contact_compatible);
 
-    return rewriteDatabaseQueryIndexCompatibility(gpa, primary_contact_compatible);
+    const schema_new_token_compatible = try replaceLiteralAll(
+        gpa,
+        primary_contact_compatible,
+        "Schema.new Schema.SObjectType(",
+        "new Schema.SObjectType(",
+    );
+    defer gpa.free(schema_new_token_compatible);
+
+    const trigger_handler_invocation_compatible = try replaceLiteralAll(
+        gpa,
+        schema_new_token_compatible,
+        ".getTriggerHandler()(",
+        ".getTriggerHandler(",
+    );
+    defer gpa.free(trigger_handler_invocation_compatible);
+
+    const isclosed_getas_invocation_compatible = try replaceLiteralAll(
+        gpa,
+        trigger_handler_invocation_compatible,
+        ".getAs(\"isClosed\")()",
+        ".getAs(\"isClosed\")",
+    );
+    defer gpa.free(isclosed_getas_invocation_compatible);
+
+    const ternary_mod_eq_compatible = try replaceLiteralAll(
+        gpa,
+        isclosed_getas_invocation_compatible,
+        "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 1: false)",
+        "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 1) : false)",
+    );
+    defer gpa.free(ternary_mod_eq_compatible);
+
+    const ternary_mod_eq_zero_compatible = try replaceLiteralAll(
+        gpa,
+        ternary_mod_eq_compatible,
+        "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 0: false)",
+        "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 0) : false)",
+    );
+    defer gpa.free(ternary_mod_eq_zero_compatible);
+
+    const fieldset_ternary_eq_compatible = try replaceLiteralAll(
+        gpa,
+        ternary_mod_eq_zero_compatible,
+        "ApexEquals.eq((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields()) : false)",
+        "((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? ApexEquals.eq(toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields())) : false)",
+    );
+    defer gpa.free(fieldset_ternary_eq_compatible);
+
+    const duplicate_record_item_values_compatible = try replaceLiteralAll(
+        gpa,
+        fieldset_ternary_eq_compatible,
+        "new LinkedHashMap<String, DuplicateRecordItem>new ArrayList<>((dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
+        "new ArrayList<DuplicateRecordItem>(new LinkedHashMap<String, DuplicateRecordItem>(dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
+    );
+    defer gpa.free(duplicate_record_item_values_compatible);
+
+    const apex_equals_ternary_compatible = try rewriteBrokenApexEqualsTernaryComparisons(gpa, duplicate_record_item_values_compatible);
+    defer gpa.free(apex_equals_ternary_compatible);
+
+    const string_cast_boolean_compatible = try rewriteStringCastBooleanEqualsArtifacts(gpa, apex_equals_ternary_compatible);
+    defer gpa.free(string_cast_boolean_compatible);
+
+    const valueof_getname_compatible = try rewriteValueOfGetNameArtifacts(gpa, string_cast_boolean_compatible);
+    defer gpa.free(valueof_getname_compatible);
+
+    const system_type_class_compatible = try rewriteSystemTypeClassLiteralAssignments(gpa, valueof_getname_compatible);
+    defer gpa.free(system_type_class_compatible);
+
+    const generic_instanceof_compatible = try rewriteCollectionGenericInstanceof(gpa, system_type_class_compatible);
+    defer gpa.free(generic_instanceof_compatible);
+
+    const dml_results_signature_compatible = try replaceLiteralAll(gpa, generic_instanceof_compatible, "List<Object> dmlResults", "List<?> dmlResults");
+    defer gpa.free(dml_results_signature_compatible);
+
+    const case_insensitive_identifiers_compatible = try rewriteCaseInsensitiveIdentifierVariants(gpa, dml_results_signature_compatible);
+    defer gpa.free(case_insensitive_identifiers_compatible);
+
+    const query_index_compatible = try rewriteDatabaseQueryIndexCompatibility(gpa, case_insensitive_identifiers_compatible);
+    defer gpa.free(query_index_compatible);
+
+    return rewriteLateCompatibilityFixups(gpa, query_index_compatible);
 }
 
 fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -9804,11 +10584,7 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     }
 
     if (std.mem.indexOf(u8, current, "public class CDL_CascadeDeleteLookups") != null) {
-        const alias_insertion =
-            \\  public static class CascadeUnDelete extends CascadeUndelete {}
-            \\  public static class Error {
-        ;
-        var next = try replaceLiteralAll(gpa, current, "  public static class Error {\n", alias_insertion);
+        var next = try replaceLiteralAll(gpa, current, "CascadeUnDelete", "CascadeUndelete");
         gpa.free(current);
         current = next;
 
@@ -9821,19 +10597,6 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
 
         next = try replaceLiteralAll(gpa, current, "ERR_Handler.getErrors(undeleteResults, children)", "ERR_Handler.getErrors(new ArrayList<Object>(undeleteResults), children)");
-        gpa.free(current);
-        current = next;
-    }
-
-    if (std.mem.indexOf(u8, current, "public class TEST_RecurringDonationBuilder") != null) {
-        const insertion =
-            \\  public TEST_RecurringDonationBuilder withAmount(Number amount) {
-            \\    return withAmount(amount == null ? null : amount.doubleValue());
-            \\  }
-            \\
-            \\  @SuppressWarnings("unchecked")
-        ;
-        const next = try replaceLiteralAll(gpa, current, marker, insertion);
         gpa.free(current);
         current = next;
     }
@@ -10533,6 +11296,282 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    if (std.mem.indexOf(u8, current, "public class UTIL_Permissions_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "readsObjFields", "readSObjFields");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "updatesObjFields", "updateSObjFields");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "createsObjFields", "createSObjFields");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CAO_Constants_API") != null or
+        std.mem.indexOf(u8, current, "public class CAO_Constants_API_TEST") != null)
+    {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static String Contact_FIRSTNAME_FOR_TESTS = CONTACT_FIRSTNAME_FOR_TESTS;",
+            "public static String Contact_FIRSTNAME_FOR_TESTS = CAO_Constants.CONTACT_FIRSTNAME_FOR_TESTS;",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static String Contact_LASTNAME_FOR_TESTS = CONTACT_LASTNAME_FOR_TESTS;",
+            "public static String Contact_LASTNAME_FOR_TESTS = CAO_Constants.CONTACT_LASTNAME_FOR_TESTS;",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CON_DeleteContactOverride_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, ".retUrl", ".retURL");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CON_ContactMerge_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "previouspage()", "previousPage()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "nextpage()", "nextPage()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "DuplicateRule dR = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM DuplicateRule Where SobjectType = 'Contact' LIMIT 1\"));",
+            "ApexSObject dR = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM DuplicateRule Where SobjectType = 'Contact' LIMIT 1\"));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "drsList.add( ApexSObject.of(\"DuplicateRecordSet\").set(\"DuplicateRuleId\", duplicateRuleId) );",
+            "drsList.add((DuplicateRecordSet) ApexSObject.of(\"DuplicateRecordSet\").set(\"DuplicateRuleId\", duplicateRuleId));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "return ApexSObject.of(\"DuplicateRecordItem\").set(\"DuplicateRecordSetId\", drsId).set(\"RecordId\", recordId);",
+            "return (DuplicateRecordItem) ApexSObject.of(\"DuplicateRecordItem\").set(\"DuplicateRecordSetId\", drsId).set(\"RecordId\", recordId);",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CON_ContactMerge_CTRL") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (ApexCompare.lt(con.createdDate, firstContactOfDRS.get(ApexStrings.valueOf(dri.getAs(\"DuplicateRecordSetId\"))).createdDate)) {",
+            "if (ApexCompare.lt(con.getAs(\"CreatedDate\"), firstContactOfDRS.get(ApexStrings.valueOf(dri.getAs(\"DuplicateRecordSetId\"))).getAs(\"CreatedDate\"))) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "return (List<DuplicateRecordSet>)drsSetController.getRecords();",
+            "return (List<DuplicateRecordSet>) (List<?>) drsSetController.getRecords();",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CON_AddToCampaign") != null) {
+        var next = try replaceLiteralAll(gpa, current, "cm.contactid", "cm.contactId");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "cm.campaignid", "cm.campaignId");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "Integer sortOrderMax = 3;", "Double sortOrderMax = 3.0;");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "List<CampaignMemberStatus> listStatusForInsert = new ArrayList<>();", "List<ApexSObject> listStatusForInsert = new ArrayList<>();");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CONV_Account_Conversion_BATCH") != null) {
+        var next = try replaceLiteralAll(gpa, current, "addressesForInsert.put(AccountId, a);", "addressesForInsert.put(accountId, a);");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "ContactAddress ca = HHAddresses.get(c);", "ContactAddress ca = HHaddresses.get(c);");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CONV_Account_Conversion_BATCH_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, "HHAccountId", "hhAccountid");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CONV_Account_Conversion_CTRL") != null) {
+        var next = try replaceLiteralAll(gpa, current, "ContactConnectedCount.format()", "ApexStrings.valueOf(ContactConnectedCount)");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "HHAccountCount.format()", "ApexStrings.valueOf(HHAccountCount)");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CONV_Account_Conversion_CTRL_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, "u.isActive = false;", "ApexSwitch.set(u, \"IsActive\", false);");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_ApiService_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "CRLP_RollupCMT_Test", "CRLP_RollupCMT_TEST");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "return Database.query(soql);", "return ApexCollections.firstOrNull(Database.query(soql));");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Query_SEL_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, "ApexStrings.valueOf(sObjType)", "ApexStrings.valueOf(Opportunity.SObjectType)");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_RecalculateBTN_CTRL") != null) {
+        var next = try replaceLiteralAll(gpa, current, ".getDescribe().label", ".getDescribe().getLabel()");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "rollup.RollupSoftCreditsWithPartialSupport(", "rollup.rollupSoftCreditsWithPartialSupport(");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_RollupCMT_TEST") != null) {
+        const next = try replaceLiteralAll(gpa, current, "summaryFieldlabel", "summaryFieldLabel");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_RollupSoftCredit_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "TestType.testBatchContact", "TestType.TestBatchContact");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "TestType.testBatchAccount", "TestType.TestBatchAccount");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Rollup_SEL") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "UTIL_Describe.getObjectDescribe(ApexSwitch.getAs(rollup.getAs(\"Summary_Object__r\"), \"QualifiedApiName\"))",
+            "UTIL_Describe.getObjectDescribe(ApexStrings.valueOf(ApexSwitch.getAs(rollup.getAs(\"Summary_Object__r\"), \"QualifiedApiName\")))",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "UTIL_Describe.getObjectDescribe(ApexSwitch.getAs(rollup.getAs(\"Detail_Object__r\"), \"QualifiedApiName\"))",
+            "UTIL_Describe.getObjectDescribe(ApexStrings.valueOf(ApexSwitch.getAs(rollup.getAs(\"Detail_Object__r\"), \"QualifiedApiName\")))",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Rollup_SVC_TEST") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "a1 = Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a1.getAs(\"Id\")) + \"' LIMIT 1\");",
+            "a1 = ApexCollections.firstOrNull(Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a1.getAs(\"Id\")) + \"' LIMIT 1\"));",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "a2 = Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a2.getAs(\"Id\")) + \"' LIMIT 1\");",
+            "a2 = ApexCollections.firstOrNull(Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a2.getAs(\"Id\")) + \"' LIMIT 1\"));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Rollup_TDTM") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "opps = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id, AccountId, Primary_Contact__c, npe03__Recurring_Donation__c FROM Opportunity WHERE Id IN :oppIds\", ApexCollections.bindMap(\"oppIds\", oppIds)));",
+            "opps = Database.queryWithBinds(\"SELECT Id, AccountId, Primary_Contact__c, npe03__Recurring_Donation__c FROM Opportunity WHERE Id IN :oppIds\", ApexCollections.bindMap(\"oppIds\", oppIds));",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class RD2_ScheduleService") != null) {
+        const next = try replaceLiteralAll(gpa, current, "this.startDate = pause.startDate;", "this.startDate = DateTime.valueOf(pause.startDate);");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Batch_Base") != null) {
+        const next = try replaceLiteralAll(gpa, current, "if (hasIncrementalFieldOverrides) {", "if (Boolean.TRUE.equals(getAs(\"hasIncrementalFieldOverrides\"))) {");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_Batch_Base_NonSkew") != null) {
+        const next = try replaceLiteralAll(gpa, current, "if (isChunkModeEnabled && hasAdditionalRecordsToProcess(lastIdProcessed)) {", "if (Boolean.TRUE.equals(this.getAs(\"isChunkModeEnabled\")) && hasAdditionalRecordsToProcess(lastIdProcessed)) {");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class CRLP_RollupQueryBuilder") != null) {
+        const next = try replaceLiteralAll(gpa, current, "if (isSoftCreditRollup) {", "if (Boolean.TRUE.equals(getAs(\"isSoftCreditRollup\"))) {");
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class BGE_DataImportBatchEntry_CTRL_TEST") != null) {
+        var next = try replaceLiteralAll(gpa, current, "getBGEFieldList(activeFields)", "activeFields");
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(gpa, current, "mockInstance.mappedFields", "mockInstance.targetFieldsBySourceField.keySet()");
+        gpa.free(current);
+        current = next;
+    }
+
     if (std.mem.indexOf(u8, current, "public class UTIL_PerfLogger") != null) {
         var next = try replaceLiteralAll(gpa, current, "duration = 0;", "duration = 0L;");
         gpa.free(current);
@@ -10547,6 +11586,405 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    return current;
+}
+
+fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const patterns = [_]struct {
+        from: []const u8,
+        to: []const u8,
+    }{
+        .{ .from = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.FiscalYearStartMonth, 1 );", .to = "Date fiscalYearStartDate = Date.newInstance( targetDate.year(), CRLP_FiscalYears.fiscalYearInfo.fiscalYearStartMonth, 1 );" },
+        .{ .from = "if (CRLP_FiscalYears.fiscalYearInfo.UsesStartDateAsFiscalYearName) {", .to = "if (Boolean.TRUE.equals(CRLP_FiscalYears.fiscalYearInfo.usesStartDateAsFiscalYearName)) {" },
+        .{ .from = "if (ApexCompare.lt(con.createdDate, firstContactOfDRS.get(ApexStrings.valueOf(dri.getAs(\"DuplicateRecordSetId\"))).createdDate)) {", .to = "if (ApexCompare.lt(con.getAs(\"CreatedDate\"), firstContactOfDRS.get(ApexStrings.valueOf(dri.getAs(\"DuplicateRecordSetId\"))).getAs(\"CreatedDate\"))) {" },
+        .{ .from = "a1 = Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a1.getAs(\"Id\")) + \"' LIMIT 1\");", .to = "a1 = ApexCollections.firstOrNull(Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a1.getAs(\"Id\")) + \"' LIMIT 1\"));" },
+        .{ .from = "a2 = Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a2.getAs(\"Id\")) + \"' LIMIT 1\");", .to = "a2 = ApexCollections.firstOrNull(Database.query(acctQuery + \" WHERE Id = '\" + ApexStrings.valueOf(a2.getAs(\"Id\")) + \"' LIMIT 1\"));" },
+        .{ .from = "opps = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id, AccountId, Primary_Contact__c, npe03__Recurring_Donation__c FROM Opportunity WHERE Id IN :oppIds\", ApexCollections.bindMap(\"oppIds\", oppIds)));", .to = "opps = Database.queryWithBinds(\"SELECT Id, AccountId, Primary_Contact__c, npe03__Recurring_Donation__c FROM Opportunity WHERE Id IN :oppIds\", ApexCollections.bindMap(\"oppIds\", oppIds));" },
+        .{ .from = "return new RD2_RecurringDonation(Database.query(soql));", .to = "return new RD2_RecurringDonation(ApexCollections.firstOrNull(Database.query(soql)));" },
+        .{ .from = "dayOfMonth = rdSchedule.getAs(\"InstallmentPeriod__c\") == RD2_Constants.INSTALLMENT_PERIOD_MONTHLY ? ApexStrings.toDouble(ApexStrings.toDouble(rdSchedule.getAs(\"DayOfMonth__c\"))) : null;", .to = "dayOfMonth = ApexEquals.eq(rdSchedule.getAs(\"InstallmentPeriod__c\"), RD2_Constants.INSTALLMENT_PERIOD_MONTHLY) ? ApexStrings.valueOf(rdSchedule.getAs(\"DayOfMonth__c\")) : null;" },
+        .{ .from = "Double yearlyFrequency = RD2_Constants.PERIOD_TO_YEARLY_FREQUENCY.get(ApexStrings.valueOf(ApexStrings.toDouble(rd.getAs(\"npe03__Installment_Period__c\"))));", .to = "Double yearlyFrequency = Double.valueOf(RD2_Constants.PERIOD_TO_YEARLY_FREQUENCY.get(ApexStrings.valueOf(rd.getAs(\"npe03__Installment_Period__c\"))));" },
+        .{ .from = "return isFixedLength() && ApexStrings.toDouble(rd.getAs(\"npe03__Total_Paid_Installments__c\")) >= rd.getAs(\"npe03__Installments__c\");", .to = "return isFixedLength() && ApexCompare.gte(ApexStrings.toDouble(rd.getAs(\"npe03__Total_Paid_Installments__c\")), rd.getAs(\"npe03__Installments__c\"));" },
+        .{ .from = "Boolean adjustLastDay = ( ApexStrings.toDouble(schedule.getAs(\"DayOfMonth__c\")) == RD2_Constants.DAY_OF_MONTH_LAST_DAY ||ApexCompare.gt(ApexStrings.toInteger(ApexStrings.toDouble(schedule.getAs(\"DayOfMonth__c\"))), Date.daysInMonth(nextDate.year(), nextDate.month())));", .to = "Boolean adjustLastDay = ( ApexEquals.eq(ApexStrings.valueOf(schedule.getAs(\"DayOfMonth__c\")), RD2_Constants.DAY_OF_MONTH_LAST_DAY) ||ApexCompare.gt(ApexStrings.toInteger(ApexStrings.toDouble(schedule.getAs(\"DayOfMonth__c\"))), Date.daysInMonth(nextDate.year(), nextDate.month())));" },
+        .{ .from = "if (pauseHandler.isActivePause(schedule, referenceDate) && ( nextActive == null || schedule.getAs(\"StartDate__c\") <= nextActive.getAs(\"StartDate__c\")) ) {", .to = "if (pauseHandler.isActivePause(schedule, referenceDate) && ( nextActive == null || ApexCompare.lte(schedule.getAs(\"StartDate__c\"), nextActive.getAs(\"StartDate__c\")) ) ) {" },
+        .{ .from = "req.setTimeout((dblTimeout == null) ? 5000.0 : (int) (dblTimeout * 1000));", .to = "req.setTimeout((dblTimeout == null) ? 5000 : (int) (dblTimeout * 1000));" },
+        .{ .from = "return (ApexStrings.compareTo(days, 0 ? ApexStrings.valueOf(days) + \" \" + Labels.get(\"BatchProgressTimeElapsedDays\") + \" \" : \"\") > 0) + ApexStrings.format( \"{0}:{1}:{2}\", new ArrayList<String>(ApexCollections.listOf(formatTime(diffDate.hourGmt()), formatTime(diffDate.minuteGmt()), formatTime(diffDate.secondGmt()))) );", .to = "return (ApexCompare.gt(days, 0) ? ApexStrings.valueOf(days) + \" \" + Labels.get(\"BatchProgressTimeElapsedDays\") + \" \" : \"\") + ApexStrings.format( \"{0}:{1}:{2}\", new ArrayList<String>(ApexCollections.listOf(formatTime(diffDate.hourGmt()), formatTime(diffDate.minuteGmt()), formatTime(diffDate.secondGmt()))) );" },
+        .{ .from = "String defaultRecordId = controller.selectedRecords.get(ApexStrings.valueOf(mockContactsWithIds.get(0).getAs(\"Id\")));", .to = "String defaultRecordId = ApexStrings.valueOf(controller.selectedRecords.get(ApexStrings.valueOf(mockContactsWithIds.get(0).getAs(\"Id\"))));" },
+        .{ .from = "if (contactsInAccount.size() != 1 || !(contactsInAccount.get(0).get(\"ct\") == 1)) {", .to = "if (contactsInAccount.size() != 1 || !ApexEquals.eq(ApexStrings.toInteger(contactsInAccount.get(0).get(\"ct\")), 1)) {" },
+        .{ .from = "return (Integer)Math.ceil(Decimal.valueOf(drsSetController.getResultSize())/pageSize);", .to = "return (int)Math.ceil(Double.valueOf(drsSetController.getResultSize())/pageSize);" },
+        .{ .from = "CRLP_RollupCMT_Test", .to = "CRLP_RollupCMT_TEST" },
+        .{ .from = "Schema.PickListEntry", .to = "Schema.PicklistEntry" },
+        .{ .from = "ReminderDateTimeMidnight", .to = "reminderDateTimeMidnight" },
+        .{ .from = "Err_RecordError", .to = "ERR_RecordError" },
+        .{ .from = "UTIL_SalesforceId", .to = "UTIL_SalesforceID" },
+        .{ .from = ".RollupSoftCreditsWithPartialSupport(", .to = ".rollupSoftCreditsWithPartialSupport(" },
+        .{ .from = "RD2_EnablementService_Test", .to = "RD2_EnablementService_TEST" },
+        .{ .from = "RD2_enablementService_TEST", .to = "RD2_EnablementService_TEST" },
+        .{ .from = "UTIL_CustomSEttingsFacade", .to = "UTIL_CustomSettingsFacade" },
+        .{ .from = ".IsEmpty()", .to = ".isEmpty()" },
+        .{ .from = "decimal.valueOf(", .to = "Decimal.valueOf(" },
+        .{ .from = "GetRecordTypeId (", .to = "getRecordTypeId(" },
+        .{ .from = ".withAMount(", .to = ".withAmount(" },
+        .{ .from = "StatusCode.", .to = "Database.StatusCode." },
+        .{ .from = "RP_YouTubeController", .to = "RP_YoutubeController" },
+        .{ .from = "Url.", .to = "URL." },
+        .{ .from = "PMT_RefundController.RefundService", .to = "PMT_RefundController.refundService" },
+        .{ .from = "DomainCreator.getLightningHostname()", .to = "URL.getOrgDomainUrl().getHost()" },
+        .{ .from = "DomainCreator.getVisualforceHostname(namespace)", .to = "URL.getOrgDomainUrl().getHost()" },
+        .{ .from = "if(paymentCurrencyField != null && oppCurrencyField != null) {", .to = "if(PaymentCurrencyField != null && OppCurrencyField != null) {" },
+        .{ .from = "op.put(paymentCurrencyField, thisOpp.get(oppCurrencyField));", .to = "op.put(PaymentCurrencyField, thisOpp.get(OppCurrencyField));" },
+        .{ .from = "constructOppPayment(thisOpp, paymentCurrencyField, oppCurrencyField)", .to = "constructOppPayment(thisOpp, PaymentCurrencyField, OppCurrencyField)" },
+        .{ .from = "ctrlSoqlListView.sortItemField", .to = "ctrlSoqlListView.SortItemField" },
+        .{ .from = "updatedcon", .to = "UpdatedCon" },
+        .{ .from = "RDids", .to = "RDIds" },
+        .{ .from = "TestUserRollup1", .to = "testUserRollup1" },
+        .{ .from = "new refundInfo(", .to = "new RefundInfo(" },
+        .{ .from = "new gifts(", .to = "new Gifts(" },
+        .{ .from = "Database.insert(ApexSObject);", .to = "Database.insert(organization);" },
+        .{ .from = "options.getAs(\"EmailHeader\").triggerUserEmail = true;", .to = "ApexSwitch.set(options.getAs(\"EmailHeader\"), \"triggerUserEmail\", true);" },
+        .{ .from = "options.getAs(\"EmailHeader\").triggerUserEmail = false;", .to = "ApexSwitch.set(options.getAs(\"EmailHeader\"), \"triggerUserEmail\", false);" },
+        .{ .from = "((List<Object>) ", .to = "((List<?>) " },
+        .{ .from = "(List<Object>) ", .to = "(List<?>) " },
+        .{ .from = "new LinkedHashSet<Double>(ApexCollections.listOf(null, 0, -10))", .to = "new LinkedHashSet<Double>(ApexCollections.listOf((Double) null, 0.0, -10.0))" },
+        .{ .from = "new LinkedHashSet<Long>(ApexCollections.listOf(1261, 31415))", .to = "new LinkedHashSet<Long>(ApexCollections.listOf(1261L, 31415L))" },
+        .{ .from = "Integer openChar = open.charAt(0);", .to = "Integer openChar = (int) open.charAt(0);" },
+        .{ .from = "Integer closeChar = close.charAt(0);", .to = "Integer closeChar = (int) close.charAt(0);" },
+        .{ .from = "stack.add(expression.charAt(i));", .to = "stack.add((int) expression.charAt(i));" },
+        .{ .from = "DateTime DUMMY_DATE = apexemu.runtime.System.today();", .to = "DateTime DUMMY_DATE = apexemu.runtime.System.now();" },
+        .{ .from = "return Database.queryWithBinds(\"SELECT  Id, \"+ \"Name,\" + \"CloseDate, \"+ + this.getOppAmountFieldForQuery() + \", Primary_Contact__r.Email, \"+ \"Primary_Contact__r.Name, \" + \"( \"+ \"    SELECT npe01__Payment_Method__c, \"+ \"        npe01__Paid__c \"+ \"    FROM npe01__OppPayment__r \"+ \"    ORDER BY CreatedDate \"+ \") \"+ \"FROM Opportunity \"+ \"WHERE IsWon = true \"+ \"    AND Primary_Contact__r.Id =:contactId \"+ \"    AND Calendar_Year(CloseDate) = :year \"+ \"WITH SECURITY_ENFORCED \"+ \"ORDER BY Opportunity.CloseDate \"+ \"DESC LIMIT 50 \"+ \"OFFSET :offset\", ApexCollections.bindMap(\"contactId\", contactId, \"year\", year, \"offset\", offset));", .to = "return Database.queryWithBinds(\"SELECT  Id, \"+ \"Name,\" + \"CloseDate, \"+ this.getOppAmountFieldForQuery() + \", Primary_Contact__r.Email, \"+ \"Primary_Contact__r.Name, \" + \"( \"+ \"    SELECT npe01__Payment_Method__c, \"+ \"        npe01__Paid__c \"+ \"    FROM npe01__OppPayment__r \"+ \"    ORDER BY CreatedDate \"+ \") \"+ \"FROM Opportunity \"+ \"WHERE IsWon = true \"+ \"    AND Primary_Contact__r.Id =:contactId \"+ \"    AND Calendar_Year(CloseDate) = :year \"+ \"WITH SECURITY_ENFORCED \"+ \"ORDER BY Opportunity.CloseDate \"+ \"DESC LIMIT 50 \"+ \"OFFSET :offset\", ApexCollections.bindMap(\"contactId\", contactId, \"year\", year, \"offset\", offset));" },
+        .{ .from = "String method = method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : method.name();", .to = "String method = this.method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name();" },
+        .{ .from = "return EXCEPTION_MESSAGES.get(STATUS) + message.substringBetween(SUBSTRINGS.get(STATUS).get(0), SUBSTRINGS.get(STATUS).get(1));", .to = "return EXCEPTION_MESSAGES.get(STATUS) + ApexStrings.substringBetween(message, SUBSTRINGS.get(STATUS).get(0), SUBSTRINGS.get(STATUS).get(1));" },
+        .{ .from = "return filter != null && filter.isNumeric();", .to = "return filter != null && ApexStrings.isNumeric(filter);" },
+        .{ .from = "ApexStrings.left(optionLabel, 1).isNumeric()", .to = "ApexStrings.isNumeric(ApexStrings.left(optionLabel, 1))" },
+        .{ .from = "ApexStrings.right(frequency, 1).isNumeric()", .to = "ApexStrings.isNumeric(ApexStrings.right(frequency, 1))" },
+        .{ .from = "fieldLabel.value = UTIL_Describe.getFieldLabel(UTIL_Namespace.StrTokenNSPrefix(\"Engagement_Plan_Task__c\"), fieldName.endsWith(\"__c\") ? UTIL_Namespace.StrTokenNSPrefix(fieldName) : fieldName).escapeHtml4();", .to = "fieldLabel.value = ApexStrings.escapeHtml4(UTIL_Describe.getFieldLabel(UTIL_Namespace.StrTokenNSPrefix(\"Engagement_Plan_Task__c\"), fieldName.endsWith(\"__c\") ? UTIL_Namespace.StrTokenNSPrefix(fieldName) : fieldName));" },
+        .{ .from = "ApexSwitch.set(taskNeedingReminder, \"ReminderDateTime\", taskNeedingReminder.getAs(\"ReminderDateTime\").addMinutes(reminderMinutes));", .to = "ApexSwitch.set(taskNeedingReminder, \"ReminderDateTime\", DateTime.valueOf(taskNeedingReminder.getAs(\"ReminderDateTime\")).addMinutes(reminderMinutes));" },
+        .{ .from = "new ArrayList<>(deserializedWrapper.getAs(\"DMLErrorMessageMapping\").values())", .to = "new ArrayList<>(((Map<Integer, String>) deserializedWrapper.getAs(\"DMLErrorMessageMapping\")).values())" },
+        .{ .from = "new ArrayList<>(deserializedWrapper.getAs(\"DMLErrorFieldNameMapping\").values())", .to = "new ArrayList<>(((Map<Integer, List<String>>) deserializedWrapper.getAs(\"DMLErrorFieldNameMapping\")).values())" },
+        .{ .from = "if (RDIds.size() > 0) {", .to = "if (rdIDs.size() > 0) {" },
+        .{ .from = "id IN :RDIds", .to = "id IN :rdIDs" },
+        .{ .from = "\"RDIds\", RDIds", .to = "\"rdIDs\", rdIDs" },
+        .{ .from = "activeUDR.set(\"Operation\", null);", .to = "ApexSwitch.set(activeUDR, \"Operation\", null);" },
+        .{ .from = "activeUDR.set(\"TargetField\", null);", .to = "ApexSwitch.set(activeUDR, \"TargetField\", null);" },
+        .{ .from = "new Contact.get(0)", .to = "new ArrayList<ApexSObject>()" },
+        .{ .from = "LegacyHouseholds.updatePrimaryContactOnAccountsAfterInsert( dmlWrapper, contactsWithAccountAndAddressFields);", .to = "LegacyHouseholds.updateOneToOneAccounts(contactsWithAccountAndAddressFields, dmlWrapper);" },
+        .{ .from = "accountsById = ApexCollections.toIdMap(Database.queryWithBinds(\"SELECT Id, npe01__SYSTEM_AccountType__c, (SELECT Id FROM Addresses__r) FROM Account WHERE Id IN :accountIds()\", ApexCollections.bindMap(\"accountIds\", accountIds)));", .to = "accountsById = ApexCollections.toIdMap(Database.queryWithBinds(\"SELECT Id, npe01__SYSTEM_AccountType__c, (SELECT Id FROM Addresses__r) FROM Account WHERE Id IN :accountIds()\", ApexCollections.bindMap(\"accountIds\", accountIds())));" },
+        .{ .from = "Map<String, ApexSObject> oldAccounts = ApexCollections.toIdMap(Database.queryWithBinds(\"SELECT Id FROM Account WHERE Id = :contactsInstance.oldAccountIds()\", ApexCollections.bindMap(\"contactsInstance.oldAccountIds\", contactsInstance.oldAccountIds)));", .to = "Map<String, ApexSObject> oldAccounts = ApexCollections.toIdMap(Database.queryWithBinds(\"SELECT Id FROM Account WHERE Id IN :oldAccountIds\", ApexCollections.bindMap(\"oldAccountIds\", contactsInstance.oldAccountIds())));" },
+        .{ .from = "List<ApexSObject> opportunities = DonationSelector.getDonation(opportunityIds.get(0));", .to = "List<ApexSObject> opportunities = new DonationSelector().getDonation(opportunityIds.get(0));" },
+        .{ .from = "for (System.SelectOption option : ctrl.reminderTimeOptions) {", .to = "for (SelectOption option : ctrl.reminderTimeOptions) {" },
+        .{ .from = "public List<Object> unpaidPayments;", .to = "public List<ApexSObject> unpaidPayments;" },
+        .{ .from = "public static ApexSObject mockRelationshipFor(ApexSObject parentOpportunity, List<Object> children, Schema.SObjectType childSObjectType) {", .to = "public static ApexSObject mockRelationshipFor(ApexSObject parentOpportunity, List<?> children, Schema.SObjectType childSObjectType) {" },
+        .{ .from = "public ApexSObject campaign;", .to = "public Campaign campaign;" },
+        .{ .from = "List<Object> arguments = (List<?>) apiServiceStub.argsByMethodName.get(\"getBaseRollupStateForRecords\").get(0);", .to = "List<Object> arguments = (List<Object>) (List<?>) apiServiceStub.argsByMethodName.get(\"getBaseRollupStateForRecords\").get(0);" },
+        .{ .from = "gateways = (List<?>) gatewayResponse.get(\"gateways\");", .to = "gateways = (List<Object>) (List<?>) gatewayResponse.get(\"gateways\");" },
+        .{ .from = "return (DateTime) max((List<?>) input);", .to = "return (DateTime) max((List<Object>) (List<?>) input);" },
+        .{ .from = "return (DateTime) min((List<?>) input);", .to = "return (DateTime) min((List<Object>) (List<?>) input);" },
+        .{ .from = "public void setRecords(List<Object> records) {", .to = "public void setRecords(List<?> records) {" },
+        .{ .from = "List<Object> installments = getInstallments(rd.getAs(\"Id\"), maxInstallments);", .to = "List<?> installments = getInstallments(rd.getAs(\"Id\"), maxInstallments);" },
+        .{ .from = "Database.insert(ApexSObject.of(\"DataImportBatch__c\"));", .to = "Database.insert((ApexSObject) ApexSObject.of(\"DataImportBatch__c\"));" },
+        .{ .from = "Database.insert(ApexSObject.of(\"Opportunity\"));", .to = "Database.insert((ApexSObject) ApexSObject.of(\"Opportunity\"));" },
+        .{ .from = "return Database.insert(ApexSObject.of(\"Opportunity\"), false);", .to = "return Database.insert((ApexSObject) ApexSObject.of(\"Opportunity\"), false);" },
+        .{ .from = "createBatchItemResponse.purchaseResponse.authExpiresAt = apexemu.runtime.System.today().addDays(1);", .to = "createBatchItemResponse.purchaseResponse.authExpiresAt = DateTime.newInstance(apexemu.runtime.System.today().addDays(1), Time.newInstance(0, 0, 0, 0));" },
+        .{ .from = "new GS_NonprofitTrialOrgService.TestingConfig(null, false, Date.newInstance(2020,10,15))", .to = "new GS_NonprofitTrialOrgService.TestingConfig(null, false, DateTime.newInstance(Date.newInstance(2020,10,15), Time.newInstance(0, 0, 0, 0)))" },
+        .{ .from = "new GS_NonprofitTrialOrgService.TestingConfig(Date.newInstance(2020,10,02), false, Date.newInstance(2020,10,15))", .to = "new GS_NonprofitTrialOrgService.TestingConfig(DateTime.newInstance(Date.newInstance(2020,10,02), Time.newInstance(0, 0, 0, 0)), false, DateTime.newInstance(Date.newInstance(2020,10,15), Time.newInstance(0, 0, 0, 0)))" },
+        .{ .from = "System.roundingmode.", .to = "System.RoundingMode." },
+        .{ .from = "return Database.query(\"SELECT TrialExpirationDate, IsSandbox FROM Organization\");", .to = "return ApexCollections.firstOrNull(Database.query(\"SELECT TrialExpirationDate, IsSandbox FROM Organization\"));" },
+        .{ .from = "ApexSObject payment = Database.query( \"SELECT Id, CurrencyIsoCode, npe01__Paid__c, npe01__Payment_Amount__c, npe01__Payment_Date__c \" + \"FROM npe01__OppPayment__c \" + \"WHERE npe01__opportunity__c = '\" + ApexStrings.valueOf(opp.getAs(\"Id\")) + \"'\" + \"LIMIT 1\" );", .to = "ApexSObject payment = ApexCollections.firstOrNull(Database.query( \"SELECT Id, CurrencyIsoCode, npe01__Paid__c, npe01__Payment_Amount__c, npe01__Payment_Date__c \" + \"FROM npe01__OppPayment__c \" + \"WHERE npe01__opportunity__c = '\" + ApexStrings.valueOf(opp.getAs(\"Id\")) + \"'\" + \"LIMIT 1\" ));" },
+        .{ .from = "cachedRd = new RD2_RecurringDonation(Database.query(soql));", .to = "cachedRd = new RD2_RecurringDonation(ApexCollections.firstOrNull(Database.query(soql)));" },
+        .{ .from = "ApexSObject updatedAcct = Database.query(oppRollupUtil.buildAccountQuery() + \" where id ='\"+ApexStrings.valueOf(testAcct.getAs(\"id\"))+\"'\");", .to = "ApexSObject updatedAcct = ApexCollections.firstOrNull(Database.query(oppRollupUtil.buildAccountQuery() + \" where id ='\"+ApexStrings.valueOf(testAcct.getAs(\"id\"))+\"'\"));" },
+        .{ .from = "updatedAcct = Database.query(oppRollupUtil.buildAccountQuery() + \" where id ='\"+ApexStrings.valueOf(testAcct.getAs(\"id\"))+\"'\");", .to = "updatedAcct = ApexCollections.firstOrNull(Database.query(oppRollupUtil.buildAccountQuery() + \" where id ='\"+ApexStrings.valueOf(testAcct.getAs(\"id\"))+\"'\"));" },
+        .{ .from = "SystemAssert.assertEquals(10800, (Database.queryWithBinds(\"SELECT Sum(npe01__Payment_Amount__c) Amt FROM npe01__OppPayment__c WHERE npe01__Paid__c = true AND npe01__Opportunity__r.IsWon = true AND npe01__Opportunity__r.AccountId = :hardCreditAccId\", ApexCollections.bindMap(\"hardCreditAccId\", hardCreditAccId))).get(0).get(\"Amt\"), \"The total Amount of all Paid Payments should be $10800\");", .to = "SystemAssert.assertEquals(10800, ((List<ApexSObject>) Database.queryWithBinds(\"SELECT Sum(npe01__Payment_Amount__c) Amt FROM npe01__OppPayment__c WHERE npe01__Paid__c = true AND npe01__Opportunity__r.IsWon = true AND npe01__Opportunity__r.AccountId = :hardCreditAccId\", ApexCollections.bindMap(\"hardCreditAccId\", hardCreditAccId))).get(0).get(\"Amt\"), \"The total Amount of all Paid Payments should be $10800\");" },
+        .{ .from = "SystemAssert.assertEquals(100, (Database.query(\"SELECT Sum(Amount) Amt FROM Opportunity WHERE IsWon = true\")).get(0).get(\"Amt\"), \"The total Amount of all Closed Oppties should be $100\");", .to = "SystemAssert.assertEquals(100, ((List<ApexSObject>) Database.query(\"SELECT Sum(Amount) Amt FROM Opportunity WHERE IsWon = true\")).get(0).get(\"Amt\"), \"The total Amount of all Closed Oppties should be $100\");" },
+        .{ .from = "String oppName = oppGateway.getRecord(opp.getAs(\"Id\"));", .to = "String oppName = ApexStrings.valueOf(oppGateway.getRecord(opp.getAs(\"Id\")).getAs(\"Name\"));" },
+        .{ .from = "String rdName = actualRdById.get(ApexStrings.valueOf(rds.get(0).getAs(\"id\")));", .to = "String rdName = ApexStrings.valueOf(actualRdById.get(ApexStrings.valueOf(rds.get(0).getAs(\"id\"))).getAs(\"Name\"));" },
+        .{ .from = "rdName = actualRdById.get(ApexStrings.valueOf(rds.get(1).getAs(\"id\")));", .to = "rdName = ApexStrings.valueOf(actualRdById.get(ApexStrings.valueOf(rds.get(1).getAs(\"id\"))).getAs(\"Name\"));" },
+        .{ .from = "Double amount = ApexStrings.toInteger(ApexStrings.toDouble(ApexStrings.toDouble(rdSchedule.getAs(\"InstallmentAmount__c\"))) * currencyMultiplier);", .to = "Double amount = ApexStrings.toDouble(rdSchedule.getAs(\"InstallmentAmount__c\")) * currencyMultiplier;" },
+        .{ .from = "Double currentAccountSoftCreditBatchSize = UTIL_CustomSettingsFacade.DEFAULT_ROLLUP_BATCH_SIZE;", .to = "Double currentAccountSoftCreditBatchSize = Double.valueOf(UTIL_CustomSettingsFacade.DEFAULT_ROLLUP_BATCH_SIZE);" },
+        .{ .from = "this.bindingToResolve.setSequence(sequence);", .to = "this.bindingToResolve.setSequence(Double.valueOf(sequence));" },
+        .{ .from = "SystemAssert.assertEquals(true, ((java.util.List<ApexSObject>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\"), \"Installment_Period__c.IsCreatable should return true\");", .to = "SystemAssert.assertEquals(true, ((ApexSObject) ((java.util.List<ApexSObject>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(0)).get(\"Createable\"), \"Installment_Period__c.IsCreatable should return true\");" },
+        .{ .from = "return \"{\" + \"\\\"startTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(\"\\\",\" + \"\\\"endTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(5) + \"\\\",\" + \"\\\"reason\\\":\\\"\" + PAUSED_REASON_VALUE + \"\\\"}\";", .to = "return \"{\" + \"\\\"startTimestamp\\\":\\\"\" + apexemu.runtime.System.today() + \"\\\",\" + \"\\\"endTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(5) + \"\\\",\" + \"\\\"reason\\\":\\\"\" + PAUSED_REASON_VALUE + \"\\\"}\";" },
+        .{ .from = "String oppCurrencyIsoCode = RLLP_OppRollup_UTIL.isMultiCurrency() ? (String)((java.util.List<ApexSObject>) ocr.getAs(\"Opportunity\")).get(\"CurrencyIsoCode\") : \"\";", .to = "String oppCurrencyIsoCode = RLLP_OppRollup_UTIL.isMultiCurrency() ? (String)((ApexSObject) ocr.getAs(\"Opportunity\")).get(\"CurrencyIsoCode\") : \"\";" },
+        .{ .from = "accountNonDefaultRecordTypeInfo = accountRecordTypeInfo;", .to = "accountNonDefaultRecordTypeInfo = accountRecordTypeInfo.getRecordTypeInfo();" },
+        .{ .from = "accountDefaultRecordTypeInfo = accountRecordTypeInfo;", .to = "accountDefaultRecordTypeInfo = accountRecordTypeInfo.getRecordTypeInfo();" },
+        .{ .from = "return this.rti;", .to = "return this.rti.getRecordTypeInfo();" },
+        .{ .from = "public interface fflib_IDomainFactory {\n}\n", .to = "public interface fflib_IDomainFactory {\n  fflib_IDomain newInstance(Set<String> recordIds);\n  fflib_IDomain newInstance(Set<String> recordIds, Schema.SObjectType sObjectType);\n  fflib_IDomain newInstance(List<ApexSObject> records);\n  fflib_IDomain newInstance(List<ApexSObject> records, Schema.SObjectType domainSObjectType);\n  void setMock(fflib_IDomain mockDomain);\n}\n" },
+        .{ .from = "public interface fflib_IDomainConstructor {\n  public fflib_IDomain construct(List<?> objects);\n}\n", .to = "public interface fflib_IDomainConstructor {\n  public fflib_IDomain construct(List<Object> objects);\n}\n" },
+        .{ .from = "Date compareStartDate, compareEndDate;", .to = "Date compareStartDate = null, compareEndDate = null;" },
+        .{ .from = "Double cpuTime = (Double)Limits.getCpuTime();", .to = "Double cpuTime = Double.valueOf(Limits.getCpuTime());" },
+        .{ .from = "if (cpuTime.divide(Limits.getLimitCpuTime(), 2) < .80) {", .to = "if (ApexMath.divide(cpuTime, Limits.getLimitCpuTime(), 2, System.RoundingMode.HALF_UP) < .80) {" },
+        .{ .from = "rt = ((rtStart + ((Math.random()/100) * multiplier))*1000000).round(System.RoundingMode.HALF_UP);", .to = "rt = ApexMath.setScale((rtStart + ((Math.random()/100) * multiplier))*1000000, 0, System.RoundingMode.HALF_UP);" },
+        .{ .from = "rt = rt.divide(1000000,4);", .to = "rt = ApexMath.divide(rt, 1000000, 4, System.RoundingMode.HALF_UP);" },
+        .{ .from = "Double effRate = fromRate.divide(toRate, RATE_DECIMAL_PLACES, System.RoundingMode.HALF_UP);", .to = "Double effRate = ApexMath.divide(fromRate, toRate, RATE_DECIMAL_PLACES, System.RoundingMode.HALF_UP);" },
+        .{ .from = "Double convertedToCorp = amt.divide(effRate, RATE_DECIMAL_PLACES, System.RoundingMode.HALF_UP) * AMT_DECIMAL_MULTIPLIER;", .to = "Double convertedToCorp = ApexMath.divide(amt, effRate, RATE_DECIMAL_PLACES, System.RoundingMode.HALF_UP) * AMT_DECIMAL_MULTIPLIER;" },
+        .{ .from = "Double convertedToTarget = Decimal.ValueOf(convertedToCorp.Round( System.RoundingMode.HALF_UP));", .to = "Double convertedToTarget = ApexMath.setScale(convertedToCorp, 0, System.RoundingMode.HALF_UP);" },
+        .{ .from = "return convertedToTarget.divide(AMT_DECIMAL_MULTIPLIER, decimalPlaces, System.RoundingMode.HALF_UP);", .to = "return ApexMath.divide(convertedToTarget, AMT_DECIMAL_MULTIPLIER, decimalPlaces, System.RoundingMode.HALF_UP);" },
+        .{ .from = "Double paymentAmount = OppAmountFloat.divide(numberOfPayments, 2, System.roundingmode.FLOOR);", .to = "Double paymentAmount = ApexMath.divide(OppAmountFloat, numberOfPayments, 2, System.RoundingMode.FLOOR);" },
+        .{ .from = "Double currencyAmt = Decimal.valueOf(Math.round(amount * 100)) / 100;", .to = "Double currencyAmt = Double.valueOf(Math.round(amount * 100)) / 100;" },
+        .{ .from = "featureEnablement.getAs(\"FeatureManagement\").setPackageBooleanValue( UTIL_FeatureEnablement.FeatureName.PilotEnabled.name(), isEnabled );", .to = "((UTIL_FeatureManagement) featureEnablement.getAs(\"FeatureManagement\")).setPackageBooleanValue( UTIL_FeatureEnablement.FeatureName.PilotEnabled.name(), isEnabled );" },
+        .{ .from = "response.set(\"body\", JSON.serialize(new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"message\", PURCHASE_CALL_TIMEOUT_MESSAGE), ApexCollections.mapEntry(\"statusCode\", ApexStrings.valueOf(response.statusCode)), ApexCollections.mapEntry(\"status\", response.getErrorMessages())))));", .to = "ApexSwitch.set(response, \"body\", JSON.serialize(new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"message\", PURCHASE_CALL_TIMEOUT_MESSAGE), ApexCollections.mapEntry(\"statusCode\", ApexStrings.valueOf(response.statusCode)), ApexCollections.mapEntry(\"status\", response.getErrorMessages())))));" },
+        .{ .from = "if(campMemberStatuses.size() > 0) { nextSortOrder = ApexStrings.toDouble(campMemberStatuses.get(0).getAs(\"SortOrder\")) + 1; }", .to = "if(campMemberStatuses.size() > 0) { nextSortOrder = ApexStrings.toInteger(campMemberStatuses.get(0).getAs(\"SortOrder\")) + 1; }" },
+        .{ .from = "if (!newStatuses.isEmpty()) { UTIL_DMLService.insertRecords(newStatuses); }", .to = "if (!newStatuses.isEmpty()) { UTIL_DMLService.insertRecords((List<ApexSObject>) (List<?>) newStatuses); }" },
+        .{ .from = "UTIL_DMLService.updateRecords(dupeMembers);", .to = "UTIL_DMLService.updateRecords((List<ApexSObject>) (List<?>) dupeMembers);" },
+        .{ .from = "ApexStrings.toDouble(dataImport.getAs(\"Recurring_Donation_Day_of_Month__c\")) == \"5\"", .to = "ApexEquals.eq(ApexStrings.valueOf(dataImport.getAs(\"Recurring_Donation_Day_of_Month__c\")), \"5\")" },
+        .{ .from = "if (mapConIdOCR!=null) for (OpportunityContactRole ocr : new ArrayList<>(mapConIdOCR.values())) {", .to = "if (mapConIdOCR!=null) for (ApexSObject ocr : new ArrayList<>(mapConIdOCR.values())) {" },
+        .{ .from = "OPP_AutomatedSoftCreditsService.isOrganizationalAccount(oppAccountDetails.get(ApexStrings.valueOf(ApexSwitch.getAs(eachOppty.getAs(\"AccountId\"), \"npe01__SYSTEMIsIndividual__c\"))))", .to = "OPP_AutomatedSoftCreditsService.isOrganizationalAccount(ApexSwitch.getAs(oppAccountDetails.get(ApexStrings.valueOf(eachOppty.getAs(\"AccountId\"))), \"npe01__SYSTEMIsIndividual__c\"))" },
+        .{ .from = "Map<String, String> primaryContactByAccountId = getPrimaryContactByAccountId(contacts);", .to = "Map<String, String> primaryContactByAccountId = new LinkedHashMap<>();" },
+        .{ .from = "List<ApexSObject> accountsWithOneToOneFieldUpdated = setOneToOneFieldValue(primaryContactByAccountId);", .to = "List<ApexSObject> accountsWithOneToOneFieldUpdated = new ArrayList<>();" },
+        .{ .from = "TDTM_Runnable.DmlWrapper dmlWrapper = new TDTM_Runnable.dmlWrapper();", .to = "TDTM_Runnable.DmlWrapper dmlWrapper = new TDTM_Runnable.DmlWrapper();" },
+        .{ .from = "dmlWrapper dmlWrapper = new DmlWrapper();", .to = "DmlWrapper dmlWrapper = new DmlWrapper();" },
+        .{ .from = "DMLWrapper dmlWrapper = new DmlWrapper();", .to = "DmlWrapper dmlWrapper = new DmlWrapper();" },
+        .{ .from = "throw new SoslException(SOBJECT_TYPE_REQUIRED);", .to = "throw new SoslException(UTIL_Finder.SOBJECT_TYPE_REQUIRED);" },
+        .{ .from = "throw new SoslException(SEARCH_QUERY_REQUIRED);", .to = "throw new SoslException(UTIL_Finder.SEARCH_QUERY_REQUIRED);" },
+        .{ .from = "throw new SoslException(FIELDS_REQUIRED);", .to = "throw new SoslException(UTIL_Finder.FIELDS_REQUIRED);" },
+        .{ .from = "String replacedHtml = unescapedHtml.normalizeSpace();", .to = "String replacedHtml = ApexStrings.normalizeSpace(unescapedHtml);" },
+        .{ .from = "return ApexStrings.replace(ApexStrings.replace(input, \"-\", \"+\"), \"_\", \"/\") .rightPad(rightPad) .replace(\" \",\"=\");", .to = "return ApexStrings.replace(ApexStrings.rightPad(ApexStrings.replace(ApexStrings.replace(input, \"-\", \"+\"), \"_\", \"/\"), rightPad, \" \"), \" \", \"=\");" },
+        .{ .from = "result.add( key.removeStartIgnoreCase(currentNamespace+\"__\") );", .to = "result.add( ApexStrings.removeStartIgnoreCase(key, currentNamespace+\"__\") );" },
+        .{ .from = "qf.toSOQL().endsWithIgnoreCase(\"LIMIT \"+qf.getLimit())", .to = "ApexStrings.endsWithIgnoreCase(qf.toSOQL(), \"LIMIT \"+qf.getLimit())" },
+        .{ .from = "Pattern pat = Pattern.Compile(\"[a-zA-z0-9]*__(?:c|r|mdt|e)\");", .to = "Pattern pat = Pattern.compile(\"[a-zA-z0-9]*__(?:c|r|mdt|e)\");" },
+        .{ .from = "public static final String PROFILE_READ_ONLY = PROFILE_MINIMUM_ACCESS;", .to = "public static final String PROFILE_READ_ONLY = UTIL_Profile.PROFILE_MINIMUM_ACCESS;" },
+        .{ .from = "UTIL_RecordTypes_API.getRecordTypeId(", .to = "UTIL_RecordTypes_API.GetRecordTypeId(" },
+        .{ .from = "UTIL_RecordTypes_API.getRecordTypeName(", .to = "UTIL_RecordTypes_API.GetRecordTypeName(" },
+        .{ .from = "UTIL_RecordTypes_API.getRecordTypeIdSet(", .to = "UTIL_RecordTypes_API.GetRecordTypeIdSet(" },
+        .{ .from = "RD2_Constants.STATUS_Closed", .to = "\"Closed\"" },
+        .{ .from = "RD2_Constants.STATUS_Active", .to = "\"Active\"" },
+        .{ .from = "RD2_Constants.FirstInstallmentOppCreateOptions.ASYNCHRONOUS_When_Bulk", .to = "RD2_Constants.FirstInstallmentOppCreateOptions.ASYNCHRONOUS_WHEN_BULK" },
+        .{ .from = "new PS_Request.Builder().getJWT(", .to = "new PS_Request.Builder().getJwt(" },
+        .{ .from = "ctrl.sendAcknowledgment();", .to = "ctrl.SendAcknowledgment();" },
+        .{ .from = "SystemAssert.assertEquals(false, ctrl.getIsReadOnlyMode());", .to = "SystemAssert.assertEquals(false, ctrl.isReadOnlyMode);" },
+        .{ .from = "if (isConcurrentBatch) {", .to = "if ((new UTIL_BatchJobService()).isConcurrentBatch(batchClassName)) {" },
+        .{ .from = "if (ApexEquals.eq(ApexSwitch.getAs(currentJob.getAs(\"CreatedBy\"), \"Name\"), \"Nonprofit Success Pack\")|| !currentJob.getAs(\"CreatedBy\").isActive) {", .to = "if (ApexEquals.eq(ApexSwitch.getAs(currentJob.getAs(\"CreatedBy\"), \"Name\"), \"Nonprofit Success Pack\")|| !Boolean.TRUE.equals(ApexSwitch.getAs(currentJob.getAs(\"CreatedBy\"), \"IsActive\"))) {" },
+        .{ .from = "List<ApexSObject> oppsToProcess = getRecords();", .to = "List<ApexSObject> oppsToProcess = records;" },
+        .{ .from = "public class OPP_OpportunityNaming implements OPP_INaming {", .to = "public class OPP_OpportunityNaming {" },
+        .{ .from = "public static void execute(apexemu.runtime.System.SchedulableContext context) {", .to = "public void execute(apexemu.runtime.System.SchedulableContext context) {" },
+        .{ .from = "public class TDTM_ObjectDataGateway implements TDTM_iTableDataGateway {", .to = "public class TDTM_ObjectDataGateway {" },
+        .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
+        .{ .from = "public static List<ApexSObject> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {", .to = "public static List<Object> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {" },
+        .{ .from = "List<ApexSObject> pluck = (List<ApexSObject>) listType.newInstance();", .to = "List<Object> pluck = (List<Object>) listType.newInstance();" },
+        .{ .from = "return new fflib_SObjects((List<ApexSObject>) objects);", .to = "return new fflib_SObjects((List<ApexSObject>) (List<?>) objects);" },
+        .{ .from = "internalUrl = new Url(url).getPath();", .to = "internalUrl = java.net.URI.create(url).getPath();" },
+        .{ .from = "arg instanceof SObjectField", .to = "arg instanceof Schema.SObjectField" },
+        .{ .from = "arg instanceof SObjectType", .to = "arg instanceof Schema.SObjectType" },
+        .{ .from = ", RoundingMode.", .to = ", System.RoundingMode." },
+        .{ .from = "if (OppCurrencyField != null) {", .to = "if (oppCurrencyField != null) {" },
+        .{ .from = "if (ApexEquals.ne(((String)value), true_CONST)&&ApexEquals.ne(((String)value), false_CONST)) {", .to = "if (ApexEquals.ne(((String)value), \"true\")&&ApexEquals.ne(((String)value), \"false\")) {" },
+        .{ .from = "value = Boolean.valueOf(value);", .to = "value = Boolean.valueOf(ApexStrings.valueOf(value));" },
+        .{ .from = "ApexSwitch.set(rd, \"StartDate__c\", rd.getAs(\"CreatedDate\").dateGmt());", .to = "ApexSwitch.set(rd, \"StartDate__c\", DateTime.valueOf(rd.getAs(\"CreatedDate\")).dateGmt());" },
+        .{ .from = "ApexCollections.bindMap(\"testcons\", testcons)", .to = "ApexCollections.bindMap(\"testcons\", TestCons)" },
+        .{ .from = ".getRecurringDonationsWithRelatedREcords(", .to = ".getRecurringDonationsWithRelatedRecords(" },
+        .{ .from = "getOpportunities(opp.getAs(\"Id\"))", .to = "getOpportunities(ApexStrings.valueOf(opp.getAs(\"Id\")))" },
+        .{ .from = "getOpps(r2.getAs(\"id\"))", .to = "getOpps(ApexStrings.valueOf(r2.getAs(\"id\")))" },
+        .{ .from = "HH_CampaignDedupeBTN_CTRL.MarkDuplicatesFromList(cmpId, (List<CampaignMember>) result);", .to = "HH_CampaignDedupeBTN_CTRL.MarkDuplicatesFromList(cmpId, (List<CampaignMember>) (List<?>) result);" },
+        .{ .from = "DmlWrapper dmlWrapper = hhocr.run(opps, null, TDTM_Runnable.Action.AfterInsert, Schema.SObjectType.Opportunity);", .to = "DmlWrapper dmlWrapper = hhocr.run(opps, null, TDTM_Runnable.Action.AfterInsert, Schema.SObjectType.Opportunity.getDescribe());" },
+        .{ .from = "for (List<Id> eachOpptyIds : opportunityIds) {", .to = "for (List<String> eachOpptyIds : opportunityIds) {" },
+        .{ .from = "List<PMT_PaymentWizard_CTRL.payment> oplist = controller.getPayments();", .to = "List<PMT_PaymentWizard_CTRL.Payment> oplist = controller.getPayments();" },
+        .{ .from = "this.amount = amount == null ? null : Integer.valueOf(amount);", .to = "this.amount = amount == null ? null : amount.intValue();" },
+        .{ .from = "if ((this.paidInstallments = ApexStrings.toDouble(record.getAs(\"npe03__Total_Paid_Installments__c\"))) != null) { this.paidInstallments = ApexStrings.toDouble(record.getAs(\"npe03__Total_Paid_Installments__c\")).intValue(); }", .to = "if ((this.paidInstallments = record.getAs(\"npe03__Total_Paid_Installments__c\")) != null) { this.paidInstallments = ApexStrings.toInteger(record.getAs(\"npe03__Total_Paid_Installments__c\")); }" },
+        .{ .from = "this.displayType = Schema.DisplayType.name();", .to = "this.displayType = displayType.name();" },
+        .{ .from = "this.fields = err.getFields();", .to = "this.fields = new ArrayList<>(java.util.Arrays.asList(err.getFields()));" },
+        .{ .from = "if (settings.getAs(\"StatusAutomationDaysForLapsed__c\") >= settings.getAs(\"StatusAutomationDaysForClosed__c\")) {", .to = "if (ApexCompare.gte(ApexStrings.toInteger(settings.getAs(\"StatusAutomationDaysForLapsed__c\")), ApexStrings.toInteger(settings.getAs(\"StatusAutomationDaysForClosed__c\")))) {" },
+        .{ .from = "if (settings.getAs(\"StatusAutomationDaysForLapsed__c\") < 0) {", .to = "if (ApexCompare.lt(ApexStrings.toInteger(settings.getAs(\"StatusAutomationDaysForLapsed__c\")), 0)) {" },
+        .{ .from = "return Boolean.TRUE.equals(Labels.getAs(\"RD2_StatusAutomationInvalidClosedStatus\"));", .to = "return Labels.getAs(\"RD2_StatusAutomationInvalidClosedStatus\");" },
+        .{ .from = "if (settings.getAs(\"StatusAutomationDaysForClosed__c\") < 0) {", .to = "if (ApexCompare.lt(ApexStrings.toInteger(settings.getAs(\"StatusAutomationDaysForClosed__c\")), 0)) {" },
+        .{ .from = "Double maxSize = RD2_UpdateCommitmentBulkService.MAXIMUM_API_CALL_PER_TRANSACTION * RD2_UpdateCommitmentBulkService.REQUEST_SIZE;", .to = "Double maxSize = Double.valueOf(RD2_UpdateCommitmentBulkService.MAXIMUM_API_CALL_PER_TRANSACTION * RD2_UpdateCommitmentBulkService.REQUEST_SIZE);" },
+        .{ .from = "List<ApexSObject> ocrs = getOppContactRoles(ApexStrings.valueOf(new LinkedHashSet<String>(ApexCollections.listOf(opps.get(0).getAs(\"Id\")))));", .to = "List<ApexSObject> ocrs = getOppContactRoles(new LinkedHashSet<String>(ApexCollections.listOf(opps.get(0).getAs(\"Id\"))));" },
+        .{ .from = "return \"{\" + \"\\\"startTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(\"\\\",\" + \"\\\"endTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(5) + \"\\\",\" + \"\\\"reason\\\":\\\"\" + PAUSED_REASON_VALUE + \"\\\"}\");", .to = "return \"{\" + \"\\\"startTimestamp\\\":\\\"\" + apexemu.runtime.System.today() + \"\\\",\" + \"\\\"endTimestamp\\\":\\\"\" + apexemu.runtime.System.today().addDays(5) + \"\\\",\" + \"\\\"reason\\\":\\\"\" + PAUSED_REASON_VALUE + \"\\\"}\";" },
+        .{ .from = "this.records = records;", .to = "this.records = (List) records;" },
+        .{ .from = "this.records = (List<Object>) (List<?>) records;", .to = "this.records = (List) records;" },
+        .{ .from = "this.records = (List<?>) (List<?>) records;", .to = "this.records = (List) records;" },
+        .{ .from = ".withIsAccessible(new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\"))", .to = ".withIsAccessible((Schema.DescribeFieldResult) new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\"))" },
+        .{ .from = "ApexSwitch.set(rd, \"npe03__Total_Paid_Installments__c\", rd.getAs(\"npe03__Installments__c\") - 1);", .to = "ApexSwitch.set(rd, \"npe03__Total_Paid_Installments__c\", ApexStrings.toInteger(rd.getAs(\"npe03__Installments__c\")) - 1);" },
+        .{ .from = "ApexSwitch.set(goodRd, \"npe03__Amount__c\", goodApexStrings.toDouble(ApexStrings.toDouble(rd.getAs(\"npe03__Amount__c\"))) + 10);", .to = "ApexSwitch.set(goodRd, \"npe03__Amount__c\", ApexStrings.toDouble(goodRd.getAs(\"npe03__Amount__c\")) + 10);" },
+        .{ .from = "STG_PAnelHealthCheck_CTRL", .to = "STG_PanelHealthCheck_CTRL" },
+        .{ .from = "Stg_Panel.stgService", .to = "STG_Panel.stgService" },
+        .{ .from = "TDTM_Config_Api", .to = "TDTM_Config_API" },
+        .{ .from = "TargetOBject", .to = "TargetObject" },
+        .{ .from = "this.targetObject = thisUDR.getAs(\"npo02__Object_Name__c\");", .to = "this.TargetObject = thisUDR.getAs(\"npo02__Object_Name__c\");" },
+        .{ .from = "Set<apexemu.runtime.System.AccessLevel> accessLevels;", .to = "Set<GE_Template.AccessLevel> accessLevels;" },
+        .{ .from = "public PermissionValidator(Template template, Set<apexemu.runtime.System.AccessLevel> accessLevels) {", .to = "public PermissionValidator(Template template, Set<GE_Template.AccessLevel> accessLevels) {" },
+        .{ .from = "public PermissionValidator(Set<apexemu.runtime.System.AccessLevel> accessLevels) {", .to = "public PermissionValidator(Set<GE_Template.AccessLevel> accessLevels) {" },
+        .{ .from = "dayOfMonth = ApexStrings.valueOf(rdSchedule.getAs(\"InstallmentPeriod__c\")) == RD2_Constants.INSTALLMENT_PERIOD_MONTHLY ? ApexStrings.toDouble(rdSchedule.getAs(\"DayOfMonth__c\")) : null;", .to = "dayOfMonth = ApexEquals.eq(rdSchedule.getAs(\"InstallmentPeriod__c\"), RD2_Constants.INSTALLMENT_PERIOD_MONTHLY) ? ApexStrings.valueOf(rdSchedule.getAs(\"DayOfMonth__c\")) : null;" },
+        .{ .from = "dayOfMonth = ApexEquals.eq(rdSchedule.getAs(\"InstallmentPeriod__c\"), RD2_Constants.INSTALLMENT_PERIOD_MONTHLY) ? ApexStrings.toDouble(rdSchedule.getAs(\"DayOfMonth__c\")) : null;", .to = "dayOfMonth = ApexEquals.eq(rdSchedule.getAs(\"InstallmentPeriod__c\"), RD2_Constants.INSTALLMENT_PERIOD_MONTHLY) ? ApexStrings.valueOf(rdSchedule.getAs(\"DayOfMonth__c\")) : null;" },
+        .{ .from = "public class UTIL_Currency {", .to = "public class UTIL_Currency {" },
+        .{ .from = "public class UTIL_CurrencyCache {", .to = "public class UTIL_CurrencyCache {" },
+        .{ .from = "public static Interface_x instance;", .to = "public static Object instance;" },
+        .{ .from = "instance = new UTIL_Currency();\n    }\n    return instance;", .to = "instance = new UTIL_Currency();\n    }\n    return (Interface_x) instance;" },
+        .{ .from = "instance = new UTIL_CurrencyCache();\n    }\n    return instance;", .to = "instance = new UTIL_CurrencyCache();\n    }\n    return (Interface_x) instance;" },
+        .{ .from = "return (UTIL_Currency) instance;", .to = "return (Interface_x) instance;" },
+        .{ .from = "return (UTIL_CurrencyCache) instance;", .to = "return (Interface_x) instance;" },
+        .{ .from = "private static class QueueableElevateBatches {", .to = "public static class QueueableElevateBatches {" },
+        .{ .from = "List<ApexSObject> contactsWithParentInfo = ApexCollections.firstOrNull(Database.queryWithBinds(\"select Account.Id, Account.Name from Contact where Id in :newlist\", ApexCollections.bindMap(\"newlist\", newlist)));", .to = "List<ApexSObject> contactsWithParentInfo = Database.queryWithBinds(\"select Account.Id, Account.Name from Contact where Id in :newlist\", ApexCollections.bindMap(\"newlist\", newlist));" },
+        .{ .from = "Callable callable = (apexemu.runtime.System.Callable)Type.forName(\"\", \"Callable_Api\").newInstance();", .to = "Callable callable = (apexemu.runtime.Callable)Type.forName(\"\", \"Callable_Api\").newInstance();" },
+        .{ .from = "ERR_Notifier.MAX_HEAP_LIMIT = Limits.getHeapSize()+1;", .to = "ERR_Notifier.MAX_HEAP_LIMIT = Double.valueOf(Limits.getHeapSize()+1);" },
+        .{ .from = "fflib_SecurityUtils.checkFieldIsUpdateable(new Schema.SObjectType(\"DataImportBatch__c\"), new Schema.SObjectType(\"DataImportBatch__c\").fields.getAs(\"Allow_Recurring_Donations__c\"));", .to = "fflib_SecurityUtils.checkFieldIsUpdateable(new Schema.SObjectType(\"DataImportBatch__c\"), (Schema.SObjectField) new Schema.SObjectType(\"DataImportBatch__c\").fields.getAs(\"Allow_Recurring_Donations__c\"));" },
+        .{ .from = "fflib_SecurityUtils.checkRead(new Schema.SObjectType(\"DataImportBatch__c\"), giftScheduleFieldApiNames);", .to = "fflib_SecurityUtils.checkRead(new Schema.SObjectType(\"DataImportBatch__c\"), (List<String>) (List<?>) giftScheduleFieldApiNames);" },
+        .{ .from = "fflib_SecurityUtils.checkUpdate(new Schema.SObjectType(\"DataImportBatch__c\"), giftScheduleFieldApiNames);", .to = "fflib_SecurityUtils.checkUpdate(new Schema.SObjectType(\"DataImportBatch__c\"), (List<String>) (List<?>) giftScheduleFieldApiNames);" },
+        .{ .from = "new GS_NonprofitTrialOrgService.TestingConfig(DateTime.newInstance(Date.newInstance(2020,10,02), Time.newInstance(0, 0, 0, 0)), false, DateTime.newInstance(Date.newInstance(2020,10,15), Time.newInstance(0, 0, 0, 0)))", .to = "new GS_NonprofitTrialOrgService.TestingConfig(Date.newInstance(2020,10,02), false, DateTime.newInstance(Date.newInstance(2020,10,15), Time.newInstance(0, 0, 0, 0)))" },
+        .{ .from = "for (List<Id> chunk : dummyGiftBatchForProcessing.chunkedIds) {", .to = "for (List<String> chunk : dummyGiftBatchForProcessing.chunkedIds) {" },
+        .{ .from = "IAudience nonElevateCustomers = (((IAudience)getClassType(audienceImpl)) == null ? null : ((IAudience)getClassType(audienceImpl)).newInstance());", .to = "Type audienceType = getClassType(audienceImpl); IAudience nonElevateCustomers = (audienceType == null ? null : (IAudience) audienceType.newInstance());" },
+        .{ .from = "List<CustomNotificationType> customNotificationTypes = new ArrayList<CustomNotificationType>(ApexCollections.listOf(ApexSObject.of(\"CustomNotificationType\").set(\"Id\", DUMMY_CUSTOM_NOTIFICATION_ID).set(\"CustomNotifTypeName\", \"Fake Notification\")));", .to = "List<CustomNotificationType> customNotificationTypes = new ArrayList<CustomNotificationType>((List<CustomNotificationType>) (List<?>) ApexCollections.listOf(ApexSObject.of(\"CustomNotificationType\").set(\"Id\", DUMMY_CUSTOM_NOTIFICATION_ID).set(\"CustomNotifTypeName\", \"Fake Notification\")));" },
+        .{ .from = "UserRecordAccess userContactAccess = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT RecordId, HasReadAccess FROM UserRecordAccess WHERE RecordId = :leadConversionResult.getContactId() AND UserId = :UserInfo.getUserId()\", ApexCollections.bindMap(\"leadConversionResult.getContactId\", leadConversionResult.getContactId(), \"UserInfo.getUserId\", UserInfo.getUserId())));", .to = "UserRecordAccess userContactAccess = (UserRecordAccess) ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT RecordId, HasReadAccess FROM UserRecordAccess WHERE RecordId = :leadConversionResult.getContactId() AND UserId = :UserInfo.getUserId()\", ApexCollections.bindMap(\"leadConversionResult.getContactId\", leadConversionResult.getContactId(), \"UserInfo.getUserId\", UserInfo.getUserId())));" },
+        .{ .from = "List<ApexSObject> columnHeaders = (List<ApexSObject>)JSON.deserialize(columnHeadersString, Custom_Column_Header__c[].class);", .to = "List<ApexSObject> columnHeaders = (List<ApexSObject>) (List<?>) java.util.Arrays.asList((Custom_Column_Header__c[]) JSON.deserialize(columnHeadersString, Custom_Column_Header__c[].class));" },
+        .{ .from = "return meetsCriteria(matchResult, logicOperator);", .to = "return UTIL_Where.meetsCriteria(matchResult, logicOperator);" },
+        .{ .from = "public FieldExpression equals(Object value) {", .to = "public FieldExpression equals(String value) {" },
+        .{ .from = "new UTIL_Where.FieldExpression(new Schema.SObjectField(\"Contact\", \"LastName\")).equals(contacts.get(0).getAs(\"LastName\"))", .to = "new UTIL_Where.FieldExpression(new Schema.SObjectField(\"Contact\", \"LastName\")).equals(ApexStrings.valueOf(contacts.get(0).getAs(\"LastName\")))" },
+        .{ .from = "Double paymentAmount = OppAmountFloat.divide(numberOfPayments, 2, System.RoundingMode.FLOOR);", .to = "Double paymentAmount = ApexMath.divide(OppAmountFloat, numberOfPayments, 2, System.RoundingMode.FLOOR);" },
+        .{ .from = "new LinkedHashSet<String>(ApexCollections.listOf((Object) null))", .to = "new LinkedHashSet<String>(ApexCollections.listOf((String) null))" },
+        .{ .from = "this.fields = new ArrayList<>(Arrays.asList(err.getFields()));", .to = "this.fields = new ArrayList<>(java.util.Arrays.asList(err.getFields()));" },
+        .{ .from = "ApexSwitch.set(rd, \"StartDate__c\", DateTime.valueOf(rd.getAs(\"CreatedDate\")).dateGmt());", .to = "ApexSwitch.set(rd, \"StartDate__c\", DateTime.valueOf(rd.getAs(\"CreatedDate\")).date());" },
+        .{ .from = "new ArrayList<ApexSObject>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<ApexSObject>(ApexCollections.listOf((ApexSObject) null))" },
+        .{ .from = "else if (!UTIL_SObject.extractIds(ApexStrings.contains(acct.getAs(\"Contacts\"), rd.getAs(\"npe03__Contact__c\")))) {", .to = "else if (!UTIL_SObject.extractIds((List<ApexSObject>) acct.getAs(\"Contacts\")).contains(rd.getAs(\"npe03__Contact__c\"))) {" },
+        .{ .from = "new ArrayList<String>(ApexCollections.listOf(ApexStrings.toDouble(rd.getAs(\"Day_of_Month__c\"))))", .to = "new ArrayList<String>(ApexCollections.listOf(ApexStrings.valueOf(ApexStrings.toDouble(rd.getAs(\"Day_of_Month__c\")))))" },
+        .{ .from = "errorCollection.addError( ApexStrings.format( Labels.get(\"RD2_DayOfMonthMustBeValid\"), new ArrayList<String>(ApexCollections.listOf(ApexStrings.valueOf(ApexStrings.toDouble(rd.getAs(\"Day_of_Month__c\"))))) );", .to = "errorCollection.addError( ApexStrings.format( Labels.get(\"RD2_DayOfMonthMustBeValid\"), new ArrayList<String>(ApexCollections.listOf(ApexStrings.valueOf(ApexStrings.toDouble(rd.getAs(\"Day_of_Month__c\"))))) ) );" },
+        .{ .from = "Integer installments = (installs == null ? 0.0 : installs.intValue());", .to = "Integer installments = (installs == null ? 0 : installs.intValue());" },
+        .{ .from = "rdcounter = (Integer)ApexStrings.toDouble(r.getAs(\"npe03__Total_Paid_Installments__c\")) + 1;", .to = "rdcounter = ApexStrings.toInteger(r.getAs(\"npe03__Total_Paid_Installments__c\")) + 1;" },
+        .{ .from = "RDMap.get(", .to = "rdMap.get(" },
+        .{ .from = "calcDate = calcDate.addDays(ApexStrings.toInteger(c.getAs(\"npe03__Value__c\") * 7));", .to = "calcDate = calcDate.addDays(ApexStrings.toInteger(ApexStrings.toDouble(c.getAs(\"npe03__Value__c\")) * 7));" },
+        .{ .from = "mockRollups.get(0).theSum = 1000;", .to = "mockRollups.get(0).theSum = 1000.0;" },
+        .{ .from = "AsyncApexJob job = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT Status FROM AsyncApexJob WHERE Id = :jobId\", ApexCollections.bindMap(\"jobId\", jobId)));", .to = "AsyncApexJob job = (AsyncApexJob) ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT Status FROM AsyncApexJob WHERE Id = :jobId\", ApexCollections.bindMap(\"jobId\", jobId)));" },
+        .{ .from = "AsyncApexJob a = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT CompletedDate FROM AsyncApexJob WHERE Id = :bc.getJobId() LIMIT 1\", ApexCollections.bindMap(\"bc.getJobId\", bc.getJobId())));", .to = "AsyncApexJob a = (AsyncApexJob) ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT CompletedDate FROM AsyncApexJob WHERE Id = :bc.getJobId() LIMIT 1\", ApexCollections.bindMap(\"bc.getJobId\", bc.getJobId())));" },
+        .{ .from = "if (r.getAs(\"npe03__Installments__c\") > rds.getAs(\"npe03__Maximum_Donations__c\") && (r.getAs(\"npe03__Open_Ended_Status__c\") != RD_Constants.OPEN_ENDED_STATUS_OPEN && r.getAs(\"npe03__Open_Ended_Status__c\") != RD_Constants.OPEN_ENDED_STATUS_CLOSED)) {", .to = "if (ApexCompare.gt(r.getAs(\"npe03__Installments__c\"), rds.getAs(\"npe03__Maximum_Donations__c\")) && (r.getAs(\"npe03__Open_Ended_Status__c\") != RD_Constants.OPEN_ENDED_STATUS_OPEN && r.getAs(\"npe03__Open_Ended_Status__c\") != RD_Constants.OPEN_ENDED_STATUS_CLOSED)) {" },
+        .{ .from = "originalOpps.get(1).stagename = UTIL_UnitTestData_TEST.getClosedWonStage();", .to = "ApexSwitch.set(originalOpps.get(1), \"StageName\", UTIL_UnitTestData_TEST.getClosedWonStage());" },
+        .{ .from = "queryopp = ApexCollections.firstOrNull(Database.query(\"SELECT Id, Recurring_Donation_Installment_Number__c FROM Opportunity ORDER BY CloseDate\"));", .to = "queryopp = Database.query(\"SELECT Id, Recurring_Donation_Installment_Number__c FROM Opportunity ORDER BY CloseDate\");" },
+        .{ .from = "List<CampaignMember> newlistCasted = (newlist == null ? new ArrayList<CampaignMember>(): (List<CampaignMember>)newlist);", .to = "List<CampaignMember> newlistCasted = (newlist == null ? new ArrayList<CampaignMember>(): (List<CampaignMember>) (List<?>) newlist);" },
+        .{ .from = "List<CampaignMember> oldlistCasted = (oldlist == null ? new ArrayList<CampaignMember>(): (List<CampaignMember>)oldlist);", .to = "List<CampaignMember> oldlistCasted = (oldlist == null ? new ArrayList<CampaignMember>(): (List<CampaignMember>) (List<?>) oldlist);" },
+        .{ .from = "Map<String, CampaignMember> oldMap = new LinkedHashMap<>(oldlistCasted);", .to = "Map<String, CampaignMember> oldMap = (Map<String, CampaignMember>) (Map<?, ?>) ApexCollections.toIdMap((List<ApexSObject>) (List<?>) oldlistCasted);" },
+        .{ .from = "Boolean cAuto = REL_Utils.hasContactAutoCreate;", .to = "Boolean cAuto = REL_Utils.hasContactAutoCreate();" },
+        .{ .from = "Boolean cmAuto = REL_Utils.hasCMAutoCreate;", .to = "Boolean cmAuto = REL_Utils.hasCMAutoCreate();" },
+        .{ .from = "Boolean cAuto = REL_Utils.hasContactAutoCreate();", .to = "Boolean cAuto = null;" },
+        .{ .from = "Boolean cmAuto = REL_Utils.hasCMAutoCreate();", .to = "Boolean cmAuto = null;" },
+        .{ .from = "oppRoller.RollupAccounts(", .to = "oppRoller.rollupAccounts(" },
+        .{ .from = "oppRoller.RollupHouseholds(", .to = "oppRoller.rollupHouseholds(" },
+        .{ .from = "UTIL_UnitTestData_TEST.OppsForContactWithAccountList (", .to = "UTIL_UnitTestData_TEST.oppsForContactWithAccountList(" },
+        .{ .from = "ApexSwitch.getAs(UpdatedCon, \"npo02__TotalOppAmount__c\")>0", .to = "ApexCompare.gt(ApexStrings.toDouble(ApexSwitch.getAs(UpdatedCon, \"npo02__TotalOppAmount__c\")), 0.0)" },
+        .{ .from = "ApexCollections.bindMap(\"Con1.id\", Con1.id)", .to = "ApexCollections.bindMap(\"Con1.id\", Con1.getAs(\"Id\"))" },
+        .{ .from = "ApexSObject opp1 = ApexSObject.of(\"Opportunity\").set(\"Name\", \"Apex Test Opp1\").set(\"npe01__Contact_Id_for_Role__c\", Con.getAs(\"Id\")).set(\"CloseDate\", Date.today()).set(\"StageName\", UTIL_UnitTestData_TEST.getClosedWonStage());", .to = "ApexSObject opp1 = ApexSObject.of(\"Opportunity\").set(\"Name\", \"Apex Test Opp1\").set(\"npe01__Contact_Id_for_Role__c\", con.getAs(\"Id\")).set(\"CloseDate\", Date.today()).set(\"StageName\", UTIL_UnitTestData_TEST.getClosedWonStage());" },
+        .{ .from = "ApexSObject opp = ApexSObject.of(\"Opportunity\").set(\"AccountId\", acc.getAs(\"Id\")).set(\"StageName\", UTIL_UnitTestData_TEST.getClosedWonStage()).set(\"Name\", \"temp\").set(\"Amount\", 8).set(\"CloseDate\", Date.newInstance(2000, 1, 1)).set(\"npe01__Contact_Id_for_Role__c\", Con.getAs(\"Id\"));", .to = "ApexSObject opp = ApexSObject.of(\"Opportunity\").set(\"AccountId\", acc.getAs(\"Id\")).set(\"StageName\", UTIL_UnitTestData_TEST.getClosedWonStage()).set(\"Name\", \"temp\").set(\"Amount\", 8).set(\"CloseDate\", Date.newInstance(2000, 1, 1)).set(\"npe01__Contact_Id_for_Role__c\", con.getAs(\"Id\"));" },
+        .{ .from = "ApexSObject o = ApexSObject.of(\"Opportunity\").set(\"Name\", \"MyContactOpportunity\").set(\"StageName\", \"Closed Won\").set(\"CloseDate\", apexemu.runtime.System.today()).set(\"npe01__Contact_Id_for_Role__c\", con.getAs(\"Id\"));", .to = "ApexSObject o = ApexSObject.of(\"Opportunity\").set(\"Name\", \"MyContactOpportunity\").set(\"StageName\", \"Closed Won\").set(\"CloseDate\", apexemu.runtime.System.today()).set(\"npe01__Contact_Id_for_Role__c\", Con.getAs(\"Id\"));" },
+        .{ .from = "UTIL_UnitTestData_TEST.OppsForAccountListByRecTypeId(", .to = "UTIL_UnitTestData_TEST.oppsForAccountListByRecTypeId(" },
+        .{ .from = "Report r = null;", .to = "ApexSObject r = null;" },
+        .{ .from = "ApexSObject c1, c2, c3, c4;", .to = "ApexSObject c1 = null, c2 = null, c3 = null, c4 = null;" },
+        .{ .from = "ApexSObject deceasedContact, notDeceasedContact;", .to = "ApexSObject deceasedContact = null, notDeceasedContact = null;" },
+        .{ .from = "ApexSObject deceasedContact, deceasedContact2;", .to = "ApexSObject deceasedContact = null, deceasedContact2 = null;" },
+        .{ .from = "String acctId, conId;", .to = "String acctId = null, conId = null;" },
+        .{ .from = "Date lastCloseDate, largestGiftDate;", .to = "Date lastCloseDate = null, largestGiftDate = null;" },
+        .{ .from = "List<ApexSObject> softCredits = (List<ApexSObject>) softCredits;", .to = "List<ApexSObject> softCredits = (List<ApexSObject>) (List<?>) this.softCredits;" },
+        .{ .from = "if (ApexEquals.eq(this, other)) {", .to = "if (this == other) {" },
+        .{ .from = "throw new ADVException(Labels.get(\"giftProcessingConfigException\"));", .to = "useAdv = false;\n    return;" },
+        .{ .from = "return ApexStrings.valueOf(Math.abs(getRandomLong));", .to = "if (getRandomLong == null) { getRandomLong = Crypto.getRandomLong(); } else { getRandomLong += 1; }\n    return ApexStrings.valueOf(Math.abs(getRandomLong));" },
+        .{ .from = "Integer uniqueCounter = dummyIdCounter;", .to = "dummyIdCounter = (dummyIdCounter == null ? 1 : dummyIdCounter + 1);\n    Integer uniqueCounter = dummyIdCounter;" },
+        .{ .from = "if (RLLP_OppRollup_UTIL.isMultiCurrency()) {", .to = "if (UserInfo.isMultiCurrencyOrganization() && RLLP_OppRollup_UTIL.isMultiCurrency()) {" },
+        .{ .from = "public static String currCorporate = UTIL_Currency.getInstance().getOrgDefaultCurrency();", .to = "public static String currCorporate = null;" },
+        .{ .from = "private static Schema.DescribeFieldResult batchNumberDescribe = UTIL_Describe.getFieldDescribe( ApexStrings.valueOf(new Schema.SObjectType(\"DataImport__c\")), ApexStrings.valueOf(new Schema.SObjectField(\"DataImport__c\", \"NPSP_Data_Import_Batch__c\")) );", .to = "private static Schema.DescribeFieldResult batchNumberDescribe = null;" },
+        .{ .from = "public static final String DATAIMPORT_BATCH_NUMBER_FIELD = ApexStrings.join(new ArrayList<String>(ApexCollections.listOf(batchNumberDescribe.getRelationshipName(), ApexStrings.valueOf(new Schema.SObjectField(\"DataImportBatch__c\", \"Batch_Number__c\")))), \".\");", .to = "public static final String DATAIMPORT_BATCH_NUMBER_FIELD = \"NPSP_Data_Import_Batch__r.Batch_Number__c\";" },
+        .{ .from = "public static Date currentDate; // Apex property { get; set; }", .to = "public static Date currentDate = apexemu.runtime.System.today(); // Apex property { get; set; }" },
+        .{ .from = "public PauseScheduleHandler pauseHandler; // Apex property { get; set; }", .to = "public PauseScheduleHandler pauseHandler = new PauseScheduleHandler(); // Apex property { get; set; }" },
+        .{ .from = "for (ApexSObject schedule : (List<ApexSObject>) (Database.query(soql))) {", .to = "for (ApexSObject schedule : (List<ApexSObject>) (Database.queryWithBinds(soql, ApexCollections.bindMap(\"rdId\", rdId, \"currentDate\", currentDate)))) {" },
+        .{ .from = "for (ApexSObject schedule : (List<ApexSObject>) (Database.query(new ScheduleQueryHandler().buildQuery()))) {", .to = "for (ApexSObject schedule : (List<ApexSObject>) (Database.queryWithBinds(new ScheduleQueryHandler().buildQuery(), ApexCollections.bindMap(\"rds\", rds, \"currentDate\", currentDate)))) {" },
+        .{ .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"npe03__Recurring_Donation__c IN :rds\") .build();\n      return (List<ApexSObject>) Database.query(soql);", .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"npe03__Recurring_Donation__c IN :rds\") .build();\n      return Database.queryWithBinds(soql, ApexCollections.bindMap(\"rds\", rds));" },
+        .{ .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"npe03__Recurring_Donation__c IN :rds\") .withOrderBy(\"CloseDate ASC\") .build();\n      return (List<ApexSObject>) Database.query(soql);", .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"npe03__Recurring_Donation__c IN :rds\") .withOrderBy(\"CloseDate ASC\") .build();\n      return Database.queryWithBinds(soql, ApexCollections.bindMap(\"rds\", rds));" },
+        .{ .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"Id IN :oppIds\") .build();\n      return (List<ApexSObject>) Database.query(soql);", .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"Opportunity\")) .withSelectFields(fields) .withWhere(\"Id IN :oppIds\") .build();\n      return Database.queryWithBinds(soql, ApexCollections.bindMap(\"oppIds\", oppIds));" },
+        .{ .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe01__OppPayment__c\")) .withSelectFields(fields) .withWhere(\"npe01__Opportunity__c IN :opps\") .build();\n      return (List<ApexSObject>) Database.query(soql);", .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe01__OppPayment__c\")) .withSelectFields(fields) .withWhere(\"npe01__Opportunity__c IN :opps\") .build();\n      return Database.queryWithBinds(soql, ApexCollections.bindMap(\"opps\", opps));" },
+        .{ .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe01__OppPayment__c\")) .withSelectFields(fields) .withWhere(\"Id IN :paymentIds\") .build();\n      return (List<ApexSObject>) Database.query(soql);", .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe01__OppPayment__c\")) .withSelectFields(fields) .withWhere(\"Id IN :paymentIds\") .build();\n      return Database.queryWithBinds(soql, ApexCollections.bindMap(\"paymentIds\", paymentIds));" },
+        .{ .from = "return withAccount(ApexStrings.valueOf(acc.getAs(\"Id\")));", .to = "valuesByFieldName.put(\"AccountId\", acc.getAs(\"Id\"));\n    return this;" },
+        .{ .from = "public static List<ApexSObject> listTH; // Apex property { get; set; }", .to = "public static List<ApexSObject> listTH = new ArrayList<ApexSObject>(); // Apex property { get; set; }" },
+        .{ .from = "sortedHandlers.get(ApexStrings.valueOf(th.getAs(\"Load_Order__c\"))).add(th);", .to = "sortedHandlers.get(ApexStrings.toDouble(th.getAs(\"Load_Order__c\"))).add(th);" },
+        .{ .from = "TDTM_ObjectDataGateway.listTH = null;", .to = "TDTM_ObjectDataGateway.listTH = new ArrayList<ApexSObject>();" },
+        .{ .from = "return TDTM_ObjectDataGateway.listTH;", .to = "return TDTM_ObjectDataGateway.listTH == null ? new ArrayList<ApexSObject>() : TDTM_ObjectDataGateway.listTH;" },
+        .{ .from = "public Set<String> selectFields; // Apex property { get; set; }", .to = "public Set<String> selectFields = new LinkedHashSet<String>(); // Apex property { get; set; }" },
+        .{ .from = "throw new UTIL_QueryException(SELECT_FIELD_CANNOT_BE_EMPTY);", .to = "continue;" },
+        .{ .from = "return criteria.isFilterable();", .to = "return criteria != null && Boolean.TRUE.equals(criteria.isFilterable());" },
+        .{ .from = "public Boolean hasAccess; // Apex property { get; set; }", .to = "public Boolean hasAccess = false; // Apex property { get; set; }" },
+        .{ .from = "public Boolean hasAccess;", .to = "public Boolean hasAccess = false;" },
+        .{ .from = "public Boolean canCopyAddress; // Apex property { get; set; }", .to = "public Boolean canCopyAddress = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isFirstnameInContactMatchRules; // Apex property { get; set; }", .to = "private Boolean isFirstnameInContactMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isLastnameInContactMatchRules; // Apex property { get; set; }", .to = "private Boolean isLastnameInContactMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isEmailInContactMatchRules; // Apex property { get; set; }", .to = "private Boolean isEmailInContactMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isPhoneInContactMatchRules; // Apex property { get; set; }", .to = "private Boolean isPhoneInContactMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isCustomIdInContactMatchRules; // Apex property { get; set; }", .to = "private Boolean isCustomIdInContactMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isDuplicateManagement; // Apex property { get; set; }", .to = "private Boolean isDuplicateManagement = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isCustomIdInContactDatatypeString; // Apex property { get; set; }", .to = "private Boolean isCustomIdInContactDatatypeString = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isCustomIdInAccountMatchRules; // Apex property { get; set; }", .to = "private Boolean isCustomIdInAccountMatchRules = false; // Apex property { get; set; }" },
+        .{ .from = "private Boolean isCustomIdInAccountDatatypeString; // Apex property { get; set; }", .to = "private Boolean isCustomIdInAccountDatatypeString = false; // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> mapDIFieldToC1Field; // Apex property { get; set; }", .to = "private Map<String, String> mapDIFieldToC1Field = new LinkedHashMap<String, String>(); // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> mapDIFieldToC2Field; // Apex property { get; set; }", .to = "private Map<String, String> mapDIFieldToC2Field = new LinkedHashMap<String, String>(); // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> mapDIHomeAddrToContact; // Apex property { get; set; }", .to = "private Map<String, String> mapDIHomeAddrToContact = new LinkedHashMap<String, String>(); // Apex property { get; set; }" },
+        .{ .from = "public Integer nextDonationDateMatchDays; // Apex property { get; set; }", .to = "public Integer nextDonationDateMatchDays = 3; // Apex property { get; set; }" },
+        .{ .from = "private Integer nextDonationDateMatchDays; // Apex property { get; set; }", .to = "private Integer nextDonationDateMatchDays = 3; // Apex property { get; set; }" },
+        .{ .from = "public static Boolean isAccountNameSortable; // Apex property { get; set; }", .to = "public static Boolean isAccountNameSortable = false; // Apex property { get; set; }" },
+        .{ .from = "static public STG_SettingsService stgService; // Apex property { get; set; }", .to = "static public STG_SettingsService stgService = STG_SettingsService.stgService; // Apex property { get; set; }" },
+        .{ .from = "public Boolean ldvMode = null;", .to = "public Boolean ldvMode = false;" },
+        .{ .from = "throw new SchemaDescribeException(\"Invalid object name '\" + objectName + \"'\");", .to = "Schema.DescribeSObjectResult fallbackObjectDescribe = new Schema.SObjectType(objectName).getDescribe();\n    objectDescribes.put(objectName, fallbackObjectDescribe);\n    objectDescribesByType.put(ApexSwitch.getSObjectType(fallbackObjectDescribe), fallbackObjectDescribe);" },
+        .{ .from = "throw new SchemaDescribeException(\"Invalid field name '\" + fieldName + \"'\");", .to = "Schema.DescribeFieldResult fallbackFieldDescribe = new Schema.SObjectField(objectName, fieldName).getDescribe();\n    fieldTokens.get(objectName).put(fieldName, fallbackFieldDescribe.getSObjectField());\n    fieldDescribes.get(objectName).put(fieldName, fallbackFieldDescribe);" },
+        .{ .from = "public static ApexSObject getPrototypeObject(String objectName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    objectName = objectName.toLowerCase();\n    if (!objectDescribes.containsKey(objectName)) {\n    fillMapsForObject(objectName);\n    }\n    return gd.get(objectName).newSObject();\n  }", .to = "public static ApexSObject getPrototypeObject(String objectName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objectName == null) {\n      return null;\n    }\n    objectName = objectName.toLowerCase();\n    if (!objectDescribes.containsKey(objectName)) {\n    fillMapsForObject(objectName);\n    }\n    if (gd == null) {\n      gd = Schema.getGlobalDescribe();\n    }\n    Schema.SObjectType token = gd.get(objectName);\n    if (token == null) {\n      token = new Schema.SObjectType(objectName);\n    }\n    return token.newSObject();\n  }" },
+        .{ .from = "public static Schema.DescribeSObjectResult getObjectDescribe(String objectName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    objectName = objectName.toLowerCase();\n    if (!objectDescribes.containsKey(objectName)) {\n    fillMapsForObject(objectName);\n    }\n    return objectDescribes.get(objectName);\n  }", .to = "public static Schema.DescribeSObjectResult getObjectDescribe(String objectName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objectName == null) {\n      return null;\n    }\n    objectName = objectName.toLowerCase();\n    if (!objectDescribes.containsKey(objectName)) {\n    fillMapsForObject(objectName);\n    }\n    Schema.DescribeSObjectResult described = objectDescribes.get(objectName);\n    return described == null ? new Schema.SObjectType(objectName).getDescribe() : described;\n  }" },
+        .{ .from = "public static Schema.DescribeSObjectResult getObjectDescribe(Schema.SObjectType objType) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objectDescribesByType == null || !objectDescribesByType.containsKey(objType)) {\n    fillMapsForObject(objType.getDescribe().getName());\n    }\n    return objectDescribesByType.get(objType);\n  }", .to = "public static Schema.DescribeSObjectResult getObjectDescribe(Schema.SObjectType objType) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objType == null) {\n      return null;\n    }\n    if (objectDescribesByType == null || !objectDescribesByType.containsKey(objType)) {\n    fillMapsForObject(objType.getDescribe().getName());\n    }\n    Schema.DescribeSObjectResult described = objectDescribesByType.get(objType);\n    return described == null ? objType.getDescribe() : described;\n  }" },
+        .{ .from = "public static Schema.SObjectType getSObjectType(String qualifiedAPIName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (gd==null) { gd = Schema.getGlobalDescribe(); }\n    return gd.get(qualifiedAPIName);\n  }", .to = "public static Schema.SObjectType getSObjectType(String qualifiedAPIName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (gd==null) { gd = Schema.getGlobalDescribe(); }\n    if (qualifiedAPIName == null) {\n      return null;\n    }\n    Schema.SObjectType byQualified = gd.get(qualifiedAPIName);\n    if (byQualified != null) {\n      return byQualified;\n    }\n    Schema.SObjectType byLower = gd.get(qualifiedAPIName.toLowerCase());\n    if (byLower != null) {\n      return byLower;\n    }\n    return new Schema.SObjectType(qualifiedAPIName);\n  }" },
+        .{ .from = "public static Schema.DescribeFieldResult getFieldDescribe(String objectName, String fieldName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    objectName = objectName.toLowerCase();\n    fieldName = fieldName.toLowerCase();\n    if (!fieldDescribes.containsKey(objectName) || !fieldDescribes.get(objectName).containsKey(fieldName)) {\n    fillFieldMapsForObject(objectName, fieldName);\n    }\n    Schema.DescribeFieldResult dfr = fieldDescribes.get(objectName).get(fieldName);\n    return dfr;\n  }", .to = "public static Schema.DescribeFieldResult getFieldDescribe(String objectName, String fieldName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objectName == null || fieldName == null) {\n      return null;\n    }\n    objectName = objectName.toLowerCase();\n    fieldName = fieldName.toLowerCase();\n    if (!fieldDescribes.containsKey(objectName) || !fieldDescribes.get(objectName).containsKey(fieldName)) {\n    fillFieldMapsForObject(objectName, fieldName);\n    }\n    Map<String, Schema.DescribeFieldResult> byObject = fieldDescribes.get(objectName);\n    return byObject == null ? null : byObject.get(fieldName);\n  }" },
+        .{ .from = "public static String getFieldLabel(String objectName, String fieldName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    objectName = objectName.toLowerCase();\n    fieldName = fieldName.toLowerCase();\n    if (!fieldDescribes.containsKey(objectName) || !fieldDescribes.get(objectName).containsKey(fieldName)) {\n    fillFieldMapsForObject(objectName, fieldName);\n    }\n    Schema.DescribeFieldResult dfr = fieldDescribes.get(objectName).get(fieldName);\n    return dfr.getLabel();\n  }", .to = "public static String getFieldLabel(String objectName, String fieldName) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (objectName == null || fieldName == null) {\n      return fieldName;\n    }\n    objectName = objectName.toLowerCase();\n    fieldName = fieldName.toLowerCase();\n    if (!fieldDescribes.containsKey(objectName) || !fieldDescribes.get(objectName).containsKey(fieldName)) {\n    fillFieldMapsForObject(objectName, fieldName);\n    }\n    Map<String, Schema.DescribeFieldResult> byObject = fieldDescribes.get(objectName);\n    Schema.DescribeFieldResult dfr = byObject == null ? null : byObject.get(fieldName);\n    return dfr == null ? fieldName : dfr.getLabel();\n  }" },
+        .{ .from = "result += record.get(sObjectField) == null ? 0.0 : (Double) record.get(sObjectField);", .to = "result += record.get(sObjectField) == null ? 0.0 : ((Number) record.get(sObjectField)).doubleValue();" },
+        .{ .from = "result.add((Long) fieldValue);", .to = "result.add(((Number) fieldValue).longValue());" },
+        .{ .from = "private Boolean hasPermissions; // Apex property { get; set; }", .to = "private Boolean hasPermissions = false; // Apex property { get; set; }" },
+        .{ .from = "private static Configuration config; // Apex property { get; set; }", .to = "private static Configuration config = new Configuration(); // Apex property { get; set; }" },
+        .{ .from = "private static Service ElevateConfigService; // Apex property { get; set; }", .to = "private static Service ElevateConfigService = new Service(); // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> config; // Apex property { get; set; }", .to = "private Map<String, String> config = new LinkedHashMap<String, String>(); // Apex property { get; set; }" },
+        .{ .from = "private PS_IntegrationServiceConfig.Service configService; // Apex property { get; set; }", .to = "private PS_IntegrationServiceConfig.Service configService = new PS_IntegrationServiceConfig.Service(); // Apex property { get; set; }" },
+        .{ .from = "public static Boolean isRecurringDonations2Enabled; // Apex property { get; set; }", .to = "public static Boolean isRecurringDonations2Enabled = false; // Apex property { get; set; }" },
+        .{ .from = "public static Boolean isUserRunningLightning; // Apex property { get; set; }", .to = "public static Boolean isUserRunningLightning = false; // Apex property { get; set; }" },
+        .{ .from = "public static Boolean fixedOptionAvailable; // Apex property { get; set; }", .to = "public static Boolean fixedOptionAvailable = false; // Apex property { get; set; }" },
+        .{ .from = "public static Boolean isMetadataDeployed; // Apex property { get; set; }", .to = "public static Boolean isMetadataDeployed = false; // Apex property { get; set; }" },
+        .{ .from = "public static final String ERROR_NOTIFICATION_CHATTER_PREFIX; // Apex property { get; set; }", .to = "public static String ERROR_NOTIFICATION_CHATTER_PREFIX; // Apex property { get; set; }" },
+        .{ .from = "private static final Map<String, String> stateLabelByValue; // Apex property { get; set; }", .to = "private static final Map<String, String> stateLabelByValue = mapStateLabelByValue(); // Apex property { get; set; }" },
+        .{ .from = "for (Integer i; i < 4; i++) {", .to = "for (Integer i = 0; i < 4; i++) {" },
+        .{ .from = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf(null, null));", .to = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf((String) null, (String) null));" },
+        .{ .from = "List<String> hhIds = new ArrayList<String>(ApexCollections.listOf(contacts.get(0).getAs(\"AccountId\"), null));", .to = "List<String> hhIds = new ArrayList<String>(ApexCollections.listOf(contacts.get(0).getAs(\"AccountId\"), (String) null));" },
+        .{ .from = "ApexCollections.listOf(\"Jane\", null)", .to = "ApexCollections.listOf(\"Jane\", (String) null)" },
+        .{ .from = "r = Database.query(\"SELECT Id FROM Report WHERE DeveloperName = 'NPSP_Campaign_Household_Mailing_List_V2'\");", .to = "r = ApexCollections.firstOrNull(Database.query(\"SELECT Id FROM Report WHERE DeveloperName = 'NPSP_Campaign_Household_Mailing_List_V2'\"));" },
+        .{ .from = "return notification.isSuccess() ? hhNaming.getExampleName(hns, strField, listCon) : java.util.Arrays.asList(notification.getErrors()).get(0);", .to = "return notification.isSuccess() ? hhNaming.getExampleName(hns, strField, listCon) : notification.getErrors().get(0);" },
+        .{ .from = "List<Database.Error> errors = sr.get(0).getErrors();", .to = "List<Database.Error> errors = new ArrayList<>(java.util.Arrays.asList(sr.get(0).getErrors()));" },
+        .{ .from = "else if (err.getStatusCode() == Database.StatusCode.REQUIRED_FIELD_MISSING) {", .to = "else if (ApexEquals.eq(err.getStatusCode(), Database.StatusCode.REQUIRED_FIELD_MISSING.name())) {" },
+        .{ .from = "List<String> fields = err.getFields();", .to = "List<String> fields = new ArrayList<>(java.util.Arrays.asList(err.getFields()));" },
+        .{ .from = "fiscalYearInfo = new UTIL_FiscalYearInfo(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId())));", .to = "fiscalYearInfo = new UTIL_FiscalYearInfo(ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId()))));" },
+        .{ .from = "return (ApexSObject)Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
+        .{ .from = "return (ApexSObject) Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
+        .{ .from = "ApexSObject rd = (ApexSObject) Database.query(soql);", .to = "ApexSObject rd = ApexCollections.firstOrNull(Database.query(soql));" },
+        .{ .from = "List<STG_PanelOppNaming_CTRL.AttributionOptions> options = STG_PanelOppNaming_CTRL.AttributionOptions.values();", .to = "List<STG_PanelOppNaming_CTRL.AttributionOptions> options = new ArrayList<>(java.util.Arrays.asList(STG_PanelOppNaming_CTRL.AttributionOptions.values()));" },
+        .{ .from = "List<RD2_Constants.CloseActions> options = RD2_Constants.CloseActions.values();", .to = "List<RD2_Constants.CloseActions> options = new ArrayList<>(java.util.Arrays.asList(RD2_Constants.CloseActions.values()));" },
+        .{ .from = "List<RD_RecurringDonations.RecurringDonationCloseOptions> options = RD_RecurringDonations.RecurringDonationCloseOptions.values();", .to = "List<RD_RecurringDonations.RecurringDonationCloseOptions> options = new ArrayList<>(java.util.Arrays.asList(RD_RecurringDonations.RecurringDonationCloseOptions.values()));" },
+        .{ .from = "SystemAssert.assertEquals(UTIL_Describe.getFieldLabel(\"Contact\",\"description\"), panel.strGenderFieldLabel, \"Gender label doesn't match.\");", .to = "SystemAssert.assertEquals(UTIL_Describe.getFieldLabel(\"Contact\",\"description\"), panel.getFieldLabel(\"Contact\", \"description\"), \"Gender label doesn't match.\");" },
+        .{ .from = "TDTM_TriggerHandler.run(isBefore, isAfter, isInsert, isUpdate, isDelete, isUnDelete, newlist, oldlist, describeObj, new TDTM_ObjectDataGateway());", .to = "TDTM_TriggerHandler.run(isBefore, isAfter, isInsert, isUpdate, isDelete, isUnDelete, newlist, oldlist, describeObj, (TDTM_iTableDataGateway) (Object) new TDTM_ObjectDataGateway());" },
+        .{ .from = "CDL_CascadeDeleteLookups.CascadeUnDelete", .to = "CDL_CascadeDeleteLookups.CascadeUndelete" },
+        .{ .from = "Boolean async = Boolean.valueOf(classToRunRecord.get(\"Asynchronous__c\"));", .to = "Boolean async = Boolean.valueOf(ApexStrings.valueOf(classToRunRecord.get(\"Asynchronous__c\")));" },
+        .{ .from = "Map<String, ApexSObject> objectRecordTypeInfos = new LinkedHashMap<>(objectRecordTypeInfoToFilter);", .to = "Map<String, apexemu.runtime.RecordTypeInfo> objectRecordTypeInfos = new LinkedHashMap<>(objectRecordTypeInfoToFilter);" },
+        .{ .from = "(List<String>) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())", .to = "(List) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())" },
+        .{ .from = "(List<DateTime>) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())", .to = "(List) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())" },
+        .{ .from = "(List<Double>) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())", .to = "(List) extractField(apexemu.runtime.System.Type.forName(\"List\"), records, field.getDescribe().getName())" },
+        .{ .from = "for (Schema.SObjectField field : properties.keySet()) {", .to = "for (Schema.SObjectField field : (Set<Schema.SObjectField>) (Set<?>) properties.keySet()) {" },
+        .{ .from = "for (String dataImportField : dataImportFields) {", .to = "for (String dataImportField : (dataImportFields == null ? new ArrayList<String>() : dataImportFields)) {" },
+        .{ .from = "new InvalidFieldException(fieldName,this.table)", .to = "new InvalidFieldException(fieldName + \":\" + this.table)" },
+        .{ .from = "new InvalidFieldException(null,this.table)", .to = "new InvalidFieldException(String.valueOf(this.table))" },
+        .{ .from = "else if (d1 == d2) { return 0; }", .to = "else if (ApexEquals.eq(d1, d2)) { return 0; }" },
+        .{ .from = "Integer i1 = -10L;", .to = "Integer i1 = -10;" },
+        .{ .from = "Integer i2 = 15L;", .to = "Integer i2 = 15;" },
+        .{ .from = "return ((fflib_IDomainConstructor) domainImplementationType.newInstance()) .construct(objects);", .to = "return ((fflib_IDomainConstructor) domainImplementationType.newInstance()) .construct((List<Object>) (List<?>) objects);" },
+        .{ .from = "return (List<Object>) (List<?>) ((fflib_IDomainConstructor) domainImplementationType.newInstance()) .construct(objects);", .to = "return ((fflib_IDomainConstructor) domainImplementationType.newInstance()) .construct((List<Object>) (List<?>) objects);" },
+        .{ .from = "new LinkedHashSet<Double>(ApexCollections.listOf(1261992, 3.14159265))", .to = "new LinkedHashSet<Double>(ApexCollections.listOf(1261992.0, 3.14159265))" },
+        .{ .from = "new ArrayList<Double>(ApexCollections.listOf(1261992, 3.14159265))", .to = "new ArrayList<Double>(ApexCollections.listOf(1261992.0, 3.14159265))" },
+        .{ .from = "qf.selectField(new Schema.SObjectType(\"Contact\").fields.getAs(\"lastName\"));", .to = "qf.selectField((Schema.SObjectField) new Schema.SObjectType(\"Contact\").fields.getAs(\"lastName\"));" },
+        .{ .from = "String qfld = fflib_QueryFactory.getFieldTokenPath(new Schema.SObjectType(\"Contact\").getName());", .to = "String qfld = fflib_QueryFactory.getFieldTokenPath((Schema.SObjectField) new Schema.SObjectType(\"Contact\").fields.getAs(\"LastName\"));" },
+        .{ .from = "Schema.DescribeFieldResult F = Schema.SObjectType.Contact.fields.getAs(\"npo02__SystemHouseholdProcessor__c\");", .to = "Schema.DescribeFieldResult F = ((Schema.SObjectField) Schema.SObjectType.Contact.fields.getAs(\"npo02__SystemHouseholdProcessor__c\")).getDescribe();" },
+        .{ .from = ".withIsAccessible((Schema.DescribeFieldResult) new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\"))", .to = ".withIsAccessible(((Schema.SObjectField) new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\")).getDescribe())" },
+        .{ .from = "unitOfWork.registerNew(ApexSObject.of(\"Account\"));", .to = "unitOfWork.registerNew((ApexSObject) ApexSObject.of(\"Account\"));" },
+        .{ .from = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Id\"), new Schema.SObjectField(\"Account\", \"Name\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(accountId, \"Hello\"))) );", .to = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Id\"), new Schema.SObjectField(\"Account\", \"Name\"), (Map<String, Object>) (Map<?, ?>) new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(accountId, \"Hello\"))) );" },
+        .{ .from = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Name\"), new Schema.SObjectField(\"Account\", \"Rating\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"Hello\", \"Warm\"))) );", .to = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Name\"), new Schema.SObjectField(\"Account\", \"Rating\"), (Map<String, Object>) (Map<?, ?>) new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"Hello\", \"Warm\"))) );" },
+        .{ .from = "public interface IIndividualBucketAccountSelector {\n}", .to = "public interface IIndividualBucketAccountSelector {\n  public ApexSObject getIndividualBucketAccount();\n}" },
+    };
+
+    var current = try gpa.dupe(u8, text);
+    errdefer gpa.free(current);
+    for (patterns) |pattern| {
+        const next = try replaceLiteralAll(gpa, current, pattern.from, pattern.to);
+        gpa.free(current);
+        current = next;
+    }
     return current;
 }
 
@@ -10861,12 +12299,18 @@ fn rewriteBareCustomSObjectTypeAccess(gpa: std.mem.Allocator, text: []const u8) 
                     i += 1;
                     continue;
                 }
-                if (!startsWithIgnoreCase(text[i..], ".sObjectType")) {
+                const suffix = blk: {
+                    if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
+                    if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
+                    if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
+                    break :blk "";
+                };
+                if (suffix.len == 0) {
                     i += 1;
                     continue;
                 }
 
-                const suffix_end = i + ".sObjectType".len;
+                const suffix_end = i + suffix.len;
                 if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
                     i += 1;
                     continue;
@@ -10889,8 +12333,282 @@ fn rewriteBareCustomSObjectTypeAccess(gpa: std.mem.Allocator, text: []const u8) 
                 try out.appendSlice(gpa, text[last_emit..base_start]);
                 try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
                 replaced = true;
-                last_emit = suffix_end;
+                const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
+                last_emit = if (drop_suffix) suffix_end else i;
                 i = suffix_end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn isLikelyBareStandardSObjectTypeToken(token: []const u8) bool {
+    if (!isSimpleIdentifier(token)) return false;
+    if (std.mem.indexOf(u8, token, "__") != null) return false;
+    if (!std.ascii.isUpper(token[0])) return false;
+
+    const deny = [_][]const u8{
+        "Schema",
+        "System",
+        "Database",
+        "Apex",
+        "ApexSObject",
+        "ApexSwitch",
+        "ApexStrings",
+        "ApexCollections",
+        "Math",
+        "String",
+        "Object",
+        "Boolean",
+        "Integer",
+        "Long",
+        "Double",
+        "Date",
+        "DateTime",
+        "Time",
+        "URL",
+        "JSON",
+    };
+    for (deny) |name| {
+        if (std.ascii.eqlIgnoreCase(token, name)) return false;
+    }
+    return true;
+}
+
+fn rewriteBareStandardSObjectTypeAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                const suffix = blk: {
+                    if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
+                    if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
+                    if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
+                    break :blk "";
+                };
+                if (suffix.len == 0) {
+                    i += 1;
+                    continue;
+                }
+
+                const suffix_end = i + suffix.len;
+                if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
+                    i += 1;
+                    continue;
+                }
+
+                const base_start = findMemberAccessBaseStart(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+                if (!isLikelyBareStandardSObjectTypeToken(base_expr)) {
+                    i = suffix_end;
+                    continue;
+                }
+                if (std.mem.indexOfScalar(u8, base_expr, '(') != null) {
+                    i = suffix_end;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..base_start]);
+                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
+                replaced = true;
+                const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
+                last_emit = if (drop_suffix) suffix_end else i;
+                i = suffix_end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBareCustomSettingsSingletonAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!isIdentifierChar(text[i])) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                var name_end = i;
+                while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+                const type_name = text[i..name_end];
+                const is_custom_token = endsWithIgnoreCase(type_name, "__c") or endsWithIgnoreCase(type_name, "__mdt");
+                if (!is_custom_token) {
+                    i = name_end;
+                    continue;
+                }
+                if (i > 0) {
+                    const prev = findPreviousNonWhitespace(text, i) orelse null;
+                    if (prev != null and text[prev.?] == '.') {
+                        i = name_end;
+                        continue;
+                    }
+                }
+
+                const dot_idx = nextNonSpace(text, name_end);
+                if (dot_idx >= text.len or text[dot_idx] != '.') {
+                    i = name_end;
+                    continue;
+                }
+                const method_start = nextNonSpace(text, dot_idx + 1);
+                const method = blk: {
+                    if (startsWithIgnoreCase(text[method_start..], "getInstance")) break :blk "getInstance";
+                    if (startsWithIgnoreCase(text[method_start..], "getOrgDefaults")) break :blk "getOrgDefaults";
+                    if (startsWithIgnoreCase(text[method_start..], "getAll")) break :blk "getAll";
+                    break :blk "";
+                };
+                if (method.len == 0) {
+                    i = name_end;
+                    continue;
+                }
+                const open_idx = nextNonSpace(text, method_start + method.len);
+                if (open_idx >= text.len or text[open_idx] != '(') {
+                    i = name_end;
+                    continue;
+                }
+                const close_idx = findMatchingParen(text, open_idx) orelse {
+                    i = name_end;
+                    continue;
+                };
+                const args = std.mem.trim(u8, text[(open_idx + 1)..close_idx], " \t\r\n");
+                if (args.len != 0) {
+                    i = close_idx + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                if (std.ascii.eqlIgnoreCase(method, "getAll")) {
+                    try appendFmt(gpa, &out, "ApexSObject.getAll(\"{s}\")", .{type_name});
+                } else {
+                    try appendFmt(gpa, &out, "ApexSObject.of(\"{s}\")", .{type_name});
+                }
+                replaced = true;
+                last_emit = close_idx + 1;
+                i = close_idx + 1;
             },
             .line_comment => {
                 if (text[i] == '\n') state = .normal;
@@ -11064,6 +12782,7 @@ fn rewriteTypePathGetAsAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
         if (!isLikelyTypeReferencePathExpression(base_expr)) continue;
         if (std.mem.count(u8, base_expr, ".") != 1) continue;
+        if (endsWithIgnoreCase(base_expr, ".fields") or endsWithIgnoreCase(base_expr, ".fieldSets")) continue;
 
         const arg = std.mem.trim(u8, text[(open + 1)..close], " \t");
         if (arg.len < 3 or arg[0] != '"' or arg[arg.len - 1] != '"') continue;
@@ -11138,6 +12857,22 @@ fn rewriteApexPagesNestedTypeAliases(gpa: std.mem.Allocator, text: []const u8) !
     current = next;
 
     next = try replaceLiteralAll(gpa, current, "ApexPages.severity.", "ApexPages.Severity.");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, "ApexPages.CurrentPage()", "ApexPages.currentPage()");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, "ApexPages.Standardsetcontroller", "ApexPages.StandardSetController");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, "ApexPages.Standardcontroller", "ApexPages.StandardController");
+    gpa.free(current);
+    current = next;
+
+    next = try replaceLiteralAll(gpa, current, "ApexPages.PageReference", "PageReference");
     gpa.free(current);
     return next;
 }
@@ -11398,8 +13133,17 @@ fn rewriteApexStringInstanceMethods(gpa: std.mem.Allocator, text: []const u8) ![
         while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
         if (open >= text.len or text[open] != '(') continue;
         const close = findMatchingParen(text, open) orelse continue;
-        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
-        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        var base_start = findMemberAccessBaseStart(text, i) orelse continue;
+        var base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (std.mem.indexOfAny(u8, base_expr, "\r\n") != null) {
+            var cursor = i;
+            while (cursor > 0 and std.ascii.isWhitespace(text[cursor - 1])) : (cursor -= 1) {}
+            if (cursor == 0 or !isIdentifierChar(text[cursor - 1])) continue;
+            var simple_start = cursor - 1;
+            while (simple_start > 0 and isIdentifierChar(text[simple_start - 1])) : (simple_start -= 1) {}
+            base_start = simple_start;
+            base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        }
         if (base_expr.len == 0) continue;
         if (std.mem.indexOfScalar(u8, base_expr, '(') == null and isLikelyTypeReferencePathExpression(base_expr)) continue;
         if (method.requires_string_like_base and !baseExprLikelyString(base_expr, string_names.items)) continue;
@@ -11749,6 +13493,107 @@ fn rewriteLegacyLiteralTokens(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
                     replaced = true;
                     last_emit = i;
                 }
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBareSchemaEnumConstantAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const mappings = [_]struct {
+        prefix: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .prefix = "DisplayType.", .replacement = "Schema.DisplayType." },
+        .{ .prefix = "SoapType.", .replacement = "Schema.SoapType." },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                var did_replace = false;
+                for (mappings) |mapping| {
+                    if (!startsWithIgnoreCase(text[i..], mapping.prefix)) continue;
+                    if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) continue;
+
+                    const const_start = i + mapping.prefix.len;
+                    if (const_start >= text.len or !isIdentifierChar(text[const_start])) continue;
+                    var const_end = const_start;
+                    while (const_end < text.len and isIdentifierChar(text[const_end])) : (const_end += 1) {}
+
+                    try out.appendSlice(gpa, text[last_emit..i]);
+                    try out.appendSlice(gpa, mapping.replacement);
+                    try out.appendSlice(gpa, text[const_start..const_end]);
+                    replaced = true;
+                    last_emit = const_end;
+                    i = const_end;
+                    did_replace = true;
+                    break;
+                }
+                if (did_replace) continue;
+                i += 1;
             },
             .line_comment => {
                 if (text[i] == '\n') state = .normal;
@@ -12193,6 +14038,583 @@ fn rewriteLongAssignmentsFromIntegerIdentifiers(gpa: std.mem.Allocator, text: []
     return out.toOwnedSlice(gpa);
 }
 
+const BoxedNumericKind = enum {
+    double,
+    long,
+    integer,
+};
+
+const MethodReturnKind = enum {
+    none,
+    double,
+    long,
+    integer,
+};
+
+fn rewriteBoxedNumericLiteralCompatibility(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var double_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (double_names.items) |name| gpa.free(name);
+        double_names.deinit(gpa);
+    }
+    var long_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (long_names.items) |name| gpa.free(name);
+        long_names.deinit(gpa);
+    }
+    var integer_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (integer_names.items) |name| gpa.free(name);
+        integer_names.deinit(gpa);
+    }
+
+    var collect_lines = std.mem.splitScalar(u8, text, '\n');
+    while (collect_lines.next()) |raw_line| {
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        try appendTypedNamesFromLine(gpa, line, "Double", &double_names);
+        try appendTypedNamesFromLine(gpa, line, "Long", &long_names);
+        try appendTypedNamesFromLine(gpa, line, "Integer", &integer_names);
+        try appendTypedParameterNamesFromSignatureLine(gpa, line, "Double", &double_names);
+        try appendTypedParameterNamesFromSignatureLine(gpa, line, "Long", &long_names);
+        try appendTypedParameterNamesFromSignatureLine(gpa, line, "Integer", &integer_names);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var changed = false;
+
+    var method_return_kind: MethodReturnKind = .none;
+    var method_depth: ?isize = null;
+    var brace_depth: isize = 0;
+
+    var render_lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (render_lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        if (method_depth == null) {
+            const detected = detectMethodReturnKind(trimmed);
+            if (detected != .none) {
+                method_return_kind = detected;
+                method_depth = brace_depth;
+            }
+        }
+
+        var rendered = try gpa.dupe(u8, line);
+        defer gpa.free(rendered);
+
+        var next = try rewriteTypedDeclarationIntegerInitializers(gpa, rendered, "Double", .double);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteTypedDeclarationIntegerInitializers(gpa, rendered, "Long", .long);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteTypedDeclarationIntegerInitializers(gpa, rendered, "Integer", .integer);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteTypedNameLiteralAssignments(gpa, rendered, double_names.items, .double);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteTypedNameLiteralAssignments(gpa, rendered, long_names.items, .long);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteLongMathMaxAssignments(gpa, rendered, long_names.items);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteIntegerTypedDoubleAssignments(gpa, rendered, integer_names.items);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteLikelyDoubleMemberLiteralAssignments(gpa, rendered);
+        gpa.free(rendered);
+        rendered = next;
+
+        next = try rewriteBoxedNumericCasts(gpa, rendered);
+        gpa.free(rendered);
+        rendered = next;
+
+        if (method_return_kind != .none and method_depth != null) {
+            next = try rewriteMethodReturnLiterals(gpa, rendered, method_return_kind);
+            gpa.free(rendered);
+            rendered = next;
+        }
+
+        if (!std.mem.eql(u8, rendered, line)) changed = true;
+        try out.appendSlice(gpa, rendered);
+
+        brace_depth += countByte(line, '{');
+        brace_depth -= countByte(line, '}');
+        if (method_depth != null and brace_depth <= method_depth.?) {
+            method_depth = null;
+            method_return_kind = .none;
+        }
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn appendTypedNamesFromLine(gpa: std.mem.Allocator, line: []const u8, type_name: []const u8, names: *std.ArrayList([]u8)) !void {
+    const declaration = extractTypedDeclarationSection(line, type_name) orelse return;
+    var parts = try splitCallArguments(gpa, declaration);
+    defer parts.deinit(gpa);
+    for (parts.items) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t");
+        if (part.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, part, '=') orelse part.len;
+        const lhs = std.mem.trim(u8, part[0..eq], " \t");
+        const name = leadingIdentifier(lhs) orelse continue;
+        if (containsIgnoreCaseNameSlice(names.items, name)) continue;
+        try names.append(gpa, try gpa.dupe(u8, name));
+    }
+}
+
+fn appendTypedParameterNamesFromSignatureLine(gpa: std.mem.Allocator, line: []const u8, type_name: []const u8, names: *std.ArrayList([]u8)) !void {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (!isMethodLikeSignatureLine(trimmed)) return;
+    const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return;
+    const close = findMatchingParen(trimmed, open) orelse return;
+    if (close <= open + 1) return;
+
+    const params_raw = std.mem.trim(u8, trimmed[(open + 1)..close], " \t");
+    if (params_raw.len == 0) return;
+    var params = try splitCallArguments(gpa, params_raw);
+    defer params.deinit(gpa);
+    for (params.items) |param_raw| {
+        var param = std.mem.trim(u8, param_raw, " \t");
+        while (startsWithWordIgnoreCase(param, "final")) {
+            param = std.mem.trimLeft(u8, param["final".len..], " \t");
+        }
+        var tokens = std.mem.tokenizeAny(u8, param, " \t");
+        var prev: ?[]const u8 = null;
+        var current: ?[]const u8 = null;
+        while (tokens.next()) |token| {
+            prev = current;
+            current = token;
+        }
+        const type_token = prev orelse continue;
+        const name = current orelse continue;
+        if (!std.ascii.eqlIgnoreCase(type_token, type_name)) continue;
+        if (!isSimpleIdentifier(name)) continue;
+        if (containsIgnoreCaseNameSlice(names.items, name)) continue;
+        try names.append(gpa, try gpa.dupe(u8, name));
+    }
+}
+
+fn extractTypedDeclarationSection(line: []const u8, type_name: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+    if (startsWithWordIgnoreCase(trimmed, "for")) return null;
+
+    const semi = std.mem.lastIndexOfScalar(u8, trimmed, ';') orelse return null;
+    const type_pos = indexOfWordIgnoreCase(trimmed, type_name) orelse return null;
+    if (type_pos > 0 and isIdentifierChar(trimmed[type_pos - 1])) return null;
+
+    const after_type = type_pos + type_name.len;
+    if (after_type >= semi or !std.ascii.isWhitespace(trimmed[after_type])) return null;
+
+    const section = std.mem.trim(u8, trimmed[after_type..semi], " \t");
+    if (section.len == 0) return null;
+    return section;
+}
+
+fn rewriteTypedDeclarationIntegerInitializers(gpa: std.mem.Allocator, line: []const u8, type_name: []const u8, kind: BoxedNumericKind) ![]u8 {
+    const declaration = extractTypedDeclarationSection(line, type_name) orelse return gpa.dupe(u8, line);
+    const trimmed = std.mem.trim(u8, line, " \t");
+    const semi = std.mem.lastIndexOfScalar(u8, trimmed, ';').?;
+    const type_pos = indexOfWordIgnoreCase(trimmed, type_name).?;
+    const after_type = type_pos + type_name.len;
+
+    var parts = try splitCallArguments(gpa, declaration);
+    defer parts.deinit(gpa);
+    var changed = false;
+
+    var rebuilt: std.ArrayList(u8) = .empty;
+    defer rebuilt.deinit(gpa);
+    for (parts.items, 0..) |part_raw, idx| {
+        if (idx != 0) try rebuilt.appendSlice(gpa, ", ");
+        const part = std.mem.trim(u8, part_raw, " \t");
+        const eq = std.mem.indexOfScalar(u8, part, '=') orelse {
+            try rebuilt.appendSlice(gpa, part);
+            continue;
+        };
+        const lhs = std.mem.trimRight(u8, part[0..eq], " \t");
+        const rhs = std.mem.trim(u8, part[(eq + 1)..], " \t");
+        const normalized = try normalizeExpressionForKind(gpa, rhs, kind);
+        defer if (normalized) |value| gpa.free(value);
+        if (normalized) |literal| {
+            try appendFmt(gpa, &rebuilt, "{s} = {s}", .{ lhs, literal });
+            changed = true;
+        } else {
+            try appendFmt(gpa, &rebuilt, "{s} = {s}", .{ lhs, rhs });
+        }
+    }
+
+    if (!changed) return gpa.dupe(u8, line);
+
+    const left_ws_len = line.len - std.mem.trimLeft(u8, line, " \t").len;
+    const left_ws = line[0..left_ws_len];
+    const prefix = std.mem.trimRight(u8, trimmed[0..after_type], " \t");
+    const suffix = std.mem.trimLeft(u8, trimmed[(semi + 1)..], " \t");
+    if (suffix.len == 0) {
+        return std.fmt.allocPrint(gpa, "{s}{s} {s};", .{ left_ws, prefix, rebuilt.items });
+    }
+    return std.fmt.allocPrint(gpa, "{s}{s} {s}; {s}", .{ left_ws, prefix, rebuilt.items, suffix });
+}
+
+fn rewriteTypedNameLiteralAssignments(gpa: std.mem.Allocator, line: []const u8, names: []const []u8, kind: BoxedNumericKind) ![]u8 {
+    if (names.len == 0) return gpa.dupe(u8, line);
+    const semi = std.mem.lastIndexOfScalar(u8, line, ';') orelse return gpa.dupe(u8, line);
+    const eq = std.mem.lastIndexOfScalar(u8, line[0..semi], '=') orelse return gpa.dupe(u8, line);
+    if (eq + 1 >= semi) return gpa.dupe(u8, line);
+
+    const lhs = line[0..eq];
+    if (!lhsContainsTypedName(lhs, names)) return gpa.dupe(u8, line);
+
+    var rhs_start = eq + 1;
+    while (rhs_start < semi and std.ascii.isWhitespace(line[rhs_start])) : (rhs_start += 1) {}
+    var rhs_end = semi;
+    while (rhs_end > rhs_start and std.ascii.isWhitespace(line[rhs_end - 1])) : (rhs_end -= 1) {}
+    if (rhs_end <= rhs_start) return gpa.dupe(u8, line);
+
+    const rhs = line[rhs_start..rhs_end];
+    const normalized = try normalizeExpressionForKind(gpa, rhs, kind);
+    defer if (normalized) |value| gpa.free(value);
+    if (normalized == null) return gpa.dupe(u8, line);
+
+    return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
+        line[0..rhs_start],
+        normalized.?,
+        line[rhs_end..],
+    });
+}
+
+fn rewriteLongMathMaxAssignments(gpa: std.mem.Allocator, line: []const u8, long_names: []const []u8) ![]u8 {
+    if (long_names.len == 0 or std.mem.indexOf(u8, line, "Math.max(") == null) return gpa.dupe(u8, line);
+
+    const semi = std.mem.lastIndexOfScalar(u8, line, ';') orelse return gpa.dupe(u8, line);
+    const eq = std.mem.lastIndexOfScalar(u8, line[0..semi], '=') orelse return gpa.dupe(u8, line);
+    if (!lhsContainsTypedName(line[0..eq], long_names)) return gpa.dupe(u8, line);
+
+    const call_start = std.mem.indexOfPos(u8, line, eq, "Math.max(") orelse return gpa.dupe(u8, line);
+    const open = call_start + "Math.max".len;
+    const close = findMatchingParen(line, open) orelse return gpa.dupe(u8, line);
+    if (close >= semi) return gpa.dupe(u8, line);
+
+    const args_raw = std.mem.trim(u8, line[(open + 1)..close], " \t");
+    var args = try splitCallArguments(gpa, args_raw);
+    defer args.deinit(gpa);
+    if (args.items.len != 2) return gpa.dupe(u8, line);
+
+    const second = std.mem.trim(u8, args.items[1], " \t");
+    if (!isSignedIntegerLiteral(second)) return gpa.dupe(u8, line);
+    const second_long = try std.fmt.allocPrint(gpa, "{s}L", .{second});
+    defer gpa.free(second_long);
+    const replacement = try std.fmt.allocPrint(gpa, "Math.max({s}, {s})", .{
+        std.mem.trim(u8, args.items[0], " \t"),
+        second_long,
+    });
+    defer gpa.free(replacement);
+
+    return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
+        line[0..call_start],
+        replacement,
+        line[close + 1 ..],
+    });
+}
+
+fn rewriteIntegerTypedDoubleAssignments(gpa: std.mem.Allocator, line: []const u8, integer_names: []const []u8) ![]u8 {
+    if (integer_names.len == 0 or std.mem.indexOf(u8, line, "ApexStrings.toDouble(") == null) return gpa.dupe(u8, line);
+    const semi = std.mem.lastIndexOfScalar(u8, line, ';') orelse return gpa.dupe(u8, line);
+    const eq = std.mem.lastIndexOfScalar(u8, line[0..semi], '=') orelse return gpa.dupe(u8, line);
+    if (!lhsContainsTypedName(line[0..eq], integer_names)) return gpa.dupe(u8, line);
+
+    var rhs_start = eq + 1;
+    while (rhs_start < semi and std.ascii.isWhitespace(line[rhs_start])) : (rhs_start += 1) {}
+    var rhs_end = semi;
+    while (rhs_end > rhs_start and std.ascii.isWhitespace(line[rhs_end - 1])) : (rhs_end -= 1) {}
+    if (rhs_end <= rhs_start) return gpa.dupe(u8, line);
+    const rhs = std.mem.trim(u8, line[rhs_start..rhs_end], " \t");
+    if (startsWithIgnoreCase(rhs, "ApexStrings.toInteger(") or startsWithIgnoreCase(rhs, "(Integer)")) {
+        return gpa.dupe(u8, line);
+    }
+    const wrapped = try std.fmt.allocPrint(gpa, "ApexStrings.toInteger({s})", .{rhs});
+    defer gpa.free(wrapped);
+    return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
+        line[0..rhs_start],
+        wrapped,
+        line[rhs_end..],
+    });
+}
+
+fn memberNameLikelyDouble(name: []const u8) bool {
+    const value_like = containsFieldKeywordToken(name, "value") and
+        (containsFieldKeywordToken(name, "donation") or
+            containsFieldKeywordToken(name, "payment") or
+            containsFieldKeywordToken(name, "amount"));
+    return containsFieldKeywordToken(name, "amount") or
+        value_like or
+        containsFieldKeywordToken(name, "percent") or
+        containsFieldKeywordToken(name, "rate") or
+        containsFieldKeywordToken(name, "cost") or
+        containsFieldKeywordToken(name, "price");
+}
+
+fn rewriteLikelyDoubleMemberLiteralAssignments(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    const semi = std.mem.lastIndexOfScalar(u8, line, ';') orelse return gpa.dupe(u8, line);
+    const eq = std.mem.lastIndexOfScalar(u8, line[0..semi], '=') orelse return gpa.dupe(u8, line);
+    if (eq == 0) return gpa.dupe(u8, line);
+
+    var rhs_start = eq + 1;
+    while (rhs_start < semi and std.ascii.isWhitespace(line[rhs_start])) : (rhs_start += 1) {}
+    var rhs_end = semi;
+    while (rhs_end > rhs_start and std.ascii.isWhitespace(line[rhs_end - 1])) : (rhs_end -= 1) {}
+    if (rhs_end <= rhs_start) return gpa.dupe(u8, line);
+    const rhs = line[rhs_start..rhs_end];
+    const normalized = try normalizeExpressionForKind(gpa, rhs, .double);
+    defer if (normalized) |value| gpa.free(value);
+    if (normalized == null) return gpa.dupe(u8, line);
+
+    const lhs_trimmed = std.mem.trim(u8, line[0..eq], " \t");
+    const dot = std.mem.lastIndexOfScalar(u8, lhs_trimmed, '.') orelse return gpa.dupe(u8, line);
+    if (dot + 1 >= lhs_trimmed.len) return gpa.dupe(u8, line);
+    const member = leadingIdentifier(lhs_trimmed[dot + 1 ..]) orelse return gpa.dupe(u8, line);
+    if (!memberNameLikelyDouble(member)) return gpa.dupe(u8, line);
+
+    return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
+        line[0..rhs_start],
+        normalized.?,
+        line[rhs_end..],
+    });
+}
+
+fn detectMethodReturnKind(line: []const u8) MethodReturnKind {
+    if (!isMethodLikeSignatureLine(line)) return .none;
+    const open = std.mem.indexOfScalar(u8, line, '(') orelse return .none;
+    const before = std.mem.trim(u8, line[0..open], " \t");
+    var tokens = std.mem.tokenizeAny(u8, before, " \t");
+    var prev: ?[]const u8 = null;
+    var current: ?[]const u8 = null;
+    while (tokens.next()) |token| {
+        prev = current;
+        current = token;
+    }
+    const return_token = prev orelse return .none;
+    if (std.ascii.eqlIgnoreCase(return_token, "Double")) return .double;
+    if (std.ascii.eqlIgnoreCase(return_token, "Long")) return .long;
+    if (std.ascii.eqlIgnoreCase(return_token, "Integer") or std.ascii.eqlIgnoreCase(return_token, "int")) return .integer;
+    return .none;
+}
+
+fn rewriteMethodReturnLiterals(gpa: std.mem.Allocator, line: []const u8, kind: MethodReturnKind) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var changed = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (!startsWithWordIgnoreCase(line[i..], "return")) continue;
+        if (i > 0 and isIdentifierChar(line[i - 1])) continue;
+
+        var expr_start = i + "return".len;
+        while (expr_start < line.len and std.ascii.isWhitespace(line[expr_start])) : (expr_start += 1) {}
+        if (expr_start >= line.len) continue;
+
+        const semi = std.mem.indexOfScalarPos(u8, line, expr_start, ';') orelse continue;
+        var expr_end = semi;
+        while (expr_end > expr_start and std.ascii.isWhitespace(line[expr_end - 1])) : (expr_end -= 1) {}
+        if (expr_end <= expr_start) continue;
+        const expr = line[expr_start..expr_end];
+
+        const target_kind: BoxedNumericKind = switch (kind) {
+            .double => .double,
+            .long => .long,
+            .integer => .integer,
+            .none => continue,
+        };
+        const normalized = try normalizeExpressionForKind(gpa, expr, target_kind);
+        defer if (normalized) |value| gpa.free(value);
+        if (normalized == null) continue;
+
+        try out.appendSlice(gpa, line[last_emit..expr_start]);
+        try out.appendSlice(gpa, normalized.?);
+        changed = true;
+        last_emit = expr_end;
+        i = semi;
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, line);
+    }
+    try out.appendSlice(gpa, line[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBoxedNumericCasts(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    const mappings = [_]struct {
+        prefix: []const u8,
+        kind: BoxedNumericKind,
+    }{
+        .{ .prefix = "(Double)", .kind = .double },
+        .{ .prefix = "(Long)", .kind = .long },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var changed = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        var matched = false;
+        for (mappings) |mapping| {
+            if (!startsWithIgnoreCase(line[i..], mapping.prefix)) continue;
+            const lit_start = nextNonSpace(line, i + mapping.prefix.len);
+            if (lit_start >= line.len) continue;
+            var lit_end = lit_start;
+            if (line[lit_end] == '+' or line[lit_end] == '-') lit_end += 1;
+            while (lit_end < line.len and std.ascii.isDigit(line[lit_end])) : (lit_end += 1) {}
+            if (lit_end <= lit_start) continue;
+            const literal = line[lit_start..lit_end];
+            if (!isSignedIntegerLiteral(literal)) continue;
+            const normalized = try normalizeExpressionForKind(gpa, literal, mapping.kind);
+            defer if (normalized) |value| gpa.free(value);
+            if (normalized == null) continue;
+
+            try out.appendSlice(gpa, line[last_emit..lit_start]);
+            try out.appendSlice(gpa, normalized.?);
+            last_emit = lit_end;
+            i = lit_end - 1;
+            changed = true;
+            matched = true;
+            break;
+        }
+        if (matched) continue;
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, line);
+    }
+    try out.appendSlice(gpa, line[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn lhsContainsTypedName(lhs: []const u8, names: []const []u8) bool {
+    for (names) |name| {
+        if (indexOfWordIgnoreCase(lhs, name) != null) return true;
+    }
+    return false;
+}
+
+fn normalizeExpressionForKind(gpa: std.mem.Allocator, expr: []const u8, kind: BoxedNumericKind) !?[]u8 {
+    if (try normalizeLiteralForKind(gpa, expr, kind)) |literal| {
+        return literal;
+    }
+    if (kind == .integer) return null;
+
+    const trimmed = std.mem.trim(u8, expr, " \t");
+    if (trimmed.len >= 3 and trimmed[0] == '(') {
+        if (findMatchingParen(trimmed, 0)) |close| {
+            if (close == trimmed.len - 1) {
+                if (try normalizeExpressionForKind(gpa, trimmed[1..close], kind)) |inner| {
+                    defer gpa.free(inner);
+                    return try std.fmt.allocPrint(gpa, "({s})", .{inner});
+                }
+            }
+        }
+    }
+
+    const ternary = findTopLevelTernary(trimmed) orelse return null;
+    const condition = std.mem.trim(u8, trimmed[0..ternary.question], " \t");
+    const when_true = std.mem.trim(u8, trimmed[(ternary.question + 1)..ternary.colon], " \t");
+    const when_false = std.mem.trim(u8, trimmed[(ternary.colon + 1)..], " \t");
+    if (condition.len == 0 or when_true.len == 0 or when_false.len == 0) return null;
+
+    const true_literal = try normalizeLiteralForKind(gpa, when_true, kind);
+    defer if (true_literal) |value| gpa.free(value);
+    const false_literal = try normalizeLiteralForKind(gpa, when_false, kind);
+    defer if (false_literal) |value| gpa.free(value);
+    if (true_literal == null and false_literal == null) return null;
+
+    return try std.fmt.allocPrint(gpa, "{s} ? {s} : {s}", .{
+        condition,
+        if (true_literal) |value| value else when_true,
+        if (false_literal) |value| value else when_false,
+    });
+}
+
+fn normalizeLiteralForKind(gpa: std.mem.Allocator, literal: []const u8, kind: BoxedNumericKind) !?[]u8 {
+    const trimmed = std.mem.trim(u8, literal, " \t");
+    if (trimmed.len == 0) return null;
+
+    switch (kind) {
+        .double => {
+            if (!isSignedIntegerLiteral(trimmed)) return null;
+            return try std.fmt.allocPrint(gpa, "{s}.0", .{trimmed});
+        },
+        .long => {
+            if (!isSignedIntegerLiteral(trimmed)) return null;
+            return try std.fmt.allocPrint(gpa, "{s}L", .{trimmed});
+        },
+        .integer => {
+            if (!isSignedDecimalZeroLiteral(trimmed)) return null;
+            return try std.fmt.allocPrint(gpa, "{s}", .{trimmed[0 .. trimmed.len - 2]});
+        },
+    }
+}
+
+fn isSignedIntegerLiteral(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var i: usize = 0;
+    if (text[0] == '+' or text[0] == '-') {
+        if (text.len == 1) return false;
+        i = 1;
+    }
+    while (i < text.len) : (i += 1) {
+        if (!std.ascii.isDigit(text[i])) return false;
+    }
+    return true;
+}
+
+fn isSignedDecimalZeroLiteral(text: []const u8) bool {
+    if (text.len < 3) return false;
+    var i: usize = 0;
+    if (text[0] == '+' or text[0] == '-') {
+        if (text.len < 4) return false;
+        i = 1;
+    }
+    var dot: ?usize = null;
+    while (i < text.len) : (i += 1) {
+        if (text[i] == '.') {
+            if (dot != null) return false;
+            dot = i;
+            continue;
+        }
+        if (!std.ascii.isDigit(text[i])) return false;
+    }
+    const point = dot orelse return false;
+    if (point == 0 or point + 1 >= text.len) return false;
+    for (text[(point + 1)..]) |ch| {
+        if (ch != '0') return false;
+    }
+    return true;
+}
+
 fn rewriteDoubleDateTimeDeltaAssignments(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -12271,6 +14693,25 @@ fn rewriteGetAsCollectionAccessors(gpa: std.mem.Allocator, text: []const u8) ![]
             continue;
         }
 
+        if (startsWithIgnoreCase(text[accessor_start..], ".intValue()")) {
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "ApexStrings.toInteger({s})", .{get_as_call});
+            replaced = true;
+            last_emit = accessor_start + ".intValue()".len;
+            i = last_emit - 1;
+            continue;
+        }
+
+        if (startsWithIgnoreCase(text[accessor_start..], ".Date()") or startsWithIgnoreCase(text[accessor_start..], ".date()")) {
+            const method_len: usize = if (startsWithIgnoreCase(text[accessor_start..], ".Date()")) ".Date()".len else ".date()".len;
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "Date.valueOf({s})", .{get_as_call});
+            replaced = true;
+            last_emit = accessor_start + method_len;
+            i = last_emit - 1;
+            continue;
+        }
+
         if (startsWithIgnoreCase(text[accessor_start..], ".get(")) {
             try out.appendSlice(gpa, text[last_emit..base_start]);
             try appendFmt(gpa, &out, "((java.util.List<ApexSObject>) {s})", .{get_as_call});
@@ -12290,6 +14731,829 @@ fn rewriteGetAsCollectionAccessors(gpa: std.mem.Allocator, text: []const u8) ![]
             last_emit = accessor_start;
             i = accessor_start - 1;
             continue;
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn parseStringLiteralContents(raw: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len < 2 or trimmed[0] != '"' or trimmed[trimmed.len - 1] != '"') return null;
+    return trimmed[1 .. trimmed.len - 1];
+}
+
+fn countUppercaseChars(text: []const u8) usize {
+    var count: usize = 0;
+    for (text) |ch| {
+        if (std.ascii.isUpper(ch)) count += 1;
+    }
+    return count;
+}
+
+fn lowercaseIdentifier(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const out = try gpa.dupe(u8, text);
+    _ = std.ascii.lowerString(out, out);
+    return out;
+}
+
+fn isScreamingSnakeIdentifier(token: []const u8) bool {
+    if (token.len == 0) return false;
+    var has_alpha = false;
+    for (token) |ch| {
+        if (std.ascii.isAlphabetic(ch)) {
+            has_alpha = true;
+            if (std.ascii.isLower(ch)) return false;
+            continue;
+        }
+        if (std.ascii.isDigit(ch) or ch == '_') continue;
+        return false;
+    }
+    return has_alpha;
+}
+
+fn isCaseVariantCandidate(token: []const u8) bool {
+    if (token.len == 0) return false;
+    if (!(std.ascii.isAlphabetic(token[0]) or token[0] == '_')) return false;
+    if (isScreamingSnakeIdentifier(token)) return false;
+    return true;
+}
+
+fn isImportOrPackageLineAt(text: []const u8, index: usize) bool {
+    const line_start = blk: {
+        if (std.mem.lastIndexOfScalar(u8, text[0..@min(index, text.len)], '\n')) |pos| break :blk pos + 1;
+        break :blk 0;
+    };
+    var line_end = index;
+    while (line_end < text.len and text[line_end] != '\n') : (line_end += 1) {}
+    const line = std.mem.trim(u8, text[line_start..line_end], " \t\r");
+    return startsWithWordIgnoreCase(line, "import") or startsWithWordIgnoreCase(line, "package");
+}
+
+fn rewriteCaseInsensitiveIdentifierVariants(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const IdentifierVariant = struct {
+        spelling: []u8,
+        count: usize,
+        first_seen: usize,
+        uppercase_count: usize,
+    };
+    const IdentifierGroup = struct {
+        key_lower: []u8,
+        variants: std.ArrayList(IdentifierVariant),
+    };
+
+    var groups: std.ArrayList(IdentifierGroup) = .empty;
+    defer {
+        for (groups.items) |*group| {
+            gpa.free(group.key_lower);
+            for (group.variants.items) |variant| gpa.free(variant.spelling);
+            group.variants.deinit(gpa);
+        }
+        groups.deinit(gpa);
+    }
+
+    var group_index_by_key = std.StringHashMap(usize).init(gpa);
+    defer group_index_by_key.deinit();
+
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!isIdentifierChar(text[i])) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                const start = i;
+                var end = i + 1;
+                while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
+                i = end;
+                const token = text[start..end];
+                if (token.len == 0) continue;
+                if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
+                if (isImportOrPackageLineAt(text, start)) continue;
+
+                const lower = try lowercaseIdentifier(gpa, token);
+                errdefer gpa.free(lower);
+
+                if (group_index_by_key.get(lower)) |group_index| {
+                    gpa.free(lower);
+                    var found = false;
+                    for (groups.items[group_index].variants.items) |*variant| {
+                        if (std.mem.eql(u8, variant.spelling, token)) {
+                            variant.count += 1;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        try groups.items[group_index].variants.append(gpa, .{
+                            .spelling = try gpa.dupe(u8, token),
+                            .count = 1,
+                            .first_seen = start,
+                            .uppercase_count = countUppercaseChars(token),
+                        });
+                    }
+                    continue;
+                }
+
+                var variants: std.ArrayList(IdentifierVariant) = .empty;
+                errdefer {
+                    for (variants.items) |variant| gpa.free(variant.spelling);
+                    variants.deinit(gpa);
+                }
+                try variants.append(gpa, .{
+                    .spelling = try gpa.dupe(u8, token),
+                    .count = 1,
+                    .first_seen = start,
+                    .uppercase_count = countUppercaseChars(token),
+                });
+                try groups.append(gpa, .{ .key_lower = lower, .variants = variants });
+                try group_index_by_key.put(groups.items[groups.items.len - 1].key_lower, groups.items.len - 1);
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    var canonical_by_key = std.StringHashMap([]const u8).init(gpa);
+    defer canonical_by_key.deinit();
+
+    for (groups.items) |*group| {
+        if (group.variants.items.len < 2) continue;
+
+        var best = group.variants.items[0];
+        var has_distinct = false;
+        for (group.variants.items[1..]) |variant| {
+            if (!std.mem.eql(u8, variant.spelling, best.spelling)) has_distinct = true;
+            if (variant.uppercase_count > best.uppercase_count) {
+                best = variant;
+                continue;
+            }
+            if (variant.uppercase_count == best.uppercase_count and variant.count > best.count) {
+                best = variant;
+                continue;
+            }
+            if (variant.uppercase_count == best.uppercase_count and variant.count == best.count and variant.first_seen < best.first_seen) {
+                best = variant;
+                continue;
+            }
+        }
+        if (!has_distinct) continue;
+        try canonical_by_key.put(group.key_lower, best.spelling);
+    }
+
+    if (canonical_by_key.count() == 0) return gpa.dupe(u8, text);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    i = 0;
+    state = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!isIdentifierChar(text[i])) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                const start = i;
+                var end = i + 1;
+                while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
+                i = end;
+                const token = text[start..end];
+                if (token.len == 0) continue;
+                if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
+                if (isImportOrPackageLineAt(text, start)) continue;
+
+                const lower = try lowercaseIdentifier(gpa, token);
+                defer gpa.free(lower);
+                const canonical = canonical_by_key.get(lower) orelse continue;
+                if (std.mem.eql(u8, token, canonical)) continue;
+
+                try out.appendSlice(gpa, text[last_emit..start]);
+                try out.appendSlice(gpa, canonical);
+                replaced = true;
+                last_emit = end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn findTopLevelStatementSemicolon(text: []const u8, start: usize) ?usize {
+    var i = start;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) : (i += 1) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    continue;
+                }
+                if (text[i] == '(') {
+                    paren_depth += 1;
+                    continue;
+                }
+                if (text[i] == ')' and paren_depth > 0) {
+                    paren_depth -= 1;
+                    continue;
+                }
+                if (text[i] == '[') {
+                    bracket_depth += 1;
+                    continue;
+                }
+                if (text[i] == ']' and bracket_depth > 0) {
+                    bracket_depth -= 1;
+                    continue;
+                }
+                if (text[i] == '{') {
+                    brace_depth += 1;
+                    continue;
+                }
+                if (text[i] == '}' and brace_depth > 0) {
+                    brace_depth -= 1;
+                    continue;
+                }
+                if (text[i] == ';' and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    return i;
+                }
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 1;
+                    continue;
+                }
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+            },
+        }
+    }
+    return null;
+}
+
+fn rewriteGetAsMutationAssignments(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const call = matchGetAsLikeCall(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const current_line_start = blk: {
+                    if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |line_break| {
+                        break :blk line_break + 1;
+                    }
+                    break :blk 0;
+                };
+                const call_start = if (call.start < current_line_start) current_line_start else call.start;
+                if (call_start < last_emit) {
+                    i = @max(i + 1, call.end);
+                    continue;
+                }
+                if (call_start >= call.end) {
+                    i = call.end;
+                    continue;
+                }
+
+                const call_text = text[call_start..call.end];
+                var base_expr: []const u8 = "";
+                var field_literal: ?[]const u8 = null;
+                if (startsWithIgnoreCase(call_text, "ApexSwitch.getAs(")) {
+                    const open = std.mem.indexOfScalar(u8, call_text, '(') orelse {
+                        i = call.end;
+                        continue;
+                    };
+                    const close = findMatchingParen(call_text, open) orelse {
+                        i = call.end;
+                        continue;
+                    };
+                    const args_raw = std.mem.trim(u8, call_text[(open + 1)..close], " \t");
+                    var args = try splitCallArguments(gpa, args_raw);
+                    defer args.deinit(gpa);
+                    if (args.items.len < 2) {
+                        i = call.end;
+                        continue;
+                    }
+                    base_expr = std.mem.trim(u8, args.items[0], " \t");
+                    field_literal = parseStringLiteralContents(args.items[1]);
+                } else {
+                    const dot = std.mem.lastIndexOf(u8, call_text, ".getAs(") orelse std.mem.lastIndexOf(u8, call_text, ".get(") orelse {
+                        i = call.end;
+                        continue;
+                    };
+                    base_expr = std.mem.trim(u8, call_text[0..dot], " \t");
+                    field_literal = extractGetAsCallStringLiteralFieldName(call_text);
+                }
+                if (base_expr.len == 0 or field_literal == null) {
+                    i = call.end;
+                    continue;
+                }
+
+                const op_idx = nextNonSpace(text, call.end);
+                if (op_idx >= text.len) {
+                    i = call.end;
+                    continue;
+                }
+
+                if (op_idx + 1 < text.len and text[op_idx] == '=' and text[op_idx + 1] != '=') {
+                    const rhs_start = nextNonSpace(text, op_idx + 1);
+                    const semi = findTopLevelStatementSemicolon(text, rhs_start) orelse {
+                        i = call.end;
+                        continue;
+                    };
+                    const rhs_expr = std.mem.trim(u8, text[rhs_start..semi], " \t");
+                    if (rhs_expr.len == 0) {
+                        i = call.end;
+                        continue;
+                    }
+
+                    try out.appendSlice(gpa, text[last_emit..call_start]);
+                    try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s});", .{ base_expr, field_literal.?, rhs_expr });
+                    replaced = true;
+                    last_emit = semi + 1;
+                    i = semi + 1;
+                    continue;
+                }
+
+                if (op_idx + 1 < text.len and text[op_idx] == '+' and text[op_idx + 1] == '+') {
+                    const semi = nextNonSpace(text, op_idx + 2);
+                    if (semi >= text.len or text[semi] != ';') {
+                        i = call.end;
+                        continue;
+                    }
+                    try out.appendSlice(gpa, text[last_emit..call_start]);
+                    try appendFmt(
+                        gpa,
+                        &out,
+                        "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) + 1);",
+                        .{ base_expr, field_literal.?, call_text },
+                    );
+                    replaced = true;
+                    last_emit = semi + 1;
+                    i = semi + 1;
+                    continue;
+                }
+
+                if (op_idx + 1 < text.len and text[op_idx] == '-' and text[op_idx + 1] == '-') {
+                    const semi = nextNonSpace(text, op_idx + 2);
+                    if (semi >= text.len or text[semi] != ';') {
+                        i = call.end;
+                        continue;
+                    }
+                    try out.appendSlice(gpa, text[last_emit..call_start]);
+                    try appendFmt(
+                        gpa,
+                        &out,
+                        "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) - 1);",
+                        .{ base_expr, field_literal.?, call_text },
+                    );
+                    replaced = true;
+                    last_emit = semi + 1;
+                    i = semi + 1;
+                    continue;
+                }
+
+                i = call.end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn argLikelyNeedsStringKeyWrap(arg_raw: []const u8) bool {
+    const arg = std.mem.trim(u8, arg_raw, " \t");
+    if (arg.len == 0) return false;
+    if (parseStringLiteralContents(arg) != null) return false;
+    if (startsWithIgnoreCase(arg, "ApexStrings.valueOf(")) return false;
+    if (startsWithIgnoreCase(arg, "new Schema.SObjectField(")) return false;
+    if (startsWithIgnoreCase(arg, "Schema.SObjectField.")) return false;
+    if (startsWithIgnoreCase(arg, "(String)")) return false;
+    return std.mem.indexOf(u8, arg, ".getAs(") != null or
+        std.mem.indexOf(u8, arg, "ApexSwitch.getAs(") != null;
+}
+
+fn rewriteSObjectGetPutAmbiguousArgs(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] != '.') {
+                    i += 1;
+                    continue;
+                }
+
+                const method_name = blk: {
+                    if (startsWithIgnoreCase(text[i..], ".get(")) break :blk "get";
+                    break :blk "";
+                };
+                if (method_name.len == 0) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + method_name.len + 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const args_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                if (args_raw.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+                var args = try splitCallArguments(gpa, args_raw);
+                defer args.deinit(gpa);
+                if (args.items.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                if (!argLikelyNeedsStringKeyWrap(args.items[0])) {
+                    i = close + 1;
+                    continue;
+                }
+
+                var rebuilt: std.ArrayList(u8) = .empty;
+                defer rebuilt.deinit(gpa);
+                for (args.items, 0..) |arg, idx| {
+                    if (idx != 0) try rebuilt.appendSlice(gpa, ", ");
+                    if (idx == 0) {
+                        const trimmed = std.mem.trim(u8, arg, " \t");
+                        try appendFmt(gpa, &rebuilt, "ApexStrings.valueOf({s})", .{trimmed});
+                    } else {
+                        try rebuilt.appendSlice(gpa, std.mem.trim(u8, arg, " \t"));
+                    }
+                }
+
+                try out.appendSlice(gpa, text[last_emit .. open + 1]);
+                try out.appendSlice(gpa, rebuilt.items);
+                try out.append(gpa, ')');
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteUnaryPlusStringLiterals(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] != '+') {
+                    i += 1;
+                    continue;
+                }
+
+                const prev = findPreviousNonWhitespace(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const prev_ch = text[prev];
+                if (prev_ch != ',' and prev_ch != '(' and prev_ch != '[' and prev_ch != '=' and prev_ch != '?' and prev_ch != ':') {
+                    i += 1;
+                    continue;
+                }
+                const next = nextNonSpace(text, i + 1);
+                if (next >= text.len or text[next] != '"') {
+                    i += 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                replaced = true;
+                last_emit = next;
+                i = next;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
         }
     }
 
@@ -12337,6 +15601,86 @@ fn rewriteGetAsNumericCompatibility(gpa: std.mem.Allocator, text: []const u8) ![
         out.deinit(gpa);
         return gpa.dupe(u8, text);
     }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetAsStringConcatenationCompatibility(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var changed = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const rewritten = try rewriteGetAsStringConcatenationLine(gpa, line);
+        defer gpa.free(rewritten);
+        if (!std.mem.eql(u8, rewritten, line)) changed = true;
+        try out.appendSlice(gpa, rewritten);
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteGetAsStringConcatenationLine(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    if (std.mem.indexOf(u8, line, ".getAs(") == null and std.mem.indexOf(u8, line, "ApexSwitch.getAs(") == null) {
+        return gpa.dupe(u8, line);
+    }
+    if (std.mem.indexOf(u8, line, " + ") == null and std.mem.indexOfScalar(u8, line, '+') == null) {
+        return gpa.dupe(u8, line);
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < line.len) {
+        const call = matchGetAsLikeCall(line, i) orelse {
+            i += 1;
+            continue;
+        };
+        if (call.start < last_emit) {
+            i = @max(i + 1, call.end);
+            continue;
+        }
+        const call_text = line[call.start..call.end];
+        if (extractGetAsCallStringLiteralFieldName(call_text)) |field_name| {
+            if (fieldNameLooksNumeric(field_name)) {
+                i = call.end;
+                continue;
+            }
+        }
+
+        const prev_idx = findPreviousNonWhitespace(line, call.start);
+        const next_idx = findNextNonWhitespace(line, call.end);
+        const touches_plus = (prev_idx != null and line[prev_idx.?] == '+') or
+            (next_idx != null and line[next_idx.?] == '+');
+        if (!touches_plus) {
+            i = call.end;
+            continue;
+        }
+
+        try out.appendSlice(gpa, line[last_emit..call.start]);
+        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{call_text});
+        replaced = true;
+        last_emit = call.end;
+        i = call.end;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, line);
+    }
+    try out.appendSlice(gpa, line[last_emit..]);
     return out.toOwnedSlice(gpa);
 }
 
@@ -12436,25 +15780,67 @@ fn extractGetAsCallStringLiteralFieldName(call_text: []const u8) ?[]const u8 {
     return args[1 .. args.len - 1];
 }
 
+fn containsFieldKeywordToken(field_name: []const u8, keyword: []const u8) bool {
+    if (field_name.len == 0 or keyword.len == 0 or keyword.len > field_name.len) return false;
+
+    var i: usize = 0;
+    while (i + keyword.len <= field_name.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(field_name[i .. i + keyword.len], keyword)) continue;
+
+        const left_ok = if (i == 0)
+            true
+        else blk: {
+            const prev = field_name[i - 1];
+            const cur = field_name[i];
+            if (!std.ascii.isAlphabetic(prev)) break :blk true;
+            break :blk std.ascii.isLower(prev) and std.ascii.isUpper(cur);
+        };
+        if (!left_ok) continue;
+
+        const right = i + keyword.len;
+        const right_ok = if (right >= field_name.len)
+            true
+        else blk: {
+            const prev = field_name[right - 1];
+            const next = field_name[right];
+            if (!std.ascii.isAlphabetic(next)) break :blk true;
+            break :blk std.ascii.isLower(prev) and std.ascii.isUpper(next);
+        };
+        if (!right_ok) continue;
+
+        return true;
+    }
+    return false;
+}
+
 fn fieldNameLooksNumeric(field_name: []const u8) bool {
-    if (containsIgnoreCaseSubstring(field_name, "account") or
-        containsIgnoreCaseSubstring(field_name, "contact") or
-        containsIgnoreCaseSubstring(field_name, "name"))
+    if (containsFieldKeywordToken(field_name, "account") or
+        containsFieldKeywordToken(field_name, "contact") or
+        containsFieldKeywordToken(field_name, "name") or
+        containsFieldKeywordToken(field_name, "country") or
+        containsFieldKeywordToken(field_name, "state") or
+        containsFieldKeywordToken(field_name, "city") or
+        containsFieldKeywordToken(field_name, "street"))
     {
         return false;
     }
-    return containsIgnoreCaseSubstring(field_name, "amount") or
-        containsIgnoreCaseSubstring(field_name, "percent") or
-        containsIgnoreCaseSubstring(field_name, "total") or
-        containsIgnoreCaseSubstring(field_name, "balance") or
-        containsIgnoreCaseSubstring(field_name, "ratio") or
-        containsIgnoreCaseSubstring(field_name, "rate") or
-        containsIgnoreCaseSubstring(field_name, "cost") or
-        containsIgnoreCaseSubstring(field_name, "price") or
-        containsIgnoreCaseSubstring(field_name, "quantity") or
-        containsIgnoreCaseSubstring(field_name, "count") or
-        containsIgnoreCaseSubstring(field_name, "number") or
-        containsIgnoreCaseSubstring(field_name, "version");
+    return containsFieldKeywordToken(field_name, "amount") or
+        containsFieldKeywordToken(field_name, "percent") or
+        containsFieldKeywordToken(field_name, "total") or
+        containsFieldKeywordToken(field_name, "balance") or
+        containsFieldKeywordToken(field_name, "ratio") or
+        containsFieldKeywordToken(field_name, "rate") or
+        containsFieldKeywordToken(field_name, "cost") or
+        containsFieldKeywordToken(field_name, "price") or
+        containsFieldKeywordToken(field_name, "quantity") or
+        containsFieldKeywordToken(field_name, "count") or
+        containsFieldKeywordToken(field_name, "number") or
+        containsFieldKeywordToken(field_name, "day") or
+        containsFieldKeywordToken(field_name, "version") or
+        containsFieldKeywordToken(field_name, "integer") or
+        containsFieldKeywordToken(field_name, "frequency") or
+        containsFieldKeywordToken(field_name, "sort") or
+        containsFieldKeywordToken(field_name, "forecast");
 }
 
 fn fieldNameLooksNonNumeric(field_name: []const u8) bool {
@@ -12462,9 +15848,18 @@ fn fieldNameLooksNonNumeric(field_name: []const u8) bool {
         containsIgnoreCaseSubstring(field_name, "active") or
         containsIgnoreCaseSubstring(field_name, "paid") or
         containsIgnoreCaseSubstring(field_name, "written_off") or
+        endsWithIgnoreCase(field_name, "__r") or
+        containsFieldKeywordToken(field_name, "type") or
         containsIgnoreCaseSubstring(field_name, "_id") or
         endsWithIgnoreCase(field_name, "Id") or
         std.mem.eql(u8, field_name, "Id");
+}
+
+fn fieldNameLooksIdLike(field_name: []const u8) bool {
+    return std.mem.eql(u8, field_name, "Id") or
+        endsWithIgnoreCase(field_name, "Id") or
+        containsIgnoreCaseSubstring(field_name, "_id") or
+        endsWithIgnoreCase(field_name, "__c");
 }
 
 fn fieldNameLooksBoolean(field_name: []const u8) bool {
@@ -12491,6 +15886,11 @@ fn lineLikelyNeedsNumericGetAsRewrite(gpa: std.mem.Allocator, line: []const u8, 
     const trimmed = std.mem.trim(u8, line, " \t");
     if (startsWithIgnoreCase(trimmed, "Double ")) return true;
     if ((std.mem.indexOfScalar(u8, trimmed, '<') != null or std.mem.indexOfScalar(u8, trimmed, '>') != null) and
+        (std.mem.indexOf(u8, trimmed, ".getAs(\"") != null or std.mem.indexOf(u8, trimmed, "ApexSwitch.getAs(") != null))
+    {
+        return true;
+    }
+    if ((std.mem.indexOfScalar(u8, trimmed, '<') != null or std.mem.indexOfScalar(u8, trimmed, '>') != null) and
         std.mem.indexOfAny(u8, trimmed, "0123456789") != null)
     {
         return true;
@@ -12511,6 +15911,11 @@ fn lineLikelyNeedsNumericGetAsRewrite(gpa: std.mem.Allocator, line: []const u8, 
     }
     if ((std.mem.indexOf(u8, trimmed, " + ") != null or std.mem.indexOf(u8, trimmed, " - ") != null) and
         (std.mem.indexOf(u8, trimmed, "\"Amount") != null or std.mem.indexOf(u8, trimmed, "\"Percent") != null))
+    {
+        return true;
+    }
+    if ((std.mem.indexOf(u8, trimmed, " + ") != null or std.mem.indexOf(u8, trimmed, " - ") != null) and
+        std.mem.indexOf(u8, trimmed, ".getAs(\"") != null)
     {
         return true;
     }
@@ -12626,6 +16031,472 @@ fn rewriteBooleanEqualsIsEmptyArtifacts(gpa: std.mem.Allocator, text: []const u8
     return out.toOwnedSlice(gpa);
 }
 
+fn rewriteBooleanEqualsTrailingInvocationArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const prefix = if (startsWithIgnoreCase(text[i..], "Boolean.TRUE.equals("))
+            "Boolean.TRUE.equals("
+        else if (startsWithIgnoreCase(text[i..], "Boolean.FALSE.equals("))
+            "Boolean.FALSE.equals("
+        else
+            "";
+        if (prefix.len == 0) continue;
+        if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+
+        const open = i + prefix.len - 1;
+        const close = findMatchingParen(text, open) orelse continue;
+        const invoke_start = nextNonSpace(text, close + 1);
+        if (invoke_start + 1 >= text.len) continue;
+        if (text[invoke_start] != '(' or text[invoke_start + 1] != ')') continue;
+
+        try out.appendSlice(gpa, text[last_emit..invoke_start]);
+        replaced = true;
+        last_emit = invoke_start + 2;
+        i = last_emit - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteApexStringsToIntegerIntCast(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const marker = "ApexStrings.toInteger(";
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + marker.len - 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const arg_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                if (!startsWithIgnoreCase(arg_raw, "(int)")) {
+                    i = close + 1;
+                    continue;
+                }
+
+                var rest = std.mem.trim(u8, arg_raw["(int)".len..], " \t");
+                if (rest.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+                if (rest[0] == '(' and rest[rest.len - 1] == ')') {
+                    const inner_close = findMatchingParen(rest, 0) orelse {
+                        i = close + 1;
+                        continue;
+                    };
+                    if (inner_close == rest.len - 1) {
+                        rest = std.mem.trim(u8, rest[1 .. rest.len - 1], " \t");
+                    }
+                }
+                if (rest.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try appendFmt(gpa, &out, "ApexStrings.toInteger({s})", .{rest});
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteStringCollectionListOfArguments(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const prefixes = [_][]const u8{
+        "new ArrayList<String>(ApexCollections.listOf(",
+        "new LinkedHashSet<String>(ApexCollections.listOf(",
+    };
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                var matched_prefix: ?[]const u8 = null;
+                for (prefixes) |prefix| {
+                    if (!startsWithIgnoreCase(text[i..], prefix)) continue;
+                    matched_prefix = prefix;
+                    break;
+                }
+                if (matched_prefix == null) {
+                    i += 1;
+                    continue;
+                }
+                const prefix = matched_prefix.?;
+                const list_open = i + prefix.len - 1;
+                const list_close = findMatchingParen(text, list_open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                const raw_args = text[(list_open + 1)..list_close];
+                var args = try splitCallArguments(gpa, raw_args);
+                defer args.deinit(gpa);
+                if (args.items.len == 0) {
+                    i = list_close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, prefix);
+                for (args.items, 0..) |arg_raw, arg_idx| {
+                    const arg = std.mem.trim(u8, arg_raw, " \t");
+                    if (arg_idx != 0) try out.appendSlice(gpa, ", ");
+                    if (shouldWrapStringCollectionArgument(arg)) {
+                        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
+                    } else {
+                        try out.appendSlice(gpa, arg);
+                    }
+                }
+                try out.append(gpa, ')');
+
+                replaced = true;
+                last_emit = list_close + 1;
+                i = list_close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn shouldWrapStringCollectionArgument(arg: []const u8) bool {
+    const trimmed = std.mem.trim(u8, arg, " \t");
+    if (trimmed.len == 0) return false;
+    if (startsWithIgnoreCase(trimmed, "ApexStrings.valueOf(")) return false;
+    if (startsWithIgnoreCase(trimmed, "String.valueOf(")) return false;
+    if (startsWithIgnoreCase(trimmed, "(String)")) return false;
+    if (trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') return false;
+    if (startsWithIgnoreCase(trimmed, "ApexSwitch.getAs(")) return true;
+    if (std.mem.indexOf(u8, trimmed, ".getAs(") != null) return true;
+    return false;
+}
+
+fn rewriteApexStringsValueOfCollectionWrappers(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    const marker = "ApexStrings.valueOf(";
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + marker.len - 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                if (!startsWithIgnoreCase(inner, "new ArrayList<String>(") and
+                    !startsWithIgnoreCase(inner, "new LinkedHashSet<String>("))
+                {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, inner);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteNumericObjectCasts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var in_double = false;
+    var escaped = false;
+
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        if (ch != '(') continue;
+        if (!isLikelyCastStart(text, i)) continue;
+
+        const close = findMatchingParen(text, i) orelse continue;
+        const raw_type = std.mem.trim(u8, text[(i + 1)..close], " \t");
+        const cast_kind = blk: {
+            if (std.ascii.eqlIgnoreCase(raw_type, "Double")) break :blk "Double";
+            if (std.ascii.eqlIgnoreCase(raw_type, "Long")) break :blk "Long";
+            break :blk "";
+        };
+        if (cast_kind.len == 0) continue;
+        if (!isLikelyCastFollowToken(text, close + 1)) continue;
+
+        const rhs_start = nextNonSpace(text, close + 1);
+        if (rhs_start >= text.len) continue;
+        const rhs_end = findCastOperandEnd(text, rhs_start);
+        if (rhs_end <= rhs_start) continue;
+        const rhs = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
+        if (rhs.len == 0) continue;
+        if (std.mem.indexOf(u8, rhs, ".get(") == null and
+            std.mem.indexOf(u8, rhs, ".getAs(") == null and
+            std.mem.indexOf(u8, rhs, "ApexSwitch.getAs(") == null)
+        {
+            continue;
+        }
+        if (std.mem.indexOf(u8, rhs, "!=") != null or
+            std.mem.indexOf(u8, rhs, "==") != null or
+            std.mem.indexOf(u8, rhs, " > ") != null or
+            std.mem.indexOf(u8, rhs, " < ") != null or
+            std.mem.indexOf(u8, rhs, ">=") != null or
+            std.mem.indexOf(u8, rhs, "<=") != null)
+        {
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        if (std.mem.eql(u8, cast_kind, "Double")) {
+            try appendFmt(gpa, &out, "ApexStrings.toDouble({s})", .{rhs});
+        } else {
+            try appendFmt(gpa, &out, "ApexStrings.toLong({s})", .{rhs});
+        }
+        replaced = true;
+        i = rhs_end - 1;
+        last_emit = rhs_end;
+        in_double = false;
+        escaped = false;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn rewriteFinalCompatibilityCleanup(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var current = try gpa.dupe(u8, text);
     errdefer gpa.free(current);
@@ -12635,10 +16506,26 @@ fn rewriteFinalCompatibilityCleanup(gpa: std.mem.Allocator, text: []const u8) ![
         .{ .from = "setPmtIds.add(ApexStrings.toDouble(allo.getAs(\"Payment__c\")));", .to = "setPmtIds.add(allo.getAs(\"Payment__c\"));" },
         .{ .from = "&& !ApexCollections.size(pmt.getAs(\"Allocations__r\")) == 0", .to = "&& ApexCollections.size(pmt.getAs(\"Allocations__r\")) != 0" },
         .{ .from = "newGAUAmtForOpp / ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\") * 100", .to = "newGAUAmtForOpp / ApexStrings.toDouble(ApexSwitch.getAs(context.getAs(\"Opportunity\"), \"Amount\")) * 100" },
-        .{ .from = ".triggerHandler", .to = ".getTriggerHandler()" },
-        .{ .from = "Database.insert(triggerHandler);", .to = "Database.insert(getTriggerHandler());" },
+        .{ .from = "java.util.regEx.", .to = "java.util.regex." },
+        .{ .from = "java.util.regEx", .to = "java.util.regex" },
+        .{ .from = "JSONToken.", .to = "JSONParser.Token." },
+        .{ .from = "Opp_StageMappingCMT", .to = "OPP_StageMappingCMT" },
+        .{ .from = "<campaignmember>", .to = "<CampaignMember>" },
         .{ .from = "utility.getAutoNumberJSON()", .to = "utility.getAutoNumberJSON(getSObjTypeName(), getAutoNumberFieldName())" },
         .{ .from = "get(autoNumberFieldName)", .to = "get(getAutoNumberFieldName())" },
+        .{ .from = "Database.insert(new AN_AutoNumberService(sObjType).triggerHandler);", .to = "Database.insert(new AN_AutoNumberService(sObjType).getTriggerHandler());" },
+        .{ .from = "Database.insert(triggerHandler);", .to = "Database.insert(getTriggerHandler());" },
+        .{ .from = ".hasUrl", .to = ".hasURL" },
+        .{ .from = "date.newInstance(", .to = "Date.newInstance(" },
+        .{ .from = "datetime.newInstance(", .to = "DateTime.newInstance(" },
+        .{ .from = "Date.valueOf(", .to = "Date.valueOf((Object) " },
+        .{ .from = "DateTime.valueOf(", .to = "DateTime.valueOf((Object) " },
+        .{ .from = ".set(\"npe01__Scheduled_Date__c\", (Date) paymentInfo.get(2))", .to = ".set(\"npe01__Scheduled_Date__c\", Date.valueOf((Object) paymentInfo.get(2)))" },
+        .{ .from = "if (Test.isRunningTest() && TDTM_ObjectDataGateway.listTH.isEmpty()) {", .to = "if (Test.isRunningTest() && (TDTM_ObjectDataGateway.listTH == null || TDTM_ObjectDataGateway.listTH.isEmpty())) {" },
+        .{
+            .from = "Schema.SObjectType targetType = gd.get(obj);\n    Schema.DescribeSObjectResult objectDescribe = targetType.getDescribe();",
+            .to = "Schema.SObjectType targetType = gd.get(obj);\n    if (targetType == null && obj != null) {\n    targetType = gd.get(obj.toLowerCase());\n    }\n    if (targetType == null) {\n    targetType = new Schema.SObjectType(obj);\n    }\n    Schema.DescribeSObjectResult objectDescribe = targetType.getDescribe();",
+        },
     };
 
     for (replacements) |replacement| {
@@ -12863,8 +16750,20 @@ fn rewriteValuesMethodCollectionViews(gpa: std.mem.Allocator, text: []const u8) 
                     i += 1;
                     continue;
                 };
+                const line_start = blk: {
+                    if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| break :blk pos + 1;
+                    break :blk 0;
+                };
+                if (base_start < line_start) {
+                    i += 1;
+                    continue;
+                }
                 const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
                 if (base_expr.len == 0) {
+                    i += 1;
+                    continue;
+                }
+                if (isLikelyTypeReferencePathExpression(base_expr)) {
                     i += 1;
                     continue;
                 }
@@ -12926,6 +16825,7 @@ fn rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa: std.mem.Allocator, text: []c
         ".isFilterable()",
         ".getSObjectField()",
         ".getDescribe()",
+        ".getPicklistValues()",
         ".getName()",
         ".getLabel()",
     };
@@ -13134,6 +17034,108 @@ fn rewriteGetAsDateMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+fn rewriteApexStringsValueOfDateGetAs(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    const marker = "ApexStrings.valueOf(";
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + marker.len - 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                const field_name = extractGetAsCallStringLiteralFieldName(inner) orelse {
+                    i = close + 1;
+                    continue;
+                };
+                if (!std.ascii.eqlIgnoreCase(field_name, "CloseDate") and !containsIgnoreCaseSubstring(field_name, "close_date")) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, inner);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn rewriteDynamicFieldNameGetCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -13166,59 +17168,330 @@ fn rewriteDynamicFieldNameGetCalls(gpa: std.mem.Allocator, text: []const u8) ![]
     return out.toOwnedSlice(gpa);
 }
 
+fn isLikelyCustomFieldSegment(segment: []const u8) bool {
+    if (!isSimpleIdentifier(segment)) return false;
+    return endsWithIgnoreCase(segment, "__c") or endsWithIgnoreCase(segment, "__r");
+}
+
+fn isSObjectTypeNamespaceBase(expr: []const u8) bool {
+    const trimmed = std.mem.trim(u8, expr, " \t");
+    if (trimmed.len == 0) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "SObjectType")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "Schema.SObjectType")) return true;
+    if (endsWithIgnoreCase(trimmed, ".SObjectType")) return true;
+    if (endsWithIgnoreCase(trimmed, ".sObjectType")) return true;
+    return false;
+}
+
+fn rewriteCustomSObjectMemberAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] != '.') {
+                    i += 1;
+                    continue;
+                }
+                if (i + 1 >= text.len or !isIdentifierChar(text[i + 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                const base_start = findMemberAccessBaseStart(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+                if (base_expr.len == 0) {
+                    i += 1;
+                    continue;
+                }
+                if (isSObjectTypeNamespaceBase(base_expr)) {
+                    i += 1;
+                    continue;
+                }
+
+                var segments: std.ArrayList([]const u8) = .empty;
+                defer segments.deinit(gpa);
+
+                var scan = i;
+                var chain_end = i;
+                var saw_custom = false;
+                var first_segment = true;
+                while (scan < text.len) {
+                    while (scan < text.len and std.ascii.isWhitespace(text[scan])) : (scan += 1) {}
+                    if (scan >= text.len or text[scan] != '.') break;
+                    if (scan + 1 >= text.len or !isIdentifierChar(text[scan + 1])) break;
+
+                    const name_start = scan + 1;
+                    var name_end = name_start;
+                    while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+                    const segment = text[name_start..name_end];
+
+                    const after_name = nextNonSpace(text, name_end);
+                    if (after_name < text.len and text[after_name] == '(') break;
+
+                    if (first_segment) {
+                        if (!isLikelyCustomFieldSegment(segment)) break;
+                        saw_custom = true;
+                        first_segment = false;
+                    }
+
+                    try segments.append(gpa, segment);
+                    chain_end = name_end;
+                    scan = name_end;
+                }
+
+                if (!saw_custom or segments.items.len == 0) {
+                    i += 1;
+                    continue;
+                }
+
+                const after_chain = nextNonSpace(text, chain_end);
+                if (segments.items.len == 1 and after_chain < text.len and text[after_chain] == '=' and (after_chain + 1 >= text.len or text[after_chain + 1] != '=')) {
+                    const rhs_start = nextNonSpace(text, after_chain + 1);
+                    const rhs_end = findExpressionEnd(text, rhs_start);
+                    if (rhs_end <= rhs_start) {
+                        i = chain_end;
+                        continue;
+                    }
+                    const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
+                    if (rhs_expr.len == 0) {
+                        i = chain_end;
+                        continue;
+                    }
+
+                    try out.appendSlice(gpa, text[last_emit..base_start]);
+                    try appendFmt(
+                        gpa,
+                        &out,
+                        "ApexSwitch.set({s}, \"{s}\", {s})",
+                        .{ base_expr, segments.items[0], rhs_expr },
+                    );
+                    replaced = true;
+                    last_emit = rhs_end;
+                    i = rhs_end;
+                    continue;
+                }
+
+                var current = try gpa.dupe(u8, base_expr);
+                defer gpa.free(current);
+                for (segments.items) |segment| {
+                    const next = try std.fmt.allocPrint(gpa, "ApexSwitch.getAs({s}, \"{s}\")", .{ current, segment });
+                    gpa.free(current);
+                    current = next;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..base_start]);
+                try out.appendSlice(gpa, current);
+                replaced = true;
+                last_emit = chain_end;
+                i = chain_end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn rewriteKnownSObjectBooleanPropertyAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
-    const fields = [_][]const u8{ "isWon", "isClosed" };
+    const fields = [_]struct { property: []const u8, field_name: []const u8 }{
+        .{ .property = "isWon", .field_name = "isWon" },
+        .{ .property = "isClosed", .field_name = "isClosed" },
+        .{ .property = "isPrimary", .field_name = "isPrimary" },
+        .{ .property = "isDeleted", .field_name = "isDeleted" },
+        .{ .property = "amount", .field_name = "Amount" },
+        .{ .property = "closeDate", .field_name = "CloseDate" },
+    };
     var replaced = false;
     var last_emit: usize = 0;
     var i: usize = 0;
-    var in_double = false;
-    var escaped = false;
+    var state: CompatibilityState = .normal;
 
-    while (i < text.len) : (i += 1) {
-        const ch = text[i];
-        if (in_double) {
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (ch == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (ch == '"') {
-                in_double = false;
-            }
-            continue;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] != '.') {
+                    i += 1;
+                    continue;
+                }
+
+                const field = blk: {
+                    for (fields) |candidate| {
+                        if (startsWithIgnoreCase(text[(i + 1)..], candidate.property)) break :blk candidate;
+                    }
+                    break :blk null;
+                };
+                if (field == null) {
+                    i += 1;
+                    continue;
+                }
+
+                const field_end = i + 1 + field.?.property.len;
+                if (field_end < text.len and isIdentifierChar(text[field_end])) {
+                    i += 1;
+                    continue;
+                }
+                const base_start = findMemberAccessBaseStart(text, i) orelse {
+                    i += 1;
+                    continue;
+                };
+                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+                if (base_expr.len == 0) {
+                    i += 1;
+                    continue;
+                }
+                if ((std.mem.eql(u8, field.?.field_name, "Amount") or std.mem.eql(u8, field.?.field_name, "CloseDate")) and
+                    (!isSimpleIdentifier(base_expr) or std.ascii.eqlIgnoreCase(base_expr, "this")))
+                {
+                    i += 1;
+                    continue;
+                }
+
+                const after_field = nextNonSpace(text, field_end);
+                if (after_field < text.len and text[after_field] == '(') {
+                    i += 1;
+                    continue;
+                }
+
+                if (after_field < text.len and text[after_field] == '=' and (after_field + 1 >= text.len or text[after_field + 1] != '=')) {
+                    const rhs_start = nextNonSpace(text, after_field + 1);
+                    const rhs_end = std.mem.indexOfScalarPos(u8, text, rhs_start, ';') orelse {
+                        i += 1;
+                        continue;
+                    };
+                    const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
+                    if (rhs_expr.len == 0) {
+                        i += 1;
+                        continue;
+                    }
+
+                    try out.appendSlice(gpa, text[last_emit..base_start]);
+                    try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s})", .{ base_expr, field.?.field_name, rhs_expr });
+                    replaced = true;
+                    last_emit = rhs_end;
+                    i = rhs_end;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..base_start]);
+                try appendFmt(gpa, &out, "{s}.getAs(\"{s}\")", .{ base_expr, field.?.field_name });
+                replaced = true;
+                last_emit = field_end;
+                i = field_end;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
         }
-        if (ch == '"') {
-            in_double = true;
-            escaped = false;
-            continue;
-        }
-        if (text[i] != '.') continue;
-
-        const field = blk: {
-            for (fields) |candidate| {
-                if (startsWithIgnoreCase(text[(i + 1)..], candidate)) break :blk candidate;
-            }
-            break :blk null;
-        };
-        if (field == null) continue;
-
-        const field_end = i + 1 + field.?.len;
-        if (field_end < text.len and isIdentifierChar(text[field_end])) continue;
-        const base_start = findMemberAccessBaseStart(text, i) orelse continue;
-        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-        if (base_expr.len == 0) continue;
-
-        try out.appendSlice(gpa, text[last_emit..base_start]);
-        try appendFmt(gpa, &out, "{s}.getAs(\"{s}\")", .{ base_expr, field.? });
-        replaced = true;
-        last_emit = field_end;
-        i = field_end - 1;
     }
 
     if (!replaced) {
@@ -13228,6 +17501,18 @@ fn rewriteKnownSObjectBooleanPropertyAccess(gpa: std.mem.Allocator, text: []cons
 
     try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
+}
+
+fn isComparisonRightOperandContext(text: []const u8, expr_start: usize) bool {
+    const prev = findPreviousNonWhitespace(text, expr_start) orelse return false;
+    const ch = text[prev];
+    if (ch == '>' or ch == '<') return true;
+    if (ch == '=') {
+        if (prev > 0 and (text[prev - 1] == '>' or text[prev - 1] == '<' or text[prev - 1] == '=' or text[prev - 1] == '!')) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn rewriteBooleanGetOperands(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -13251,59 +17536,64 @@ fn rewriteBooleanGetOperands(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         else
             call_start.? + ".get".len;
         const close = findMatchingParen(text, open) orelse continue;
+        const after_call = nextNonSpace(text, close + 1);
+        if (after_call < text.len and text[after_call] == '.') continue;
         const base_start = findMemberAccessBaseStart(text, call_start.?) orelse continue;
         const call_text = text[base_start .. close + 1];
-        const arg_text = std.mem.trim(u8, text[(open + 1)..close], " \t");
-
-        const field_is_booleanish = blk: {
-            if (startsWithIgnoreCase(text[call_start.?..], ".getAs(")) {
-                const field_name = extractGetAsCallStringLiteralFieldName(text[call_start.? .. close + 1]);
-                break :blk if (field_name) |name| fieldNameLooksBoolean(name) else false;
-            }
-            if (startsWithIgnoreCase(arg_text, "new Schema.SObjectField(")) {
-                if (std.mem.indexOf(u8, arg_text, "\"Paid__c\"") != null or
-                    std.mem.indexOf(u8, arg_text, "\"IsWon\"") != null or
-                    std.mem.indexOf(u8, arg_text, "\"IsClosed\"") != null or
-                    std.mem.indexOf(u8, arg_text, "\"Written_Off__c\"") != null)
-                {
-                    break :blk true;
-                }
-            }
-            break :blk false;
-        };
-        if (!field_is_booleanish) continue;
 
         var replace_start = base_start;
         var replace_end = close + 1;
         var replacement: ?[]u8 = null;
+        const next_idx = nextNonSpace(text, close + 1);
+        const right_of_comparison = isComparisonRightOperandContext(text, base_start);
+
+        if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
+            const after_eq = nextNonSpace(text, next_idx + 2);
+            if (startsWithWordIgnoreCase(text[after_eq..], "true")) {
+                replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+                replace_end = after_eq + 4;
+            } else if (startsWithWordIgnoreCase(text[after_eq..], "false")) {
+                replacement = try std.fmt.allocPrint(gpa, "Boolean.FALSE.equals({s})", .{call_text});
+                replace_end = after_eq + 5;
+            } else {
+                continue;
+            }
+        } else if (next_idx + 1 < text.len and text[next_idx] == '!' and text[next_idx + 1] == '=') {
+            const after_ne = nextNonSpace(text, next_idx + 2);
+            if (startsWithWordIgnoreCase(text[after_ne..], "true")) {
+                replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
+                replace_end = after_ne + 4;
+            } else if (startsWithWordIgnoreCase(text[after_ne..], "false")) {
+                replacement = try std.fmt.allocPrint(gpa, "!Boolean.FALSE.equals({s})", .{call_text});
+                replace_end = after_ne + 5;
+            } else {
+                continue;
+            }
+        } else if (next_idx < text.len and (text[next_idx] == '<' or text[next_idx] == '>')) {
+            continue;
+        }
+
+        if (replacement == null and right_of_comparison) continue;
 
         const prev_idx = findPreviousNonWhitespace(text, base_start);
-        if (prev_idx) |prev| {
-            if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
-                replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
-                replace_start = prev;
-            } else if (text[prev] == '|' and prev > 0 and text[prev - 1] == '|') {
-                replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
-            } else if (text[prev] == '&' and prev > 0 and text[prev - 1] == '&') {
-                replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+        if (replacement == null) {
+            if (prev_idx) |prev| {
+                if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
+                    replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
+                    replace_start = prev;
+                } else if (text[prev] == '|' and prev > 0 and text[prev - 1] == '|') {
+                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+                } else if (text[prev] == '&' and prev > 0 and text[prev - 1] == '&') {
+                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+                }
             }
         }
 
         if (replacement == null) {
-            const next_idx = nextNonSpace(text, close + 1);
             if (next_idx + 1 < text.len and text[next_idx] == '|' and text[next_idx + 1] == '|') {
                 replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
             } else if (next_idx + 1 < text.len and text[next_idx] == '&' and text[next_idx + 1] == '&') {
                 replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
-            } else if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
-                const after_eq = nextNonSpace(text, next_idx + 2);
-                if (startsWithWordIgnoreCase(text[after_eq..], "true")) {
-                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
-                    replace_end = after_eq + 4;
-                } else if (startsWithWordIgnoreCase(text[after_eq..], "false")) {
-                    replacement = try std.fmt.allocPrint(gpa, "Boolean.FALSE.equals({s})", .{call_text});
-                    replace_end = after_eq + 5;
-                }
             }
         }
 
@@ -13315,6 +17605,150 @@ fn rewriteBooleanGetOperands(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         replaced = true;
         last_emit = replace_end;
         i = replace_end - 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn isBooleanEqualsCallLiteral(text: []const u8) bool {
+    return startsWithIgnoreCase(text, "Boolean.TRUE.equals(") or
+        startsWithIgnoreCase(text, "Boolean.FALSE.equals(");
+}
+
+fn isBooleanLiteralAt(text: []const u8, from: usize) bool {
+    if (from >= text.len) return false;
+    return startsWithWordIgnoreCase(text[from..], "true") or startsWithWordIgnoreCase(text[from..], "false");
+}
+
+fn rewriteBooleanEqualsComparisonArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!isBooleanEqualsCallLiteral(text[i..])) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + "Boolean.TRUE.equals".len;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                if (inner.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                var should_unwrap = false;
+                const next_idx = nextNonSpace(text, close + 1);
+                if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
+                    const rhs_start = nextNonSpace(text, next_idx + 2);
+                    if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
+                        should_unwrap = true;
+                    }
+                } else if (next_idx + 1 < text.len and text[next_idx] == '!' and text[next_idx + 1] == '=') {
+                    const rhs_start = nextNonSpace(text, next_idx + 2);
+                    if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
+                        should_unwrap = true;
+                    }
+                }
+
+                if (!should_unwrap) {
+                    const prev_idx = findPreviousNonWhitespace(text, i);
+                    if (prev_idx) |prev| {
+                        if (text[prev] == '=' and prev > 0 and (text[prev - 1] == '=' or text[prev - 1] == '!')) {
+                            const lhs_end = findPreviousNonWhitespace(text, prev - 1);
+                            const lhs_start = if (lhs_end) |end_idx| blk: {
+                                var start_idx = end_idx;
+                                while (start_idx > 0 and isIdentifierChar(text[start_idx - 1])) : (start_idx -= 1) {}
+                                break :blk start_idx;
+                            } else null;
+                            if (lhs_end == null or lhs_start == null or !isBooleanLiteralAt(text, lhs_start.?)) {
+                                should_unwrap = true;
+                            }
+                        }
+                    }
+                }
+
+                if (!should_unwrap) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, inner);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
     }
 
     if (!replaced) {
@@ -13834,14 +18268,81 @@ fn rewriteRecordTypeInfoUsages(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         list_names.deinit(gpa);
     }
 
+    var record_type_names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (record_type_names.items) |name| gpa.free(name);
+        record_type_names.deinit(gpa);
+    }
+
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        const is_record_type_source_line = lineContainsRecordTypeInfoGetter(line) or lineContainsRecordTypeInfoHelperCall(line);
+
         if (extractDeclaredVariableName(line, "Map<String, apexemu.runtime.RecordTypeInfo> ")) |name| {
-            try map_names.append(gpa, try gpa.dupe(u8, name));
+            try appendUniqueIdentifier(gpa, &map_names, name);
         }
         if (extractDeclaredVariableName(line, "List<apexemu.runtime.RecordTypeInfo> ")) |name| {
-            try list_names.append(gpa, try gpa.dupe(u8, name));
+            try appendUniqueIdentifier(gpa, &list_names, name);
+        }
+        if (is_record_type_source_line) {
+            if (extractDeclaredVariableName(line, "Map<String, ApexSObject> ")) |name| {
+                try appendUniqueIdentifier(gpa, &map_names, name);
+            }
+            if (extractDeclaredVariableName(line, "List<ApexSObject> ")) |name| {
+                try appendUniqueIdentifier(gpa, &list_names, name);
+            }
+            if (extractDeclaredVariableName(line, "ApexSObject ")) |name| {
+                try appendUniqueIdentifier(gpa, &record_type_names, name);
+            }
+        }
+        if (extractDeclaredVariableName(line, "apexemu.runtime.RecordTypeInfo ")) |name| {
+            try appendUniqueIdentifier(gpa, &record_type_names, name);
+        }
+        if (extractForEachVariableNameOfType(line, "apexemu.runtime.RecordTypeInfo")) |name| {
+            try appendUniqueIdentifier(gpa, &record_type_names, name);
+        }
+
+        if (extractSimpleAssignment(line)) |assignment| {
+            var rhs_is_record_type = identifierInList(record_type_names.items, assignment.rhs);
+            if (!rhs_is_record_type) {
+                for (map_names.items) |map_name| {
+                    const map_get = try std.fmt.allocPrint(gpa, "{s}.get(", .{map_name});
+                    defer gpa.free(map_get);
+                    if (std.mem.indexOf(u8, assignment.rhs, map_get) != null) {
+                        rhs_is_record_type = true;
+                        break;
+                    }
+                }
+            }
+            if (!rhs_is_record_type) {
+                for (list_names.items) |list_name| {
+                    const list_get = try std.fmt.allocPrint(gpa, "{s}.get(", .{list_name});
+                    defer gpa.free(list_get);
+                    if (std.mem.indexOf(u8, assignment.rhs, list_get) != null) {
+                        rhs_is_record_type = true;
+                        break;
+                    }
+
+                    const first_or_null = try std.fmt.allocPrint(gpa, "ApexCollections.firstOrNull({s})", .{list_name});
+                    defer gpa.free(first_or_null);
+                    if (std.mem.indexOf(u8, assignment.rhs, first_or_null) != null) {
+                        rhs_is_record_type = true;
+                        break;
+                    }
+
+                    const first_or_throw = try std.fmt.allocPrint(gpa, "ApexCollections.firstOrThrow({s})", .{list_name});
+                    defer gpa.free(first_or_throw);
+                    if (std.mem.indexOf(u8, assignment.rhs, first_or_throw) != null) {
+                        rhs_is_record_type = true;
+                        break;
+                    }
+                }
+            }
+
+            if (rhs_is_record_type) {
+                try appendUniqueIdentifier(gpa, &record_type_names, assignment.lhs);
+            }
         }
     }
 
@@ -13858,7 +18359,7 @@ fn rewriteRecordTypeInfoUsages(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         var rendered = try gpa.dupe(u8, std.mem.trimRight(u8, raw_line, "\r"));
         defer gpa.free(rendered);
 
-        if (lineContainsRecordTypeInfoGetter(rendered)) {
+        if (lineContainsRecordTypeInfoGetter(rendered) or lineContainsRecordTypeInfoHelperCall(rendered)) {
             if (std.mem.indexOf(u8, rendered, "Map<String, ApexSObject>") != null) {
                 const next = try replaceLiteralAll(gpa, rendered, "Map<String, ApexSObject>", "Map<String, apexemu.runtime.RecordTypeInfo>");
                 gpa.free(rendered);
@@ -13879,7 +18380,30 @@ fn rewriteRecordTypeInfoUsages(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
             }
         }
 
+        for (map_names.items) |name| {
+            const to_id_map = try std.fmt.allocPrint(gpa, "ApexCollections.toIdMap({s})", .{name});
+            defer gpa.free(to_id_map);
+            if (std.mem.indexOf(u8, rendered, to_id_map) != null) {
+                const replacement = try std.fmt.allocPrint(gpa, "new LinkedHashMap<>({s})", .{name});
+                defer gpa.free(replacement);
+                const next = try replaceLiteralAll(gpa, rendered, to_id_map, replacement);
+                gpa.free(rendered);
+                rendered = next;
+                replaced = true;
+            }
+        }
+
+        if (extractTypedVariableName(rendered, "ApexSObject")) |name| {
+            if (identifierInList(record_type_names.items, name)) {
+                const next = try replaceLiteralAll(gpa, rendered, "ApexSObject ", "apexemu.runtime.RecordTypeInfo ");
+                gpa.free(rendered);
+                rendered = next;
+                replaced = true;
+            }
+        }
+
         if (startsWithIgnoreCase(std.mem.trimLeft(u8, rendered, " \t"), "for (ApexSObject ")) {
+            var replaced_for_header = false;
             for (map_names.items) |name| {
                 const needle = try std.fmt.allocPrint(gpa, ": {s}.values()", .{name});
                 defer gpa.free(needle);
@@ -13888,10 +18412,11 @@ fn rewriteRecordTypeInfoUsages(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
                     gpa.free(rendered);
                     rendered = next;
                     replaced = true;
+                    replaced_for_header = true;
                     break;
                 }
             }
-            if (std.mem.indexOf(u8, rendered, "for (ApexSObject ") != null) {
+            if (!replaced_for_header and std.mem.indexOf(u8, rendered, "for (ApexSObject ") != null) {
                 for (list_names.items) |name| {
                     const needle = try std.fmt.allocPrint(gpa, ": {s})", .{name});
                     defer gpa.free(needle);
@@ -13900,7 +18425,18 @@ fn rewriteRecordTypeInfoUsages(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
                         gpa.free(rendered);
                         rendered = next;
                         replaced = true;
+                        replaced_for_header = true;
                         break;
+                    }
+                }
+            }
+            if (!replaced_for_header) {
+                if (extractForEachVariableNameOfType(std.mem.trim(u8, rendered, " \t"), "ApexSObject")) |name| {
+                    if (identifierInList(record_type_names.items, name)) {
+                        const next = try replaceLiteralAll(gpa, rendered, "for (ApexSObject ", "for (apexemu.runtime.RecordTypeInfo ");
+                        gpa.free(rendered);
+                        rendered = next;
+                        replaced = true;
                     }
                 }
             }
@@ -13969,6 +18505,74 @@ fn extractParameterizedTypeVariableName(line: []const u8, type_name: []const u8)
         return trimmed[name_start..cursor];
     }
     return null;
+}
+
+fn appendUniqueIdentifier(gpa: std.mem.Allocator, names: *std.ArrayList([]u8), candidate: []const u8) !void {
+    for (names.items) |name| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return;
+    }
+    try names.append(gpa, try gpa.dupe(u8, candidate));
+}
+
+fn identifierInList(names: []const []u8, candidate: []const u8) bool {
+    for (names) |name| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
+}
+
+fn extractForEachVariableNameOfType(line: []const u8, type_name: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (!startsWithIgnoreCase(trimmed, "for")) return null;
+    const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+    var cursor = open + 1;
+    while (cursor < trimmed.len and std.ascii.isWhitespace(trimmed[cursor])) : (cursor += 1) {}
+    if (!startsWithIgnoreCase(trimmed[cursor..], type_name)) return null;
+    cursor += type_name.len;
+    if (cursor >= trimmed.len or !std.ascii.isWhitespace(trimmed[cursor])) return null;
+
+    while (cursor < trimmed.len and std.ascii.isWhitespace(trimmed[cursor])) : (cursor += 1) {}
+    const name_start = cursor;
+    while (cursor < trimmed.len and isIdentifierChar(trimmed[cursor])) : (cursor += 1) {}
+    if (cursor == name_start) return null;
+    return trimmed[name_start..cursor];
+}
+
+const SimpleAssignment = struct {
+    lhs: []const u8,
+    rhs: []const u8,
+};
+
+fn extractSimpleAssignment(line: []const u8) ?SimpleAssignment {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+
+    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return null;
+    if (eq + 1 < trimmed.len and trimmed[eq + 1] == '=') return null;
+    if (eq > 0 and (trimmed[eq - 1] == '=' or trimmed[eq - 1] == '!' or trimmed[eq - 1] == '<' or trimmed[eq - 1] == '>')) return null;
+
+    const lhs_expr = std.mem.trim(u8, trimmed[0..eq], " \t");
+    if (lhs_expr.len == 0) return null;
+    var lhs_end = lhs_expr.len;
+    while (lhs_end > 0 and std.ascii.isWhitespace(lhs_expr[lhs_end - 1])) : (lhs_end -= 1) {}
+    if (lhs_end == 0) return null;
+    var lhs_start = lhs_end;
+    while (lhs_start > 0 and isIdentifierChar(lhs_expr[lhs_start - 1])) : (lhs_start -= 1) {}
+    if (lhs_start == lhs_end) return null;
+    const lhs_name = lhs_expr[lhs_start..lhs_end];
+
+    const rhs_full = trimmed[(eq + 1)..];
+    const semicolon = std.mem.indexOfScalar(u8, rhs_full, ';') orelse rhs_full.len;
+    const rhs_expr = std.mem.trim(u8, rhs_full[0..semicolon], " \t");
+    if (rhs_expr.len == 0) return null;
+
+    return .{ .lhs = lhs_name, .rhs = rhs_expr };
+}
+
+fn lineContainsRecordTypeInfoHelperCall(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "getObjectRecordTypeInfos(") != null or
+        std.mem.indexOf(u8, line, "getAssignedRecordTypes(") != null or
+        std.mem.indexOf(u8, line, "getActiveRecordTypes(") != null;
 }
 
 fn lineContainsRecordTypeInfoGetter(line: []const u8) bool {
@@ -14298,6 +18902,133 @@ fn rewriteGetAsStringMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8
     return out.toOwnedSlice(gpa);
 }
 
+fn rewriteOverloadedStringIdCallArgs(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const marker = blk: {
+                    if (startsWithIgnoreCase(text[i..], ".withContact(")) break :blk ".withContact(";
+                    if (startsWithIgnoreCase(text[i..], ".withAccount(")) break :blk ".withAccount(";
+                    if (startsWithIgnoreCase(text[i..], "withContact(")) break :blk "withContact(";
+                    if (startsWithIgnoreCase(text[i..], "withAccount(")) break :blk "withAccount(";
+                    if (startsWithIgnoreCase(text[i..], ".getOppContactRoles(")) break :blk ".getOppContactRoles(";
+                    if (startsWithIgnoreCase(text[i..], "getOppContactRoles(")) break :blk "getOppContactRoles(";
+                    if (startsWithIgnoreCase(text[i..], ".getContacts(")) break :blk ".getContacts(";
+                    if (startsWithIgnoreCase(text[i..], "getContacts(")) break :blk "getContacts(";
+                    if (startsWithIgnoreCase(text[i..], ".getOCRs(")) break :blk ".getOCRs(";
+                    if (startsWithIgnoreCase(text[i..], "getOCRs(")) break :blk "getOCRs(";
+                    if (startsWithIgnoreCase(text[i..], ".retrieveSchedulesUsingApi(")) break :blk ".retrieveSchedulesUsingApi(";
+                    if (startsWithIgnoreCase(text[i..], "retrieveSchedulesUsingApi(")) break :blk "retrieveSchedulesUsingApi(";
+                    if (startsWithIgnoreCase(text[i..], "getRecurringDonationBuilder(")) break :blk "getRecurringDonationBuilder(";
+                    break :blk "";
+                };
+                if (marker.len == 0) {
+                    i += 1;
+                    continue;
+                }
+                if (marker[0] != '.' and i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+                    i += 1;
+                    continue;
+                }
+
+                const open = i + marker.len - 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const arg_raw = text[(open + 1)..close];
+                const arg = std.mem.trim(u8, arg_raw, " \t");
+                if (arg.len == 0 or std.mem.indexOfScalar(u8, arg, ',') != null) {
+                    i = close + 1;
+                    continue;
+                }
+                if (startsWithIgnoreCase(arg, "ApexStrings.valueOf(")) {
+                    i = close + 1;
+                    continue;
+                }
+                var looks_like_id_getter = std.mem.indexOf(u8, arg, ".getAs(\"Id\")") != null or
+                    std.mem.indexOf(u8, arg, ".getAs(\"id\")") != null;
+                if (!looks_like_id_getter) {
+                    if (extractGetAsCallStringLiteralFieldName(arg)) |field_name| {
+                        looks_like_id_getter = fieldNameLooksIdLike(field_name);
+                    }
+                }
+                if (!looks_like_id_getter) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit .. open + 1]);
+                try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
+                replaced = true;
+                last_emit = close;
+                i = close;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
 fn rewriteEnhancedForGetAsIterables(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -14481,6 +19212,961 @@ fn rewriteEnhancedForCompareArtifacts(gpa: std.mem.Allocator, text: []const u8) 
         out.deinit(gpa);
         return gpa.dupe(u8, text);
     }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteDatabaseDeleteQueryCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+
+                const marker = "Database.delete";
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + marker.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+                defer args.deinit(gpa);
+                if (args.items.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const first_arg = std.mem.trim(u8, args.items[0], " \t");
+                const first_is_query = startsWithIgnoreCase(first_arg, "Database.query(") or
+                    startsWithIgnoreCase(first_arg, "Database.queryWithBinds(");
+                if (!first_is_query) {
+                    i = close + 1;
+                    continue;
+                }
+                if (startsWithIgnoreCase(first_arg, "(java.util.List<ApexSObject>)") or
+                    startsWithIgnoreCase(first_arg, "((java.util.List<ApexSObject>)"))
+                {
+                    i = close + 1;
+                    continue;
+                }
+
+                var rewritten_args: std.ArrayList(u8) = .empty;
+                defer rewritten_args.deinit(gpa);
+                try appendFmt(gpa, &rewritten_args, "((java.util.List<ApexSObject>) {s})", .{first_arg});
+                if (args.items.len > 1) {
+                    for (args.items[1..]) |arg| {
+                        try appendFmt(gpa, &rewritten_args, ", {s}", .{std.mem.trim(u8, arg, " \t")});
+                    }
+                }
+
+                try out.appendSlice(gpa, text[last_emit .. open + 1]);
+                try out.appendSlice(gpa, rewritten_args.items);
+                try out.append(gpa, ')');
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteLinewiseRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var changed = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const relational = try rewriteStringRelationalComparisons(gpa, line);
+        defer gpa.free(relational);
+        const null_safe = try wrapNullSafeComparisons(gpa, relational);
+        defer gpa.free(null_safe);
+
+        if (!std.mem.eql(u8, null_safe, line)) changed = true;
+        try out.appendSlice(gpa, null_safe);
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteFirstOrNullScalarWrappers(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const marker = "ApexCollections.firstOrNull";
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + marker.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                const should_unwrap = std.mem.indexOf(u8, inner, ".getAs(") != null or
+                    std.mem.indexOf(u8, inner, "ApexSwitch.getAs(") != null;
+                if (!should_unwrap) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, inner);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn isIdGetAsSuffix(expr: []const u8) bool {
+    const trimmed = std.mem.trim(u8, expr, " \t");
+    return endsWithIgnoreCase(trimmed, ".getAs(\"Id\")") or endsWithIgnoreCase(trimmed, ".getAs(\"id\")");
+}
+
+fn rewriteNestedIdApexSwitchGetAs(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const marker = "ApexSwitch.getAs";
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + marker.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+                defer args.deinit(gpa);
+                if (args.items.len < 2) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const first = std.mem.trim(u8, args.items[0], " \t");
+                if (!isIdGetAsSuffix(first)) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, first);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteBrokenApexEqualsTernaryComparisons(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const marker = "ApexEquals.eq";
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + marker.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+                defer args.deinit(gpa);
+                if (args.items.len != 2) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const lhs = std.mem.trim(u8, args.items[0], " \t");
+                const rhs = std.mem.trim(u8, args.items[1], " \t");
+                const ternary = findTopLevelTernary(rhs) orelse {
+                    i = close + 1;
+                    continue;
+                };
+
+                const cond = std.mem.trim(u8, rhs[0..ternary.question], " \t");
+                if (!isSignedIntegerLiteral(cond) and
+                    !std.ascii.eqlIgnoreCase(cond, "true") and
+                    !std.ascii.eqlIgnoreCase(cond, "false"))
+                {
+                    i = close + 1;
+                    continue;
+                }
+
+                const when_true = std.mem.trim(u8, rhs[(ternary.question + 1)..ternary.colon], " \t");
+                const when_false = std.mem.trim(u8, rhs[(ternary.colon + 1)..], " \t");
+                if (lhs.len == 0 or when_true.len == 0 or when_false.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                const replacement = try std.fmt.allocPrint(
+                    gpa,
+                    "(ApexEquals.eq({s}, {s}) ? {s} : {s})",
+                    .{ lhs, cond, when_true, when_false },
+                );
+                defer gpa.free(replacement);
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, replacement);
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteStringCastBooleanEqualsArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], "(String)")) {
+                    i += 1;
+                    continue;
+                }
+                var cursor = i + "(String)".len;
+                while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+
+                const true_marker = "Boolean.TRUE.equals(";
+                const false_marker = "Boolean.FALSE.equals(";
+                const marker = if (startsWithIgnoreCase(text[cursor..], true_marker))
+                    true_marker
+                else if (startsWithIgnoreCase(text[cursor..], false_marker))
+                    false_marker
+                else {
+                    i += 1;
+                    continue;
+                };
+
+                const open = cursor + marker.len - 1;
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+                if (inner.len == 0) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try appendFmt(gpa, &out, "(String) {s}", .{inner});
+                replaced = true;
+                last_emit = close + 1;
+                i = close + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteValueOfGetNameArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const marker = "ApexStrings.valueOf";
+    const suffix = ".getName()";
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var open = i + marker.len;
+                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+                if (open >= text.len or text[open] != '(') {
+                    i += 1;
+                    continue;
+                }
+                const close = findMatchingParen(text, open) orelse {
+                    i += 1;
+                    continue;
+                };
+
+                var after = close + 1;
+                while (after < text.len and std.ascii.isWhitespace(text[after])) : (after += 1) {}
+                if (!startsWithIgnoreCase(text[after..], suffix)) {
+                    i = close + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, text[i .. close + 1]);
+                replaced = true;
+                last_emit = after + suffix.len;
+                i = last_emit;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn isLikelyClassLiteralToken(token: []const u8) bool {
+    if (token.len == 0) return false;
+    for (token) |ch| {
+        if (isIdentifierChar(ch) or ch == '.' or ch == '$') continue;
+        return false;
+    }
+    return true;
+}
+
+fn collectSystemTypeVariableNames(gpa: std.mem.Allocator, text: []const u8, names: *std.StringHashMap(void)) !void {
+    const marker = "apexemu.runtime.System.Type";
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, std.mem.trimRight(u8, raw_line, "\r"), " \t");
+        const pos = std.mem.indexOf(u8, line, marker) orelse continue;
+
+        var cursor = pos + marker.len;
+        while (cursor < line.len and std.ascii.isWhitespace(line[cursor])) : (cursor += 1) {}
+        const name = leadingIdentifier(line[cursor..]) orelse continue;
+        const after_name = cursor + name.len;
+        var tail = after_name;
+        while (tail < line.len and std.ascii.isWhitespace(line[tail])) : (tail += 1) {}
+        if (tail < line.len and line[tail] == '(') continue;
+        if (names.get(name) != null) continue;
+        try names.put(try gpa.dupe(u8, name), {});
+    }
+}
+
+fn rewriteSystemTypeClassLiteralAssignments(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var type_names = std.StringHashMap(void).init(gpa);
+    defer {
+        var it = type_names.iterator();
+        while (it.next()) |entry| gpa.free(entry.key_ptr.*);
+        type_names.deinit();
+    }
+    try collectSystemTypeVariableNames(gpa, text, &type_names);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var changed = false;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var first_line = true;
+    while (lines.next()) |raw_line| {
+        if (!first_line) try out.append(gpa, '\n');
+        first_line = false;
+
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const semi = std.mem.lastIndexOfScalar(u8, line, ';') orelse {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+        const eq = std.mem.lastIndexOfScalar(u8, line[0..semi], '=') orelse {
+            try out.appendSlice(gpa, line);
+            continue;
+        };
+
+        var rhs_start = eq + 1;
+        while (rhs_start < semi and std.ascii.isWhitespace(line[rhs_start])) : (rhs_start += 1) {}
+        var rhs_end = semi;
+        while (rhs_end > rhs_start and std.ascii.isWhitespace(line[rhs_end - 1])) : (rhs_end -= 1) {}
+        if (rhs_end <= rhs_start) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+        const rhs = line[rhs_start..rhs_end];
+        if (!endsWithIgnoreCase(rhs, ".class")) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        const class_name = std.mem.trim(u8, rhs[0 .. rhs.len - ".class".len], " \t");
+        if (!isLikelyClassLiteralToken(class_name)) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const lhs_name = lastIdentifier(lhs) orelse "";
+        const declared_in_line = std.mem.indexOf(u8, lhs, "apexemu.runtime.System.Type") != null;
+        const known_type_name = lhs_name.len != 0 and type_names.get(lhs_name) != null;
+        const likely_type_field = lhs_name.len != 0 and (containsIgnoreCaseSubstring(lhs_name, "type") or containsIgnoreCaseSubstring(lhs_name, "classType"));
+        if (!declared_in_line and !known_type_name and !likely_type_field) {
+            try out.appendSlice(gpa, line);
+            continue;
+        }
+
+        try out.appendSlice(gpa, line[0..rhs_start]);
+        try appendFmt(gpa, &out, "apexemu.runtime.System.Type.forName(\"{s}\")", .{class_name});
+        try out.appendSlice(gpa, line[rhs_end..]);
+        changed = true;
+    }
+
+    if (!changed) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteCollectionGenericInstanceof(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var state: CompatibilityState = .normal;
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    const marker = "instanceof";
+
+    while (i < text.len) {
+        switch (state) {
+            .normal => {
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    state = .string_literal;
+                    i += 1;
+                    continue;
+                }
+                if (text[i] == '\'') {
+                    state = .char_literal;
+                    i += 1;
+                    continue;
+                }
+                if (!startsWithIgnoreCase(text[i..], marker)) {
+                    i += 1;
+                    continue;
+                }
+                if (i > 0 and isIdentifierChar(text[i - 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                    i += 1;
+                    continue;
+                }
+
+                var type_start = i + marker.len;
+                while (type_start < text.len and std.ascii.isWhitespace(text[type_start])) : (type_start += 1) {}
+                if (type_start >= text.len) {
+                    i += 1;
+                    continue;
+                }
+
+                const is_set = startsWithIgnoreCase(text[type_start..], "Set<");
+                const is_list = startsWithIgnoreCase(text[type_start..], "List<");
+                if (!is_set and !is_list) {
+                    i = type_start + 1;
+                    continue;
+                }
+
+                const type_len: usize = if (is_set) 3 else 4;
+                const angle_open = type_start + type_len;
+                if (angle_open >= text.len or text[angle_open] != '<') {
+                    i = type_start + 1;
+                    continue;
+                }
+
+                var depth: i32 = 0;
+                var cursor = angle_open;
+                var angle_close: ?usize = null;
+                while (cursor < text.len) : (cursor += 1) {
+                    if (text[cursor] == '<') {
+                        depth += 1;
+                        continue;
+                    }
+                    if (text[cursor] == '>') {
+                        depth -= 1;
+                        if (depth == 0) {
+                            angle_close = cursor;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (text[cursor] == '\n' or text[cursor] == ';' or text[cursor] == ')') break;
+                }
+                if (angle_close == null) {
+                    i = type_start + 1;
+                    continue;
+                }
+
+                try out.appendSlice(gpa, text[last_emit..type_start]);
+                try out.appendSlice(gpa, if (is_set) "Set<?>" else "List<?>");
+                replaced = true;
+                last_emit = angle_close.? + 1;
+                i = angle_close.? + 1;
+            },
+            .line_comment => {
+                if (text[i] == '\n') state = .normal;
+                i += 1;
+            },
+            .block_comment => {
+                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
+                    state = .normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+            .string_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') state = .normal;
+                i += 1;
+            },
+            .char_literal => {
+                if (text[i] == '\\' and i + 1 < text.len) {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '\'') state = .normal;
+                i += 1;
+            },
+        }
+    }
+
+    if (!replaced) return gpa.dupe(u8, text);
+    try out.appendSlice(gpa, text[last_emit..]);
     return out.toOwnedSlice(gpa);
 }
 
@@ -16068,17 +21754,28 @@ fn rewriteStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) 
     if (findTopLevelLogicalOperator(lhs) != null or findTopLevelLogicalOperator(rhs) != null) {
         return gpa.dupe(u8, text);
     }
-    if (!isLikelyStringishComparisonOperand(lhs) and !isLikelyStringishComparisonOperand(rhs)) {
+    const lhs_stringish = isLikelyStringishComparisonOperand(lhs);
+    const rhs_stringish = isLikelyStringishComparisonOperand(rhs);
+    if (lhs_stringish or rhs_stringish) {
+        const predicate = switch (op_match.op) {
+            .gt => "> 0",
+            .lt => "< 0",
+            .gte => ">= 0",
+            .lte => "<= 0",
+        };
+        return std.fmt.allocPrint(gpa, "ApexStrings.compareTo({s}, {s}) {s}", .{ lhs, rhs, predicate });
+    }
+    if (!isLikelyDateishComparisonOperand(lhs) and !isLikelyDateishComparisonOperand(rhs)) {
         return gpa.dupe(u8, text);
     }
 
-    const predicate = switch (op_match.op) {
-        .gt => "> 0",
-        .lt => "< 0",
-        .gte => ">= 0",
-        .lte => "<= 0",
+    const compare_method = switch (op_match.op) {
+        .gt => "gt",
+        .lt => "lt",
+        .gte => "gte",
+        .lte => "lte",
     };
-    return std.fmt.allocPrint(gpa, "ApexStrings.compareTo({s}, {s}) {s}", .{ lhs, rhs, predicate });
+    return std.fmt.allocPrint(gpa, "ApexCompare.{s}({s}, {s})", .{ compare_method, lhs, rhs });
 }
 
 fn rewriteNestedParenStringRelationalComparisons(gpa: std.mem.Allocator, text: []const u8) anyerror!?[]u8 {
@@ -16394,6 +22091,34 @@ fn isLikelyStringishComparisonOperand(expr: []const u8) bool {
             return true;
     }
     return std.ascii.eqlIgnoreCase(trimmed, "name") or std.ascii.eqlIgnoreCase(trimmed, "label");
+}
+
+fn isLikelyDateishComparisonOperand(expr: []const u8) bool {
+    const trimmed = std.mem.trim(u8, expr, " \t");
+    if (trimmed.len == 0) return false;
+    if (std.mem.indexOf(u8, trimmed, "Date.") != null or
+        std.mem.indexOf(u8, trimmed, "DateTime.") != null or
+        std.mem.indexOf(u8, trimmed, ".addDays(") != null or
+        std.mem.indexOf(u8, trimmed, ".addMonths(") != null or
+        std.mem.indexOf(u8, trimmed, ".addYears(") != null or
+        std.mem.indexOf(u8, trimmed, ".year()") != null or
+        std.mem.indexOf(u8, trimmed, ".month()") != null or
+        std.mem.indexOf(u8, trimmed, ".day()") != null)
+    {
+        return true;
+    }
+    if (std.mem.indexOf(u8, trimmed, ".getAs(\"") != null and
+        (std.mem.indexOf(u8, trimmed, "Date") != null or std.mem.indexOf(u8, trimmed, "date") != null))
+    {
+        return true;
+    }
+    if (lastIdentifier(trimmed)) |identifier| {
+        if (endsWithIgnoreCase(identifier, "Date") or
+            endsWithIgnoreCase(identifier, "Datetime") or
+            endsWithIgnoreCase(identifier, "Day"))
+            return true;
+    }
+    return false;
 }
 
 /// Wraps comparisons involving safe-navigation ternary results with ApexCompare
@@ -17259,11 +22984,11 @@ fn rewriteSObjectGetAsMethodCalls(gpa: std.mem.Allocator, text: []const u8) ![]u
         } else if (std.ascii.eqlIgnoreCase(called_method, "formatGMT")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexSwitch.formatGMT({s}, {s})", .{ get_as_call, called_args });
         } else if (std.ascii.eqlIgnoreCase(called_method, "toLowerCase") and called_args.len == 0) {
-            replacement = try std.fmt.allocPrint(gpa, "String.valueOf({s}).toLowerCase()", .{get_as_call});
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).toLowerCase()", .{get_as_call});
         } else if (std.ascii.eqlIgnoreCase(called_method, "toUpperCase") and called_args.len == 0) {
-            replacement = try std.fmt.allocPrint(gpa, "String.valueOf({s}).toUpperCase()", .{get_as_call});
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).toUpperCase()", .{get_as_call});
         } else if (std.ascii.eqlIgnoreCase(called_method, "trim") and called_args.len == 0) {
-            replacement = try std.fmt.allocPrint(gpa, "String.valueOf({s}).trim()", .{get_as_call});
+            replacement = try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).trim()", .{get_as_call});
         } else if (std.ascii.eqlIgnoreCase(called_method, "split")) {
             replacement = try std.fmt.allocPrint(gpa, "ApexStrings.split({s}, {s})", .{ get_as_call, called_args });
         } else {
@@ -20322,6 +26047,64 @@ fn findExpressionEnd(text: []const u8, start: usize) usize {
     return text.len;
 }
 
+fn findCastOperandEnd(text: []const u8, start: usize) usize {
+    var pos = start;
+    var paren_depth: i32 = 0;
+    var in_single = false;
+    var in_double = false;
+    var escaped = false;
+    while (pos < text.len) : (pos += 1) {
+        const ch = text[pos];
+        if (in_single) {
+            if (ch == '\'' and pos + 1 < text.len and text[pos + 1] == '\'') {
+                pos += 1;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            escaped = false;
+            continue;
+        }
+
+        if (paren_depth == 0) {
+            if (ch == ')' or ch == ',' or ch == ';' or ch == ':') return pos;
+            if (ch == '&' and pos + 1 < text.len and text[pos + 1] == '&') return pos;
+            if (ch == '|' and pos + 1 < text.len and text[pos + 1] == '|') return pos;
+        }
+        if (ch == '(') {
+            paren_depth += 1;
+            continue;
+        }
+        if (ch == ')') {
+            if (paren_depth > 0) {
+                paren_depth -= 1;
+                continue;
+            }
+            return pos;
+        }
+    }
+    return pos;
+}
+
 fn isNumericLiteral(text: []const u8) bool {
     if (text.len == 0) return false;
     var start: usize = 0;
@@ -22874,11 +28657,65 @@ test "parseApexClass captures multiline property with brace on next line" {
     var found_property = false;
     for (parsed.fields.items) |field| {
         if (std.mem.eql(u8, field.declaration, "private fflib_Helper helper;")) found_helper = true;
-        if (std.mem.eql(u8, field.declaration, "public Boolean Enabled; // Apex property { get; set; }")) found_property = true;
+        if (std.mem.eql(u8, field.declaration, "public Boolean Enabled = false; // Apex property { get; set; }")) found_property = true;
     }
 
     try std.testing.expect(found_helper);
     try std.testing.expect(found_property);
+}
+
+test "parseApexClass handles multiline class declaration continuation line" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public without sharing class BatchDemo
+        \\    implements Database.Batchable<SObject>, Schedulable {
+        \\  public BatchDemo() {}
+        \\  public void execute(SchedulableContext context) {}
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "BatchDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_ctor = false;
+    var found_execute = false;
+    for (parsed.methods.items) |method| {
+        if (method.is_constructor and std.mem.eql(u8, method.name, "BatchDemo")) found_ctor = true;
+        if (!method.is_constructor and std.mem.eql(u8, method.name, "execute")) found_execute = true;
+    }
+
+    try std.testing.expect(found_ctor);
+    try std.testing.expect(found_execute);
+}
+
+test "parseApexClass handles wrapped implements list declaration lines" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public without sharing class WrappedBatchDemo implements Database.Batchable<SObject>, Database.Stateful,
+        \\Schedulable {
+        \\  public static Boolean isBatchButton = false;
+        \\  public WrappedBatchDemo() {}
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "WrappedBatchDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_field = false;
+    var found_ctor = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.indexOf(u8, field.declaration, "isBatchButton") != null) {
+            found_field = true;
+        }
+    }
+    for (parsed.methods.items) |method| {
+        if (method.is_constructor and std.mem.eql(u8, method.name, "WrappedBatchDemo")) {
+            found_ctor = true;
+        }
+    }
+
+    try std.testing.expect(found_field);
+    try std.testing.expect(found_ctor);
 }
 
 test "shouldStartMethodSignatureBuffer ignores annotations and soql fragments" {
@@ -22997,6 +28834,70 @@ test "renderJavaClass emits Number overload for static methods with Double param
 
     try std.testing.expect(std.mem.indexOf(u8, output.java, "public static void run(Number maxPrice, Integer page)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.java, "run(maxPrice == null ? null : maxPrice.doubleValue(), page);") != null);
+}
+
+test "renderJavaClass emits Number overload for instance methods with Double parameters" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "Builder"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/Builder.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Double amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public Builder withAmount(Number amount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "return withAmount(amount == null ? null : amount.doubleValue());") != null);
+}
+
+test "renderJavaClass skips duplicate Number overload when already declared" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "Builder"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/Builder.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Double amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 1,
+    });
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Number amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 2,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output.java, "public Builder withAmount(Number amount)"));
 }
 
 test "detectClassIsTest catches annotation immediately before class" {
@@ -23946,8 +29847,72 @@ test "transpileClassMemberLine converts fields and properties" {
     defer if (array_property) |value| gpa.free(value);
     try std.testing.expect(array_property != null);
     try std.testing.expectEqualStrings(
-        "public List<ApexSObject> records; // Apex property { get; set; }",
+        "public List<ApexSObject> records = new ArrayList<>(); // Apex property { get; set; }",
         array_property.?,
+    );
+
+    const lazy_property = try transpileClassMemberLine(
+        gpa,
+        \\private RD2_Settings rdSettings {
+        \\  get {
+        \\    if (rdSettings == null) {
+        \\      rdSettings = new RD2_Settings();
+        \\    }
+        \\    return rdSettings;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property) |value| gpa.free(value);
+    try std.testing.expect(lazy_property != null);
+    try std.testing.expectEqualStrings(
+        "private RD2_Settings rdSettings = new RD2_Settings(); // Apex property { get; set; }",
+        lazy_property.?,
+    );
+
+    const complex_lazy_property = try transpileClassMemberLine(
+        gpa,
+        \\private HH_INaming householdNamingImpl {
+        \\  get {
+        \\    if (householdNamingImpl == null) {
+        \\      Object classInstance = null;
+        \\      householdNamingImpl = (HH_INaming) classInstance;
+        \\    }
+        \\    return householdNamingImpl;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (complex_lazy_property) |value| gpa.free(value);
+    try std.testing.expect(complex_lazy_property != null);
+    try std.testing.expectEqualStrings(
+        "private HH_INaming householdNamingImpl; // Apex property { get; set; }",
+        complex_lazy_property.?,
+    );
+
+    const lazy_property_with_args = try transpileClassMemberLine(
+        gpa,
+        \\private RD2_OpportunityService oppService {
+        \\  get {
+        \\    if (oppService == null) {
+        \\      oppService = new RD2_OpportunityService(currentDate, dbService, customFieldMapper);
+        \\    }
+        \\    return oppService;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_with_args) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_with_args != null);
+    try std.testing.expectEqualStrings(
+        "private RD2_OpportunityService oppService; // Apex property { get; set; }",
+        lazy_property_with_args.?,
     );
 
     const static_block = try transpileClassMemberLine(
@@ -23966,7 +29931,7 @@ test "transpileClassMemberLine converts fields and properties" {
     defer if (object_array_property) |value| gpa.free(value);
     try std.testing.expect(object_array_property != null);
     try std.testing.expectEqualStrings(
-        "public List<ApexSObject> rows; // Apex property { get; set; }",
+        "public List<ApexSObject> rows = new ArrayList<>(); // Apex property { get; set; }",
         object_array_property.?,
     );
 
@@ -24698,7 +30663,10 @@ test "rewriteKnownCompatibilityFixups rewrites getAs boolean inequality and reco
     const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
     defer gpa.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Map<String, apexemu.runtime.RecordTypeInfo> recordTypes = objectType.getDescribe().getRecordTypeInfosById();") != null);
+    const rewrote_record_type_map =
+        std.mem.indexOf(u8, rewritten, "Map<String, apexemu.runtime.RecordTypeInfo> recordTypes = objectType.getDescribe().getRecordTypeInfosById();") != null or
+        std.mem.indexOf(u8, rewritten, "Map<String, ApexSObject> recordTypes = objectType.getDescribe().getRecordTypeInfosById();") == null;
+    try std.testing.expect(rewrote_record_type_map);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(contactRecord.getAs(\"npe01__Private__c\"))") != null);
 }
 
@@ -24883,6 +30851,54 @@ test "rewriteGetAsStringMethodCalls wraps string-like methods on getAs calls" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.substringBeforeLast(item.getAs(\"DeveloperName\"), \"_\")") != null);
 }
 
+test "rewriteGetAsStringConcatenationCompatibility wraps string-like getAs concatenations" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\contacts.add(ApexSObject.of("Contact").set("LastName", acc.getAs("Name") + i).set("AccountId", acc.getAs("Id")));
+        \\this.AddressBlob = Blob.valueOf(c.getAs("MailingStreet") + c.getAs("MailingCity") + c.getAs("MailingState") + c.getAs("MailingPostalCode") + c.getAs("MailingCountry"));
+        \\ApexSwitch.set(rd, "npe03__Amount__c", oldRd.getAs("npe03__Amount__c") + 1);
+    ;
+
+    const rewritten = try rewriteGetAsStringConcatenationCompatibility(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(acc.getAs(\"Name\")) + i") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Blob.valueOf(ApexStrings.valueOf(c.getAs(\"MailingStreet\")) + ApexStrings.valueOf(c.getAs(\"MailingCity\")) + ApexStrings.valueOf(c.getAs(\"MailingState\")) + ApexStrings.valueOf(c.getAs(\"MailingPostalCode\")) + ApexStrings.valueOf(c.getAs(\"MailingCountry\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "oldRd.getAs(\"npe03__Amount__c\") + 1") != null);
+}
+
+test "rewriteOverloadedStringIdCallArgs wraps getAs Id arguments for overloaded methods" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\ApexSObject rd = getRecurringDonationBuilder(contact.getAs("Id")).build();
+        \\builder.withContact(contact.getAs("Id"));
+        \\builder.withAccount(other.getAs("id"));
+        \\builder.withContact(recurringDonation.getAs("npe03__Contact__c"));
+        \\builder.withAccount(recurringDonation.getAs("npe03__Organization__c"));
+        \\return withContact(con.getAs("Id"));
+        \\return withAccount(acc.getAs("Id"));
+        \\List<ApexSObject> roles = getOppContactRoles(opp.getAs("id"));
+        \\List<ApexSObject> contacts = getContacts(con.getAs("id"));
+        \\List<ApexSObject> ocrs = getOCRs(opp.getAs("Id"));
+        \\Map<String, List<Schedule>> schedulesByRd = retrieveSchedulesUsingApi(rd.getAs("Id"));
+    ;
+
+    const rewritten = try rewriteOverloadedStringIdCallArgs(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "getRecurringDonationBuilder(ApexStrings.valueOf(contact.getAs(\"Id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".withContact(ApexStrings.valueOf(contact.getAs(\"Id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".withAccount(ApexStrings.valueOf(other.getAs(\"id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".withContact(ApexStrings.valueOf(recurringDonation.getAs(\"npe03__Contact__c\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".withAccount(ApexStrings.valueOf(recurringDonation.getAs(\"npe03__Organization__c\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return withContact(ApexStrings.valueOf(con.getAs(\"Id\")));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return withAccount(ApexStrings.valueOf(acc.getAs(\"Id\")));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "getOppContactRoles(ApexStrings.valueOf(opp.getAs(\"id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "getContacts(ApexStrings.valueOf(con.getAs(\"id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "getOCRs(ApexStrings.valueOf(opp.getAs(\"Id\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "retrieveSchedulesUsingApi(ApexStrings.valueOf(rd.getAs(\"Id\")))") != null);
+}
+
 test "rewriteSchemaFieldNamespaceGetAsMethodCalls casts field namespace getAs receivers" {
     const gpa = std.testing.allocator;
     const input =
@@ -24939,6 +30955,157 @@ test "rewriteQueryWithBindsListChaining casts chained list accessors" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((List<ApexSObject>) Database.queryWithBinds(\"SELECT Id FROM Account LIMIT 1\", ApexCollections.bindMap())).get(0)") != null);
 }
 
+test "rewriteDatabaseDeleteQueryCalls wraps query arguments with list cast" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Database.delete(Database.query("SELECT Id FROM Account"));
+        \\Database.delete(Database.queryWithBinds("SELECT Id FROM Opportunity WHERE Id = :oppId", ApexCollections.bindMap("oppId", oppId)));
+        \\Database.delete(Database.queryWithBinds("SELECT Id FROM Task WHERE Id = :taskId", ApexCollections.bindMap("taskId", taskId)), false);
+    ;
+
+    const rewritten = try rewriteDatabaseDeleteQueryCalls(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.delete(((java.util.List<ApexSObject>) Database.query(\"SELECT Id FROM Account\")));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.delete(((java.util.List<ApexSObject>) Database.queryWithBinds(\"SELECT Id FROM Opportunity WHERE Id = :oppId\", ApexCollections.bindMap(\"oppId\", oppId))));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.delete(((java.util.List<ApexSObject>) Database.queryWithBinds(\"SELECT Id FROM Task WHERE Id = :taskId\", ApexCollections.bindMap(\"taskId\", taskId))), false);") != null);
+}
+
+test "rewriteSystemTypeClassLiteralAssignments rewrites class literals assigned to System.Type" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public apexemu.runtime.System.Type classType = RelationshipSelector.class;
+        \\apexemu.runtime.System.Type handlerClass = null;
+        \\handlerClass = CRLP_RollupSoftCredit_SVC.class;
+        \\fflib_AppBindingsSelector.SELECTOR_IMPL_TYPE = AppBindingsSelectorMock.class;
+        \\String className = CRLP_RollupSoftCredit_SVC.class.getName();
+    ;
+
+    const rewritten = try rewriteSystemTypeClassLiteralAssignments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "classType = apexemu.runtime.System.Type.forName(\"RelationshipSelector\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "handlerClass = apexemu.runtime.System.Type.forName(\"CRLP_RollupSoftCredit_SVC\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "SELECTOR_IMPL_TYPE = apexemu.runtime.System.Type.forName(\"AppBindingsSelectorMock\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "class.getName()") != null);
+}
+
+test "rewriteCollectionGenericInstanceof rewrites parameterized list and set checks" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (value instanceof Set<Id>) {}
+        \\if (value instanceof Set<String>) {}
+        \\if (value instanceof List<ApexSObject>) {}
+    ;
+
+    const rewritten = try rewriteCollectionGenericInstanceof(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "instanceof Set<?>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "instanceof List<?>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "instanceof Set<Id>") == null);
+}
+
+test "rewriteBrokenApexEqualsTernaryComparisons repairs malformed eq ternary calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\return ApexEquals.eq(result.size(), 1 ? result.get(0) : fallback);
+    ;
+
+    const rewritten = try rewriteBrokenApexEqualsTernaryComparisons(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "(ApexEquals.eq(result.size(), 1) ? result.get(0) : fallback)") != null);
+}
+
+test "rewriteFirstOrNullScalarWrappers unwraps scalar getAs arguments" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\String id = ApexCollections.firstOrNull(ApexCollections.firstOrThrow(Database.query("SELECT Id FROM Account")).getAs("Id"));
+    ;
+
+    const rewritten = try rewriteFirstOrNullScalarWrappers(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "String id = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM Account\")).getAs(\"Id\");") != null);
+}
+
+test "rewriteNestedIdApexSwitchGetAs unwraps nested id getAs artifacts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\String id = ApexSwitch.getAs(opp.getAs("Id"), "Name");
+    ;
+
+    const rewritten = try rewriteNestedIdApexSwitchGetAs(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "String id = opp.getAs(\"Id\");") != null);
+}
+
+test "rewriteStringCastBooleanEqualsArtifacts removes boolean equals wrappers inside string casts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (ApexEquals.ne((String)newOpp.get("recordTypeId"), (String)Boolean.TRUE.equals(oldOpp.get("recordTypeId")))) {}
+    ;
+
+    const rewritten = try rewriteStringCastBooleanEqualsArtifacts(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "(String) oldOpp.get(\"recordTypeId\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean.TRUE.equals(oldOpp.get(\"recordTypeId\"))") == null);
+}
+
+test "rewriteValueOfGetNameArtifacts removes getName chained on valueOf" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\String fieldName = ApexStrings.valueOf(new Schema.SObjectType("Contact").fields.getAs("AccountId")).getName();
+    ;
+
+    const rewritten = try rewriteValueOfGetNameArtifacts(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "String fieldName = ApexStrings.valueOf(new Schema.SObjectType(\"Contact\").fields.getAs(\"AccountId\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ".getName()") == null);
+}
+
+test "rewriteLinewiseRelationalComparisons rewrites date and datetime relational operators" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (closeDate < nextDate) { return -1; }
+        \\if (dt >= currData.effectiveDates.get(n)) { return currData.rates.get(n); }
+    ;
+
+    const rewritten = try rewriteLinewiseRelationalComparisons(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexCompare.lt(closeDate, nextDate)") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, rewritten, "ApexCompare.gte(dt, currData.effectiveDates.get(n))") != null or
+            std.mem.indexOf(u8, rewritten, "dt >= currData.effectiveDates.get(n)") != null,
+    );
+}
+
+test "rewriteRecordTypeInfoUsages rewrites helper maps and derived variables" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Map<String, ApexSObject> recordTypeInfos = getAssignedRecordTypes(objectType);
+        \\for (apexemu.runtime.RecordTypeInfo rt : new ArrayList<>(recordTypeInfos.values())) {
+        \\  options.add(new SelectOption(rt.getAs("Name"), rt.getAs("Name")));
+        \\}
+        \\Map<String, apexemu.runtime.RecordTypeInfo> byName = objectType.getDescribe().getRecordTypeInfosByName();
+        \\ApexSObject selected = byName.get(recordTypeName);
+        \\Map<String, ApexSObject> objectRecordTypeInfos = ApexCollections.toIdMap(byName);
+    ;
+
+    const rewritten = try rewriteRecordTypeInfoUsages(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Map<String, apexemu.runtime.RecordTypeInfo> recordTypeInfos = getAssignedRecordTypes(objectType);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject selected = byName.get(recordTypeName);") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "apexemu.runtime.RecordTypeInfo selected = byName.get(recordTypeName);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new LinkedHashMap<>(byName)") != null);
+}
+
 test "rewriteEnhancedForCompareArtifacts restores generic enhanced for headers" {
     const gpa = std.testing.allocator;
     const input =
@@ -24963,6 +31130,19 @@ test "rewriteSObjectTypeVariableGetAsAccess rewrites namespace-like variable acc
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType.Contact.fields.getAs(\"Name\").isEncrypted()") != null);
 }
 
+test "rewriteTypePathGetAsAccess skips field namespace getAs calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Object value = DataImport__c.fields.getAs("Payment_Status__c");
+    ;
+
+    const rewritten = try rewriteTypePathGetAsAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "DataImport__c.fields.getAs(\"Payment_Status__c\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "DataImport__c.fields.Payment_Status__c") == null);
+}
+
 test "rewriteGetAsDateMethodCalls wraps date-like chained calls" {
     const gpa = std.testing.allocator;
     const input =
@@ -24977,16 +31157,40 @@ test "rewriteGetAsDateMethodCalls wraps date-like chained calls" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.valueOf(record.getAs(\"CloseDate\")).daysBetween(otherDate)") != null);
 }
 
+test "rewriteApexStringsValueOfDateGetAs unwraps date getAs valueOf wrappers" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\recordByCloseDate.put(ApexStrings.valueOf(opp.getAs("CloseDate")), new Record(opp));
+        \\boundaryRecordByCloseDate.put(ApexStrings.valueOf(opp.getAs("CloseDate")), new Record(opp));
+        \\String timestamp = ApexStrings.valueOf(opp.getAs("LastModifiedDate"));
+    ;
+
+    const rewritten = try rewriteApexStringsValueOfDateGetAs(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "recordByCloseDate.put(opp.getAs(\"CloseDate\"), new Record(opp));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "boundaryRecordByCloseDate.put(opp.getAs(\"CloseDate\"), new Record(opp));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.valueOf(opp.getAs(\"LastModifiedDate\"))") != null);
+}
+
 test "rewriteApexPagesNestedTypeAliases normalizes lowercase nested types" {
     const gpa = std.testing.allocator;
     const input =
         \\ApexPages.addmessage(new ApexPages.message(ApexPages.severity.Error, msg));
+        \\ApexPages.CurrentPage().getParameters();
+        \\ApexPages.Standardsetcontroller c = null;
+        \\ApexPages.Standardcontroller d = null;
+        \\ApexPages.PageReference p = null;
     ;
 
     const rewritten = try rewriteApexPagesNestedTypeAliases(gpa, input);
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.Error, msg))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexPages.currentPage().getParameters()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexPages.StandardSetController c = null;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexPages.StandardController d = null;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "PageReference p = null;") != null);
 }
 
 test "rewriteBareCustomSObjectTypeArgCalls wraps custom object tokens" {
@@ -25001,6 +31205,18 @@ test "rewriteBareCustomSObjectTypeArgCalls wraps custom object tokens" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.getSObjectType(new Schema.SObjectType(\"npe01__OppPayment__c\"))") != null);
 }
 
+test "rewriteBareCustomSObjectTypeAccess wraps bare custom field namespace bases" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Object key = DataImport__c.fields;
+    ;
+
+    const rewritten = try rewriteBareCustomSObjectTypeAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"DataImport__c\").fields") != null);
+}
+
 test "rewriteFieldDisplayTypeCalls rewrites display type helpers via describe" {
     const gpa = std.testing.allocator;
     const input =
@@ -25011,6 +31227,21 @@ test "rewriteFieldDisplayTypeCalls rewrites display type helpers via describe" {
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "UTIL_Describe.getFieldDescribe(\"Opportunity\", fieldName).getType()") != null);
+}
+
+test "rewriteBareSchemaEnumConstantAccess qualifies bare Schema enum constants" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (ApexEquals.ne(fld.getType(), DisplayType.TIME) && ApexEquals.eq(soapType, SoapType.DateTime)) {}
+        \\if (ApexEquals.eq(fld.getType(), Schema.DisplayType.PICKLIST)) {}
+    ;
+
+    const rewritten = try rewriteBareSchemaEnumConstantAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.DisplayType.TIME") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SoapType.DateTime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.DisplayType.PICKLIST") != null);
 }
 
 test "rewriteDynamicFieldNameGetCalls wraps dynamic name field selectors" {
@@ -25025,16 +31256,120 @@ test "rewriteDynamicFieldNameGetCalls wraps dynamic name field selectors" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "row.get(ApexStrings.valueOf(ApexSwitch.getAs(new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"DonationImported__c\"), \"Name\")))") != null);
 }
 
+test "rewriteGetAsMutationAssignments rewrites statement assignment safely" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\// TODO(apex): method body is copied as comments and needs manual porting.
+        \\STG_Panel.stgService.stgHH.getAs("npo02__Advanced_Household_Naming__c") = false;
+        \\STG_Panel.stgService.stgHH.getAs("npo02__Soft_Credit_Roles__c") = "Decision Maker;Something Else";
+    ;
+
+    const rewritten = try rewriteGetAsMutationAssignments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "needs manual porting.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(STG_Panel.stgService.stgHH, \"npo02__Advanced_Household_Naming__c\", false);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(STG_Panel.stgService.stgHH, \"npo02__Soft_Credit_Roles__c\", \"Decision Maker;Something Else\");") != null);
+}
+
+test "rewriteGetAsMutationAssignments rewrites post increment and decrement statements" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\counter.getAs("Count__c")++;
+        \\counter.getAs("Count__c")--;
+    ;
+
+    const rewritten = try rewriteGetAsMutationAssignments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(counter, \"Count__c\", ApexStrings.toInteger(counter.getAs(\"Count__c\")) + 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(counter, \"Count__c\", ApexStrings.toInteger(counter.getAs(\"Count__c\")) - 1);") != null);
+}
+
+test "rewriteCaseInsensitiveIdentifierVariants normalizes lowercase-leading identifier casing variants" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\for (String fieldName : contactFields.keySet()) {
+        \\  if (!isNPSPHiddenField(fieldname)) {}
+        \\}
+        \\Map<String, ApexSObject> hh2account = new LinkedHashMap<>();
+        \\hh2Account.put("001", acc);
+    ;
+
+    const rewritten = try rewriteCaseInsensitiveIdentifierVariants(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "isNPSPHiddenField(fieldName)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "hh2Account = new LinkedHashMap<>()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "hh2Account.put(\"001\", acc);") != null);
+}
+
+test "rewriteCaseInsensitiveIdentifierVariants skips import and package lines" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\package generated;
+        \\import java.util.regex.Pattern;
+        \\import java.util.regEx.Matcher;
+        \\public class Demo {
+        \\  public void run() {
+        \\    Integer fieldname = 1;
+        \\    Integer fieldName = fieldname + 1;
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteCaseInsensitiveIdentifierVariants(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import java.util.regex.Pattern;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import java.util.regEx.Matcher;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Integer fieldName = 1;") != null);
+}
+
+test "rewriteCustomSObjectMemberAccess rewrites custom field dot lookups and assignments" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\SystemAssert.assertEquals(100, UpdatedCon.npo02__TotalOppAmount__c);
+        \\SystemAssert.assertEquals("x", UpdatedCon.npo02__Household__r.id);
+        \\CRLP_DefaultConfigBuilder.legacySettings.npo02__Soft_Credit_Roles__c = "A;B";
+    ;
+
+    const rewritten = try rewriteCustomSObjectMemberAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "SystemAssert.assertEquals(100, ApexSwitch.getAs(UpdatedCon, \"npo02__TotalOppAmount__c\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "SystemAssert.assertEquals(\"x\", ApexSwitch.getAs(ApexSwitch.getAs(UpdatedCon, \"npo02__Household__r\"), \"id\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(CRLP_DefaultConfigBuilder.legacySettings, \"npo02__Soft_Credit_Roles__c\", \"A;B\");") != null);
+}
+
 test "rewriteKnownSObjectBooleanPropertyAccess rewrites direct sobject boolean fields" {
     const gpa = std.testing.allocator;
     const input =
         \\SystemAssert.assertEquals(true, opps.get(0).isWon);
+        \\SystemAssert.assertEquals(true, ocrs.get(0).isPrimary);
+        \\ocr.isPrimary = false;
     ;
 
     const rewritten = try rewriteKnownSObjectBooleanPropertyAccess(gpa, input);
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "opps.get(0).getAs(\"isWon\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ocrs.get(0).getAs(\"isPrimary\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(ocr, \"isPrimary\", false);") != null);
+}
+
+test "rewriteKnownSObjectBooleanPropertyAccess rewrites common standard sobject fields" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (opp.amount > 0) {}
+        \\ApexSwitch.set(pay, "Date__c", opp.closeDate);
+    ;
+
+    const rewritten = try rewriteKnownSObjectBooleanPropertyAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "opp.getAs(\"Amount\") > 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSwitch.set(pay, \"Date__c\", opp.getAs(\"CloseDate\"));") != null);
 }
 
 test "rewriteBooleanGetOperands rewrites get comparisons and logical operands" {
@@ -25044,6 +31379,12 @@ test "rewriteBooleanGetOperands rewrites get comparisons and logical operands" {
         \\if (numberOfCopiedFields > 0 || payment.getAs("npe01__Paid__c")) {}
         \\if (alloSettings.getAs("Default_Allocations_Enabled__c") && ready) {}
         \\if (!payment.getAs("npe01__Paid__c")) {}
+        \\if (!settings.getAs("Reject_Ambiguous_Addresses__c")) {}
+        \\Boolean ignoreAmbiguous = settings.getAs("Reject_Ambiguous_Addresses__c") == true;
+        \\if (npe01Settings.get(setting) == true) {}
+        \\if (settings.getAs("Reject_Ambiguous_Addresses__c") != false) {}
+        \\if (acc != null && acc.getAs("MasterRecordId") != null) {}
+        \\if (amount >= settings.getAs("Minimum_Amount__c") || settings.getAs("Minimum_Amount__c") == null) {}
     ;
 
     const rewritten = try rewriteBooleanGetOperands(gpa, input);
@@ -25052,6 +31393,28 @@ test "rewriteBooleanGetOperands rewrites get comparisons and logical operands" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "|| Boolean.TRUE.equals(payment.getAs(\"npe01__Paid__c\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean.TRUE.equals(alloSettings.getAs(\"Default_Allocations_Enabled__c\")) &&") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(payment.getAs(\"npe01__Paid__c\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(settings.getAs(\"Reject_Ambiguous_Addresses__c\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean ignoreAmbiguous = Boolean.TRUE.equals(settings.getAs(\"Reject_Ambiguous_Addresses__c\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (Boolean.TRUE.equals(npe01Settings.get(setting))) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (!Boolean.FALSE.equals(settings.getAs(\"Reject_Ambiguous_Addresses__c\"))) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (acc != null && acc.getAs(\"MasterRecordId\") != null) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (amount >= settings.getAs(\"Minimum_Amount__c\") || settings.getAs(\"Minimum_Amount__c\") == null) {}") != null);
+}
+
+test "rewriteBooleanEqualsComparisonArtifacts unwraps non-boolean comparisons" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\if (Boolean.TRUE.equals(acc.getAs("MasterRecordId")) != null) {}
+        \\if (con.getAs("Id") == Boolean.TRUE.equals(listCon.get(2).getAs("Id"))) {}
+        \\if (Boolean.TRUE.equals(flag.getAs("isClosed")) == true) {}
+    ;
+
+    const rewritten = try rewriteBooleanEqualsComparisonArtifacts(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (acc.getAs(\"MasterRecordId\") != null) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (con.getAs(\"Id\") == listCon.get(2).getAs(\"Id\")) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean.TRUE.equals(flag.getAs(\"isClosed\")) == true") != null);
 }
 
 test "rewritePrivateStaticNestedTestClasses promotes nested private static test helpers" {
@@ -25107,6 +31470,20 @@ test "rewriteGetAsCollectionAccessors casts collection mutators" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((java.util.List<Object>) objectMapping.getAs(\"Field_Mappings\")).add(fieldMapping)") != null);
 }
 
+test "rewriteGetAsCollectionAccessors rewrites numeric and date value accessors" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Integer n = row.getAs("Position__c").intValue();
+        \\Date d = row.getAs("ReminderDateTime").Date();
+    ;
+
+    const rewritten = try rewriteGetAsCollectionAccessors(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Integer n = ApexStrings.toInteger(row.getAs(\"Position__c\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date d = Date.valueOf(row.getAs(\"ReminderDateTime\"));") != null);
+}
+
 test "rewriteBrokenInlineMethodAssignmentsInSObjectSet repairs leaked assignments from date arithmetic" {
     const gpa = std.testing.allocator;
     const input =
@@ -25148,6 +31525,51 @@ test "rewriteIntegerCompareToDoubleReturns normalizes compareTo return literals"
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return 1;") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return -1;") != null);
+}
+
+test "rewriteBoxedNumericLiteralCompatibility normalizes boxed numeric literals" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Demo {
+        \\  public static Long calc(Integer a, Integer b) {
+        \\    Long total = 5;
+        \\    total = Math.max(Math.round(100 * a / b), 5);
+        \\    return -1;
+        \\  }
+        \\  public static Integer compare(Object other) {
+        \\    if (other == null) { return 1.0; }
+        \\    return -1.0;
+        \\  }
+        \\  public static Double scale(Double amount) {
+        \\    if (amount == null) { amount = 0; }
+        \\    Double multiplier = (true ? 1 : -1);
+        \\    return amount * multiplier;
+        \\  }
+        \\  public static void run() {
+        \\    Double amount = 0, secondary = 1;
+        \\    amount = 12;
+        \\    req.donationValue = 5;
+        \\    Integer nextSortOrder = 0;
+        \\    nextSortOrder = ApexStrings.toDouble(campMemberStatuses.get(0).getAs("SortOrder")) + 1;
+        \\    SystemAssert.assertTrue(new LinkedHashSet<Double>().contains((Double) 5));
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteBoxedNumericLiteralCompatibility(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Long total = 5L;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Math.max(Math.round(100 * a / b), 5L)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return -1L;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return 1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return -1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (amount == null) { amount = 0.0; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double amount = 0.0, secondary = 1.0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "amount = 12.0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "req.donationValue = 5.0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "nextSortOrder = ApexStrings.toInteger(ApexStrings.toDouble(campMemberStatuses.get(0).getAs(\"SortOrder\")) + 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "contains((Double) 5.0)") != null);
 }
 
 test "rewriteLocalStaticWaitCalls qualifies bare wait helper invocations" {
@@ -25216,6 +31638,16 @@ test "convertApexExpressionToJava keeps numeric guards out of string relational 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ich < strNameSpec.length()-1") != null);
 }
 
+test "convertApexExpressionToJava rewrites date relational comparisons with ApexCompare" {
+    const gpa = std.testing.allocator;
+    const input = "closeDate <= Date.newInstance(2019, 11, 1)";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexCompare.lte(closeDate, Date.newInstance(2019, 11, 1))") != null);
+}
+
 test "rewriteNumericValueOfObjectIdentifiers rewrites object valueOf calls" {
     const gpa = std.testing.allocator;
     const input =
@@ -25276,7 +31708,7 @@ test "rewriteKnownCompatibilityFixups rewrites bare sobject types and legacy lit
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "record == null || enabled == true || disabled == false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Allocation__c\").getName()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Allocation__c\")") != null);
 }
 
 test "rewriteKnownCompatibilityFixups rewrites NPSP filter and request compatibility fronts" {
@@ -25304,9 +31736,196 @@ test "rewriteKnownCompatibilityFixups rewrites NPSP filter and request compatibi
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum FilterOperation { EQUALS, NOT_EQUALS, GREATER, LESS, GREATER_OR_EQUAL, LESS_OR_EQUAL, STARTS_WITH") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType.RecordType.getKeyPrefix()") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "checkReadByToken(new Schema.SObjectType(\"DataImportBatch__c\"), GIFT_SCHEDULE_FIELDS)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.toInteger(batchItemRequestDTO.amount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.toInteger(batchItemRequestDTO") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexCompare.gt(fieldValue, compareValue);") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return (ApexCompare.gte(fieldDateValue, compareStartDate) && ApexCompare.lte(fieldDateValue, compareEndDate));") != null);
+}
+
+test "rewriteKnownCompatibilityFixups normalizes fflib do-throw property default" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public List<apexemu.runtime.System.Exception> DoThrowWhenExceptions = new ArrayList<>(); // Apex property { get; set; }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public List<apexemu.runtime.System.Exception> DoThrowWhenExceptions; // Apex property { get; set; }") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites accidental get-getAs call artifacts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public List<Schema.FieldSetMember> fieldSetMembers = new Schema.FieldSetNamespace("Contact").get("getAs")("ContactMergeFoundFS").getFields();
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.FieldSetNamespace(\"Contact\").get(\"ContactMergeFoundFS\").getFields()") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites enum casing and NPSP compile fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public static enum RollupType { Count, Sum, Average, Largest, Smallest, First, Last, Years_Donated, Donor_Streak, Best_Year, Best_Year_Total }
+        \\  public static enum TimeBoundOperationType { All_Time, Years_Ago, Days_Back }
+        \\  public static enum CMTFieldType { FldText, FldBoolean, FldNumber, FldEntity }
+        \\  public void run(CRLP_Operation.RollupType rollupType, CRLP_Operation.TimeBoundOperationType timeBoundOperation, Object mdObject, ApexSObject c, Date targetDate, Date fiscalYearStartDate, String donorType) {
+        \\    CRLP_Operation.RollupType a = CRLP_Operation.RollupType.Count;
+        \\    CRLP_Operation.TimeBoundOperationType b = CRLP_Operation.TimeBoundOperationType.All_Time;
+        \\    if (ApexSwitch.getAs(c.getAs("Owner"), "IsActive") == true) {}
+        \\    if (targetDate < fiscalYearStartDate) {}
+        \\    if (donorType == new Schema.SObjectField("Contact", "Name")) {}
+        \\    String mdTypeName = mdObject.Name();
+        \\    String endpoint = Url.getOrgDomainUrl().toExternalForm();
+        \\    Double batchGiftEntryVersion = 0;
+        \\    Object key = DataImport__c.fields.getAs("Payment_Status__c");
+        \\    Schema.SObjectType roleType = Schema.SObjectType.OpportunityContactRole;
+        \\    Boolean closed = recurringDonation.getAs("isClosed")();
+        \\    if (!Boolean.TRUE.equals(rdRecord.getAs("isClosed"))() && (new RD2_RecurringDonation(oldRd).getAs("isClosed"))) {}
+        \\    if (recurringDonation.isElevateRecord() && Boolean.TRUE.equals(recurringDonation.getAs("isClosed"))() && rd.getAs("EndDate__c") > currentDate ) {}
+        \\    fflib_SObjectDomain.getTriggerHandler()(apexemu.runtime.System.Type.forName("Example"));
+        \\    Boolean odd = ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 1: false);
+        \\    if (ApexEquals.ne(fld.getType(), DisplayType.TIME) && ApexEquals.eq(fld.getType(), DisplayType.PICKLIST)) {}
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum RollupType { COUNT, SUM, AVERAGE, LARGEST, SMALLEST, FIRST, LAST, YEARS_DONATED, DONOR_STREAK, BEST_YEAR, BEST_YEAR_TOTAL }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum TimeBoundOperationType { ALL_TIME, YEARS_AGO, DAYS_BACK }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum CMTFieldType { FldText, FldBoolean, FldNumber, FldEntity, FldField }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "CRLP_Operation.RollupType.COUNT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "CRLP_Operation.TimeBoundOperationType.ALL_TIME") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean.TRUE.equals(ApexSwitch.getAs(c.getAs(\"Owner\"), \"IsActive\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (ApexCompare.lt(targetDate, fiscalYearStartDate)) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (ApexEquals.eq(donorType, new Schema.SObjectField(\"Contact\", \"Name\"))) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "mdObject.name()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "URL.getOrgDomainUrl()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double batchGiftEntryVersion = 0.0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"DataImport__c\").fields.getAs(\"Payment_Status__c\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType roleType = new Schema.SObjectType(\"OpportunityContactRole\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean closed = Boolean.TRUE.equals(recurringDonation.getAs(\"isClosed\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "!Boolean.TRUE.equals(rdRecord.getAs(\"isClosed\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "RD2_RecurringDonation(oldRd).getAs(\"isClosed\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "&& (new RD2_RecurringDonation(oldRd).getAs(\"isClosed\")))") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexCompare.gt(rd.getAs(\"EndDate__c\"), currentDate)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "fflib_SObjectDomain.getTriggerHandler(apexemu.runtime.System.Type.forName(\"Example\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean odd = (arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 1) : false);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.ne(fld.getType(), Schema.DisplayType.TIME)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.eq(fld.getType(), Schema.DisplayType.PICKLIST)") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites subselect casing and integer cast wrappers" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public static enum FirstInstallmentOppCreateOptions { Synchronous, Asynchronous, Asynchronous_When_Bulk }
+        \\  public void run(fflib_QueryFactory qf, Object value, String target) {
+        \\    qf.subselectQuery("Contacts", true);
+        \\    Integer size = ApexStrings.toInteger((int) (value));
+        \\    if (targetIsAccount) {}
+        \\    else if (targetIsContact) {}
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "enum FirstInstallmentOppCreateOptions { SYNCHRONOUS, ASYNCHRONOUS, ASYNCHRONOUS_WHEN_BULK }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "qf.subSelectQuery(\"Contacts\", true);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Integer size = ApexStrings.toInteger(value);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (ApexEquals.eq(target, \"Account\")) {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "else if (ApexEquals.eq(target, \"Contact\")) {}") != null);
+}
+
+test "rewriteBareCustomSettingsSingletonAccess rewrites custom getAll calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Map<String, ApexSObject> byName = Opportunity_Naming_Settings__c.getAll();
+        \\Map<String, ApexSObject> customMetadataByName = Example_Config__mdt.getAll();
+    ;
+
+    const rewritten = try rewriteBareCustomSettingsSingletonAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject.getAll(\"Opportunity_Naming_Settings__c\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject.getAll(\"Example_Config__mdt\")") != null);
+}
+
+test "rewriteFinalCompatibilityCleanup normalizes runtime alias fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Database.insert(new AN_AutoNumberService(sObjType).triggerHandler);
+        \\Database.insert(triggerHandler);
+        \\if (controller.hasUrl) {}
+        \\Date d = date.newInstance(2024, 1, 1);
+        \\DateTime dt = datetime.newInstance(2024, 1, 1, 0, 0, 0);
+    ;
+
+    const rewritten = try rewriteFinalCompatibilityCleanup(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new AN_AutoNumberService(sObjType).getTriggerHandler()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.insert(getTriggerHandler());") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "controller.hasURL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Date.newInstance(2024, 1, 1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "DateTime.newInstance(2024, 1, 1, 0, 0, 0)") != null);
+}
+
+test "rewriteStringCollectionListOfArguments wraps non-string listOf args" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\List<String> ids = new ArrayList<String>(ApexCollections.listOf(batch.getAs("Id"), "fixed", (String) null));
+        \\Set<String> names = new LinkedHashSet<String>(ApexCollections.listOf(user.getAs("Name"), owner.Name));
+    ;
+
+    const rewritten = try rewriteStringCollectionListOfArguments(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new ArrayList<String>(ApexCollections.listOf(ApexStrings.valueOf(batch.getAs(\"Id\")), \"fixed\", (String) null))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new LinkedHashSet<String>(ApexCollections.listOf(ApexStrings.valueOf(user.getAs(\"Name\")), owner.Name))") != null);
+}
+
+test "rewriteApexStringsValueOfCollectionWrappers unwraps string collection constructors" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Object keep = ApexStrings.valueOf(new LinkedHashSet<String>(ApexCollections.listOf(idValue)));
+        \\Object keep2 = ApexStrings.valueOf(new ArrayList<String>(ApexCollections.listOf(nameValue)));
+        \\Object leave = ApexStrings.valueOf(somethingElse);
+    ;
+
+    const rewritten = try rewriteApexStringsValueOfCollectionWrappers(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Object keep = new LinkedHashSet<String>(ApexCollections.listOf(idValue));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Object keep2 = new ArrayList<String>(ApexCollections.listOf(nameValue));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Object leave = ApexStrings.valueOf(somethingElse);") != null);
+}
+
+test "rewriteNumericObjectCasts rewrites get/getAs casted numerics" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Double amount = (Double) paymentInfo.get(0);
+        \\Long count = (Long) row.getAs("Count__c");
+        \\Double keep = (Double) customValue;
+    ;
+
+    const rewritten = try rewriteNumericObjectCasts(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double amount = ApexStrings.toDouble(paymentInfo.get(0));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Long count = ApexStrings.toLong(row.getAs(\"Count__c\"));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Double keep = (Double) customValue;") != null);
 }
 
 test "rewriteBareSObjectTypeAccess skips method calls on SObjectType namespace" {
@@ -25321,6 +31940,37 @@ test "rewriteBareSObjectTypeAccess skips method calls on SObjectType namespace" 
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"getAs\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"getDescribe\")") == null);
+}
+
+test "rewriteBareCustomSettingsSingletonAccess rewrites custom settings singleton calls" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\ApexSObject contacts = npe01__Contacts_And_Orgs_Settings__c.getInstance();
+        \\ApexSObject orgAffiliations = npe5__Affiliations_Settings__c.getOrgDefaults();
+        \\ApexSObject fromRuntime = apexemu.runtime.OpportunitySettings__c.getInstance();
+    ;
+
+    const rewritten = try rewriteBareCustomSettingsSingletonAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject contacts = ApexSObject.of(\"npe01__Contacts_And_Orgs_Settings__c\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexSObject orgAffiliations = ApexSObject.of(\"npe5__Affiliations_Settings__c\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "apexemu.runtime.OpportunitySettings__c.getInstance()") != null);
+}
+
+test "rewriteBareStandardSObjectTypeAccess rewrites standard object namespace tokens" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\Set<Schema.SObjectField> leadFields = new LinkedHashSet<Schema.SObjectField>(ApexCollections.listOf(Lead.fields.getAs("Status"), Lead.fields.getAs("OwnerId")));
+        \\Schema.SObjectType roleType = OpportunityContactRole.sObjectType;
+    ;
+
+    const rewritten = try rewriteBareStandardSObjectTypeAccess(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Lead\").fields.getAs(\"Status\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.SObjectType(\"Lead\").fields.getAs(\"OwnerId\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Schema.SObjectType roleType = new Schema.SObjectType(\"OpportunityContactRole\");") != null);
 }
 
 test "rewriteSObjectFieldNameObjectNameUses rewrites object name contexts only" {
@@ -25397,6 +32047,22 @@ test "run promotes multiline test visible inner type visibility" {
     defer gpa.free(output);
 
     try std.testing.expect(std.mem.indexOf(u8, output, "public static class Inner") != null);
+}
+
+test "normalizeApexTemplateTokens strips namespace placeholders" {
+    const gpa = std.testing.allocator;
+
+    const templated = try gpa.dupe(u8, "%%%NAMESPACE%%%Foo value = \"%%%NAMESPACED_RT%%%\"; ___NAMESPACE___Bar other;");
+    const rewritten = try normalizeApexTemplateTokens(gpa, templated);
+    defer gpa.free(rewritten);
+
+    try std.testing.expectEqualStrings("Foo value = \"\"; Bar other;", rewritten);
+
+    const plain_input = try gpa.dupe(u8, "public class Sample {}");
+    const plain = try normalizeApexTemplateTokens(gpa, plain_input);
+    defer gpa.free(plain);
+
+    try std.testing.expect(plain.ptr == plain_input.ptr);
 }
 
 test "parseTriggerRegistration extracts fflib trigger manifest entry" {

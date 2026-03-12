@@ -81,26 +81,72 @@ public final class ApexStrings {
 
   /** Converts value to Integer, throwing System.TypeException instead of NumberFormatException. */
   public static Integer toInteger(Object value) {
+    if (value instanceof Integer i) {
+      return i;
+    }
+    if (value instanceof Number n) {
+      double asDouble = n.doubleValue();
+      if (Double.isFinite(asDouble) && Math.rint(asDouble) == asDouble) {
+        return n.intValue();
+      }
+    }
+    String text = String.valueOf(value);
     try {
-      return Integer.valueOf(String.valueOf(value));
+      return Integer.valueOf(text);
     } catch (NumberFormatException e) {
+      try {
+        java.math.BigDecimal decimal = new java.math.BigDecimal(text.trim());
+        if (decimal.stripTrailingZeros().scale() <= 0) {
+          return decimal.intValueExact();
+        }
+      } catch (RuntimeException ignored) {
+      }
       throw new System.TypeException("Invalid integer: " + value, e);
     }
   }
 
   /** Converts value to Long, throwing System.TypeException instead of NumberFormatException. */
   public static Long toLong(Object value) {
+    if (value instanceof Long l) {
+      return l;
+    }
+    if (value instanceof Number n) {
+      double asDouble = n.doubleValue();
+      if (Double.isFinite(asDouble) && Math.rint(asDouble) == asDouble) {
+        return n.longValue();
+      }
+    }
+    String text = String.valueOf(value);
     try {
-      return Long.valueOf(String.valueOf(value));
+      return Long.valueOf(text);
     } catch (NumberFormatException e) {
+      try {
+        java.math.BigDecimal decimal = new java.math.BigDecimal(text.trim());
+        if (decimal.stripTrailingZeros().scale() <= 0) {
+          return decimal.longValueExact();
+        }
+      } catch (RuntimeException ignored) {
+      }
       throw new System.TypeException("Invalid long: " + value, e);
     }
   }
 
   /** Converts value to Double, throwing System.TypeException instead of NumberFormatException. */
   public static Double toDouble(Object value) {
+    if (value == null) {
+      return 0.0;
+    }
+    if (value instanceof Double d) {
+      return d;
+    }
+    if (value instanceof Number n) {
+      return n.doubleValue();
+    }
+    if (value instanceof String text && text.trim().isEmpty()) {
+      return 0.0;
+    }
     try {
-      return Double.valueOf(String.valueOf(value));
+      return Double.valueOf(String.valueOf(value).trim());
     } catch (NumberFormatException e) {
       throw new System.TypeException("Invalid double: " + value, e);
     }
@@ -140,6 +186,22 @@ public final class ApexStrings {
       return false;
     }
     return String.valueOf(value).toLowerCase().contains(needle.toLowerCase());
+  }
+
+  public static boolean isNumeric(Object value) {
+    if (value == null) {
+      return false;
+    }
+    String text = String.valueOf(value).trim();
+    if (text.isEmpty()) {
+      return false;
+    }
+    try {
+      new java.math.BigDecimal(text);
+      return true;
+    } catch (NumberFormatException ignored) {
+      return false;
+    }
   }
 
   public static boolean startsWithIgnoreCase(Object value, String prefix) {
@@ -216,6 +278,23 @@ public final class ApexStrings {
       return text;
     }
     return text.substring(0, idx);
+  }
+
+  public static String substringBetween(Object value, String open, String close) {
+    if (value == null || open == null || close == null) {
+      return null;
+    }
+    String text = String.valueOf(value);
+    int start = text.indexOf(open);
+    if (start < 0) {
+      return null;
+    }
+    start += open.length();
+    int end = text.indexOf(close, start);
+    if (end < 0) {
+      return null;
+    }
+    return text.substring(start, end);
   }
 
   private static String inferTypeNameFromClassCast(String message) {
@@ -408,6 +487,13 @@ public final class ApexStrings {
       return null;
     }
     return String.valueOf(value).replaceAll("\\s+", "");
+  }
+
+  public static String normalizeSpace(Object value) {
+    if (value == null) {
+      return null;
+    }
+    return String.valueOf(value).trim().replaceAll("\\s+", " ");
   }
 
   public static Integer countMatches(Object value, String needle) {

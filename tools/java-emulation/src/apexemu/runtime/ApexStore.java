@@ -37,6 +37,8 @@ final class ApexStore {
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern WHERE_IN_PATTERN =
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+(not\\s+in|in)\\s*\\((.*)\\)$");
+  private static final Pattern WHERE_IN_BIND_PATTERN =
+      Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+(not\\s+in|in)\\s*(:[a-zA-Z_][\\w.]*)$");
   private static final Pattern WHERE_LIKE_PATTERN =
       Pattern.compile("(?i)^(" + FIELD_PATH_TEXT + ")\\s+like\\s+(.+)$");
   private static final Pattern WHERE_NULL_PATTERN =
@@ -1915,6 +1917,22 @@ final class ApexStore {
     boolean aggregateQuery = isAggregateQuery(spec);
     boolean hasActiveRows = activeBucket != null && !activeBucket.isEmpty();
     boolean hasDeletedRows = deletedBucket != null && !deletedBucket.isEmpty();
+    if (spec != null && isType(spec.sobjectType, "RecordType") && !hasActiveRows && !hasDeletedRows) {
+      List<ApexSObject> syntheticRecordTypes = synthesizeRecordTypeRows();
+      if (!syntheticRecordTypes.isEmpty()) {
+        List<ApexSObject> filtered = new ArrayList<>();
+        for (ApexSObject row : syntheticRecordTypes) {
+          if (!matchesWhere(row, spec.whereExpr)) {
+            continue;
+          }
+          filtered.add(row);
+        }
+        if (!countOnly && aggregateQuery) {
+          return scanAggregate(spec, filtered);
+        }
+        return applyOrderingAndPaging(spec, filtered, countOnly);
+      }
+    }
     if (!hasActiveRows && !hasDeletedRows) {
       if (!countOnly && aggregateQuery && (spec.groupByFields == null || spec.groupByFields.isEmpty())) {
         ApexSObject aggregate = buildAggregateRow(spec, List.of(), List.of());
@@ -1948,6 +1966,55 @@ final class ApexStore {
       return scanAggregate(spec, out);
     }
     return applyOrderingAndPaging(spec, out, countOnly);
+  }
+
+  private static List<ApexSObject> synthesizeRecordTypeRows() {
+    Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+    if (globalDescribe == null || globalDescribe.isEmpty()) {
+      return new ArrayList<>(List.of(Schema.DefaultRecordTypeInfo.defaultFor("SObject")));
+    }
+    Set<String> seenTypeNames = new LinkedHashSet<>();
+    Set<String> seenRecordTypeIds = new LinkedHashSet<>();
+    List<ApexSObject> out = new ArrayList<>();
+    for (Schema.SObjectType token : globalDescribe.values()) {
+      if (token == null || token.getName() == null || token.getName().isBlank()) {
+        continue;
+      }
+      String typeName = token.getName().trim();
+      if (typeName.equalsIgnoreCase("RecordType")) {
+        continue;
+      }
+      String key = typeName.toLowerCase();
+      if (!seenTypeNames.add(key)) {
+        continue;
+      }
+      List<apexemu.runtime.RecordTypeInfo> recordTypeInfos = token.getDescribe().getRecordTypeInfos();
+      if (recordTypeInfos == null || recordTypeInfos.isEmpty()) {
+        ApexSObject fallback = Schema.DefaultRecordTypeInfo.defaultFor(typeName);
+        if (fallback != null && fallback.getAs("Id") != null && seenRecordTypeIds.add(fallback.getAs("Id"))) {
+          out.add(fallback);
+        }
+        continue;
+      }
+      for (apexemu.runtime.RecordTypeInfo info : recordTypeInfos) {
+        if (info == null) {
+          continue;
+        }
+        ApexSObject row = info.getRecordTypeInfo();
+        if (row == null) {
+          continue;
+        }
+        String recordTypeId = row.getAs("Id");
+        if (recordTypeId == null || !seenRecordTypeIds.add(recordTypeId)) {
+          continue;
+        }
+        out.add(row);
+      }
+    }
+    if (out.isEmpty()) {
+      out.add(Schema.DefaultRecordTypeInfo.defaultFor("SObject"));
+    }
+    return out;
   }
 
   private static boolean isAggregateQuery(QuerySpec spec) {
@@ -3871,6 +3938,15 @@ final class ApexStore {
       return new WhereClause(field, operator, inValues);
     }
 
+    Matcher inBindMatcher = WHERE_IN_BIND_PATTERN.matcher(normalized);
+    if (inBindMatcher.matches()) {
+      String field = inBindMatcher.group(1);
+      String operator = inBindMatcher.group(2).trim().toLowerCase().replaceAll("\\s+", " ");
+      // Database.query(String) cannot resolve lexical bind variables;
+      // preserve execution by treating unresolved IN binds as an empty set.
+      return new WhereClause(field, operator, List.of());
+    }
+
     Matcher likeMatcher = WHERE_LIKE_PATTERN.matcher(normalized);
     if (likeMatcher.matches()) {
       String field = likeMatcher.group(1);
@@ -5185,26 +5261,7 @@ final class ApexStore {
   }
 
   private static String idPrefixForType(String type) {
-    if (type == null || type.isBlank()) {
-      return "a00";
-    }
-    String normalized = type.trim();
-    if (normalized.equalsIgnoreCase("Account")) return "001";
-    if (normalized.equalsIgnoreCase("Contact")) return "003";
-    if (normalized.equalsIgnoreCase("Lead")) return "00Q";
-    if (normalized.equalsIgnoreCase("Opportunity")) return "006";
-    if (normalized.equalsIgnoreCase("Case")) return "500";
-    if (normalized.equalsIgnoreCase("Task")) return "00T";
-    if (normalized.equalsIgnoreCase("Event")) return "00U";
-    if (normalized.equalsIgnoreCase("User")) return "005";
-    if (normalized.equalsIgnoreCase("Group")) return "00G";
-    if (normalized.equalsIgnoreCase("Profile")) return "00e";
-    if (normalized.equalsIgnoreCase("PermissionSet")) return "0PS";
-    if (normalized.equalsIgnoreCase("PermissionSetAssignment")) return "0Pa";
-    if (normalized.endsWith("__mdt")) return "m00";
-    if (normalized.endsWith("__e")) return "e00";
-    if (normalized.endsWith("__c")) return "a00";
-    return "a00";
+    return Schema.keyPrefixForTypeName(type);
   }
 
   private interface DmlOperation {

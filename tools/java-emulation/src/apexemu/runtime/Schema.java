@@ -6,12 +6,17 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 public final class Schema {
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
   private static final ThreadLocal<String> CURRENT_PROFILE_ID = ThreadLocal.withInitial(() -> null);
+  private static final char[] CUSTOM_KEY_PREFIX_ALPHABET =
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray();
+  private static final Map<String, String> CUSTOM_KEY_PREFIX_BY_TYPE = new LinkedHashMap<>();
+  private static final Set<String> CUSTOM_KEY_PREFIXES_IN_USE = new LinkedHashSet<>();
   private static final String MINIMUM_ACCESS_PROFILE_ID = "00e000000000001";
   private static final String MARKETING_USER_PROFILE_ID = "00e000000000004";
   public static final SObjectTypeNamespace sObjectType = new SObjectTypeNamespace();
@@ -55,6 +60,84 @@ public final class Schema {
     CURRENT_PROFILE_ID.set(profileId);
   }
 
+  static String keyPrefixForTypeName(String typeName) {
+    if (typeName == null || typeName.isBlank()) {
+      return "a00";
+    }
+    String normalized = typeName.trim();
+    if (normalized.equalsIgnoreCase("RecordType")) return "012";
+    if (normalized.equalsIgnoreCase("Account")) return "001";
+    if (normalized.equalsIgnoreCase("Contact")) return "003";
+    if (normalized.equalsIgnoreCase("Lead")) return "00Q";
+    if (normalized.equalsIgnoreCase("Opportunity")) return "006";
+    if (normalized.equalsIgnoreCase("Case")) return "500";
+    if (normalized.equalsIgnoreCase("Task")) return "00T";
+    if (normalized.equalsIgnoreCase("Event")) return "00U";
+    if (normalized.equalsIgnoreCase("User")) return "005";
+    if (normalized.equalsIgnoreCase("Group")) return "00G";
+    if (normalized.equalsIgnoreCase("Profile")) return "00e";
+    if (normalized.equalsIgnoreCase("PermissionSet")) return "0PS";
+    if (normalized.equalsIgnoreCase("PermissionSetAssignment")) return "0Pa";
+    if (normalized.endsWith("__mdt")) return customKeyPrefixForType(normalized, 'm');
+    if (normalized.endsWith("__e")) return customKeyPrefixForType(normalized, 'e');
+    if (normalized.endsWith("__c")) return customKeyPrefixForType(normalized, 'a');
+    return customKeyPrefixForType(normalized, 'a');
+  }
+
+  private static String customKeyPrefixForType(String typeName, char lead) {
+    if (typeName == null || typeName.isBlank()) {
+      return lead + "00";
+    }
+    String key = normalize(typeName);
+    synchronized (Schema.class) {
+      String existing = CUSTOM_KEY_PREFIX_BY_TYPE.get(key);
+      if (existing != null) {
+        return existing;
+      }
+
+      int bucketSize = CUSTOM_KEY_PREFIX_ALPHABET.length * CUSTOM_KEY_PREFIX_ALPHABET.length;
+      int seed = Math.floorMod(key.hashCode(), bucketSize);
+      for (int offset = 0; offset < bucketSize; offset++) {
+        int slot = (seed + offset) % bucketSize;
+        char first = CUSTOM_KEY_PREFIX_ALPHABET[slot / CUSTOM_KEY_PREFIX_ALPHABET.length];
+        char second = CUSTOM_KEY_PREFIX_ALPHABET[slot % CUSTOM_KEY_PREFIX_ALPHABET.length];
+        String candidate = new String(new char[] {lead, first, second});
+        if (isReservedStandardKeyPrefix(candidate)) {
+          continue;
+        }
+        if (CUSTOM_KEY_PREFIXES_IN_USE.contains(candidate)) {
+          continue;
+        }
+        CUSTOM_KEY_PREFIX_BY_TYPE.put(key, candidate);
+        CUSTOM_KEY_PREFIXES_IN_USE.add(candidate);
+        return candidate;
+      }
+
+      String fallback = lead + "00";
+      CUSTOM_KEY_PREFIX_BY_TYPE.put(key, fallback);
+      return fallback;
+    }
+  }
+
+  private static boolean isReservedStandardKeyPrefix(String prefix) {
+    if (prefix == null || prefix.isBlank()) {
+      return false;
+    }
+    return prefix.equalsIgnoreCase("012")
+        || prefix.equalsIgnoreCase("001")
+        || prefix.equalsIgnoreCase("003")
+        || prefix.equalsIgnoreCase("00Q")
+        || prefix.equalsIgnoreCase("006")
+        || prefix.equalsIgnoreCase("500")
+        || prefix.equalsIgnoreCase("00T")
+        || prefix.equalsIgnoreCase("00U")
+        || prefix.equalsIgnoreCase("005")
+        || prefix.equalsIgnoreCase("00G")
+        || prefix.equalsIgnoreCase("00e")
+        || prefix.equalsIgnoreCase("0PS")
+        || prefix.equalsIgnoreCase("0Pa");
+  }
+
   public static Map<String, SObjectType> getGlobalDescribe() {
     Map<String, SObjectType> out = new LinkedHashMap<>();
     for (ObjectDefinition def : STATE.get().definitions.values()) {
@@ -62,8 +145,11 @@ public final class Schema {
         continue;
       }
       SObjectType token = new SObjectType(def.type);
-      out.put(def.type.toLowerCase(), token);
-      out.put(def.type, token);
+      addDescribeAlias(out, def.type, token);
+      String bareType = stripNamespace(def.type);
+      if (bareType != null && !bareType.equalsIgnoreCase(def.type)) {
+        addDescribeAlias(out, bareType, token);
+      }
     }
     addDescribeAlias(out, "Account", SObjectType.Account);
     addDescribeAlias(out, "Contact", SObjectType.Contact);
@@ -75,6 +161,7 @@ public final class Schema {
     addDescribeAlias(out, "Group", SObjectType.Group);
     addDescribeAlias(out, "OpportunityLineItem", SObjectType.OpportunityLineItem);
     addDescribeAlias(out, "PricebookEntry", SObjectType.PricebookEntry);
+    addKnownSObjectTypeAliases(out);
     return out;
   }
 
@@ -84,6 +171,50 @@ public final class Schema {
     }
     out.put(typeName.toLowerCase(), token);
     out.put(typeName, token);
+  }
+
+  private static void addKnownSObjectTypeAliases(Map<String, SObjectType> out) {
+    if (out == null) {
+      return;
+    }
+    for (java.lang.reflect.Field field : SObjectType.class.getDeclaredFields()) {
+      int modifiers = field.getModifiers();
+      if (!Modifier.isStatic(modifiers) || !Modifier.isPublic(modifiers)) {
+        continue;
+      }
+      if (!SObjectType.class.equals(field.getType())) {
+        continue;
+      }
+      try {
+        Object raw = field.get(null);
+        if (!(raw instanceof SObjectType token)) {
+          continue;
+        }
+        String typeName = token.getName();
+        addDescribeAlias(out, typeName, token);
+        String bareType = stripNamespace(typeName);
+        if (bareType != null && !bareType.equalsIgnoreCase(typeName)) {
+          addDescribeAlias(out, bareType, token);
+        }
+      } catch (IllegalAccessException ignored) {
+      }
+    }
+  }
+
+  private static String stripNamespace(String typeName) {
+    if (typeName == null || typeName.isBlank()) {
+      return typeName;
+    }
+    String trimmed = typeName.trim();
+    int firstSeparator = trimmed.indexOf("__");
+    if (firstSeparator <= 0) {
+      return trimmed;
+    }
+    int secondSeparator = trimmed.indexOf("__", firstSeparator + 2);
+    if (secondSeparator < 0) {
+      return trimmed;
+    }
+    return trimmed.substring(firstSeparator + 2);
   }
 
   public static List<DescribeSObjectResult> describeSObjects(List<String> typeNames) {
@@ -371,11 +502,13 @@ public final class Schema {
     private final String typeName;
     public final FieldNamespace fields;
     public final FieldSetNamespace fieldSets;
+    public final String label;
 
     DescribeSObjectResult(String typeName) {
       this.typeName = typeName == null ? "" : typeName.trim();
       this.fields = new FieldNamespace(this.typeName);
       this.fieldSets = new FieldSetNamespace(this.typeName);
+      this.label = this.typeName;
     }
 
     public boolean isAccessible() {
@@ -414,6 +547,18 @@ public final class Schema {
       return true;
     }
 
+    public boolean IsAccessible() {
+      return isAccessible();
+    }
+
+    public boolean IsCreateable() {
+      return isCreateable();
+    }
+
+    public boolean IsUpdateable() {
+      return isUpdateable();
+    }
+
     public boolean isDeletable() {
       if (isMinimumAccessProfile()) {
         return ApexStore.hasObjectPermission(typeName, "PermissionsDelete");
@@ -427,6 +572,14 @@ public final class Schema {
 
     public boolean isUndeletable() {
       return isDeletable();
+    }
+
+    public boolean isMergeable() {
+      return true;
+    }
+
+    public boolean isFeedEnabled() {
+      return true;
     }
 
     public boolean isCustomSetting() {
@@ -478,26 +631,7 @@ public final class Schema {
     }
 
     public String getKeyPrefix() {
-      if (typeName == null || typeName.isBlank()) {
-        return "a00";
-      }
-      String normalized = typeName.trim();
-      if (normalized.equalsIgnoreCase("Account")) return "001";
-      if (normalized.equalsIgnoreCase("Contact")) return "003";
-      if (normalized.equalsIgnoreCase("Lead")) return "00Q";
-      if (normalized.equalsIgnoreCase("Opportunity")) return "006";
-      if (normalized.equalsIgnoreCase("Case")) return "500";
-      if (normalized.equalsIgnoreCase("Task")) return "00T";
-      if (normalized.equalsIgnoreCase("Event")) return "00U";
-      if (normalized.equalsIgnoreCase("User")) return "005";
-      if (normalized.equalsIgnoreCase("Group")) return "00G";
-      if (normalized.equalsIgnoreCase("Profile")) return "00e";
-      if (normalized.equalsIgnoreCase("PermissionSet")) return "0PS";
-      if (normalized.equalsIgnoreCase("PermissionSetAssignment")) return "0Pa";
-      if (normalized.endsWith("__mdt")) return "m00";
-      if (normalized.endsWith("__e")) return "e00";
-      if (normalized.endsWith("__c")) return "a00";
-      return "a00";
+      return Schema.keyPrefixForTypeName(typeName);
     }
 
     public SObjectType getSObjectType() {
@@ -532,7 +666,7 @@ public final class Schema {
       if (typeName == null || typeName.isBlank()) {
         return List.of();
       }
-      return List.of(DefaultRecordTypeInfo.defaultFor(typeName));
+      return new ArrayList<>(DefaultRecordTypeInfo.defaultsFor(typeName));
     }
 
     public List<ChildRelationship> getChildRelationships() {
@@ -583,6 +717,7 @@ public final class Schema {
     public static final SObjectType User = new SObjectType("User");
     public static final SObjectType Group = new SObjectType("Group");
     public static final SObjectType Campaign = new SObjectType("Campaign");
+    public static final SObjectType CampaignMember = new SObjectType("CampaignMember");
     public static final SObjectType Contract = new SObjectType("Contract");
     public static final SObjectType Asset = new SObjectType("Asset");
     public static final SObjectType Product2 = new SObjectType("Product2");
@@ -637,6 +772,10 @@ public final class Schema {
       return getDescribe().getRecordTypeInfos();
     }
 
+    public List<ChildRelationship> getChildRelationships() {
+      return getDescribe().getChildRelationships();
+    }
+
     public boolean isAccessible() {
       return getDescribe().isAccessible();
     }
@@ -655,6 +794,14 @@ public final class Schema {
 
     public boolean isUndeletable() {
       return getDescribe().isUndeletable();
+    }
+
+    public boolean isMergeable() {
+      return getDescribe().isMergeable();
+    }
+
+    public boolean isFeedEnabled() {
+      return getDescribe().isFeedEnabled();
     }
 
     public ApexSObject newSObject() {
@@ -683,6 +830,10 @@ public final class Schema {
 
     public String getLabelPlural() {
       return getDescribe().getLabelPlural();
+    }
+
+    public String getKeyPrefix() {
+      return getDescribe().getKeyPrefix();
     }
 
     @SuppressWarnings("unchecked")
@@ -764,6 +915,10 @@ public final class Schema {
       return fieldName;
     }
 
+    public List<PicklistEntry> getPicklistValues() {
+      return getDescribe().getPicklistValues();
+    }
+
     @Override
     public String toString() {
       return fieldName;
@@ -804,6 +959,7 @@ public final class Schema {
     public final String label;
     public final boolean permissionable;
     public final DisplayType type;
+    public final List<SObjectType> referenceTo;
 
     DescribeFieldResult(String ownerType, String fieldName) {
       this.ownerType = ownerType == null ? "" : ownerType.trim();
@@ -811,6 +967,7 @@ public final class Schema {
       this.name = canonicalFieldName();
       this.label = this.name == null ? this.fieldName : this.name;
       this.permissionable = true;
+      this.referenceTo = resolveReferenceTargets();
       this.type = getType();
     }
 
@@ -833,22 +990,25 @@ public final class Schema {
     }
 
     public List<SObjectType> getReferenceTo() {
-      List<SObjectType> targets = resolveReferenceTargets();
-      if (targets.isEmpty()) {
+      if (referenceTo.isEmpty()) {
         return Collections.emptyList();
       }
-      return targets;
+      return referenceTo;
     }
 
     public SoapType getSoapType() {
-      if (!resolveReferenceTargets().isEmpty()) {
+      if (!referenceTo.isEmpty()) {
         return SoapType.ID;
       }
       return SoapType.STRING;
     }
 
+    public SoapType getSOAPType() {
+      return getSoapType();
+    }
+
     public DisplayType getType() {
-      if (!resolveReferenceTargets().isEmpty()) {
+      if (!referenceTo.isEmpty()) {
         return DisplayType.REFERENCE;
       }
       return DisplayType.STRING;
@@ -884,6 +1044,27 @@ public final class Schema {
 
     public boolean isNameField() {
       return "Name".equalsIgnoreCase(fieldName);
+    }
+
+    public boolean isIdLookup() {
+      if (fieldName == null) {
+        return false;
+      }
+      if ("id".equalsIgnoreCase(fieldName) || fieldName.endsWith("Id")) {
+        return true;
+      }
+      return getType() == DisplayType.REFERENCE;
+    }
+
+    public boolean isDeprecatedAndHidden() {
+      return false;
+    }
+
+    public boolean isCustom() {
+      if (fieldName == null) {
+        return false;
+      }
+      return fieldName.endsWith("__c") || fieldName.endsWith("__r");
     }
 
     public boolean isEncrypted() {
@@ -1227,10 +1408,8 @@ public final class Schema {
       if (out == null || typeName == null || typeName.isBlank()) {
         return;
       }
-      Class<?> runtimeType;
-      try {
-        runtimeType = Class.forName("apexemu.runtime." + typeName);
-      } catch (ClassNotFoundException ignored) {
+      Class<?> runtimeType = resolveRuntimeTypeClass(typeName);
+      if (runtimeType == null) {
         return;
       }
       java.lang.reflect.Field[] members = runtimeType.getFields();
@@ -1252,6 +1431,65 @@ public final class Schema {
         } catch (IllegalAccessException ignored) {
           // best effort: skip inaccessible fields
         }
+      }
+    }
+
+    private static Class<?> resolveRuntimeTypeClass(String rawTypeName) {
+      if (rawTypeName == null || rawTypeName.isBlank()) {
+        return null;
+      }
+      String candidateTypeName = rawTypeName.trim();
+
+      Class<?> runtimeType = tryLoadRuntimeTypeClass(candidateTypeName);
+      if (runtimeType != null) {
+        return runtimeType;
+      }
+
+      ObjectDefinition definition = Schema.find(candidateTypeName);
+      if (definition != null && definition.type != null && !definition.type.isBlank()) {
+        runtimeType = tryLoadRuntimeTypeClass(definition.type.trim());
+        if (runtimeType != null) {
+          return runtimeType;
+        }
+      }
+
+      for (Map.Entry<String, SObjectType> entry : Schema.getGlobalDescribe().entrySet()) {
+        if (entry == null) {
+          continue;
+        }
+        String alias = entry.getKey();
+        if (alias == null || !alias.equalsIgnoreCase(candidateTypeName)) {
+          continue;
+        }
+        SObjectType token = entry.getValue();
+        if (token == null || token.name == null || token.name.isBlank()) {
+          continue;
+        }
+        runtimeType = tryLoadRuntimeTypeClass(token.name.trim());
+        if (runtimeType != null) {
+          return runtimeType;
+        }
+      }
+
+      if (!candidateTypeName.isEmpty()) {
+        String upperCamel = Character.toUpperCase(candidateTypeName.charAt(0)) + candidateTypeName.substring(1);
+        runtimeType = tryLoadRuntimeTypeClass(upperCamel);
+        if (runtimeType != null) {
+          return runtimeType;
+        }
+      }
+
+      return null;
+    }
+
+    private static Class<?> tryLoadRuntimeTypeClass(String candidateTypeName) {
+      if (candidateTypeName == null || candidateTypeName.isBlank()) {
+        return null;
+      }
+      try {
+        return Class.forName("apexemu.runtime." + candidateTypeName.trim());
+      } catch (ClassNotFoundException | LinkageError ignored) {
+        return null;
       }
     }
   }
@@ -1326,8 +1564,8 @@ public final class Schema {
   }
 
   public static final class PicklistEntry {
-    private final String label;
-    private final String value;
+    public final String label;
+    public final String value;
 
     public PicklistEntry(String label, String value) {
       this.label = label == null ? "" : label;
@@ -1354,6 +1592,7 @@ public final class Schema {
   public enum SoapType {
     BOOLEAN,
     DOUBLE,
+    Double,
     INTEGER,
     Integer,
     DATE,
@@ -1391,6 +1630,7 @@ public final class Schema {
     LONG,
     MULTIPICKLIST,
     PERCENT,
+    Percent,
     PHONE,
     PICKLIST,
     Picklist,
@@ -1399,7 +1639,24 @@ public final class Schema {
   }
 
   public static final class DefaultRecordTypeInfo extends ApexSObject implements apexemu.runtime.RecordTypeInfo {
-    public DefaultRecordTypeInfo(String typeName, String recordTypeId, String name, String developerName) {
+    private static final class Seed {
+      final String name;
+      final String developerName;
+      final boolean defaultMapping;
+
+      Seed(String name, String developerName, boolean defaultMapping) {
+        this.name = name;
+        this.developerName = developerName;
+        this.defaultMapping = defaultMapping;
+      }
+    }
+
+    public DefaultRecordTypeInfo(
+        String typeName,
+        String recordTypeId,
+        String name,
+        String developerName,
+        boolean defaultMapping) {
       super("RecordType");
       withId(recordTypeId);
       set("SObjectType", typeName);
@@ -1407,14 +1664,78 @@ public final class Schema {
       set("Name", name);
       set("DeveloperName", developerName);
       set("IsAvailable", true);
-      set("IsDefaultRecordTypeMapping", true);
+      set("IsDefaultRecordTypeMapping", defaultMapping);
+      set("IsActive", true);
+    }
+
+    public DefaultRecordTypeInfo(String typeName, String recordTypeId, String name, String developerName) {
+      this(typeName, recordTypeId, name, developerName, true);
     }
 
     public static DefaultRecordTypeInfo defaultFor(String typeName) {
-      String canonicalType = typeName == null || typeName.isBlank() ? "SObject" : typeName.trim();
-      String keyPrefix = new DescribeSObjectResult(canonicalType).getKeyPrefix();
-      String recordTypeId = keyPrefix + "RT000000000000";
-      return new DefaultRecordTypeInfo(canonicalType, recordTypeId, "Master", "Master");
+      List<DefaultRecordTypeInfo> infos = defaultsFor(typeName);
+      if (infos.isEmpty()) {
+        return masterFor(typeName);
+      }
+      return infos.get(0);
+    }
+
+    public static List<DefaultRecordTypeInfo> defaultsFor(String typeName) {
+      String canonicalType = canonicalType(typeName);
+      List<DefaultRecordTypeInfo> out = new ArrayList<>();
+      for (Seed seed : seedsFor(canonicalType)) {
+        out.add(
+            new DefaultRecordTypeInfo(
+                canonicalType,
+                recordTypeIdFor(canonicalType, seed.developerName),
+                seed.name,
+                seed.developerName,
+                seed.defaultMapping));
+      }
+      out.add(masterFor(canonicalType));
+      return out;
+    }
+
+    public static DefaultRecordTypeInfo masterFor(String typeName) {
+      String canonicalType = canonicalType(typeName);
+      return new DefaultRecordTypeInfo(
+          canonicalType,
+          recordTypeIdFor(canonicalType, "Master"),
+          "Master",
+          "Master",
+          false);
+    }
+
+    private static String canonicalType(String typeName) {
+      return typeName == null || typeName.isBlank() ? "SObject" : typeName.trim();
+    }
+
+    private static List<Seed> seedsFor(String typeName) {
+      String normalized = typeName == null ? "" : typeName.trim().toLowerCase(Locale.ROOT);
+      if ("account".equals(normalized)) {
+        return List.of(
+            new Seed("Organization", "Organization", true),
+            new Seed("Household", "HH_Account", false),
+            new Seed("One to One", "One_to_One", false),
+            new Seed("One to One Account", "One_to_One_Account", false));
+      }
+      if ("opportunity".equals(normalized)) {
+        return List.of(
+            new Seed("Donation", "Donation", true),
+            new Seed("Membership", "Membership", false));
+      }
+      if ("contact".equals(normalized)) {
+        return List.of(new Seed("Individual", "Individual", true));
+      }
+      return List.of(new Seed("Default", "Default", true));
+    }
+
+    private static String recordTypeIdFor(String typeName, String developerName) {
+      String typeToken = typeName == null ? "" : typeName.trim().toLowerCase(Locale.ROOT);
+      String developerToken =
+          developerName == null ? "" : developerName.trim().toLowerCase(Locale.ROOT);
+      long hash = Integer.toUnsignedLong((typeToken + "#" + developerToken).hashCode());
+      return String.format(Locale.ROOT, "012%012dAAA", hash % 1_000_000_000_000L);
     }
 
     @Override
@@ -1456,7 +1777,7 @@ public final class Schema {
 
   public static final class FieldSetMember {
     private final String ownerType;
-    private final String fieldPath;
+    public final String fieldPath;
 
     public FieldSetMember(String fieldPath) {
       this("", fieldPath);

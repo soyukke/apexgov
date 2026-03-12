@@ -13,25 +13,39 @@ public final class ApexPages {
     return CURRENT_PAGE.get();
   }
 
+  public static PageReference CurrentPage() {
+    return currentPage();
+  }
+
   public enum Severity {
     INFO,
     WARNING,
     ERROR,
-    CONFIRM;
+    CONFIRM,
+    FATAL;
 
     public static final Severity Info = INFO;
     public static final Severity Warning = WARNING;
     public static final Severity Error = ERROR;
     public static final Severity Confirm = CONFIRM;
+    public static final Severity Fatal = FATAL;
   }
 
   public static class Message {
     private final Severity severity;
     private final String summary;
+    private final String detail;
 
     public Message(Severity severity, String summary) {
       this.severity = severity == null ? Severity.INFO : severity;
       this.summary = summary == null ? "" : summary;
+      this.detail = this.summary;
+    }
+
+    public Message(Severity severity, String summary, String detail) {
+      this.severity = severity == null ? Severity.INFO : severity;
+      this.summary = summary == null ? "" : summary;
+      this.detail = detail == null ? this.summary : detail;
     }
 
     public Severity getSeverity() {
@@ -43,6 +57,10 @@ public final class ApexPages {
     }
 
     public String getDetail() {
+      return detail;
+    }
+
+    public String getComponentLabel() {
       return summary;
     }
   }
@@ -88,11 +106,12 @@ public final class ApexPages {
     return new java.util.ArrayList<>(MESSAGES.get());
   }
 
-  public static final class StandardController {
+  public static class StandardController {
     private final ApexSObject record;
 
     public StandardController(ApexSObject record) {
       this.record = record;
+      ensureRecordBackedByStore(record);
     }
 
     public ApexSObject getRecord() {
@@ -108,11 +127,36 @@ public final class ApexPages {
     public PageReference view() {
       return new PageReference("");
     }
+
+    public PageReference save() {
+      return new PageReference("");
+    }
+
+    private static void ensureRecordBackedByStore(ApexSObject record) {
+      if (record == null || record.id() == null || record.id().isBlank()) {
+        return;
+      }
+      try {
+        java.util.Map<String, Object> bindVariables = new java.util.LinkedHashMap<>();
+        bindVariables.put("controllerId", record.id());
+        java.util.List<ApexSObject> existing =
+            ApexStore.queryWithBinds(
+                "SELECT Id FROM " + record.type() + " WHERE Id = :controllerId LIMIT 1",
+                bindVariables);
+        if (existing == null || existing.isEmpty()) {
+          ApexStore.upsert(java.util.List.of(record), true);
+        }
+      } catch (RuntimeException ignored) {
+        // Keep controller construction resilient even when backing-store sync cannot be applied.
+      }
+    }
   }
 
-  public static final class StandardSetController {
+  public static class StandardSetController {
     private final java.util.List<ApexSObject> records;
     private java.util.List<ApexSObject> selected;
+    private int pageNumber = 1;
+    private int pageSize = 20;
 
     public StandardSetController(java.util.List<ApexSObject> records) {
       this.records =
@@ -131,6 +175,46 @@ public final class ApexPages {
     public void setSelected(java.util.List<ApexSObject> selected) {
       this.selected =
           selected == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(selected);
+    }
+
+    public Integer getResultSize() {
+      return records.size();
+    }
+
+    public Integer getPageNumber() {
+      return pageNumber;
+    }
+
+    public void setPageSize(Integer pageSize) {
+      if (pageSize == null || pageSize <= 0) {
+        return;
+      }
+      this.pageSize = pageSize;
+      int maxPage = Math.max(1, (int) Math.ceil((double) records.size() / Math.max(1, this.pageSize)));
+      if (pageNumber > maxPage) {
+        pageNumber = maxPage;
+      }
+    }
+
+    public void first() {
+      pageNumber = 1;
+    }
+
+    public void previous() {
+      if (pageNumber > 1) {
+        pageNumber -= 1;
+      }
+    }
+
+    public void next() {
+      int maxPage = Math.max(1, (int) Math.ceil((double) records.size() / Math.max(1, pageSize)));
+      if (pageNumber < maxPage) {
+        pageNumber += 1;
+      }
+    }
+
+    public void last() {
+      pageNumber = Math.max(1, (int) Math.ceil((double) records.size() / Math.max(1, pageSize)));
     }
   }
 

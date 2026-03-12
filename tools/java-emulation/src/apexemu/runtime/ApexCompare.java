@@ -13,24 +13,28 @@ public final class ApexCompare {
   public static boolean gt(Long a, long b) { return a != null && a > b; }
   public static boolean gt(Double a, double b) { return a != null && a > b; }
   public static boolean gt(Object a, Object b) { if (a == null || b == null) return false; return cmp(a, b) > 0; }
+  public static boolean gt(Object a, Object b, String message) { return gt(a, b); }
 
   /** Returns true iff a &lt; b; returns false if a is null. */
   public static boolean lt(Integer a, int b) { return a != null && a < b; }
   public static boolean lt(Long a, long b) { return a != null && a < b; }
   public static boolean lt(Double a, double b) { return a != null && a < b; }
   public static boolean lt(Object a, Object b) { if (a == null || b == null) return false; return cmp(a, b) < 0; }
+  public static boolean lt(Object a, Object b, String message) { return lt(a, b); }
 
   /** Returns true iff a &gt;= b; returns false if a is null. */
   public static boolean gte(Integer a, int b) { return a != null && a >= b; }
   public static boolean gte(Long a, long b) { return a != null && a >= b; }
   public static boolean gte(Double a, double b) { return a != null && a >= b; }
   public static boolean gte(Object a, Object b) { if (a == null || b == null) return false; return cmp(a, b) >= 0; }
+  public static boolean gte(Object a, Object b, String message) { return gte(a, b); }
 
   /** Returns true iff a &lt;= b; returns false if a is null. */
   public static boolean lte(Integer a, int b) { return a != null && a <= b; }
   public static boolean lte(Long a, long b) { return a != null && a <= b; }
   public static boolean lte(Double a, double b) { return a != null && a <= b; }
   public static boolean lte(Object a, Object b) { if (a == null || b == null) return false; return cmp(a, b) <= 0; }
+  public static boolean lte(Object a, Object b, String message) { return lte(a, b); }
 
   @SuppressWarnings({"unchecked", "rawtypes"})
   private static int cmp(Object a, Object b) {

@@ -16,6 +16,10 @@ public final class PageReference {
     return url;
   }
 
+  public String getURL() {
+    return getUrl();
+  }
+
   public Map<String, String> getParameters() {
     return parameters;
   }

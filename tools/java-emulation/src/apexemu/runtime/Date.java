@@ -15,6 +15,10 @@ public final class Date implements Comparable<Date> {
     return new Date(LocalDate.of(year, month, day));
   }
 
+  public static Date newinstance(int year, int month, int day) {
+    return newInstance(year, month, day);
+  }
+
   public static Date today() {
     return new Date(LocalDate.now());
   }
@@ -28,6 +32,10 @@ public final class Date implements Comparable<Date> {
       return null;
     }
     return new Date(LocalDate.parse(value));
+  }
+
+  public static Date Parse(String value) {
+    return valueOf(value);
   }
 
   public static Date valueOf(Object value) {
@@ -44,6 +52,10 @@ public final class Date implements Comparable<Date> {
     return new Date(value.plusDays(days));
   }
 
+  public Date adddays(int days) {
+    return addDays(days);
+  }
+
   public Date addMonths(int months) {
     return new Date(value.plusMonths(months));
   }
@@ -57,6 +69,19 @@ public final class Date implements Comparable<Date> {
       return null;
     }
     return (int) (other.value.toEpochDay() - value.toEpochDay());
+  }
+
+  public Integer monthsBetween(Date other) {
+    if (other == null) {
+      return null;
+    }
+    int months = (other.value.getYear() - value.getYear()) * 12 + (other.value.getMonthValue() - value.getMonthValue());
+    if (months > 0 && other.value.getDayOfMonth() < value.getDayOfMonth()) {
+      months -= 1;
+    } else if (months < 0 && other.value.getDayOfMonth() > value.getDayOfMonth()) {
+      months += 1;
+    }
+    return months;
   }
 
   public Date toStartOfMonth() {
@@ -100,6 +125,25 @@ public final class Date implements Comparable<Date> {
 
   public Integer Day() {
     return day();
+  }
+
+  public Integer dayOfYear() {
+    return value.getDayOfYear();
+  }
+
+  public static Integer daysInMonth(Integer year, Integer month) {
+    if (year == null || month == null) {
+      return null;
+    }
+    return LocalDate.of(year, month, 1).lengthOfMonth();
+  }
+
+  public static Integer DaysInMonth(Integer year, Integer month) {
+    return daysInMonth(year, month);
+  }
+
+  public static Integer DaysInMonth(Integer year, int month) {
+    return daysInMonth(year, month);
   }
 
   @Override

@@ -60,6 +60,7 @@ public final class Metadata {
 
   public static class DeployDetails extends Record {
     public List<DeployMessage> componentFailures = new ArrayList<>();
+    public List<DeployMessage> componentSuccesses = new ArrayList<>();
   }
 
   public static class DeployResult extends Record {

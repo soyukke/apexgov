@@ -91,6 +91,10 @@ public final class Limits {
     return getDmlStatements();
   }
 
+  public static int getDmlRows() {
+    return getDMLRows();
+  }
+
   public static int getQueryRows() {
     return getQueries();
   }
@@ -139,6 +143,18 @@ public final class Limits {
   }
 
   public static int getQueueableJobs() {
+    return 0;
+  }
+
+  public static int getAsyncCalls() {
+    return getQueueableJobs();
+  }
+
+  public static int getLimitAsyncCalls() {
+    return getLimitQueueableJobs();
+  }
+
+  public static int getEmailInvocations() {
     return 0;
   }
 

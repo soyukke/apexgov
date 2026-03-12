@@ -16,6 +16,10 @@ public final class Auth {
       return this;
     }
 
+    public JWT setIss(String issuer) {
+      return set("iss", issuer);
+    }
+
     public String toJSONString() {
       return JSON.serialize(claims);
     }

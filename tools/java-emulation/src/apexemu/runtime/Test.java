@@ -55,6 +55,10 @@ public final class Test {
     startTest();
   }
 
+  public static void starttest() {
+    startTest();
+  }
+
   public static void stopTest() {
     Async.flush();
     EventBus.flushPending();
@@ -62,6 +66,10 @@ public final class Test {
   }
 
   public static void StopTest() {
+    stopTest();
+  }
+
+  public static void stoptest() {
     stopTest();
   }
 
@@ -87,6 +95,53 @@ public final class Test {
 
   public static void setCurrentPageReference(PageReference pageReference) {
     setCurrentPage(pageReference);
+  }
+
+  public static void setCreatedDate(Object record, DateTime createdDate) {
+    ApexSObject row = record instanceof ApexSObject ? (ApexSObject) record : null;
+    if (row == null) {
+      return;
+    }
+    row.set("CreatedDate", createdDate == null ? null : createdDate.toString());
+  }
+
+  public static void testInstall(System.InstallHandler handler, apexemu.runtime.Version previousVersion) {
+    testInstall(handler, previousVersion, false);
+  }
+
+  public static void testInstall(
+      System.InstallHandler handler, apexemu.runtime.Version previousVersion, boolean isPush) {
+    if (handler == null) {
+      return;
+    }
+    System.InstallContext context = new System.InstallContext();
+    context.setPreviousVersion(previousVersion);
+    context.setPush(isPush);
+    context.setUpgrade(previousVersion != null && !isPush);
+    try {
+      Method method = handler.getClass().getMethod("onInstall", System.InstallContext.class);
+      method.setAccessible(true);
+      method.invoke(handler, context);
+    } catch (NoSuchMethodException ignored) {
+      // Install handlers are optional in local emulation.
+    } catch (IllegalAccessException | InvocationTargetException ignored) {
+      // Best-effort only.
+    }
+  }
+
+  public static void testUninstall(System.UninstallHandler handler) {
+    if (handler == null) {
+      return;
+    }
+    try {
+      Method method = handler.getClass().getMethod("onUninstall", System.UninstallContext.class);
+      method.setAccessible(true);
+      method.invoke(handler, new System.UninstallContext());
+    } catch (NoSuchMethodException ignored) {
+      // Uninstall handlers are optional in local emulation.
+    } catch (IllegalAccessException | InvocationTargetException ignored) {
+      // Best-effort only.
+    }
   }
 
   public static void runAs(ApexSObject user, Runnable work) {

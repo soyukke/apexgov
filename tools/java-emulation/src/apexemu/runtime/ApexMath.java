@@ -58,4 +58,35 @@ public final class ApexMath {
     }
     return BigDecimal.valueOf(value.doubleValue()).setScale(scale, RoundingMode.HALF_UP).doubleValue();
   }
+
+  public static Double setScale(Number value, int scale, java.math.RoundingMode roundingMode) {
+    if (value == null) {
+      return null;
+    }
+    java.math.RoundingMode mode = roundingMode == null ? java.math.RoundingMode.HALF_UP : roundingMode;
+    return BigDecimal.valueOf(value.doubleValue()).setScale(scale, mode).doubleValue();
+  }
+
+  public static Double setScale(Number value, int scale, apexemu.runtime.System.RoundingMode roundingMode) {
+    java.math.RoundingMode mode = roundingMode == null ? java.math.RoundingMode.HALF_UP : roundingMode.toJavaMode();
+    return setScale(value, scale, mode);
+  }
+
+  public static Double divide(Number left, Number right, int scale, java.math.RoundingMode roundingMode) {
+    if (left == null || right == null) {
+      return null;
+    }
+    if (right.doubleValue() == 0.0d) {
+      return null;
+    }
+    java.math.RoundingMode mode = roundingMode == null ? java.math.RoundingMode.HALF_UP : roundingMode;
+    BigDecimal dividend = BigDecimal.valueOf(left.doubleValue());
+    BigDecimal divisor = BigDecimal.valueOf(right.doubleValue());
+    return dividend.divide(divisor, scale, mode).doubleValue();
+  }
+
+  public static Double divide(Number left, Number right, int scale, apexemu.runtime.System.RoundingMode roundingMode) {
+    java.math.RoundingMode mode = roundingMode == null ? java.math.RoundingMode.HALF_UP : roundingMode.toJavaMode();
+    return divide(left, right, scale, mode);
+  }
 }

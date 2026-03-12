@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -97,6 +98,14 @@ public final class DateTime implements Comparable<DateTime> {
     return valueOf(value);
   }
 
+  public static DateTime parse(String value) {
+    return valueOf(value);
+  }
+
+  public static DateTime Parse(String value) {
+    return parse(value);
+  }
+
   public long getTime() {
     return instant.toEpochMilli();
   }
@@ -113,6 +122,26 @@ public final class DateTime implements Comparable<DateTime> {
     return Long.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getSecond());
   }
 
+  public Integer year() {
+    return Integer.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getYear());
+  }
+
+  public Integer month() {
+    return Integer.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getMonthValue());
+  }
+
+  public Integer day() {
+    return Integer.valueOf(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).getDayOfMonth());
+  }
+
+  public Integer dayGmt() {
+    return day();
+  }
+
+  public Integer dayGMT() {
+    return day();
+  }
+
   public DateTime addSeconds(int seconds) {
     return new DateTime(instant.plusSeconds(seconds));
   }
@@ -125,8 +154,16 @@ public final class DateTime implements Comparable<DateTime> {
     return new DateTime(instant.plusSeconds((long) hours * 60L * 60L));
   }
 
+  public DateTime addMinutes(int minutes) {
+    return new DateTime(instant.plusSeconds((long) minutes * 60L));
+  }
+
   public DateTime addMonths(int months) {
     return new DateTime(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).plusMonths(months).toInstant());
+  }
+
+  public DateTime addYears(int years) {
+    return new DateTime(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC).plusYears(years).toInstant());
   }
 
   public Date date() {
@@ -152,6 +189,26 @@ public final class DateTime implements Comparable<DateTime> {
 
   public String format(String pattern) {
     return formatGMT(pattern);
+  }
+
+  public String format(String pattern, String timeZoneId) {
+    if (pattern == null || pattern.isBlank()) {
+      return instant.toString();
+    }
+    ZoneId zone = ZoneOffset.UTC;
+    if (timeZoneId != null && !timeZoneId.isBlank()) {
+      try {
+        zone = ZoneId.of(timeZoneId.trim());
+      } catch (RuntimeException ignored) {
+        zone = ZoneOffset.UTC;
+      }
+    }
+    try {
+      DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern, Locale.US);
+      return formatter.format(ZonedDateTime.ofInstant(instant, zone));
+    } catch (IllegalArgumentException ignored) {
+      return instant.toString();
+    }
   }
 
   @Override

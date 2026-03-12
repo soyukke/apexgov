@@ -51,9 +51,24 @@ public final class Database {
 
   public static LeadConvertResult convertLead(LeadConvert leadConvert) {
     if (leadConvert == null) {
-      return new LeadConvertResult(false, null, new Error[0], null);
+      return new LeadConvertResult(false, null, new Error[0], null, null, null, null);
     }
-    return new LeadConvertResult(true, leadConvert.getContactId(), new Error[0], leadConvert.getLeadId());
+    return new LeadConvertResult(
+        true,
+        leadConvert.getContactId(),
+        new Error[0],
+        leadConvert.getLeadId(),
+        leadConvert.getContactId(),
+        leadConvert.getAccountId(),
+        null);
+  }
+
+  private static boolean resolveAllOrNone(DmlOptions dmlOptions) {
+    if (dmlOptions == null) {
+      return true;
+    }
+    Boolean configured = dmlOptions.getOptAllOrNone();
+    return configured == null ? true : configured;
   }
 
   public static void insert(Collection<? extends ApexSObject> records) {
@@ -67,6 +82,33 @@ public final class Database {
     SaveResult[] results = insert((Collection<? extends ApexSObject>) List.of(record), true);
     ensureSuccess(results, "insert");
     return results.length == 0 ? null : results[0];
+  }
+
+  public static SaveResult insert(Object record) {
+    return insert(asSObject(record));
+  }
+
+  public static SaveResult insert(ApexSObject record, boolean allOrNone) {
+    if (record == null) {
+      return null;
+    }
+    SaveResult[] results = insert((Collection<? extends ApexSObject>) List.of(record), allOrNone);
+    if (allOrNone) {
+      ensureSuccess(results, "insert");
+    }
+    return results.length == 0 ? null : results[0];
+  }
+
+  public static SaveResult insert(Object record, boolean allOrNone) {
+    return insert(asSObject(record), allOrNone);
+  }
+
+  public static SaveResult insert(ApexSObject record, DmlOptions dmlOptions) {
+    return insert(record, resolveAllOrNone(dmlOptions));
+  }
+
+  public static SaveResult insert(Object record, DmlOptions dmlOptions) {
+    return insert(asSObject(record), dmlOptions);
   }
 
   public static SaveResult insert(ApexSObject record, System.AccessLevel accessLevel) {
@@ -111,10 +153,7 @@ public final class Database {
   }
 
   public static List<SaveResult> insert(List<? extends ApexSObject> records, DmlOptions dmlOptions) {
-    boolean allOrNone = dmlOptions == null || dmlOptions.OptAllOrNone == null
-        ? true
-        : dmlOptions.OptAllOrNone;
-    return insert(records, allOrNone);
+    return insert(records, resolveAllOrNone(dmlOptions));
   }
 
   public static List<SaveResult> insert(
@@ -136,6 +175,29 @@ public final class Database {
     return results.length == 0 ? null : results[0];
   }
 
+  public static SaveResult update(ApexSObject record, boolean allOrNone) {
+    if (record == null) {
+      return null;
+    }
+    SaveResult[] results = update((Collection<? extends ApexSObject>) List.of(record), allOrNone);
+    if (allOrNone) {
+      ensureSuccess(results, "update");
+    }
+    return results.length == 0 ? null : results[0];
+  }
+
+  public static SaveResult update(Object record, boolean allOrNone) {
+    return update(asSObject(record), allOrNone);
+  }
+
+  public static SaveResult update(ApexSObject record, DmlOptions dmlOptions) {
+    return update(record, resolveAllOrNone(dmlOptions));
+  }
+
+  public static SaveResult update(Object record, DmlOptions dmlOptions) {
+    return update(asSObject(record), dmlOptions);
+  }
+
   public static List<SaveResult> update(List<? extends ApexSObject> records) {
     return update(records, true);
   }
@@ -153,10 +215,7 @@ public final class Database {
   }
 
   public static List<SaveResult> update(List<? extends ApexSObject> records, DmlOptions dmlOptions) {
-    boolean allOrNone = dmlOptions == null || dmlOptions.OptAllOrNone == null
-        ? true
-        : dmlOptions.OptAllOrNone;
-    return update(records, allOrNone);
+    return update(records, resolveAllOrNone(dmlOptions));
   }
 
   public static List<SaveResult> update(
@@ -178,6 +237,21 @@ public final class Database {
     return results.length == 0 ? null : toUpsertResult(results[0]);
   }
 
+  public static UpsertResult upsert(ApexSObject record, boolean allOrNone) {
+    if (record == null) {
+      return null;
+    }
+    SaveResult[] results = upsert((Collection<? extends ApexSObject>) List.of(record), allOrNone);
+    if (allOrNone) {
+      ensureSuccess(results, "upsert");
+    }
+    return results.length == 0 ? null : toUpsertResult(results[0]);
+  }
+
+  public static UpsertResult upsert(Object record, boolean allOrNone) {
+    return upsert(asSObject(record), allOrNone);
+  }
+
   public static UpsertResult upsert(
       ApexSObject record, boolean allOrNone, System.AccessLevel accessLevel) {
     if (record == null) {
@@ -193,6 +267,10 @@ public final class Database {
 
   public static UpsertResult upsert(Object record, boolean allOrNone, System.AccessLevel accessLevel) {
     return upsert(asSObject(record), allOrNone, accessLevel);
+  }
+
+  public static List<UpsertResult> upsert(List<? extends ApexSObject> records) {
+    return upsert(records, true);
   }
 
   public static List<UpsertResult> upsert(List<? extends ApexSObject> records, boolean allOrNone) {
@@ -261,12 +339,36 @@ public final class Database {
     ensureSuccess(delete(records, true), "delete");
   }
 
+  public static void delete(Object recordOrRecords) {
+    if (recordOrRecords == null) {
+      return;
+    }
+    if (recordOrRecords instanceof Collection<?> records) {
+      @SuppressWarnings("unchecked")
+      Collection<? extends ApexSObject> normalized = (Collection<? extends ApexSObject>) records;
+      delete(normalized);
+      return;
+    }
+    delete(asSObject(recordOrRecords));
+  }
+
   public static DeleteResult delete(ApexSObject record) {
     if (record == null) {
       throw new apexemu.runtime.System.DmlException("Attempt to de-reference a null object");
     }
     SaveResult[] results = delete((Collection<? extends ApexSObject>) List.of(record), true);
     ensureSuccess(results, "delete");
+    return results.length == 0 ? null : new DeleteResult(results[0].isSuccess(), results[0].getId(), results[0].getErrors());
+  }
+
+  public static DeleteResult delete(ApexSObject record, boolean allOrNone) {
+    if (record == null) {
+      throw new apexemu.runtime.System.DmlException("Attempt to de-reference a null object");
+    }
+    SaveResult[] results = delete((Collection<? extends ApexSObject>) List.of(record), allOrNone);
+    if (allOrNone) {
+      ensureSuccess(results, "delete");
+    }
     return results.length == 0 ? null : new DeleteResult(results[0].isSuccess(), results[0].getId(), results[0].getErrors());
   }
 
@@ -318,6 +420,17 @@ public final class Database {
     }
     SaveResult[] results = undelete((Collection<? extends ApexSObject>) List.of(record), true);
     ensureSuccess(results, "undelete");
+    return results.length == 0 ? null : toUndeleteResult(results[0]);
+  }
+
+  public static UndeleteResult undelete(ApexSObject record, boolean allOrNone) {
+    if (record == null) {
+      return null;
+    }
+    SaveResult[] results = undelete((Collection<? extends ApexSObject>) List.of(record), allOrNone);
+    if (allOrNone) {
+      ensureSuccess(results, "undelete");
+    }
     return results.length == 0 ? null : toUndeleteResult(results[0]);
   }
 
@@ -470,6 +583,13 @@ public final class Database {
     ApexStore.rollback(savepoint.token);
   }
 
+  public static void rollback(System.SavePoint savePoint) {
+    if (savePoint == null) {
+      throw new IllegalArgumentException("savepoint cannot be null");
+    }
+    rollback(savePoint.asDatabaseSavepoint());
+  }
+
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static List query(String soql) {
     return ApexStore.query(soql);
@@ -516,12 +636,12 @@ public final class Database {
   }
 
   public static QueryLocator getQueryLocator(String soql) {
-    return new QueryLocator(query(soql));
+    return new QueryLocator(query(soql), soql);
   }
 
   public static QueryLocator getQueryLocatorWithBinds(
       String soql, Map<String, Object> bindVariables) {
-    return new QueryLocator((List<ApexSObject>) queryWithBinds(soql, bindVariables));
+    return new QueryLocator((List<ApexSObject>) queryWithBinds(soql, bindVariables), soql);
   }
 
   public static void clearInMemoryStore() {
@@ -758,8 +878,126 @@ public final class Database {
   }
 
   public static class DmlOptions {
+    public static final class DuplicateRuleHeaderOptions {
+      public Boolean allowSave;
+      public Boolean AllowSave;
+
+      public Boolean getAllowSave() {
+        if (allowSave != null) {
+          return allowSave;
+        }
+        return AllowSave;
+      }
+
+      public void setAllowSave(Boolean value) {
+        this.allowSave = value;
+        this.AllowSave = value;
+      }
+    }
+
     public Boolean OptAllOrNone;
+    public Boolean optAllOrNone;
     public Boolean AllowFieldTruncation;
+    public ApexSObject DuplicateRuleHeader;
+    public DuplicateRuleHeaderOptions duplicateRuleHeader;
+
+    public DmlOptions() {
+      this.DuplicateRuleHeader = ApexSObject.of("DuplicateRuleHeader");
+      this.duplicateRuleHeader = new DuplicateRuleHeaderOptions();
+    }
+
+    public Boolean getOptAllOrNone() {
+      if (optAllOrNone != null) {
+        return optAllOrNone;
+      }
+      return OptAllOrNone;
+    }
+
+    public void setOptAllOrNone(Boolean value) {
+      this.OptAllOrNone = value;
+      this.optAllOrNone = value;
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T> T getAs(String field) {
+      if (field == null) {
+        return null;
+      }
+      if (field.equalsIgnoreCase("OptAllOrNone") || field.equalsIgnoreCase("optAllOrNone")) {
+        return (T) getOptAllOrNone();
+      }
+      if (field.equalsIgnoreCase("AllowFieldTruncation")) {
+        return (T) AllowFieldTruncation;
+      }
+      if (field.equalsIgnoreCase("DuplicateRuleHeader") || field.equalsIgnoreCase("duplicateRuleHeader")) {
+        syncDuplicateRuleHeaderAliasToSObject();
+        return (T) ensureDuplicateRuleHeaderSObject();
+      }
+      return null;
+    }
+
+    public DmlOptions set(String field, Object value) {
+      if (field == null) {
+        return this;
+      }
+      if (field.equalsIgnoreCase("OptAllOrNone") || field.equalsIgnoreCase("optAllOrNone")) {
+        if (value == null || value instanceof Boolean) {
+          setOptAllOrNone((Boolean) value);
+        } else {
+          setOptAllOrNone(Boolean.valueOf(String.valueOf(value)));
+        }
+        return this;
+      }
+      if (field.equalsIgnoreCase("AllowFieldTruncation")) {
+        if (value == null || value instanceof Boolean) {
+          AllowFieldTruncation = (Boolean) value;
+        } else {
+          AllowFieldTruncation = Boolean.valueOf(String.valueOf(value));
+        }
+        return this;
+      }
+      if (field.equalsIgnoreCase("DuplicateRuleHeader") || field.equalsIgnoreCase("duplicateRuleHeader")) {
+        if (value instanceof ApexSObject sObject) {
+          DuplicateRuleHeader = sObject;
+          syncDuplicateRuleHeaderSObjectToAlias();
+        } else if (value instanceof DuplicateRuleHeaderOptions options) {
+          duplicateRuleHeader = options;
+          syncDuplicateRuleHeaderAliasToSObject();
+        } else if (value == null) {
+          DuplicateRuleHeader = ApexSObject.of("DuplicateRuleHeader");
+          duplicateRuleHeader = new DuplicateRuleHeaderOptions();
+        }
+      }
+      return this;
+    }
+
+    private ApexSObject ensureDuplicateRuleHeaderSObject() {
+      if (DuplicateRuleHeader == null) {
+        DuplicateRuleHeader = ApexSObject.of("DuplicateRuleHeader");
+      }
+      return DuplicateRuleHeader;
+    }
+
+    private void syncDuplicateRuleHeaderAliasToSObject() {
+      if (duplicateRuleHeader == null) {
+        return;
+      }
+      Boolean allowSave = duplicateRuleHeader.getAllowSave();
+      if (allowSave != null) {
+        ensureDuplicateRuleHeaderSObject().set("AllowSave", allowSave);
+      }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void syncDuplicateRuleHeaderSObjectToAlias() {
+      if (duplicateRuleHeader == null) {
+        duplicateRuleHeader = new DuplicateRuleHeaderOptions();
+      }
+      Boolean allowSave = (Boolean) ensureDuplicateRuleHeaderSObject().getAs("AllowSave");
+      if (allowSave != null) {
+        duplicateRuleHeader.setAllowSave(allowSave);
+      }
+    }
   }
 
   public interface BatchableContext {
@@ -783,9 +1021,15 @@ public final class Database {
 
   public static final class QueryLocator implements Iterable<ApexSObject> {
     private final List<ApexSObject> rows;
+    private final String query;
 
     QueryLocator(List<ApexSObject> rows) {
+      this(rows, null);
+    }
+
+    QueryLocator(List<ApexSObject> rows, String query) {
       this.rows = copyRows(rows);
+      this.query = query;
     }
 
     public int size() {
@@ -794,6 +1038,10 @@ public final class Database {
 
     public List<ApexSObject> getRecords() {
       return copyRows(rows);
+    }
+
+    public String getQuery() {
+      return query;
     }
 
     @Override
@@ -930,18 +1178,47 @@ public final class Database {
 
   public static final class LeadConvertResult extends SaveResult {
     private final String leadId;
+    private final String contactId;
+    private final String accountId;
+    private final String opportunityId;
 
     public LeadConvertResult() {
-      this(false, null, new Error[0], null);
+      this(false, null, new Error[0], null, null, null, null);
     }
 
     public LeadConvertResult(boolean success, String id, Error[] errors, String leadId) {
+      this(success, id, errors, leadId, id, null, null);
+    }
+
+    public LeadConvertResult(
+        boolean success,
+        String id,
+        Error[] errors,
+        String leadId,
+        String contactId,
+        String accountId,
+        String opportunityId) {
       super(success, id, errors);
       this.leadId = leadId;
+      this.contactId = contactId;
+      this.accountId = accountId;
+      this.opportunityId = opportunityId;
     }
 
     public String getLeadId() {
       return leadId;
+    }
+
+    public String getContactId() {
+      return contactId;
+    }
+
+    public String getAccountId() {
+      return accountId;
+    }
+
+    public String getOpportunityId() {
+      return opportunityId;
     }
   }
 
@@ -1044,7 +1321,13 @@ public final class Database {
     }
   }
 
-  public static final class Error {
+  public enum StatusCode {
+    FIELD_CUSTOM_VALIDATION_EXCEPTION,
+    REQUIRED_FIELD_MISSING,
+    DUPLICATES_DETECTED
+  }
+
+  public static class Error {
     private final String statusCode;
     private final String message;
     private final String[] fields;
@@ -1069,6 +1352,19 @@ public final class Database {
 
     public String[] getFields() {
       return fields.clone();
+    }
+  }
+
+  public static final class DuplicateError extends Error {
+    private final Datacloud.DuplicateResult duplicateResult;
+
+    public DuplicateError(String statusCode, String message, Datacloud.DuplicateResult duplicateResult) {
+      super(statusCode, message);
+      this.duplicateResult = duplicateResult == null ? new Datacloud.DuplicateResult() : duplicateResult;
+    }
+
+    public Datacloud.DuplicateResult getDuplicateResult() {
+      return duplicateResult;
     }
   }
 }

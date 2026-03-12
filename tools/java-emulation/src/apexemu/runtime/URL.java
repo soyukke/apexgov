@@ -18,4 +18,20 @@ public final class URL {
   public String toExternalForm() {
     return externalForm;
   }
+
+  public String getHost() {
+    try {
+      java.net.URI uri = java.net.URI.create(externalForm);
+      if (uri.getHost() != null) {
+        return uri.getHost();
+      }
+    } catch (IllegalArgumentException ignored) {
+    }
+    return "localhost";
+  }
+
+  @Override
+  public String toString() {
+    return externalForm;
+  }
 }
