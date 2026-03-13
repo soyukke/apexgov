@@ -6,6 +6,7 @@ import apexemu.runtime.ApexPages;
 import apexemu.runtime.Date;
 import apexemu.runtime.DateTime;
 import apexemu.runtime.HttpResponse;
+import apexemu.runtime.ApexInterfaceAdapter;
 import apexemu.runtime.Metadata;
 import apexemu.runtime.Schema;
 import apexemu.runtime.System;
@@ -59,5 +60,35 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertTrue(ApexPages.hasMessages(ApexPages.Severity.ERROR), "ApexPages addmessage alias should record messages");
     setController.setSelected(java.util.List.of());
     SystemAssert.assertEquals(0, setController.getSelected().size(), "StandardSetController setSelected alias mismatch");
+
+    AdapterProbe.instance = null;
+    SystemAssert.assertEquals(
+        "pong",
+        AdapterProbe.getInstance().ping(),
+        "ApexInterfaceAdapter should proxy self-interface singleton instances");
+    AdapterProbe.instance = (AdapterProbe.Contract) () -> "stub";
+    SystemAssert.assertEquals(
+        "stub",
+        AdapterProbe.getInstance().ping(),
+        "ApexInterfaceAdapter should return directly assignable interface instances");
+  }
+
+  private static final class AdapterProbe {
+    interface Contract {
+      String ping();
+    }
+
+    static Object instance;
+
+    static Contract getInstance() {
+      if (instance == null) {
+        instance = new AdapterProbe();
+      }
+      return ApexInterfaceAdapter.adapt(instance, Contract.class);
+    }
+
+    String ping() {
+      return "pong";
+    }
   }
 }

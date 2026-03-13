@@ -9,6 +9,7 @@ import apexemu.runtime.ApexStrings;
 import apexemu.runtime.BatchContext;
 import apexemu.runtime.Database;
 import apexemu.runtime.DmlException;
+import apexemu.runtime.Date;
 import apexemu.runtime.Limits;
 import apexemu.runtime.QueryLocatorBatchable;
 import apexemu.runtime.Schema;
@@ -995,6 +996,62 @@ public final class SampleGovernorTest {
     List<ApexSObject> emptyCount = Database.query("SELECT COUNT() totalRows FROM Account");
     SystemAssert.assertEquals(1, emptyCount.size(), "COUNT() on empty table should return one row");
     SystemAssert.assertEquals(0L, emptyCount.get(0).get("totalRows"), "COUNT() on empty table mismatch");
+  }
+
+  @Test
+  public void soqlSupportsCalendarYearGroupingExpressions() {
+    Database.clearInMemoryStore();
+    Database.clearSchemaRegistry();
+
+    String contactA = "003000000000001AAA";
+    String contactB = "003000000000002AAA";
+
+    Database.insert(
+        List.of(
+            ApexSObject.of("OpportunityContactRole")
+                .set("ContactId", contactA)
+                .set("CloseDate__c", Date.newInstance(2023, 1, 2))
+                .set("Amount__c", 100),
+            ApexSObject.of("OpportunityContactRole")
+                .set("ContactId", contactA)
+                .set("CloseDate__c", Date.newInstance(2024, 3, 4))
+                .set("Amount__c", 50),
+            ApexSObject.of("OpportunityContactRole")
+                .set("ContactId", contactB)
+                .set("CloseDate__c", Date.newInstance(2024, 6, 7))
+                .set("Amount__c", 200)));
+
+    List<ApexSObject> grouped =
+        Database.query(
+            "SELECT ContactId, CALENDAR_YEAR(CloseDate__c) CalendarYr, SUM(Amount__c) TotalAmount "
+                + "FROM OpportunityContactRole "
+                + "GROUP BY ContactId, CALENDAR_YEAR(CloseDate__c) "
+                + "ORDER BY ContactId ASC, CalendarYr ASC");
+
+    SystemAssert.assertEquals(3, grouped.size(), "CALENDAR_YEAR grouping should produce three groups");
+    SystemAssert.assertEquals(contactA, grouped.get(0).get("ContactId"), "group #1 ContactId mismatch");
+    SystemAssert.assertEquals(2023, grouped.get(0).get("CalendarYr"), "group #1 CalendarYr mismatch");
+    SystemAssert.assertEquals(100.0, grouped.get(0).get("TotalAmount"), "group #1 sum mismatch");
+
+    SystemAssert.assertEquals(contactA, grouped.get(1).get("ContactId"), "group #2 ContactId mismatch");
+    SystemAssert.assertEquals(2024, grouped.get(1).get("CalendarYr"), "group #2 CalendarYr mismatch");
+    SystemAssert.assertEquals(50.0, grouped.get(1).get("TotalAmount"), "group #2 sum mismatch");
+
+    SystemAssert.assertEquals(contactB, grouped.get(2).get("ContactId"), "group #3 ContactId mismatch");
+    SystemAssert.assertEquals(2024, grouped.get(2).get("CalendarYr"), "group #3 CalendarYr mismatch");
+    SystemAssert.assertEquals(200.0, grouped.get(2).get("TotalAmount"), "group #3 sum mismatch");
+
+    List<ApexSObject> groupedWithRollup =
+        Database.query(
+            "SELECT ContactId, CALENDAR_YEAR(CloseDate__c) CalendarYr, SUM(Amount__c) TotalAmount "
+                + "FROM OpportunityContactRole "
+                + "GROUP BY ROLLUP(ContactId, CALENDAR_YEAR(CloseDate__c)) "
+                + "ORDER BY ContactId ASC, CalendarYr ASC");
+    SystemAssert.assertEquals(3, groupedWithRollup.size(), "ROLLUP should group by flattened fields");
+    SystemAssert.assertEquals(
+        contactA, groupedWithRollup.get(0).get("ContactId"), "ROLLUP row #1 ContactId mismatch");
+    SystemAssert.assertEquals(
+        2023, groupedWithRollup.get(0).get("CalendarYr"), "ROLLUP row #1 CalendarYr mismatch");
   }
 
   @Test

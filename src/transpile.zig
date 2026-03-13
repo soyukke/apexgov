@@ -11806,10 +11806,11 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public class UTIL_Currency {", .to = "public class UTIL_Currency {" },
         .{ .from = "public class UTIL_CurrencyCache {", .to = "public class UTIL_CurrencyCache {" },
         .{ .from = "public static Interface_x instance;", .to = "public static Object instance;" },
-        .{ .from = "instance = new UTIL_Currency();\n    }\n    return instance;", .to = "instance = new UTIL_Currency();\n    }\n    return (Interface_x) instance;" },
-        .{ .from = "instance = new UTIL_CurrencyCache();\n    }\n    return instance;", .to = "instance = new UTIL_CurrencyCache();\n    }\n    return (Interface_x) instance;" },
-        .{ .from = "return (UTIL_Currency) instance;", .to = "return (Interface_x) instance;" },
-        .{ .from = "return (UTIL_CurrencyCache) instance;", .to = "return (Interface_x) instance;" },
+        .{ .from = "instance = new UTIL_Currency();\n    }\n    return instance;", .to = "instance = new UTIL_Currency();\n    }\n    return ApexInterfaceAdapter.adapt(instance, Interface_x.class);" },
+        .{ .from = "instance = new UTIL_CurrencyCache();\n    }\n    return instance;", .to = "instance = new UTIL_CurrencyCache();\n    }\n    return ApexInterfaceAdapter.adapt(instance, Interface_x.class);" },
+        .{ .from = "return (UTIL_Currency) instance;", .to = "return ApexInterfaceAdapter.adapt(instance, Interface_x.class);" },
+        .{ .from = "return (UTIL_CurrencyCache) instance;", .to = "return ApexInterfaceAdapter.adapt(instance, Interface_x.class);" },
+        .{ .from = "return (Interface_x) instance;", .to = "return ApexInterfaceAdapter.adapt(instance, Interface_x.class);" },
         .{ .from = "private static class QueueableElevateBatches {", .to = "public static class QueueableElevateBatches {" },
         .{ .from = "List<ApexSObject> contactsWithParentInfo = ApexCollections.firstOrNull(Database.queryWithBinds(\"select Account.Id, Account.Name from Contact where Id in :newlist\", ApexCollections.bindMap(\"newlist\", newlist)));", .to = "List<ApexSObject> contactsWithParentInfo = Database.queryWithBinds(\"select Account.Id, Account.Name from Contact where Id in :newlist\", ApexCollections.bindMap(\"newlist\", newlist));" },
         .{ .from = "Callable callable = (apexemu.runtime.System.Callable)Type.forName(\"\", \"Callable_Api\").newInstance();", .to = "Callable callable = (apexemu.runtime.Callable)Type.forName(\"\", \"Callable_Api\").newInstance();" },
@@ -31767,6 +31768,29 @@ test "rewriteKnownCompatibilityFixups rewrites accidental get-getAs call artifac
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new Schema.FieldSetNamespace(\"Contact\").get(\"ContactMergeFoundFS\").getFields()") != null);
+}
+
+test "rewriteKnownCompatibilityFixups adapts self-interface singleton instance casts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public static Object instance;
+        \\  public static interface Interface_x {
+        \\    String value();
+        \\  }
+        \\  public static Interface_x getInstance() {
+        \\    if (instance == null) {
+        \\      instance = new Sample();
+        \\    }
+        \\    return (Interface_x) instance;
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexInterfaceAdapter.adapt(instance, Interface_x.class);") != null);
 }
 
 test "rewriteKnownCompatibilityFixups rewrites enum casing and NPSP compile fronts" {

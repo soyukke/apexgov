@@ -26,6 +26,7 @@ import java.util.regex.PatternSyntaxException;
 final class ApexStore {
   private static final String IDENTIFIER_TEXT = "[a-zA-Z_][\\w]*";
   private static final String FIELD_PATH_TEXT = IDENTIFIER_TEXT + "(?:\\." + IDENTIFIER_TEXT + ")*";
+  private static final String DATE_PART_FUNCTION_TEXT = "calendar_year";
   private static final Pattern FROM_PATTERN =
       Pattern.compile("(?i)\\bfrom\\s+(" + FIELD_PATH_TEXT + ")");
   private static final Pattern LIMIT_PATTERN = Pattern.compile("(?i)\\blimit\\s+(\\d+)");
@@ -73,6 +74,22 @@ final class ApexStore {
               + ")(?:\\s+(?:as\\s+)?("
               + IDENTIFIER_TEXT
               + "))?$");
+  private static final Pattern SELECT_DATE_PART_FIELD_PATTERN =
+      Pattern.compile(
+          "(?i)^("
+              + DATE_PART_FUNCTION_TEXT
+              + ")\\s*\\(\\s*("
+              + FIELD_PATH_TEXT
+              + ")\\s*\\)(?:\\s+(?:as\\s+)?("
+              + IDENTIFIER_TEXT
+              + "))?$");
+  private static final Pattern DATE_PART_FIELD_PATTERN =
+      Pattern.compile(
+          "(?i)^("
+              + DATE_PART_FUNCTION_TEXT
+              + ")\\s*\\(\\s*("
+              + FIELD_PATH_TEXT
+              + ")\\s*\\)$");
   private static final Pattern HAVING_CLAUSE_PATTERN =
       Pattern.compile("(?i)^(.+?)\\s*(>=|<=|!=|=|>|<)\\s*(.+)$");
   private static final Pattern HAVING_AGGREGATE_OPERAND_PATTERN =
@@ -867,6 +884,10 @@ final class ApexStore {
         continue;
       }
       String field = item.field();
+      DatePartField datePartField = parseDatePartFieldExpression(field);
+      if (datePartField != null) {
+        field = datePartField.fieldPath();
+      }
       if (!field.contains(".")) {
         continue;
       }
@@ -898,7 +919,12 @@ final class ApexStore {
         return null;
       }
       if (item.kind() == SelectItemKind.FIELD && item.field() != null) {
-        String f = item.field().toLowerCase();
+        String f = item.field();
+        DatePartField datePartField = parseDatePartFieldExpression(f);
+        if (datePartField != null) {
+          f = datePartField.fieldPath();
+        }
+        f = f.toLowerCase();
         fields.add(f);
         if (f.contains(".")) {
           String relSegment = f.substring(0, f.indexOf('.')).toLowerCase();
@@ -2637,6 +2663,12 @@ final class ApexStore {
       return null;
     }
 
+    DatePartField datePartField = parseDatePartFieldExpression(fieldPath);
+    if (datePartField != null) {
+      Object sourceValue = resolveFieldValue(row, datePartField.fieldPath());
+      return evaluateDatePartField(datePartField.functionName(), sourceValue);
+    }
+
     Object direct = row.get(fieldPath);
     if (!fieldPath.contains(".")) {
       return direct;
@@ -2661,6 +2693,20 @@ final class ApexStore {
       if (current == null) {
         return null;
       }
+    }
+    return null;
+  }
+
+  private static Object evaluateDatePartField(String functionName, Object sourceValue) {
+    if (functionName == null || functionName.isBlank() || sourceValue == null) {
+      return null;
+    }
+    LocalDate dateValue = toDateValue(sourceValue);
+    if (dateValue == null) {
+      return null;
+    }
+    if ("CALENDAR_YEAR".equalsIgnoreCase(functionName)) {
+      return dateValue.getYear();
     }
     return null;
   }
@@ -3071,6 +3117,17 @@ final class ApexStore {
         continue;
       }
 
+      Matcher datePartMatcher = SELECT_DATE_PART_FIELD_PATTERN.matcher(normalized);
+      if (datePartMatcher.matches()) {
+        String functionName = datePartMatcher.group(1);
+        String field = datePartMatcher.group(2).trim();
+        String alias = datePartMatcher.group(3);
+        String expression = normalizeDatePartExpression(functionName, field);
+        String outputName = alias != null && !alias.isBlank() ? alias.trim() : expression;
+        items.add(SelectItem.field(expression, outputName, normalized));
+        continue;
+      }
+
       throw new IllegalArgumentException("unsupported SELECT term: " + normalized + " in " + rawSoql);
     }
 
@@ -3192,12 +3249,21 @@ final class ApexStore {
     List<String> terms = splitByComma(groupByExpr);
     List<String> out = new ArrayList<>(terms.size());
     for (String term : terms) {
-      String field = term == null ? "" : term.trim();
-      if (field.isEmpty() || !FIELD_PATH_PATTERN.matcher(field).matches()) {
+      List<String> rollupFields = parseRollupGroupByTerm(term);
+      if (rollupFields != null) {
+        for (String rollupField : rollupFields) {
+          if (!containsIgnoreCase(out, rollupField)) {
+            out.add(rollupField);
+          }
+        }
+        continue;
+      }
+      String normalized = normalizeGroupByFieldTerm(term);
+      if (normalized == null) {
         throw new IllegalArgumentException("unsupported GROUP BY field: " + term + " in " + rawSoql);
       }
-      if (!containsIgnoreCase(out, field)) {
-        out.add(field);
+      if (!containsIgnoreCase(out, normalized)) {
+        out.add(normalized);
       }
     }
 
@@ -3205,6 +3271,63 @@ final class ApexStore {
       throw new IllegalArgumentException("GROUP BY expression cannot be blank: " + rawSoql);
     }
     return out;
+  }
+
+  private static List<String> parseRollupGroupByTerm(String rawTerm) {
+    if (rawTerm == null || rawTerm.isBlank()) {
+      return null;
+    }
+    String normalized = rawTerm.trim();
+    if (!normalized.regionMatches(true, 0, "ROLLUP(", 0, 7) || !normalized.endsWith(")")) {
+      return null;
+    }
+    String body = normalized.substring(7, normalized.length() - 1).trim();
+    if (body.isEmpty()) {
+      return List.of();
+    }
+    List<String> terms = splitByComma(body);
+    List<String> out = new ArrayList<>(terms.size());
+    for (String term : terms) {
+      String normalizedField = normalizeGroupByFieldTerm(term);
+      if (normalizedField == null) {
+        return null;
+      }
+      out.add(normalizedField);
+    }
+    return out;
+  }
+
+  private static String normalizeGroupByFieldTerm(String rawTerm) {
+    if (rawTerm == null || rawTerm.isBlank()) {
+      return null;
+    }
+    String normalized = rawTerm.trim();
+    if (FIELD_PATH_PATTERN.matcher(normalized).matches()) {
+      return normalized;
+    }
+    DatePartField datePartField = parseDatePartFieldExpression(normalized);
+    if (datePartField == null) {
+      return null;
+    }
+    return normalizeDatePartExpression(datePartField.functionName(), datePartField.fieldPath());
+  }
+
+  private static String normalizeDatePartExpression(String functionName, String fieldPath) {
+    if (functionName == null || functionName.isBlank() || fieldPath == null || fieldPath.isBlank()) {
+      return null;
+    }
+    return functionName.trim().toUpperCase() + "(" + fieldPath.trim() + ")";
+  }
+
+  private static DatePartField parseDatePartFieldExpression(String expression) {
+    if (expression == null || expression.isBlank()) {
+      return null;
+    }
+    Matcher matcher = DATE_PART_FIELD_PATTERN.matcher(expression.trim());
+    if (!matcher.matches()) {
+      return null;
+    }
+    return new DatePartField(matcher.group(1).trim().toUpperCase(), matcher.group(2).trim());
   }
 
   private static void validateSelectSpec(SelectSpec selectSpec, List<String> groupByFields, String rawSoql) {
@@ -3321,6 +3444,10 @@ final class ApexStore {
         continue;
       }
       String fieldName = item.field();
+      DatePartField datePartField = parseDatePartFieldExpression(fieldName);
+      if (datePartField != null) {
+        fieldName = datePartField.fieldPath();
+      }
       int dot = fieldName.indexOf('.');
       if (dot >= 0) {
         fieldName = fieldName.substring(0, dot);
@@ -4308,6 +4435,13 @@ final class ApexStore {
   private static LocalDate toDateValue(Object value) {
     if (value == null) {
       return null;
+    }
+    if (value instanceof Date date) {
+      return date.value();
+    }
+    if (value instanceof DateTime dateTime) {
+      Date resolvedDate = dateTime.date();
+      return resolvedDate == null ? null : resolvedDate.value();
     }
     if (value instanceof LocalDate localDate) {
       return localDate;
@@ -5472,6 +5606,8 @@ final class ApexStore {
       return !day.isBefore(startInclusive) && !day.isAfter(endInclusive);
     }
   }
+
+  private record DatePartField(String functionName, String fieldPath) {}
 
   private static final class DmlFailure extends RuntimeException {
     final String statusCode;
