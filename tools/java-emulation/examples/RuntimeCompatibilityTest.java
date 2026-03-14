@@ -1,6 +1,7 @@
 package samples;
 
 import apexemu.annotations.Test;
+import apexemu.runtime.ApexSObject;
 import apexemu.runtime.CampaignMember;
 import apexemu.runtime.ApexPages;
 import apexemu.runtime.Date;
@@ -90,5 +91,27 @@ public final class RuntimeCompatibilityTest {
     String ping() {
       return "pong";
     }
+  }
+
+  @Test
+  public void systemTypeSupportsSObjectInstantiationAndTypeExceptionCatchability() {
+    Object customObject = System.Type.forName("DataImportBatch__c").newInstance();
+    Object standardObject = System.Type.forName("CollaborationGroup").newInstance();
+    Object opportunityObject = System.Type.forName("Opportunity").newInstance();
+
+    SystemAssert.assertTrue(customObject instanceof ApexSObject, "Custom SObject type should instantiate as ApexSObject");
+    SystemAssert.assertTrue(standardObject instanceof ApexSObject, "Standard SObject type should instantiate as ApexSObject");
+    SystemAssert.assertTrue(opportunityObject instanceof ApexSObject, "Built-in SObject type should instantiate as ApexSObject");
+    SystemAssert.assertEquals("DataImportBatch__c", ((ApexSObject) customObject).type(), "Custom SObject type token mismatch");
+    SystemAssert.assertEquals("CollaborationGroup", ((ApexSObject) standardObject).type(), "Standard SObject type token mismatch");
+    SystemAssert.assertEquals("Opportunity", ((ApexSObject) opportunityObject).type(), "Built-in SObject type token mismatch");
+
+    Boolean caughtAsBaseException = false;
+    try {
+      throw new System.TypeException("invalid");
+    } catch (System.Exception ignored) {
+      caughtAsBaseException = true;
+    }
+    SystemAssert.assertEquals(true, caughtAsBaseException, "TypeException should be catchable via System.Exception");
   }
 }

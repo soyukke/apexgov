@@ -5,6 +5,7 @@ import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -156,7 +157,7 @@ public final class System {
     }
   }
 
-  public static final class TypeException extends RuntimeException {
+  public static final class TypeException extends Exception {
     public TypeException(String message) {
       super(message);
     }
@@ -768,6 +769,10 @@ public final class System {
       if (isMapType(typeName)) {
         return new LinkedHashMap<>();
       }
+      Object sObjectFallback = instantiateSObjectFallback(typeName);
+      if (sObjectFallback != null) {
+        return sObjectFallback;
+      }
       Class<?> klass = resolveClass(typeName);
       if (klass == null) {
         String normalizedApexName = normalizeApexSimpleTypeName(typeName);
@@ -794,6 +799,9 @@ public final class System {
         return null;
       }
       String candidate = normalized.trim();
+      if (isKnownSObjectTypeToken(candidate)) {
+        return new Type(candidate);
+      }
       Class<?> resolved = resolveClass(candidate);
       if (resolved != null) {
         return new Type(resolved.getName());
@@ -802,6 +810,9 @@ public final class System {
         return new Type(candidate);
       }
       String apexStyle = normalizeApexSimpleTypeName(candidate);
+      if (isKnownSObjectTypeToken(apexStyle)) {
+        return new Type(apexStyle);
+      }
       resolved = resolveClass(apexStyle);
       if (resolved != null) {
         return new Type(resolved.getName());
@@ -861,6 +872,53 @@ public final class System {
         return false;
       }
       return trimmed.equalsIgnoreCase(token);
+    }
+
+    private static Object instantiateSObjectFallback(String rawTypeName) {
+      if (rawTypeName == null || rawTypeName.isBlank()) {
+        return null;
+      }
+      String normalized = rawTypeName.trim();
+      Schema.SObjectType fromDescribe = lookupSObjectType(normalized);
+      if (fromDescribe != null) {
+        return fromDescribe.newSObject();
+      }
+      if (isLikelyCustomSObjectTypeToken(normalized)) {
+        return new Schema.SObjectType(normalized).newSObject();
+      }
+      return null;
+    }
+
+    private static boolean isKnownSObjectTypeToken(String typeName) {
+      if (typeName == null || typeName.isBlank()) {
+        return false;
+      }
+      return lookupSObjectType(typeName) != null || isLikelyCustomSObjectTypeToken(typeName);
+    }
+
+    private static Schema.SObjectType lookupSObjectType(String typeName) {
+      if (typeName == null || typeName.isBlank()) {
+        return null;
+      }
+      String normalized = typeName.trim();
+      Map<String, Schema.SObjectType> describe = Schema.getGlobalDescribe();
+      Schema.SObjectType byName = describe.get(normalized);
+      if (byName != null) {
+        return byName;
+      }
+      return describe.get(normalized.toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isLikelyCustomSObjectTypeToken(String typeName) {
+      if (typeName == null || typeName.isBlank()) {
+        return false;
+      }
+      String normalized = typeName.trim().toLowerCase(Locale.ROOT);
+      return normalized.endsWith("__c")
+          || normalized.endsWith("__mdt")
+          || normalized.endsWith("__e")
+          || normalized.endsWith("__b")
+          || normalized.endsWith("__x");
     }
 
     private Object instantiateWithFallbackConstructor(Class<?> klass) {

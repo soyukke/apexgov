@@ -3731,7 +3731,7 @@ fn findTopLevelSemicolonIndex(text: []const u8, start: usize) ?usize {
 fn isSafeInlinePropertyInitializer(rhs: []const u8, property_name: []const u8) bool {
     var candidate = std.mem.trim(u8, rhs, " \t");
     if (candidate.len == 0) return false;
-    if (containsWordIgnoreCase(candidate, property_name)) return false;
+    if (containsWord(candidate, property_name)) return false;
     if (std.mem.indexOf(u8, candidate, ".getAs(") != null) return false;
 
     while (candidate.len > 0 and candidate[0] == '(') {
@@ -10838,12 +10838,59 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    if (std.mem.indexOf(u8, current, "public class RD2_NamingService") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public String nameFormat; // Apex property { get; set; }",
+            "public String nameFormat = getConfiguredFormat(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public Set<String> fields = new LinkedHashSet<>(); // Apex property { get; set; }",
+            "public Set<String> fields = parseFormat(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
     if (std.mem.indexOf(u8, current, "public class Addresses") != null) {
         var next = try replaceLiteralAll(
             gpa,
             current,
             "public ContactSelector contactSelector; // Apex property { get; set; }",
             "public static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+            "public static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "private ContactSelector contactSelector; // Apex property { get; set; }",
+            "private static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "private ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+            "private static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
         );
         gpa.free(current);
         current = next;
@@ -11586,6 +11633,86 @@ fn rewriteNpspAliasCompat(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         current = next;
     }
 
+    if (std.mem.indexOf(u8, current, "public class ContactMergeSelector") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public static OrgConfig orgConfig; // Apex property { get; set; }",
+            "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class HouseholdNamingService") != null) {
+        var next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public ContactSelector contactSelector; // Apex property { get; set; }",
+            "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public UnitOfWork unitOfWork; // Apex property { get; set; }",
+            "public UnitOfWork unitOfWork = new UnitOfWork(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public AddressService addressService; // Apex property { get; set; }",
+            "public AddressService addressService = new AddressService(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "if (!settings.isAdvancedHouseholdNaming() || householdNamingImpl.setHouseholdNameFieldsOnContact() == null) {",
+            "if (!settings.isAdvancedHouseholdNaming() || householdNamingImpl == null || householdNamingImpl.setHouseholdNameFieldsOnContact() == null) {",
+        );
+        gpa.free(current);
+        current = next;
+
+        next = try replaceLiteralAll(
+            gpa,
+            current,
+            "return householdNamingImpl.setHouseholdNameFieldsOnContact();",
+            "return householdNamingImpl == null ? new LinkedHashSet<String>() : householdNamingImpl.setHouseholdNameFieldsOnContact();",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class AddressService") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public OrgConfig orgConfig; // Apex property { get; set; }",
+            "public OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
+    if (std.mem.indexOf(u8, current, "public class ElevateBatchService") != null) {
+        const next = try replaceLiteralAll(
+            gpa,
+            current,
+            "public ElevateBatch elevateBatch = new ElevateBatch(); // Apex property { get; set; }",
+            "public ElevateBatch elevateBatch; // Apex property { get; set; }",
+        );
+        gpa.free(current);
+        current = next;
+    }
+
     return current;
 }
 
@@ -11760,7 +11887,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public static List<ApexSObject> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {", .to = "public static List<Object> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {" },
         .{ .from = "List<ApexSObject> pluck = (List<ApexSObject>) listType.newInstance();", .to = "List<Object> pluck = (List<Object>) listType.newInstance();" },
         .{ .from = "return new fflib_SObjects((List<ApexSObject>) objects);", .to = "return new fflib_SObjects((List<ApexSObject>) (List<?>) objects);" },
-        .{ .from = "internalUrl = new Url(url).getPath();", .to = "internalUrl = java.net.URI.create(url).getPath();" },
+        .{ .from = "internalUrl = new Url(url).getPath();", .to = "internalUrl = (url == null ? null : java.net.URI.create(url).getPath());" },
+        .{ .from = "if (fieldSetDescribe == null) {\n    return null;\n    }", .to = "if (fieldSetDescribe == null) {\n    return new ArrayList<>();\n    }" },
+        .{ .from = "allOpportunityContactRoles.addAll(moreOpportunityContactRoles);", .to = "if (moreOpportunityContactRoles != null) {\n    allOpportunityContactRoles.addAll(moreOpportunityContactRoles);\n    }" },
         .{ .from = "arg instanceof SObjectField", .to = "arg instanceof Schema.SObjectField" },
         .{ .from = "arg instanceof SObjectType", .to = "arg instanceof Schema.SObjectType" },
         .{ .from = ", RoundingMode.", .to = ", System.RoundingMode." },
@@ -11912,6 +12041,25 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "private Integer nextDonationDateMatchDays; // Apex property { get; set; }", .to = "private Integer nextDonationDateMatchDays = 3; // Apex property { get; set; }" },
         .{ .from = "public static Boolean isAccountNameSortable; // Apex property { get; set; }", .to = "public static Boolean isAccountNameSortable = false; // Apex property { get; set; }" },
         .{ .from = "static public STG_SettingsService stgService; // Apex property { get; set; }", .to = "static public STG_SettingsService stgService = STG_SettingsService.stgService; // Apex property { get; set; }" },
+        .{ .from = "public static OrgConfig orgConfig; // Apex property { get; set; }", .to = "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }" },
+        .{ .from = "public OrgConfig orgConfig; // Apex property { get; set; }", .to = "public OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }" },
+        .{ .from = "public ContactSelector contactSelector; // Apex property { get; set; }", .to = "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }" },
+        .{ .from = "public UnitOfWork unitOfWork; // Apex property { get; set; }", .to = "public UnitOfWork unitOfWork = new UnitOfWork(); // Apex property { get; set; }" },
+        .{ .from = "public AddressService addressService; // Apex property { get; set; }", .to = "public AddressService addressService = new AddressService(); // Apex property { get; set; }" },
+        .{ .from = "public ElevateBatch elevateBatch = new ElevateBatch(); // Apex property { get; set; }", .to = "public ElevateBatch elevateBatch; // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgCon; // Apex property { get; set; }", .to = "public ApexSObject stgCon = UTIL_CustomSettingsFacade.getOrgContactsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgHH; // Apex property { get; set; }", .to = "public ApexSObject stgHH = UTIL_CustomSettingsFacade.getOrgHouseholdsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgHN; // Apex property { get; set; }", .to = "public ApexSObject stgHN = UTIL_CustomSettingsFacade.getOrgHouseholdNamingSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgRD; // Apex property { get; set; }", .to = "public ApexSObject stgRD = UTIL_CustomSettingsFacade.getOrgRecurringDonationsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgRel; // Apex property { get; set; }", .to = "public ApexSObject stgRel = UTIL_CustomSettingsFacade.getOrgRelationshipSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgAffl; // Apex property { get; set; }", .to = "public ApexSObject stgAffl = UTIL_CustomSettingsFacade.getOrgAffiliationsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgErr; // Apex property { get; set; }", .to = "public ApexSObject stgErr = UTIL_CustomSettingsFacade.getOrgErrorSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgBDE; // Apex property { get; set; }", .to = "public ApexSObject stgBDE = UTIL_CustomSettingsFacade.getorgBdeSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgAllo; // Apex property { get; set; }", .to = "public ApexSObject stgAllo = UTIL_CustomSettingsFacade.getOrgAllocationsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgCRLP; // Apex property { get; set; }", .to = "public ApexSObject stgCRLP = UTIL_CustomSettingsFacade.getOrgCustomizableRollupSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgLevels; // Apex property { get; set; }", .to = "public ApexSObject stgLevels = UTIL_CustomSettingsFacade.getOrgLevelsSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgDI; // Apex property { get; set; }", .to = "public ApexSObject stgDI = UTIL_CustomSettingsFacade.getDataImportSettings(); // Apex property { get; set; }" },
+        .{ .from = "public ApexSObject stgGiftEntry; // Apex property { get; set; }", .to = "public ApexSObject stgGiftEntry = UTIL_CustomSettingsFacade.getGiftEntrySettings(); // Apex property { get; set; }" },
         .{ .from = "public Boolean ldvMode = null;", .to = "public Boolean ldvMode = false;" },
         .{ .from = "throw new SchemaDescribeException(\"Invalid object name '\" + objectName + \"'\");", .to = "Schema.DescribeSObjectResult fallbackObjectDescribe = new Schema.SObjectType(objectName).getDescribe();\n    objectDescribes.put(objectName, fallbackObjectDescribe);\n    objectDescribesByType.put(ApexSwitch.getSObjectType(fallbackObjectDescribe), fallbackObjectDescribe);" },
         .{ .from = "throw new SchemaDescribeException(\"Invalid field name '\" + fieldName + \"'\");", .to = "Schema.DescribeFieldResult fallbackFieldDescribe = new Schema.SObjectField(objectName, fieldName).getDescribe();\n    fieldTokens.get(objectName).put(fieldName, fallbackFieldDescribe.getSObjectField());\n    fieldDescribes.get(objectName).put(fieldName, fallbackFieldDescribe);" },
@@ -11944,6 +12092,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "else if (err.getStatusCode() == Database.StatusCode.REQUIRED_FIELD_MISSING) {", .to = "else if (ApexEquals.eq(err.getStatusCode(), Database.StatusCode.REQUIRED_FIELD_MISSING.name())) {" },
         .{ .from = "List<String> fields = err.getFields();", .to = "List<String> fields = new ArrayList<>(java.util.Arrays.asList(err.getFields()));" },
         .{ .from = "fiscalYearInfo = new UTIL_FiscalYearInfo(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId())));", .to = "fiscalYearInfo = new UTIL_FiscalYearInfo(ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId()))));" },
+        .{ .from = "oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);", .to = "if (oppService == null) { oppService = new RD2_OpportunityService(currentDate, dbService, customFieldMapper); }\n    oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);" },
         .{ .from = "return (ApexSObject)Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
         .{ .from = "return (ApexSObject) Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
         .{ .from = "ApexSObject rd = (ApexSObject) Database.query(soql);", .to = "ApexSObject rd = ApexCollections.firstOrNull(Database.query(soql));" },
@@ -28026,6 +28175,23 @@ fn containsWordIgnoreCase(text: []const u8, word: []const u8) bool {
     return indexOfWordIgnoreCase(text, word) != null;
 }
 
+fn containsWord(text: []const u8, word: []const u8) bool {
+    return indexOfWord(text, word) != null;
+}
+
+fn indexOfWord(text: []const u8, word: []const u8) ?usize {
+    if (word.len == 0 or text.len < word.len) return null;
+    var i: usize = 0;
+    while (i + word.len <= text.len) : (i += 1) {
+        if (!std.mem.eql(u8, text[i .. i + word.len], word)) continue;
+        const left_ok = i == 0 or !isIdentifierChar(text[i - 1]);
+        const right_idx = i + word.len;
+        const right_ok = right_idx == text.len or !isIdentifierChar(text[right_idx]);
+        if (left_ok and right_ok) return i;
+    }
+    return null;
+}
+
 fn indexOfWordIgnoreCase(text: []const u8, word: []const u8) ?usize {
     if (word.len == 0 or text.len < word.len) return null;
     var i: usize = 0;
@@ -29914,6 +30080,68 @@ test "transpileClassMemberLine converts fields and properties" {
     try std.testing.expectEqualStrings(
         "private RD2_OpportunityService oppService; // Apex property { get; set; }",
         lazy_property_with_args.?,
+    );
+
+    const lazy_property_case_distinct_type = try transpileClassMemberLine(
+        gpa,
+        \\public NameFormatter nameFormatter {
+        \\  get {
+        \\    if (nameFormatter == null) {
+        \\      nameFormatter = new NameFormatter();
+        \\    }
+        \\    return nameFormatter;
+        \\  } private set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_case_distinct_type) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_case_distinct_type != null);
+    try std.testing.expectEqualStrings(
+        "public NameFormatter nameFormatter = new NameFormatter(); // Apex property { get; set; }",
+        lazy_property_case_distinct_type.?,
+    );
+
+    const lazy_property_self_reference_arg = try transpileClassMemberLine(
+        gpa,
+        \\private NameFormatter nameFormatter {
+        \\  get {
+        \\    if (nameFormatter == null) {
+        \\      nameFormatter = new NameFormatter(nameFormatter);
+        \\    }
+        \\    return nameFormatter;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_self_reference_arg) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_self_reference_arg != null);
+    try std.testing.expectEqualStrings(
+        "private NameFormatter nameFormatter; // Apex property { get; set; }",
+        lazy_property_self_reference_arg.?,
+    );
+
+    const lazy_test_visible_static_property = try transpileClassMemberLine(
+        gpa,
+        \\private static OrgConfig orgConfig {
+        \\  get {
+        \\    if (orgConfig == null) {
+        \\      orgConfig = new OrgConfig();
+        \\    }
+        \\    return orgConfig;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        true,
+    );
+    defer if (lazy_test_visible_static_property) |value| gpa.free(value);
+    try std.testing.expect(lazy_test_visible_static_property != null);
+    try std.testing.expectEqualStrings(
+        "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }",
+        lazy_test_visible_static_property.?,
     );
 
     const static_block = try transpileClassMemberLine(
@@ -31848,6 +32076,87 @@ test "rewriteKnownCompatibilityFixups rewrites enum casing and NPSP compile fron
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexEquals.eq(fld.getType(), Schema.DisplayType.PICKLIST)") != null);
 }
 
+test "rewriteKnownCompatibilityFixups initializes OrgConfig and helper service properties" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class ContactMergeSelector {
+        \\  public static OrgConfig orgConfig; // Apex property { get; set; }
+        \\}
+        \\public class HouseholdNamingService {
+        \\  public ContactSelector contactSelector; // Apex property { get; set; }
+        \\  public UnitOfWork unitOfWork; // Apex property { get; set; }
+        \\  public AddressService addressService; // Apex property { get; set; }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UnitOfWork unitOfWork = new UnitOfWork(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public AddressService addressService = new AddressService(); // Apex property { get; set; }") != null);
+}
+
+test "rewriteLateCompatibilityFixups initializes OrgConfig and helper service properties" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class ContactMergeSelector {
+        \\  public static OrgConfig orgConfig; // Apex property { get; set; }
+        \\}
+        \\public class HouseholdNamingService {
+        \\  public ContactSelector contactSelector; // Apex property { get; set; }
+        \\  public UnitOfWork unitOfWork; // Apex property { get; set; }
+        \\  public AddressService addressService; // Apex property { get; set; }
+        \\}
+    ;
+
+    const rewritten = try rewriteLateCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UnitOfWork unitOfWork = new UnitOfWork(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public AddressService addressService = new AddressService(); // Apex property { get; set; }") != null);
+}
+
+test "rewriteKnownCompatibilityFixups makes Addresses contact selector static when initialized" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Addresses {
+        \\  public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }
+        \\  public static Map<String, List<ApexSObject>> getContactsByHouseholdAccountId(Set<String> accountIds) {
+        \\    return contactSelector.getContactAddressFieldsForContactAccountsIn(accountIds);
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }") != null);
+}
+
+test "rewriteKnownCompatibilityFixups makes HouseholdNamingService naming impl checks null-safe" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class HouseholdNamingService {
+        \\  public Set<String> getHouseholdNamingContactFields() {
+        \\    if (!settings.isAdvancedHouseholdNaming() || householdNamingImpl.setHouseholdNameFieldsOnContact() == null) {
+        \\      return new LinkedHashSet<String>();
+        \\    }
+        \\    return householdNamingImpl.setHouseholdNameFieldsOnContact();
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (!settings.isAdvancedHouseholdNaming() || householdNamingImpl == null || householdNamingImpl.setHouseholdNameFieldsOnContact() == null) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return householdNamingImpl == null ? new LinkedHashSet<String>() : householdNamingImpl.setHouseholdNameFieldsOnContact();") != null);
+}
+
 test "rewriteKnownCompatibilityFixups rewrites subselect casing and integer cast wrappers" {
     const gpa = std.testing.allocator;
     const input =
@@ -31870,6 +32179,51 @@ test "rewriteKnownCompatibilityFixups rewrites subselect casing and integer cast
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Integer size = ApexStrings.toInteger(value);") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (ApexEquals.eq(target, \"Account\")) {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "else if (ApexEquals.eq(target, \"Contact\")) {}") != null);
+}
+
+test "rewriteKnownCompatibilityFixups guards URL path extraction against null input" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class UTIL_String {
+        \\  public static String getInternalUrlPath(String url) {
+        \\    String internalUrl = "";
+        \\    internalUrl = new Url(url).getPath();
+        \\    return internalUrl;
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "internalUrl = (url == null ? null : java.net.URI.create(url).getPath());") != null);
+}
+
+test "rewriteKnownCompatibilityFixups normalizes null collection fronts for field sets and soft credits" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public List<String> listStrFromFieldSet(Schema.FieldSet fieldSetDescribe) {
+        \\    if (fieldSetDescribe == null) {
+        \\    return null;
+        \\    }
+        \\    return new ArrayList<String>();
+        \\  }
+        \\  public List<ApexSObject> deduplicate(List<ApexSObject> moreOpportunityContactRoles) {
+        \\    List<ApexSObject> allOpportunityContactRoles = new ArrayList<>();
+        \\    allOpportunityContactRoles.addAll(moreOpportunityContactRoles);
+        \\    return allOpportunityContactRoles;
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (fieldSetDescribe == null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return new ArrayList<>();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (moreOpportunityContactRoles != null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "allOpportunityContactRoles.addAll(moreOpportunityContactRoles);") != null);
 }
 
 test "rewriteBareCustomSettingsSingletonAccess rewrites custom getAll calls" {

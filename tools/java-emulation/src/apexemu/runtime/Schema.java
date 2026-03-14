@@ -75,6 +75,10 @@ public final class Schema {
     if (normalized.equalsIgnoreCase("Event")) return "00U";
     if (normalized.equalsIgnoreCase("User")) return "005";
     if (normalized.equalsIgnoreCase("Group")) return "00G";
+    if (normalized.equalsIgnoreCase("CollaborationGroup")) return "0F9";
+    if (normalized.equalsIgnoreCase("FeedItem")) return "0D5";
+    if (normalized.equalsIgnoreCase("Report")) return "00O";
+    if (normalized.equalsIgnoreCase("AsyncApexJob")) return "707";
     if (normalized.equalsIgnoreCase("Profile")) return "00e";
     if (normalized.equalsIgnoreCase("PermissionSet")) return "0PS";
     if (normalized.equalsIgnoreCase("PermissionSetAssignment")) return "0Pa";
@@ -133,6 +137,10 @@ public final class Schema {
         || prefix.equalsIgnoreCase("00U")
         || prefix.equalsIgnoreCase("005")
         || prefix.equalsIgnoreCase("00G")
+        || prefix.equalsIgnoreCase("0F9")
+        || prefix.equalsIgnoreCase("0D5")
+        || prefix.equalsIgnoreCase("00O")
+        || prefix.equalsIgnoreCase("707")
         || prefix.equalsIgnoreCase("00e")
         || prefix.equalsIgnoreCase("0PS")
         || prefix.equalsIgnoreCase("0Pa");
@@ -716,6 +724,10 @@ public final class Schema {
     public static final SObjectType Event = new SObjectType("Event");
     public static final SObjectType User = new SObjectType("User");
     public static final SObjectType Group = new SObjectType("Group");
+    public static final SObjectType CollaborationGroup = new SObjectType("CollaborationGroup");
+    public static final SObjectType FeedItem = new SObjectType("FeedItem");
+    public static final SObjectType Report = new SObjectType("Report");
+    public static final SObjectType AsyncApexJob = new SObjectType("AsyncApexJob");
     public static final SObjectType Campaign = new SObjectType("Campaign");
     public static final SObjectType CampaignMember = new SObjectType("CampaignMember");
     public static final SObjectType Contract = new SObjectType("Contract");
