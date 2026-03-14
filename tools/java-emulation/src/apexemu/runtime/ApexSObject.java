@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -238,7 +239,82 @@ public class ApexSObject {
 
   @SuppressWarnings("unchecked")
   public <T> T getAs(String field) {
-    return (T) get(field);
+    Object value = get(field);
+    return (T) coerceTemporalValue(field, value);
+  }
+
+  private static Object coerceTemporalValue(String field, Object value) {
+    if (!(value instanceof String text) || field == null || field.isBlank()) {
+      return value;
+    }
+    String trimmed = text.trim();
+    if (!looksLikeIsoDateOrDateTime(trimmed)) {
+      return value;
+    }
+    String normalizedField = field.trim().toLowerCase(Locale.ROOT);
+
+    if (isLikelyDateTimeField(normalizedField)) {
+      DateTime dateTime = DateTime.valueOf(trimmed);
+      return dateTime == null ? value : dateTime;
+    }
+    if (isLikelyDateField(normalizedField)) {
+      if (trimmed.length() >= 10) {
+        try {
+          Date parsed = Date.valueOf(trimmed.substring(0, 10));
+          if (parsed != null) {
+            return parsed;
+          }
+        } catch (RuntimeException ignored) {
+          // fall through
+        }
+      }
+      Date parsed = Date.valueOf(trimmed);
+      return parsed == null ? value : parsed;
+    }
+    return value;
+  }
+
+  private static boolean looksLikeIsoDateOrDateTime(String value) {
+    if (value == null || value.length() < 10) {
+      return false;
+    }
+    // Fast path for `yyyy-MM-dd` with optional time suffix.
+    return Character.isDigit(value.charAt(0))
+        && Character.isDigit(value.charAt(1))
+        && Character.isDigit(value.charAt(2))
+        && Character.isDigit(value.charAt(3))
+        && value.charAt(4) == '-'
+        && Character.isDigit(value.charAt(5))
+        && Character.isDigit(value.charAt(6))
+        && value.charAt(7) == '-'
+        && Character.isDigit(value.charAt(8))
+        && Character.isDigit(value.charAt(9));
+  }
+
+  private static boolean isLikelyDateTimeField(String normalizedField) {
+    if (normalizedField == null || normalizedField.isBlank()) {
+      return false;
+    }
+    return normalizedField.endsWith("datetime")
+        || normalizedField.endsWith("datetime__c")
+        || normalizedField.endsWith("datetime__pc")
+        || normalizedField.equals("createddate")
+        || normalizedField.equals("lastmodifieddate")
+        || normalizedField.equals("systemmodstamp")
+        || normalizedField.equals("completeddate");
+  }
+
+  private static boolean isLikelyDateField(String normalizedField) {
+    if (normalizedField == null || normalizedField.isBlank()) {
+      return false;
+    }
+    if (isLikelyDateTimeField(normalizedField)) {
+      return false;
+    }
+    return normalizedField.endsWith("date")
+        || normalizedField.endsWith("date__c")
+        || normalizedField.endsWith("date__pc")
+        || normalizedField.contains("_date__");
   }
 
   public Object get(Object field) {

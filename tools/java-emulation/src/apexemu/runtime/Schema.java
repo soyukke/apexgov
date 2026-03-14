@@ -88,6 +88,73 @@ public final class Schema {
     return customKeyPrefixForType(normalized, 'a');
   }
 
+  static String resolveTypeNameByKeyPrefix(String keyPrefix) {
+    if (keyPrefix == null || keyPrefix.isBlank()) {
+      return null;
+    }
+    String normalizedPrefix = keyPrefix.trim();
+
+    String standardType = standardTypeByKeyPrefix(normalizedPrefix);
+    if (standardType != null) {
+      return standardType;
+    }
+
+    for (ObjectDefinition def : STATE.get().definitions.values()) {
+      if (def == null || def.type == null || def.type.isBlank()) {
+        continue;
+      }
+      String typeName = def.type.trim();
+      String prefix = keyPrefixForTypeName(typeName);
+      if (prefix != null && prefix.equalsIgnoreCase(normalizedPrefix)) {
+        return typeName;
+      }
+      String bareType = stripNamespace(typeName);
+      if (bareType != null && !bareType.equalsIgnoreCase(typeName)) {
+        String barePrefix = keyPrefixForTypeName(bareType);
+        if (barePrefix != null && barePrefix.equalsIgnoreCase(normalizedPrefix)) {
+          return bareType;
+        }
+      }
+    }
+
+    synchronized (Schema.class) {
+      for (Map.Entry<String, String> entry : CUSTOM_KEY_PREFIX_BY_TYPE.entrySet()) {
+        String entryPrefix = entry.getValue();
+        if (entryPrefix != null && entryPrefix.equalsIgnoreCase(normalizedPrefix)) {
+          return entry.getKey();
+        }
+      }
+    }
+    return null;
+  }
+
+  private static String standardTypeByKeyPrefix(String keyPrefix) {
+    if (keyPrefix == null || keyPrefix.isBlank()) {
+      return null;
+    }
+    String normalized = keyPrefix.trim().toLowerCase();
+    return switch (normalized) {
+      case "012" -> "RecordType";
+      case "001" -> "Account";
+      case "003" -> "Contact";
+      case "00q" -> "Lead";
+      case "006" -> "Opportunity";
+      case "500" -> "Case";
+      case "00t" -> "Task";
+      case "00u" -> "Event";
+      case "005" -> "User";
+      case "00g" -> "Group";
+      case "0f9" -> "CollaborationGroup";
+      case "0d5" -> "FeedItem";
+      case "00o" -> "Report";
+      case "707" -> "AsyncApexJob";
+      case "00e" -> "Profile";
+      case "0ps" -> "PermissionSet";
+      case "0pa" -> "PermissionSetAssignment";
+      default -> null;
+    };
+  }
+
   private static String customKeyPrefixForType(String typeName, char lead) {
     if (typeName == null || typeName.isBlank()) {
       return lead + "00";

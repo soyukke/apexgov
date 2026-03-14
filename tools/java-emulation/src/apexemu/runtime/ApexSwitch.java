@@ -149,6 +149,10 @@ public final class ApexSwitch {
         return describe.getName();
       }
     }
+    String resolvedBySchema = Schema.resolveTypeNameByKeyPrefix(prefix);
+    if (resolvedBySchema != null && !resolvedBySchema.isBlank()) {
+      return resolvedBySchema;
+    }
     return null;
   }
 

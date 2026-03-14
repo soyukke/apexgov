@@ -4,6 +4,8 @@ import apexemu.annotations.Test;
 import apexemu.runtime.ApexSObject;
 import apexemu.runtime.CampaignMember;
 import apexemu.runtime.ApexPages;
+import apexemu.runtime.ApexSwitch;
+import apexemu.runtime.ApexStrings;
 import apexemu.runtime.Date;
 import apexemu.runtime.DateTime;
 import apexemu.runtime.HttpResponse;
@@ -98,6 +100,8 @@ public final class RuntimeCompatibilityTest {
     Object customObject = System.Type.forName("DataImportBatch__c").newInstance();
     Object standardObject = System.Type.forName("CollaborationGroup").newInstance();
     Object opportunityObject = System.Type.forName("Opportunity").newInstance();
+    String customId = ((ApexSObject) customObject).getSObjectType().getDescribe().getKeyPrefix() + "000000000001";
+    Schema.SObjectType resolvedFromCustomId = ApexSwitch.getSObjectType(customId);
 
     SystemAssert.assertTrue(customObject instanceof ApexSObject, "Custom SObject type should instantiate as ApexSObject");
     SystemAssert.assertTrue(standardObject instanceof ApexSObject, "Standard SObject type should instantiate as ApexSObject");
@@ -105,6 +109,9 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertEquals("DataImportBatch__c", ((ApexSObject) customObject).type(), "Custom SObject type token mismatch");
     SystemAssert.assertEquals("CollaborationGroup", ((ApexSObject) standardObject).type(), "Standard SObject type token mismatch");
     SystemAssert.assertEquals("Opportunity", ((ApexSObject) opportunityObject).type(), "Built-in SObject type token mismatch");
+    SystemAssert.assertTrue(
+        ApexStrings.equalsIgnoreCase(resolvedFromCustomId.getDescribe().getName(), "DataImportBatch__c"),
+        "Custom object id prefix should resolve back to its SObject type");
 
     Boolean caughtAsBaseException = false;
     try {
