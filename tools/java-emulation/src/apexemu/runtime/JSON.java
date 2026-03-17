@@ -3,6 +3,8 @@ package apexemu.runtime;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -560,9 +562,7 @@ public final class JSON {
 
   private static Object mapToObject(Map<String, Object> values, Class<?> clazz) {
     try {
-      Constructor<?> constructor = clazz.getDeclaredConstructor();
-      constructor.setAccessible(true);
-      Object instance = constructor.newInstance();
+      Object instance = instantiateObject(clazz);
 
       for (Map.Entry<String, Object> entry : values.entrySet()) {
         String fieldName = entry.getKey();
@@ -574,7 +574,7 @@ public final class JSON {
           continue;
         }
         field.setAccessible(true);
-        Object converted = convertForField(entry.getValue(), field.getType());
+        Object converted = convertForField(entry.getValue(), field.getType(), field.getGenericType());
         field.set(instance, converted);
       }
       return instance;
@@ -583,6 +583,59 @@ public final class JSON {
           "unable to materialize " + clazz.getSimpleName() + " from JSON object",
           error);
     }
+  }
+
+  private static Object instantiateObject(Class<?> clazz) throws ReflectiveOperationException {
+    Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+    if (constructors == null || constructors.length == 0) {
+      throw new NoSuchMethodException("no constructor for " + clazz.getName());
+    }
+    java.util.Arrays.sort(constructors, java.util.Comparator.comparingInt(Constructor::getParameterCount));
+    for (Constructor<?> constructor : constructors) {
+      constructor.setAccessible(true);
+      Class<?>[] parameterTypes = constructor.getParameterTypes();
+      Object[] args = new Object[parameterTypes.length];
+      for (int i = 0; i < parameterTypes.length; i += 1) {
+        args[i] = defaultValueFor(parameterTypes[i]);
+      }
+      try {
+        return constructor.newInstance(args);
+      } catch (ReflectiveOperationException ignored) {
+        // try next constructor shape
+      }
+    }
+    throw new NoSuchMethodException("unable to instantiate " + clazz.getName());
+  }
+
+  private static Object defaultValueFor(Class<?> parameterType) {
+    if (parameterType == null || !parameterType.isPrimitive()) {
+      return null;
+    }
+    if (parameterType == boolean.class) {
+      return Boolean.FALSE;
+    }
+    if (parameterType == char.class) {
+      return Character.valueOf('\0');
+    }
+    if (parameterType == byte.class) {
+      return Byte.valueOf((byte) 0);
+    }
+    if (parameterType == short.class) {
+      return Short.valueOf((short) 0);
+    }
+    if (parameterType == int.class) {
+      return Integer.valueOf(0);
+    }
+    if (parameterType == long.class) {
+      return Long.valueOf(0L);
+    }
+    if (parameterType == float.class) {
+      return Float.valueOf(0F);
+    }
+    if (parameterType == double.class) {
+      return Double.valueOf(0D);
+    }
+    return null;
   }
 
   private static Field findField(Class<?> clazz, String fieldName) {
@@ -599,10 +652,25 @@ public final class JSON {
   }
 
   private static Object convertForField(Object raw, Class<?> targetType) {
+    return convertForField(raw, targetType, targetType);
+  }
+
+  private static Object convertForField(Object raw, Class<?> targetType, Type genericType) {
     if (raw == null) {
       return null;
     }
-    if (targetType == null || targetType == Object.class || targetType.isInstance(raw)) {
+    if (targetType == null || targetType == Object.class) {
+      return raw;
+    }
+    if (List.class.isAssignableFrom(targetType) && raw instanceof List<?> list) {
+      Class<?> elementType = resolveListElementClass(genericType);
+      List<Object> out = new ArrayList<>(list.size());
+      for (Object value : list) {
+        out.add(convertForField(value, elementType, elementType));
+      }
+      return out;
+    }
+    if (targetType.isInstance(raw)) {
       return raw;
     }
     Object scalar = convertScalar(raw, targetType);
@@ -616,6 +684,30 @@ public final class JSON {
       return mapToObject(castMap(map), targetType);
     }
     return raw;
+  }
+
+  private static Class<?> resolveListElementClass(Type genericType) {
+    if (!(genericType instanceof ParameterizedType parameterizedType)) {
+      return Object.class;
+    }
+    Type[] typeArgs = parameterizedType.getActualTypeArguments();
+    if (typeArgs.length == 0) {
+      return Object.class;
+    }
+    return rawClassOfType(typeArgs[0]);
+  }
+
+  private static Class<?> rawClassOfType(Type type) {
+    if (type instanceof Class<?> clazz) {
+      return clazz;
+    }
+    if (type instanceof ParameterizedType parameterizedType) {
+      Type raw = parameterizedType.getRawType();
+      if (raw instanceof Class<?> rawClass) {
+        return rawClass;
+      }
+    }
+    return Object.class;
   }
 
   private static Object convertScalar(Object raw, Class<?> targetType) {

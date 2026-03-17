@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Pattern;
 
 public final class Runner {
   public static void main(String[] args) throws Exception {
@@ -35,7 +36,12 @@ public final class Runner {
   }
 
   private static int run(Config config) throws Exception {
-    List<String> classNames = discoverClassNames(config.classesDir);
+    List<String> allClassNames = discoverClassNames(config.classesDir);
+    List<String> classNames = allClassNames;
+    if (config.classNamePattern != null && !config.classNamePattern.isBlank()) {
+      Pattern classPattern = Pattern.compile(config.classNamePattern);
+      classNames = classNames.stream().filter(name -> classPattern.matcher(name).find()).toList();
+    }
     URLClassLoader loader = new URLClassLoader(new URL[] {toUrl(config.classesDir)});
     List<TestResult> results = new ArrayList<>();
 
@@ -66,7 +72,7 @@ public final class Runner {
         results.add(
             runTest(
                 config,
-                classNames,
+                allClassNames,
                 className,
                 testSetupMethods,
                 methodSpec.name,
@@ -637,6 +643,7 @@ public final class Runner {
     final long heapLimitBytes;
     final Database.NullOrderDefault soqlNullOrderDefault;
     final boolean registerStandardSchema;
+    final String classNamePattern;
 
     Config(
         Path classesDir,
@@ -644,13 +651,15 @@ public final class Runner {
         long cpuLimitMs,
         long heapLimitBytes,
         Database.NullOrderDefault soqlNullOrderDefault,
-        boolean registerStandardSchema) {
+        boolean registerStandardSchema,
+        String classNamePattern) {
       this.classesDir = classesDir;
       this.outPath = outPath;
       this.cpuLimitMs = cpuLimitMs;
       this.heapLimitBytes = heapLimitBytes;
       this.soqlNullOrderDefault = soqlNullOrderDefault;
       this.registerStandardSchema = registerStandardSchema;
+      this.classNamePattern = classNamePattern;
     }
 
     static Config parse(String[] args) {
@@ -661,6 +670,7 @@ public final class Runner {
       Database.NullOrderDefault soqlNullOrderDefault =
           parseNullOrderDefault(System.getenv("SOQL_NULL_ORDER_DEFAULT"));
       boolean registerStandardSchema = "true".equalsIgnoreCase(System.getenv("REGISTER_STANDARD_SCHEMA"));
+      String classNamePattern = null;
 
       int i = 0;
       while (i < args.length) {
@@ -694,6 +704,11 @@ public final class Runner {
           case "--register-standard-schema":
             registerStandardSchema = true;
             break;
+          case "--class-name-pattern":
+            i += 1;
+            requireValue(i, args, "--class-name-pattern");
+            classNamePattern = args[i];
+            break;
           case "-h":
           case "--help":
             printHelpAndExit(0);
@@ -709,7 +724,14 @@ public final class Runner {
         System.err.println("missing --classes-dir");
         printHelpAndExit(2);
       }
-      return new Config(classesDir, outPath, cpuLimitMs, heapLimitBytes, soqlNullOrderDefault, registerStandardSchema);
+      return new Config(
+          classesDir,
+          outPath,
+          cpuLimitMs,
+          heapLimitBytes,
+          soqlNullOrderDefault,
+          registerStandardSchema,
+          classNamePattern);
     }
 
     private static void requireValue(int idx, String[] args, String option) {
@@ -721,7 +743,7 @@ public final class Runner {
 
     private static void printHelpAndExit(int code) {
       System.out.println(
-          "Runner options: --classes-dir DIR [--out FILE] [--cpu-limit-ms N] [--heap-limit-bytes N] [--soql-null-order-default FIRST|LAST|DIRECTIONAL]");
+          "Runner options: --classes-dir DIR [--out FILE] [--cpu-limit-ms N] [--heap-limit-bytes N] [--soql-null-order-default FIRST|LAST|DIRECTIONAL] [--class-name-pattern REGEX]");
       System.exit(code);
     }
 

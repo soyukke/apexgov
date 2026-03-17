@@ -12,6 +12,7 @@ import apexemu.runtime.DateTime;
 import apexemu.runtime.HttpResponse;
 import apexemu.runtime.ApexInterfaceAdapter;
 import apexemu.runtime.Metadata;
+import apexemu.runtime.JSON;
 import apexemu.runtime.Schema;
 import apexemu.runtime.System;
 import apexemu.runtime.SystemAssert;
@@ -121,6 +122,27 @@ public final class RuntimeCompatibilityTest {
       caughtAsBaseException = true;
     }
     SystemAssert.assertEquals(true, caughtAsBaseException, "TypeException should be catchable via System.Exception");
+  }
+
+  @Test
+  public void jsonDeserializeMaterializesNestedListElementTypes() {
+    String payload = "{\"errors\":[{\"message\":\"first\"},{\"message\":\"second\"}]}";
+    ErrorEnvelope envelope = JSON.deserialize(payload, ErrorEnvelope.class);
+
+    SystemAssert.assertNotEquals(null, envelope, "deserialized envelope should not be null");
+    SystemAssert.assertEquals(2, envelope.errors.size(), "nested list should keep all elements");
+    SystemAssert.assertEquals(
+        "first", envelope.errors.get(0).message, "first nested element should deserialize into typed object");
+    SystemAssert.assertEquals(
+        "second", envelope.errors.get(1).message, "second nested element should deserialize into typed object");
+  }
+
+  private static final class ErrorEnvelope {
+    public java.util.List<ErrorItem> errors = new java.util.ArrayList<>();
+  }
+
+  private static final class ErrorItem {
+    public String message;
   }
 
   @Test

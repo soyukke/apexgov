@@ -1035,6 +1035,11 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
                 if (std.mem.indexOfScalar(u8, logical_trimmed, '{') == null) {
                     in_type_declaration_header = true;
                 }
+                // Class-level annotations (e.g. @isTest) should not leak into
+                // the first method as a method-level annotation.
+                pending_test_annotation = false;
+                pending_test_setup_annotation = false;
+                pending_test_see_all_data = false;
                 continue;
             }
 
@@ -7813,6 +7818,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{ .from = ":giftBatchId.value()", .to = ":giftBatchIdValue" },
         .{ .from = "\"giftBatchId.value\", giftBatchId.value", .to = "\"giftBatchIdValue\", giftBatchId.value()" },
+        .{ .from = "implements apexemu.runtime.System.Callable", .to = "implements apexemu.runtime.Callable" },
         .{ .from = "this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\"));", .to = "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));"},
         .{ .from = "return this.batch.getAs(\"Latest_Apex_Job_Id__c\");", .to = "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");"},
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
@@ -28634,6 +28640,31 @@ test "parseApexClass captures @testSetup methods separately from @isTest methods
     try std.testing.expect(parsed.methods.items[1].is_test);
 }
 
+test "parseApexClass does not mark helper methods as tests from class-level @isTest" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\@isTest
+        \\private class HelperDemo {
+        \\  private static void setData(String v) {
+        \\    System.debug(v);
+        \\  }
+        \\
+        \\  static void testHappyPath() {
+        \\    setData('ok');
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "HelperDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("setData", parsed.methods.items[0].name);
+    try std.testing.expect(!parsed.methods.items[0].is_test);
+    try std.testing.expectEqualStrings("testHappyPath", parsed.methods.items[1].name);
+    try std.testing.expect(parsed.methods.items[1].is_test);
+}
+
 test "parseApexClass captures seeAllData on class and method @isTest annotations" {
     const gpa = std.testing.allocator;
     const source =
@@ -32264,6 +32295,20 @@ test "rewriteKnownCompatibilityFixups guards GiftBatch and lead affiliation inde
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "primaryAffiliationId = (listSOAfflAccounts != null && listSOAfflAccounts.size() > 1 ? listSOAfflAccounts.get(1).getValue() : (listSOAfflAccounts != null && !listSOAfflAccounts.isEmpty() ? listSOAfflAccounts.get(0).getValue() : null));") != null);
+}
+
+test "rewriteKnownCompatibilityFixups maps System.Callable implementations to runtime Callable alias" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Callable_API implements apexemu.runtime.System.Callable {
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "implements apexemu.runtime.Callable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "implements apexemu.runtime.System.Callable") == null);
 }
 
 test "rewriteKnownCompatibilityFixups normalizes null collection fronts for field sets and soft credits" {

@@ -29,6 +29,12 @@ zig build run -- emulate test --nix
   --tests-dir reports/apex-transpile-external/my-repo \
   --out-dir reports/java-emulation-local \
   --best-effort
+
+# クラス名を絞って実行（正規表現）
+./tools/java-emulation/run-tests.sh \
+  --tests-dir reports/apex-transpile-external/my-repo \
+  --out-dir reports/java-emulation-local \
+  --class-name-pattern 'generated\\.(UTIL_Http_TEST|PS_GatewayService_TEST)'
 ```
 
 上限は環境変数で変更できます。

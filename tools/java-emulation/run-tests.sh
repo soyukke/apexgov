@@ -28,18 +28,20 @@ fi
 
 usage() {
   cat <<'USAGE'
-usage: run-tests.sh [--tests-dir DIR] [--out-dir DIR] [--best-effort]
+usage: run-tests.sh [--tests-dir DIR] [--out-dir DIR] [--best-effort] [--class-name-pattern REGEX]
 
 options:
   --tests-dir DIR   Java test source directory (default: tools/java-emulation/examples)
   --out-dir DIR     Output directory (default: reports/java-emulation)
   --best-effort     Compile incrementally and fallback unresolved sources to placeholders
+  --class-name-pattern REGEX  run only classes whose fully qualified name matches REGEX
 env:
   SOQL_NULL_ORDER_DEFAULT=FIRST|LAST|DIRECTIONAL (default: FIRST)
 USAGE
 }
 
 best_effort=false
+class_name_pattern=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,6 +64,14 @@ while [[ $# -gt 0 ]]; do
     --best-effort)
       best_effort=true
       shift
+      ;;
+    --class-name-pattern)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for --class-name-pattern" >&2
+        exit 2
+      fi
+      class_name_pattern="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -301,12 +311,18 @@ if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
 fi
 
 set +e
-java -cp "$out_dir/build" apexemu.runner.Runner \
-  --classes-dir "$out_dir/build" \
-  --out "$out_dir/report.json" \
-  --cpu-limit-ms "$cpu_limit_ms" \
-  --heap-limit-bytes "$heap_limit_bytes" \
+runner_cmd=(
+  java -cp "$out_dir/build" apexemu.runner.Runner
+  --classes-dir "$out_dir/build"
+  --out "$out_dir/report.json"
+  --cpu-limit-ms "$cpu_limit_ms"
+  --heap-limit-bytes "$heap_limit_bytes"
   --soql-null-order-default "$soql_null_order_default"
+)
+if [[ -n "$class_name_pattern" ]]; then
+  runner_cmd+=(--class-name-pattern "$class_name_pattern")
+fi
+"${runner_cmd[@]}"
 runner_exit=$?
 set -e
 
