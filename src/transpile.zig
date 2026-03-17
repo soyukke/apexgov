@@ -12052,6 +12052,15 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "private Integer nextDonationDateMatchDays; // Apex property { get; set; }", .to = "private Integer nextDonationDateMatchDays = 3; // Apex property { get; set; }" },
         .{ .from = "public static Boolean isAccountNameSortable; // Apex property { get; set; }", .to = "public static Boolean isAccountNameSortable = false; // Apex property { get; set; }" },
         .{ .from = "static public STG_SettingsService stgService; // Apex property { get; set; }", .to = "static public STG_SettingsService stgService = STG_SettingsService.stgService; // Apex property { get; set; }" },
+        .{
+            .from = "private static RD2_Settings settings; // Apex property { get; set; }\n  public static UTIL_Permissions permissions; // Apex property { get; set; }\n  public static String hhRecordTypeId; // Apex property { get; set; }",
+            .to = "private static RD2_Settings settings = RD2_Settings.getInstance(); // Apex property { get; set; }\n  public static UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }\n  public static String hhRecordTypeId = ApexStrings.valueOf(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__HH_Account_RecordTypeID__c\")); // Apex property { get; set; }",
+        },
+        .{
+            .from = "public UTIL_Permissions permissions; // Apex property { get; set; }\n  public UTIL_Describe describeUtil; // Apex property { get; set; }",
+            .to = "public UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }\n  public UTIL_Describe describeUtil = UTIL_Describe.getInstance(); // Apex property { get; set; }",
+        },
+        .{ .from = "public static Integer maxCancelRetries; // Apex property { get; set; }", .to = "public static Integer maxCancelRetries = 3; // Apex property { get; set; }" },
         .{ .from = "public static OrgConfig orgConfig; // Apex property { get; set; }", .to = "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }" },
         .{ .from = "public OrgConfig orgConfig; // Apex property { get; set; }", .to = "public OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }" },
         .{ .from = "public ContactSelector contactSelector; // Apex property { get; set; }", .to = "public ContactSelector contactSelector = new ContactSelector(); // Apex property { get; set; }" },
@@ -12104,6 +12113,22 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "List<String> fields = err.getFields();", .to = "List<String> fields = new ArrayList<>(java.util.Arrays.asList(err.getFields()));" },
         .{ .from = "fiscalYearInfo = new UTIL_FiscalYearInfo(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId())));", .to = "fiscalYearInfo = new UTIL_FiscalYearInfo(ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId()))));" },
         .{ .from = "oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);", .to = "if (oppService == null) { oppService = new RD2_OpportunityService(currentDate, dbService, customFieldMapper); }\n    oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);" },
+        .{
+            .from = "Boolean isContactDonor = ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\") == hhRecordTypeId || (rd.getAs(\"npe03__Organization__c\") == null && ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\") == hhRecordTypeId);",
+            .to = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));",
+        },
+        .{
+            .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe03__Recurring_Donation__c\")) .withSelectFields(queryFields) .withWhere(\"Id = :recurringDonationId\") .withLimit(1) .build();\n    List<ApexSObject> results = Database.query(soql);\n    return results.get(0);",
+            .to = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe03__Recurring_Donation__c\")) .withSelectFields(queryFields) .withWhere(\"Id = :recurringDonationId\") .withLimit(1) .build();\n    List<ApexSObject> results = Database.queryWithBinds(soql, ApexCollections.bindMap(\"recurringDonationId\", recurringDonationId));\n    return ApexCollections.firstOrNull(results);",
+        },
+        .{
+            .from = "for (String fieldApiName : customFieldValues.keySet()) {\n    if (!permissions.canCreateInstanced( rdSObjectDescribe.getName(), fieldApiName, false)) {\n    customFieldValues.remove(fieldApiName);\n    }\n    }",
+            .to = "for (String fieldApiName : new ArrayList<String>(customFieldValues.keySet())) {\n    if (!permissions.canCreateInstanced( rdSObjectDescribe.getName(), fieldApiName, false)) {\n    customFieldValues.remove(fieldApiName);\n    }\n    }",
+        },
+        .{
+            .from = "((ApexSObject) ((java.util.List<ApexSObject>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(0)).get(\"Createable\")",
+            .to = "((Map<String, Object>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\")",
+        },
         .{ .from = "return (ApexSObject)Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
         .{ .from = "return (ApexSObject) Database.query(soql);", .to = "return ApexCollections.firstOrNull(Database.query(soql));" },
         .{ .from = "ApexSObject rd = (ApexSObject) Database.query(soql);", .to = "ApexSObject rd = ApexCollections.firstOrNull(Database.query(soql));" },
@@ -32336,6 +32361,75 @@ test "rewriteKnownCompatibilityFixups normalizes null collection fronts for fiel
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return new ArrayList<>();") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (moreOpportunityContactRoles != null)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "allOpportunityContactRoles.addAll(moreOpportunityContactRoles);") != null);
+}
+
+test "rewriteKnownCompatibilityFixups initializes RD2 lazy property fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class RD2_EntryFormController {
+        \\  private static RD2_Settings settings; // Apex property { get; set; }
+        \\  public static UTIL_Permissions permissions; // Apex property { get; set; }
+        \\  public static String hhRecordTypeId; // Apex property { get; set; }
+        \\}
+        \\public class RD2_SaveRequest {
+        \\  public UTIL_Permissions permissions; // Apex property { get; set; }
+        \\  public UTIL_Describe describeUtil; // Apex property { get; set; }
+        \\}
+        \\public class RD2_CancelCommitmentService {
+        \\  public static Integer maxCancelRetries; // Apex property { get; set; }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "private static RD2_Settings settings = RD2_Settings.getInstance(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static String hhRecordTypeId = ApexStrings.valueOf(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__HH_Account_RecordTypeID__c\")); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Describe describeUtil = UTIL_Describe.getInstance(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static Integer maxCancelRetries = 3; // Apex property { get; set; }") != null);
+}
+
+test "rewriteKnownCompatibilityFixups rewrites RD2 query binds and map mutation fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class RD2_QueryService {
+        \\  public ApexSObject getRecurringDonationForUI(String recurringDonationId) {
+        \\    String soql = new UTIL_Query() .withFrom(new Schema.SObjectType("npe03__Recurring_Donation__c")) .withSelectFields(queryFields) .withWhere("Id = :recurringDonationId") .withLimit(1) .build();
+        \\    List<ApexSObject> results = Database.query(soql);
+        \\    return results.get(0);
+        \\  }
+        \\  public Boolean isContactDonor(ApexSObject rd) {
+        \\    Boolean isContactDonor = ApexSwitch.getAs(rd.getAs("npe03__Organization__r"), "RecordTypeId") == hhRecordTypeId || (rd.getAs("npe03__Organization__c") == null && ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs("npe03__Contact__r"), "Account"), "RecordTypeId") == hhRecordTypeId);
+        \\    return isContactDonor;
+        \\  }
+        \\}
+        \\public class RD2_SaveRequest {
+        \\  public RD2_SaveRequest removeNonCreateableCustomFields() {
+        \\    for (String fieldApiName : customFieldValues.keySet()) {
+        \\    if (!permissions.canCreateInstanced( rdSObjectDescribe.getName(), fieldApiName, false)) {
+        \\    customFieldValues.remove(fieldApiName);
+        \\    }
+        \\    }
+        \\    return this;
+        \\  }
+        \\}
+        \\public class RD2_EntryFormController_TEST {
+        \\  public static void shouldReturnSettings(RD2_AppView initialView) {
+        \\    SystemAssert.assertEquals(true, ((ApexSObject) ((java.util.List<ApexSObject>) initialView.getAs("InstallmentPeriodPermissions")).get(0)).get("Createable"), "Installment_Period__c.IsCreatable should return true");
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> results = Database.queryWithBinds(soql, ApexCollections.bindMap(\"recurringDonationId\", recurringDonationId));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexCollections.firstOrNull(results);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "for (String fieldApiName : new ArrayList<String>(customFieldValues.keySet())) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Map<String, Object>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\")") != null);
 }
 
 test "rewriteBareCustomSettingsSingletonAccess rewrites custom getAll calls" {

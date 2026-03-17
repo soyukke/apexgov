@@ -7,6 +7,7 @@ import apexemu.runtime.ApexPages;
 import apexemu.runtime.ApexSwitch;
 import apexemu.runtime.ApexStrings;
 import apexemu.runtime.ApexCollections;
+import apexemu.runtime.Database;
 import apexemu.runtime.Date;
 import apexemu.runtime.DateTime;
 import apexemu.runtime.HttpResponse;
@@ -53,6 +54,7 @@ public final class RuntimeCompatibilityTest {
     SystemAssert.assertEquals(today.year(), today.Year(), "Date Year alias mismatch");
     SystemAssert.assertEquals(today.month(), today.Month(), "Date Month alias mismatch");
     SystemAssert.assertEquals(today.day(), today.Day(), "Date Day alias mismatch");
+    SystemAssert.assertEquals(today, Date.valueOf(today.toString()), "Date value equality mismatch");
     SystemAssert.assertTrue(today.isSameDay(Date.valueOf(today.toString())), "Date isSameDay alias mismatch");
     SystemAssert.assertEquals("2024-03-04T05:06:07Z", String.valueOf(parsedDateTime), "DateTime valueOfGMT alias mismatch");
     SystemAssert.assertEquals("2024", parsedDateTime.formatGmt("yyyy"), "DateTime formatGmt alias mismatch");
@@ -143,6 +145,26 @@ public final class RuntimeCompatibilityTest {
 
   private static final class ErrorItem {
     public String message;
+  }
+
+  @Test
+  public void systemSchedulePersistsCronJobDetailAndForNameSkipsUnknownTypes() {
+    String jobName = "runtime.schedule.compat";
+    String cron = "0 0 5 1 1 ? 2027";
+    String jobId = System.schedule(jobName, cron, () -> {});
+    ApexSObject cronTrigger =
+        ApexCollections.firstOrThrow(
+            Database.queryWithBinds(
+                "SELECT Id, CronExpression, CronJobDetail.Name FROM CronTrigger WHERE Id = :jobId",
+                ApexCollections.bindMap("jobId", jobId)));
+
+    SystemAssert.assertEquals(cron, cronTrigger.getAs("CronExpression"), "Cron expression should round-trip");
+    SystemAssert.assertEquals(
+        jobName,
+        ApexSwitch.getAs(cronTrigger.getAs("CronJobDetail"), "Name"),
+        "Scheduled job name should be available on CronJobDetail");
+    SystemAssert.assertEquals(null, System.Type.forName("DOES_NOT_EXIST"), "Unknown class token should return null");
+    SystemAssert.assertNotEquals(null, System.Type.forName("List"), "List type token should still resolve");
   }
 
   @Test

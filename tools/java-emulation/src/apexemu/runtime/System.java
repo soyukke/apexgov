@@ -802,23 +802,23 @@ public final class System {
       if (isKnownSObjectTypeToken(candidate)) {
         return new Type(candidate);
       }
+      if (isListType(candidate) || isSetType(candidate) || isMapType(candidate)) {
+        return new Type(candidate);
+      }
       Class<?> resolved = resolveClass(candidate);
       if (resolved != null) {
         return new Type(resolved.getName());
-      }
-      if (isLikelyApexTypeToken(candidate)) {
-        return new Type(candidate);
       }
       String apexStyle = normalizeApexSimpleTypeName(candidate);
       if (isKnownSObjectTypeToken(apexStyle)) {
         return new Type(apexStyle);
       }
+      if (isListType(apexStyle) || isSetType(apexStyle) || isMapType(apexStyle)) {
+        return new Type(apexStyle);
+      }
       resolved = resolveClass(apexStyle);
       if (resolved != null) {
         return new Type(resolved.getName());
-      }
-      if (isLikelyApexTypeToken(apexStyle)) {
-        return new Type(apexStyle);
       }
       return null;
     }
@@ -1261,6 +1261,7 @@ public final class System {
               .withId(jobId)
               .set("CronExpression", cronExpr)
               .set("TimesTriggered", 0)
+              .set("CronJobDetail", ApexSObject.of("CronJobDetail").set("Name", name))
               .set("NextFireTime", inferCronNextFireTime(cronExpr));
       Database.insert(cronTrigger);
     } catch (RuntimeException ignored) {

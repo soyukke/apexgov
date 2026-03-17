@@ -158,4 +158,20 @@ public final class Date implements Comparable<Date> {
   public String toString() {
     return value.toString();
   }
+
+  @Override
+  public boolean equals(Object other) {
+    if (this == other) {
+      return true;
+    }
+    if (!(other instanceof Date that)) {
+      return false;
+    }
+    return value.equals(that.value);
+  }
+
+  @Override
+  public int hashCode() {
+    return value.hashCode();
+  }
 }
