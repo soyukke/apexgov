@@ -7813,6 +7813,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{ .from = ":giftBatchId.value()", .to = ":giftBatchIdValue" },
         .{ .from = "\"giftBatchId.value\", giftBatchId.value", .to = "\"giftBatchIdValue\", giftBatchId.value()" },
+        .{ .from = "this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\"));", .to = "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));"},
+        .{ .from = "return this.batch.getAs(\"Latest_Apex_Job_Id__c\");", .to = "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");"},
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
@@ -7850,6 +7852,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
             .from = "public Boolean multiCurrencyEnabled; // Apex property { get; set; }",
             .to = "public Boolean multiCurrencyEnabled = UserInfo.isMultiCurrencyOrganization(); // Apex property { get; set; }",
         },
+        .{ .from = "primaryAffiliationId = listSOAfflAccounts.get(1).getValue();", .to = "primaryAffiliationId = (listSOAfflAccounts != null && listSOAfflAccounts.size() > 1 ? listSOAfflAccounts.get(1).getValue() : (listSOAfflAccounts != null && !listSOAfflAccounts.isEmpty() ? listSOAfflAccounts.get(0).getValue() : null));" },
         .{ .from = " implements IA, IB, IC", .to = "" },
         .{ .from = " implements fflib_Inheritor.IA, fflib_Inheritor.IB, fflib_Inheritor.IC", .to = "" },
         .{ .from = "List<AppMenuItem>", .to = "List<ApexSObject>" },
@@ -32238,6 +32241,29 @@ test "rewriteKnownCompatibilityFixups guards URL path extraction against null in
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "internalUrl = (url == null ? null : java.net.URI.create(url).getPath());") != null);
+}
+
+test "rewriteKnownCompatibilityFixups guards GiftBatch and lead affiliation index fronts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public void run(GiftBatchId giftBatchId) {
+        \\    this.batch = selectGiftBatchBy(giftBatchId);
+        \\    this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs("Latest_Apex_Job_Id__c"));
+        \\    return this.batch.getAs("Latest_Apex_Job_Id__c");
+        \\  }
+        \\  public void other() {
+        \\    primaryAffiliationId = listSOAfflAccounts.get(1).getValue();
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "primaryAffiliationId = (listSOAfflAccounts != null && listSOAfflAccounts.size() > 1 ? listSOAfflAccounts.get(1).getValue() : (listSOAfflAccounts != null && !listSOAfflAccounts.isEmpty() ? listSOAfflAccounts.get(0).getValue() : null));") != null);
 }
 
 test "rewriteKnownCompatibilityFixups normalizes null collection fronts for field sets and soft credits" {
