@@ -129,6 +129,25 @@ public final class ApexCollections {
     return list;
   }
 
+  /** Apex `new Type[n]` semantics: fixed-size list initialized with `n` null slots. */
+  public static <T> List<T> newListWithSize(Object sizeValue) {
+    if (sizeValue == null) {
+      return new ArrayList<>();
+    }
+    Integer parsed = sizeValue instanceof Integer i ? i : ApexStrings.toInteger(sizeValue);
+    int size = parsed == null ? 0 : Math.max(0, parsed);
+    List<T> list = new ArrayList<>(size);
+    for (int i = 0; i < size; i++) {
+      list.add(null);
+    }
+    return list;
+  }
+
+  /** Backward compatibility for case-normalized transpiler output. */
+  public static <T> List<T> newlistWithSize(Object sizeValue) {
+    return newListWithSize(sizeValue);
+  }
+
   public static <K, V> Map.Entry<K, V> mapEntry(K key, V value) {
     return new AbstractMap.SimpleImmutableEntry<>(key, value);
   }

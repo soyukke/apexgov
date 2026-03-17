@@ -7469,6 +7469,7 @@ fn rewriteCommonJavaMethodCase(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
         .{ .from = "Long.valueof(", .to = "Long.valueOf(" },
         .{ .from = "Double.valueof(", .to = "Double.valueOf(" },
         .{ .from = "String.valueof(", .to = "ApexStrings.valueOf(" },
+        .{ .from = "ApexCollections.newlistWithSize(", .to = "ApexCollections.newListWithSize(" },
         .{ .from = "getSobjectType(", .to = "getSObjectType(" },
         .{ .from = "getSobjectField(", .to = "getSObjectField(" },
         .{ .from = ".getSobjectType(", .to = ".getSObjectType(" },
@@ -7608,6 +7609,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = ".GetRecordTypeIdSet(", .to = ".getRecordTypeIdSet(" },
         .{ .from = ".canDisplaytypesCopy(", .to = ".canDisplayTypesCopy(" },
         .{ .from = ".containskey(", .to = ".containsKey(" },
+        .{ .from = "newlistWithSize(", .to = "newListWithSize(" },
         .{ .from = "Database.DMLOptions", .to = "Database.DmlOptions" },
         .{ .from = "Database.UnDeleteResult", .to = "Database.UndeleteResult" },
         .{ .from = "List<PicklistEntry>", .to = "List<Schema.PicklistEntry>" },
@@ -7832,8 +7834,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = ".si size", .to = ".size()" },
         .{ .from = ".getsObject(", .to = ".getSObject(" },
         .{ .from = "List<String> names = new String.get(0);", .to = "List<String> names = new ArrayList<>();" },
-        .{ .from = "new String.get(", .to = "new ArrayList<String>(" },
-        .{ .from = "new Id.get(", .to = "new ArrayList<String>(" },
+        .{ .from = "new String.get(", .to = "ApexCollections.newListWithSize(" },
+        .{ .from = "new Id.get(", .to = "ApexCollections.newListWithSize(" },
         .{ .from = "ApexSObject.of(\"CampaignMember\").", .to = "((CampaignMember) ApexSObject.of(\"CampaignMember\"))." },
         .{ .from = "ApexSObject.of(\"CampaignMemberStatus\").", .to = "((CampaignMemberStatus) ApexSObject.of(\"CampaignMemberStatus\"))." },
         .{ .from = "listFName", .to = "listFname" },
@@ -25348,7 +25350,13 @@ fn convertBracketIndexAccessPass(gpa: std.mem.Allocator, text: []const u8) anyer
         if (base_start < last_emit) continue;
 
         try out.appendSlice(gpa, text[last_emit..base_start]);
-        try appendFmt(gpa, &out, "{s}.get({s})", .{ base_expr, index_expr });
+        if (looksLikeApexSizedArrayConstructorBase(base_expr)) {
+            // Apex `new Id[n]` (and peers) creates a fixed-length list with `n` null slots.
+            // Use a runtime helper so subsequent `.set(i, value)` matches Apex behavior.
+            try appendFmt(gpa, &out, "ApexCollections.newListWithSize({s})", .{index_expr});
+        } else {
+            try appendFmt(gpa, &out, "{s}.get({s})", .{ base_expr, index_expr });
+        }
         replaced = true;
         i = close;
         last_emit = close + 1;
@@ -25370,6 +25378,21 @@ fn convertBracketIndexAccess(gpa: std.mem.Allocator, text: []const u8) anyerror!
         current = next;
     }
     return current;
+}
+
+fn looksLikeApexSizedArrayConstructorBase(base_expr_raw: []const u8) bool {
+    var expr = std.mem.trim(u8, base_expr_raw, " \t");
+    if (!startsWithWordIgnoreCase(expr, "new")) return false;
+
+    expr = std.mem.trimLeft(u8, expr["new".len..], " \t");
+    if (expr.len == 0) return false;
+    if (std.mem.indexOfAny(u8, expr, "([{") != null) return false;
+
+    // Allow qualified Apex type names, e.g. `Namespace.Type`.
+    for (expr) |ch| {
+        if (!(isIdentifierChar(ch) or ch == '.')) return false;
+    }
+    return true;
 }
 
 fn findIndexAccessBaseStart(text: []const u8, bracket_pos: usize) ?usize {
@@ -30268,6 +30291,17 @@ test "transpileGenericStatementLine converts declarations assignments and calls"
         multi_decl.?,
     );
 
+    const sized_array_decl = try transpileGenericStatementLine(
+        gpa,
+        "List<Id> fixedSearchResults = new Id[contactSize];",
+    );
+    defer if (sized_array_decl) |value| gpa.free(value);
+    try std.testing.expect(sized_array_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<String> fixedSearchResults = ApexCollections.newListWithSize(contactSize);",
+        sized_array_decl.?,
+    );
+
     const member_price_assign =
         try transpileGenericStatementLine(gpa, "filters.maxPrice = 2000;");
     defer if (member_price_assign) |value| gpa.free(value);
@@ -30401,6 +30435,13 @@ test "convertApexExpressionToJava converts collection literals and sobject const
     try std.testing.expectEqualStrings(
         "\"Couldn't update account with ID \" + accountId",
         escaped_apex_string,
+    );
+
+    const sized_array_expr = try convertApexExpressionToJava(gpa, "new Id[contactSize]");
+    defer gpa.free(sized_array_expr);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.newListWithSize(contactSize)",
+        sized_array_expr,
     );
 }
 

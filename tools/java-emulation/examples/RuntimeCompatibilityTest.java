@@ -6,6 +6,7 @@ import apexemu.runtime.CampaignMember;
 import apexemu.runtime.ApexPages;
 import apexemu.runtime.ApexSwitch;
 import apexemu.runtime.ApexStrings;
+import apexemu.runtime.ApexCollections;
 import apexemu.runtime.Date;
 import apexemu.runtime.DateTime;
 import apexemu.runtime.HttpResponse;
@@ -120,5 +121,21 @@ public final class RuntimeCompatibilityTest {
       caughtAsBaseException = true;
     }
     SystemAssert.assertEquals(true, caughtAsBaseException, "TypeException should be catchable via System.Exception");
+  }
+
+  @Test
+  public void apexCollectionsSizedListSupportsIndexedAssignment() {
+    java.util.List<String> ids = ApexCollections.newListWithSize(2);
+    ids.set(0, "003xx0000000001AAA");
+    ids.set(1, "003xx0000000002AAA");
+
+    SystemAssert.assertEquals(2, ids.size(), "Sized list should allocate exact slot count");
+    SystemAssert.assertEquals("003xx0000000001AAA", ids.get(0), "First slot assignment should succeed");
+    SystemAssert.assertEquals("003xx0000000002AAA", ids.get(1), "Second slot assignment should succeed");
+    SystemAssert.assertEquals(0, ApexCollections.newListWithSize(0).size(), "Zero-sized list should be empty");
+    SystemAssert.assertEquals(
+        0, ApexCollections.newListWithSize((Object) null).size(), "Null size should produce empty list");
+    SystemAssert.assertEquals(
+        0, ApexCollections.newListWithSize(-5).size(), "Negative size should clamp to empty list");
   }
 }
