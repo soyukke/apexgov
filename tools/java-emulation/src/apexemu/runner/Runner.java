@@ -168,6 +168,7 @@ public final class Runner {
       registerAllClassesFast(classRegistrations, loader);
       autoRegisterTriggerManifest(config.classesDir, loader);
       registerTriggerHandlersFast(triggerHandlers, loader);
+      autoRegisterTDTMTriggers(classRegistrations, loader);
       klass = Class.forName(className, true, loader);
       method = klass.getDeclaredMethod(methodName);
       testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
@@ -424,6 +425,115 @@ public final class Runner {
         // ignore unsupported manifest entries
       }
     }
+  }
+
+  /**
+   * Auto-detect NPSP TDTM trigger pattern and register TDTM_Config_API.run() as the trigger
+   * handler for all SObject types that have TDTM trigger classes (named TDTM_<SObjectType>).
+   */
+  private static void autoRegisterTDTMTriggers(List<ClassRegistration> classRegistrations, ClassLoader loader) {
+    // Check if TDTM_Config_API exists with the expected run() method
+    Class<?> configApiClass;
+    java.lang.reflect.Method runMethod;
+    try {
+      configApiClass = Class.forName("generated.TDTM_Config_API", true, loader);
+      runMethod = configApiClass.getMethod("run",
+          Boolean.class, Boolean.class, Boolean.class, Boolean.class,
+          Boolean.class, Boolean.class, List.class, List.class,
+          apexemu.runtime.Schema.DescribeSObjectResult.class);
+    } catch (Exception e) {
+      return; // No TDTM framework — skip
+    }
+
+    // Find all TDTM trigger classes (pattern: TDTM_<SObjectType> or similar)
+    java.util.Set<String> registeredTypes = new java.util.LinkedHashSet<>();
+    for (ClassRegistration reg : classRegistrations) {
+      String simpleName = reg.className.contains(".")
+          ? reg.className.substring(reg.className.lastIndexOf('.') + 1) : reg.className;
+      if (!simpleName.startsWith("TDTM_") || simpleName.contains("_TEST")
+          || simpleName.contains("_TDTM") || simpleName.equals("TDTM_TriggerHandler")
+          || simpleName.equals("TDTM_Config_API") || simpleName.equals("TDTM_DefaultConfig")
+          || simpleName.equals("TDTM_ObjectDataGateway") || simpleName.equals("TDTM_Runnable")
+          || simpleName.equals("TDTM_RunnableMutable") || simpleName.equals("TDTM_Global_API")
+          || simpleName.equals("TDTM_TriggerActionHelper") || simpleName.equals("TDTM_Filter")
+          || simpleName.equals("TDTM_ProcessControl") || simpleName.equals("TDTM_iTableDataGateway")
+          || simpleName.equals("TDTM_Glue")) {
+        continue;
+      }
+      // TDTM_Contact → Contact, TDTM_Account → Account, TDTM_Payment → npe01__OppPayment__c
+      // We need to map the trigger class name to SObject type
+      String triggerSuffix = simpleName.substring("TDTM_".length());
+      registeredTypes.add(triggerSuffix);
+    }
+
+    // Map known trigger class suffixes to SObject API names
+    java.util.Map<String, String> triggerToSObject = new java.util.LinkedHashMap<>();
+    triggerToSObject.put("Account", "Account");
+    triggerToSObject.put("Contact", "Contact");
+    triggerToSObject.put("Opportunity", "Opportunity");
+    triggerToSObject.put("Lead", "Lead");
+    triggerToSObject.put("Campaign", "Campaign");
+    triggerToSObject.put("CampaignMember", "CampaignMember");
+    triggerToSObject.put("Task", "Task");
+    triggerToSObject.put("User", "User");
+    triggerToSObject.put("Payment", "npe01__OppPayment__c");
+    triggerToSObject.put("RecurringDonation", "npe03__Recurring_Donation__c");
+    triggerToSObject.put("Relationship", "npe4__Relationship__c");
+    triggerToSObject.put("Affiliation", "npe5__Affiliation__c");
+    triggerToSObject.put("HouseholdObject", "npo02__Household__c");
+    triggerToSObject.put("Address", "Address__c");
+    triggerToSObject.put("Allocation", "Allocation__c");
+    triggerToSObject.put("DataImport", "DataImport__c");
+    triggerToSObject.put("DataImportBatch", "DataImportBatch__c");
+    triggerToSObject.put("EngagementPlan", "Engagement_Plan__c");
+    triggerToSObject.put("EngagementPlanTask", "Engagement_Plan_Task__c");
+    triggerToSObject.put("FormTemplate", "Form_Template__c");
+    triggerToSObject.put("GeneralAccountingUnit", "General_Accounting_Unit__c");
+    triggerToSObject.put("GrantDeadline", "Grant_Deadline__c");
+    triggerToSObject.put("Level", "Level__c");
+    triggerToSObject.put("OpportunityContactRole", "OpportunityContactRole");
+    triggerToSObject.put("PartialSoftCredit", "Partial_Soft_Credit__c");
+    triggerToSObject.put("AccountSoftCredit", "Account_Soft_Credit__c");
+
+    for (var entry : triggerToSObject.entrySet()) {
+      if (!registeredTypes.contains(entry.getKey())) continue;
+      String sobjectType = entry.getValue();
+      Runnable tdtmHandler = buildTDTMHandler(configApiClass, runMethod, sobjectType);
+      Trigger.onBeforeInsert(sobjectType, tdtmHandler);
+      Trigger.onBeforeUpdate(sobjectType, tdtmHandler);
+      Trigger.onBeforeDelete(sobjectType, tdtmHandler);
+      Trigger.onAfterInsert(sobjectType, tdtmHandler);
+      Trigger.onAfterUpdate(sobjectType, tdtmHandler);
+      Trigger.onAfterDelete(sobjectType, tdtmHandler);
+      Trigger.onAfterUndelete(sobjectType, tdtmHandler);
+    }
+  }
+
+  private static Runnable buildTDTMHandler(Class<?> configApiClass,
+      java.lang.reflect.Method runMethod, String sobjectType) {
+    return () -> {
+      try {
+        Boolean isBefore = Trigger.isBefore();
+        Boolean isAfter = Trigger.isAfter();
+        Boolean isInsert = Trigger.isInsert();
+        Boolean isUpdate = Trigger.isUpdate();
+        Boolean isDelete = Trigger.isDelete();
+        Boolean isUndelete = Trigger.isUndelete();
+        List<?> newList = Trigger.getNew();
+        List<?> oldList = Trigger.getOld();
+        apexemu.runtime.Schema.DescribeSObjectResult describeResult =
+            new apexemu.runtime.Schema.SObjectType(sobjectType).getDescribe();
+        runMethod.invoke(null, isBefore, isAfter, isInsert, isUpdate,
+            isDelete, isUndelete, newList, oldList, describeResult);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException re) throw re;
+        if (cause instanceof Error err) throw err;
+        throw new RuntimeException(cause);
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    };
   }
 
   /** Pre-computed class registration entry: stores all name→className mappings discovered once. */
