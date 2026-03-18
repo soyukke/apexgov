@@ -513,6 +513,21 @@ public final class Runner {
       java.lang.reflect.Method runMethod, String sobjectType) {
     return () -> {
       try {
+        // Resolve TDTM_Config_API.run() through the current thread's context class loader
+        // so it uses the child-first loader for the active test (static fields are per-loader).
+        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+        java.lang.reflect.Method activeRunMethod = runMethod;
+        if (cl != null) {
+          try {
+            Class<?> activeClass = Class.forName("generated.TDTM_Config_API", true, cl);
+            activeRunMethod = activeClass.getMethod("run",
+                Boolean.class, Boolean.class, Boolean.class, Boolean.class,
+                Boolean.class, Boolean.class, List.class, List.class,
+                apexemu.runtime.Schema.DescribeSObjectResult.class);
+          } catch (Exception ignored) {
+            // fall back to the pre-resolved method
+          }
+        }
         Boolean isBefore = Trigger.isBefore();
         Boolean isAfter = Trigger.isAfter();
         Boolean isInsert = Trigger.isInsert();
@@ -523,7 +538,7 @@ public final class Runner {
         List<?> oldList = Trigger.getOld();
         apexemu.runtime.Schema.DescribeSObjectResult describeResult =
             new apexemu.runtime.Schema.SObjectType(sobjectType).getDescribe();
-        runMethod.invoke(null, isBefore, isAfter, isInsert, isUpdate,
+        activeRunMethod.invoke(null, isBefore, isAfter, isInsert, isUpdate,
             isDelete, isUndelete, newList, oldList, describeResult);
       } catch (java.lang.reflect.InvocationTargetException e) {
         Throwable cause = e.getCause();
