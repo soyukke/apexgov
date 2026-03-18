@@ -26027,6 +26027,31 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         return std.fmt.allocPrint(gpa, "{s}return {s};", .{ leading, rewritten });
     }
 
+    // Fallback: rewrite equality operators in for-each, else-if, and assignment statements.
+    // Check for 'else if' or 'for' patterns not caught above.
+    if (startsWithWordIgnoreCase(trimmed, "else") or startsWithWordIgnoreCase(trimmed, "for")) {
+        if (std.mem.indexOfScalar(u8, trimmed, '(')) |open| {
+            if (findMatchingParen(trimmed, open)) |close| {
+                if (close > open + 1) {
+                    const condition = trimmed[open + 1 .. close];
+                    const rewritten = try rewriteEqualityOperators(gpa, condition, object_names);
+                    defer gpa.free(rewritten);
+                    if (!std.mem.eql(u8, rewritten, condition)) {
+                        const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+                        var out: std.ArrayList(u8) = .empty;
+                        errdefer out.deinit(gpa);
+                        try out.appendSlice(gpa, leading);
+                        try out.appendSlice(gpa, trimmed[0 .. open + 1]);
+                        try out.appendSlice(gpa, rewritten);
+                        try out.append(gpa, ')');
+                        if (close + 1 < trimmed.len) try out.appendSlice(gpa, trimmed[close + 1 ..]);
+                        return out.toOwnedSlice(gpa);
+                    }
+                }
+            }
+        }
+    }
+
     return gpa.dupe(u8, line);
 }
 
