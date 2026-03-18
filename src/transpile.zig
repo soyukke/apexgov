@@ -12141,10 +12141,6 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "fiscalYearInfo = new UTIL_FiscalYearInfo(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId())));", .to = "fiscalYearInfo = new UTIL_FiscalYearInfo(ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT FiscalYearStartMonth, UsesStartDateAsFiscalYearName FROM Organization WHERE Id = :UserInfo.getOrganizationId()\", ApexCollections.bindMap(\"UserInfo.getOrganizationId\", UserInfo.getOrganizationId()))));" },
         .{ .from = "oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);", .to = "if (oppService == null) { oppService = new RD2_OpportunityService(currentDate, dbService, customFieldMapper); }\n    oppService .createOpportunities(newOppRDs) .updateOpportunities(updateOppRDs, rdIdsWhereScheduleChanged) .voidOpenOpportunities(closeOppRds);" },
         .{
-            .from = "Boolean isContactDonor = ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\") == hhRecordTypeId || (rd.getAs(\"npe03__Organization__c\") == null && ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\") == hhRecordTypeId);",
-            .to = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));",
-        },
-        .{
             .from = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));",
             .to = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && (ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId) || ApexEquals.eq(rd.getAs(\"npe03__Donor_Type__c\"), \"Contact\")));",
         },
@@ -26059,6 +26055,23 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         }
     }
 
+    // Fallback: rewrite == / != in variable assignments, ternary, etc.
+    // Skip lines already containing ApexEquals (rewritten by earlier passes).
+    if ((std.mem.indexOf(u8, trimmed, " == ") != null or std.mem.indexOf(u8, trimmed, " != ") != null) and
+        std.mem.indexOf(u8, trimmed, "ApexEquals") == null)
+    {
+        const rewritten = try rewriteEqualityOperators(gpa, trimmed, object_names);
+        defer gpa.free(rewritten);
+        if (!std.mem.eql(u8, rewritten, trimmed)) {
+            const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(gpa);
+            try out.appendSlice(gpa, leading);
+            try out.appendSlice(gpa, rewritten);
+            return out.toOwnedSlice(gpa);
+        }
+    }
+
     return gpa.dupe(u8, line);
 }
 
@@ -32500,7 +32513,10 @@ test "rewriteKnownCompatibilityFixups rewrites RD2 query binds and map mutation 
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> results = Database.queryWithBinds(soql, ApexCollections.bindMap(\"recurringDonationId\", recurringDonationId));") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexCollections.firstOrNull(results);") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && (ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId) || ApexEquals.eq(rd.getAs(\"npe03__Donor_Type__c\"), \"Contact\")));") != null);
+    // After removing the redundant fixup (now handled by rewriteObjectEqualityLine),
+    // the isContactDonor assignment gets its == operators rewritten by the equality pass,
+    // and then the chained fixup adds the Donor_Type fallback.
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean isContactDonor = ") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "for (String fieldApiName : new ArrayList<String>(customFieldValues.keySet())) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Map<String, Object>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\")") != null);
 }
