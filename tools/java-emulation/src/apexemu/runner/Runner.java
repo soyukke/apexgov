@@ -45,6 +45,10 @@ public final class Runner {
     URLClassLoader loader = new URLClassLoader(new URL[] {toUrl(config.classesDir)});
     List<TestResult> results = new ArrayList<>();
 
+    // Pre-compute class registration and trigger handler data once
+    List<ClassRegistration> classRegistrations = precomputeClassRegistrations(allClassNames, loader);
+    List<TriggerHandlerEntry> triggerHandlers = precomputeTriggerHandlers(allClassNames, loader);
+
     for (String className : classNames) {
       Class<?> klass;
       try {
@@ -72,7 +76,8 @@ public final class Runner {
         results.add(
             runTest(
                 config,
-                allClassNames,
+                classRegistrations,
+                triggerHandlers,
                 className,
                 testSetupMethods,
                 methodSpec.name,
@@ -110,7 +115,8 @@ public final class Runner {
 
   private static TestResult runTest(
       Config config,
-      List<String> allClassNames,
+      List<ClassRegistration> classRegistrations,
+      List<TriggerHandlerEntry> triggerHandlers,
       String className,
       List<String> testSetupMethodNames,
       String methodName,
@@ -156,11 +162,10 @@ public final class Runner {
 
       // Prevent stale classes from previous test loaders leaking into static initialization.
       apexemu.runtime.System.clearClassRegistry();
-      // Register class names before test-class static initialization so Type.forName() can
-      // resolve inner types used in static field initializers.
-      registerAllClasses(allClassNames, loader);
+      // Fast re-registration using pre-computed data, loading classes through the child-first loader.
+      registerAllClassesFast(classRegistrations, loader);
       autoRegisterTriggerManifest(config.classesDir, loader);
-      autoRegisterTriggerHandlers(allClassNames, loader);
+      registerTriggerHandlersFast(triggerHandlers, loader);
       klass = Class.forName(className, true, loader);
       method = klass.getDeclaredMethod(methodName);
       testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
@@ -340,13 +345,18 @@ public final class Runner {
     }
   }
 
-  private static void autoRegisterTriggerHandlers(List<String> allClassNames, ClassLoader loader) {
+  /** Pre-computed trigger handler entry. */
+  private record TriggerHandlerEntry(String className, String sobjectType) {}
+
+  /** Discover trigger handlers once (filter + validate), return entries for fast re-registration. */
+  private static List<TriggerHandlerEntry> precomputeTriggerHandlers(
+      List<String> allClassNames, ClassLoader loader) {
+    List<TriggerHandlerEntry> entries = new ArrayList<>();
     for (String cn : allClassNames) {
       String simpleName = cn.contains(".") ? cn.substring(cn.lastIndexOf('.') + 1) : cn;
       if (!simpleName.endsWith("TriggerHandler")) continue;
       if (simpleName.equals("TriggerHandler")) continue;
       if (simpleName.equals("MetadataTriggerHandler")) continue;
-      // Skip metadata-driven and event-based handlers (they run via MetadataTriggerHandler or EventBus)
       if (simpleName.startsWith("MDT")) continue;
       if (simpleName.startsWith("Log")) continue;
       if (simpleName.startsWith("PlatformEvent")) continue;
@@ -361,12 +371,19 @@ public final class Runner {
       } catch (Exception e) {
         continue;
       }
+      entries.add(new TriggerHandlerEntry(cn, sobjectType));
+    }
+    return entries;
+  }
 
-      final String handlerClassName = cn;
-      final ClassLoader handlerLoader = loader;
+  /** Fast trigger handler registration using pre-computed entries. */
+  private static void registerTriggerHandlersFast(
+      List<TriggerHandlerEntry> entries, ClassLoader loader) {
+    for (TriggerHandlerEntry entry : entries) {
+      final String handlerClassName = entry.className;
       Runnable factory = () -> {
         try {
-          Class<?> klass = Class.forName(handlerClassName, true, handlerLoader);
+          Class<?> klass = Class.forName(handlerClassName, true, loader);
           Object instance = klass.getDeclaredConstructor().newInstance();
           klass.getMethod("run").invoke(instance);
         } catch (java.lang.reflect.InvocationTargetException e) {
@@ -379,13 +396,13 @@ public final class Runner {
         }
       };
 
-      Trigger.onBeforeInsert(sobjectType, factory);
-      Trigger.onBeforeUpdate(sobjectType, factory);
-      Trigger.onBeforeDelete(sobjectType, factory);
-      Trigger.onAfterInsert(sobjectType, factory);
-      Trigger.onAfterUpdate(sobjectType, factory);
-      Trigger.onAfterDelete(sobjectType, factory);
-      Trigger.onAfterUndelete(sobjectType, factory);
+      Trigger.onBeforeInsert(entry.sobjectType, factory);
+      Trigger.onBeforeUpdate(entry.sobjectType, factory);
+      Trigger.onBeforeDelete(entry.sobjectType, factory);
+      Trigger.onAfterInsert(entry.sobjectType, factory);
+      Trigger.onAfterUpdate(entry.sobjectType, factory);
+      Trigger.onAfterDelete(entry.sobjectType, factory);
+      Trigger.onAfterUndelete(entry.sobjectType, factory);
     }
   }
 
@@ -407,30 +424,50 @@ public final class Runner {
     }
   }
 
-  private static void registerAllClasses(List<String> allClassNames, ClassLoader loader) {
-    apexemu.runtime.System.clearClassRegistry();
+  /** Pre-computed class registration entry: stores all name→className mappings discovered once. */
+  private record ClassRegistration(String className, List<String> registrationNames) {}
+
+  /** Scan classes once and record which names each class should be registered under. */
+  private static List<ClassRegistration> precomputeClassRegistrations(
+      List<String> allClassNames, ClassLoader loader) {
+    List<ClassRegistration> registrations = new ArrayList<>();
     for (String cn : allClassNames) {
       try {
         Class<?> clazz = Class.forName(cn, false, loader);
-        // Register with simple name (e.g., "SampleHandler")
+        List<String> names = new ArrayList<>();
         String simpleName = cn.contains(".") ? cn.substring(cn.lastIndexOf('.') + 1) : cn;
-        apexemu.runtime.System.registerClass(simpleName, clazz);
-        // Also register inner classes with Outer.Inner notation
+        names.add(simpleName);
         if (simpleName.contains("$")) {
-          String dotNotation = simpleName.replace('$', '.');
-          apexemu.runtime.System.registerClass(dotNotation, clazz);
+          names.add(simpleName.replace('$', '.'));
         }
-        // Register with full qualified name
-        apexemu.runtime.System.registerClass(cn, clazz);
-        // Also register inner classes of this class
+        names.add(cn);
         for (Class<?> inner : clazz.getDeclaredClasses()) {
           String innerSimple = inner.getSimpleName();
-          String outerSimple = simpleName.contains("$") ? simpleName.substring(0, simpleName.indexOf('$')) : simpleName;
-          apexemu.runtime.System.registerClass(outerSimple + "." + innerSimple, inner);
-          apexemu.runtime.System.registerClass(innerSimple, inner);
+          String outerSimple = simpleName.contains("$")
+              ? simpleName.substring(0, simpleName.indexOf('$')) : simpleName;
+          names.add(outerSimple + "." + innerSimple);
+          names.add(innerSimple);
         }
+        registrations.add(new ClassRegistration(cn, names));
       } catch (Exception ignored) {
         // skip classes that can't be loaded
+      }
+    }
+    return registrations;
+  }
+
+  /** Fast re-registration: uses pre-computed names, loads classes through the given loader. */
+  private static void registerAllClassesFast(
+      List<ClassRegistration> registrations, ClassLoader loader) {
+    apexemu.runtime.System.clearClassRegistry();
+    for (ClassRegistration reg : registrations) {
+      try {
+        Class<?> clazz = Class.forName(reg.className, false, loader);
+        for (String name : reg.registrationNames) {
+          apexemu.runtime.System.registerClass(name, clazz);
+        }
+      } catch (Exception ignored) {
+        // skip
       }
     }
   }

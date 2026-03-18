@@ -95,6 +95,9 @@ mkdir -p "$out_dir/build"
 out_dir="$(cd "$out_dir" && pwd)"
 mkdir -p "$out_dir/build"
 
+_timer_start() { date +%s; }
+_timer_elapsed() { echo "$(( $(date +%s) - $1 ))s"; }
+
 sources_file="$out_dir/sources.zlist"
 runtime_sources_file="$out_dir/runtime-sources.zlist"
 test_sources_file="$out_dir/test-sources.zlist"
@@ -111,18 +114,38 @@ if [[ ! -s "$sources_file" ]]; then
   exit 2
 fi
 
-xargs -0 javac -d "$out_dir/build" < "$runtime_sources_file"
+# Fast JVM startup flags for javac
+JAVAC_FLAGS=(-J-XX:+TieredCompilation -J-XX:TieredStopAtLevel=1)
+
+# Compile runtime — skip if no source is newer than the oldest .class
+_t=$(_timer_start)
+runtime_needs_rebuild=false
+oldest_class="$(find "$out_dir/build/apexemu" -type f -name '*.class' -print0 2>/dev/null | xargs -0 ls -tr 2>/dev/null | head -n 1)" || true
+if [[ -z "$oldest_class" ]]; then
+  runtime_needs_rebuild=true
+else
+  newer_sources="$(find "$repo_root/tools/java-emulation/src" -type f -name '*.java' -newer "$oldest_class" -print -quit 2>/dev/null)" || true
+  if [[ -n "$newer_sources" ]]; then
+    runtime_needs_rebuild=true
+  fi
+fi
+if [[ "$runtime_needs_rebuild" == "true" ]]; then
+  xargs -0 javac "${JAVAC_FLAGS[@]}" -d "$out_dir/build" < "$runtime_sources_file"
+fi
+echo "phase:runtime $(_timer_elapsed $_t)" >&2
 
 if [[ "$best_effort" == "true" ]]; then
+  _t=$(_timer_start)
   best_effort_sources_dir="$out_dir/best-effort-sources"
   best_effort_sources_file="$out_dir/best-effort-sources.zlist"
   compile_failures="$out_dir/compile-failures.txt"
   compile_fallbacks="$out_dir/compile-fallbacks.txt"
   rm -rf "$best_effort_sources_dir"
   mkdir -p "$best_effort_sources_dir"
-  : > "$best_effort_sources_file"
   : > "$compile_fallbacks"
 
+  # Copy test sources preserving directory structure
+  : > "$best_effort_sources_file"
   while IFS= read -r -d '' src; do
     rel="${src#"$tests_dir"/}"
     dst="$best_effort_sources_dir/$rel"
@@ -197,71 +220,77 @@ if [[ "$best_effort" == "true" ]]; then
   done < "$best_effort_sources_file"
 
   fallback_count=0
+  declare -A fallback_set=()
   record_fallback() {
     local src="$1"
-    if ! grep -Fxq "$src" "$compile_fallbacks"; then
+    if [[ -z "${fallback_set[$src]+x}" ]]; then
+      fallback_set[$src]=1
       printf '%s\n' "$src" >> "$compile_fallbacks"
       fallback_count=$((fallback_count + 1))
     fi
   }
 
+  # --- Phase 1: Try compiling all files at once ---
+  if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
+    pending=()
+  fi
+
+  # --- Phase 2: Batch-bisect failing files ---
   while [[ ${#pending[@]} -gt 0 ]]; do
     progress=false
-    next_pending=()
 
-    for src in "${pending[@]}"; do
-      if javac -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
+    # Try batch compile to identify error sources
+    class_count_before="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
+    if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+      progress=true
+      pending=()
+      rm -f "$out_dir/.javac.err"
+    else
+      class_count_after="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
+      if (( class_count_after > class_count_before )); then
         progress=true
-      else
-        next_pending+=("$src")
       fi
-    done
 
-    pending=()
-    if [[ ${#next_pending[@]} -gt 0 ]]; then
-      pending=("${next_pending[@]}")
-    fi
+      # Extract error sources from javac output
+      batch_error_sources=()
+      while IFS= read -r batch_src; do
+        batch_error_sources+=("$batch_src")
+      done < <(
+        awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" \
+          | grep "^$best_effort_sources_dir/" \
+          | sort -u
+      )
+      rm -f "$out_dir/.javac.err"
 
-    if [[ ${#pending[@]} -gt 0 && "$progress" == "false" ]]; then
-      class_count_before="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
-      if javac -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+      if [[ ${#batch_error_sources[@]} -gt 0 ]]; then
+        # Replace error sources with placeholders
+        for src in "${batch_error_sources[@]}"; do
+          render_placeholder_source "$src"
+          record_fallback "$src"
+        done
         progress=true
-        pending=()
-        rm -f "$out_dir/.javac.err"
-      else
-        class_count_after="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
-        if (( class_count_after > class_count_before )); then
-          progress=true
-          rm -f "$out_dir/.javac.err"
-        else
-          batch_error_sources=()
-          while IFS= read -r batch_src; do
-            batch_error_sources+=("$batch_src")
-          done < <(
-            awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" \
-              | grep "^$best_effort_sources_dir/" \
-              | sort -u
-          )
-          rm -f "$out_dir/.javac.err"
-          if [[ ${#batch_error_sources[@]} -gt 0 ]]; then
-            for src in "${batch_error_sources[@]}"; do
-              render_placeholder_source "$src"
-              if javac -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
-                progress=true
-                record_fallback "$src"
-              fi
-            done
+
+        # Rebuild pending list excluding placeholders
+        next_pending=()
+        for src in "${pending[@]}"; do
+          if [[ -z "${fallback_set[$src]+x}" ]]; then
+            next_pending+=("$src")
           fi
+        done
+        pending=()
+        if [[ ${#next_pending[@]} -gt 0 ]]; then
+          pending=("${next_pending[@]}")
         fi
       fi
     fi
 
+    # If no progress from batch, fall back to individual salvage
     if [[ ${#pending[@]} -gt 0 && "$progress" == "false" ]]; then
       salvage_progress=false
       next_pending=()
       for src in "${pending[@]}"; do
         render_placeholder_source "$src"
-        if javac -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
+        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
           salvage_progress=true
           progress=true
           record_fallback "$src"
@@ -283,6 +312,8 @@ if [[ "$best_effort" == "true" ]]; then
     fi
   done
 
+  echo "phase:best-effort-compile $(_timer_elapsed $_t)" >&2
+
   if [[ "$fallback_count" -gt 0 ]]; then
     echo "best-effort: replaced ${fallback_count} source(s) with placeholder stubs, see $compile_fallbacks"
   else
@@ -292,7 +323,7 @@ if [[ "$best_effort" == "true" ]]; then
   if [[ ${#pending[@]} -gt 0 ]]; then
     : > "$compile_failures"
     for src in "${pending[@]}"; do
-      if ! javac -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>"$out_dir/.javac.err"; then
+      if ! javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>"$out_dir/.javac.err"; then
         first_line="$(head -n 1 "$out_dir/.javac.err")"
         printf '%s\t%s\n' "$src" "$first_line" >> "$compile_failures"
       fi
@@ -303,13 +334,14 @@ if [[ "$best_effort" == "true" ]]; then
     rm -f "$compile_failures"
   fi
 else
-  xargs -0 javac -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
+  xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
 fi
 
 if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
   cp "$tests_dir/apex-triggers.txt" "$out_dir/build/apex-triggers.txt"
 fi
 
+_t=$(_timer_start)
 set +e
 runner_cmd=(
   java -cp "$out_dir/build" apexemu.runner.Runner
@@ -325,6 +357,7 @@ fi
 "${runner_cmd[@]}"
 runner_exit=$?
 set -e
+echo "phase:test-runner $(_timer_elapsed $_t)" >&2
 
 if [[ "$runner_exit" -eq 2 ]]; then
   # Some external repos intentionally ship no @Test classes in the selected source set.
