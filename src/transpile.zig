@@ -12121,6 +12121,13 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == BUCKET_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), BUCKET_PROCESSOR);" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == HH_ACCOUNT_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), HH_ACCOUNT_PROCESSOR);" },
+        .{ .from = "accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\") == CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE", .to = "ApexEquals.eq(accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\"), CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE)" },
+        .{ .from = "acc.getAs(\"npe01__SYSTEM_AccountType__c\") == CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE", .to = "ApexEquals.eq(acc.getAs(\"npe01__SYSTEM_AccountType__c\"), CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE)" },
+        .{ .from = "acc.getAs(\"Name\") == CAO_Constants.BUCKET_ACCOUNT_NAME", .to = "ApexEquals.eq(acc.getAs(\"Name\"), CAO_Constants.BUCKET_ACCOUNT_NAME)" },
+        .{ .from = "payment.getAs(\"DebitType__c\") == PMT_RefundService.PARTIAL_REFUND", .to = "ApexEquals.eq(payment.getAs(\"DebitType__c\"), PMT_RefundService.PARTIAL_REFUND)" },
+        .{ .from = "payment.getAs(\"DebitType__c\") == PMT_RefundService.FULL_REFUND", .to = "ApexEquals.eq(payment.getAs(\"DebitType__c\"), PMT_RefundService.FULL_REFUND)" },
+        .{ .from = "dataImport.getAs(\"Payment_Method__c\") == ACH_PAYMENT_METHOD", .to = "ApexEquals.eq(dataImport.getAs(\"Payment_Method__c\"), ACH_PAYMENT_METHOD)" },
+        .{ .from = "ApexSwitch.getAs(con.getAs(\"Account\"), \"npe01__SYSTEM_AccountType__c\") == CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE", .to = "ApexEquals.eq(ApexSwitch.getAs(con.getAs(\"Account\"), \"npe01__SYSTEM_AccountType__c\"), CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE)" },
         .{ .from = "private static final Map<String, String> stateLabelByValue; // Apex property { get; set; }", .to = "private static final Map<String, String> stateLabelByValue = mapStateLabelByValue(); // Apex property { get; set; }" },
         .{ .from = "for (Integer i; i < 4; i++) {", .to = "for (Integer i = 0; i < 4; i++) {" },
         .{ .from = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf(null, null));", .to = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf((String) null, (String) null));" },
@@ -26092,8 +26099,9 @@ fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8, objec
             continue;
         }
 
-        // Only match at top level (not inside nested parens of a method call)
-        if (paren_depth != 0) continue;
+        // Skip deeply nested parens (depth > 1) to avoid breaking method call arguments.
+        // Allow depth 0 (top-level) and depth 1 (inside one level of parens, e.g. assertTrue(a == b)).
+        if (paren_depth > 1) continue;
 
         // Check for == or != that is not === or !==
         const is_eq = i + 1 < condition.len and ch == '=' and condition[i + 1] == '=' and
