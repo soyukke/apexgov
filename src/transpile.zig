@@ -12115,6 +12115,10 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public static Boolean fixedOptionAvailable; // Apex property { get; set; }", .to = "public static Boolean fixedOptionAvailable = false; // Apex property { get; set; }" },
         .{ .from = "public static Boolean isMetadataDeployed; // Apex property { get; set; }", .to = "public static Boolean isMetadataDeployed = false; // Apex property { get; set; }" },
         .{ .from = "public static final String ERROR_NOTIFICATION_CHATTER_PREFIX; // Apex property { get; set; }", .to = "public static String ERROR_NOTIFICATION_CHATTER_PREFIX; // Apex property { get; set; }" },
+        .{
+            .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    String strAction = action.name();",
+            .to = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (listTH == null || listTH.isEmpty()) {\n    setDefaultHandlers(TDTM_DefaultConfig.getDefaultRecords());\n    }\n    String strAction = action.name();",
+        },
         .{ .from = "private static final Map<String, String> stateLabelByValue; // Apex property { get; set; }", .to = "private static final Map<String, String> stateLabelByValue = mapStateLabelByValue(); // Apex property { get; set; }" },
         .{ .from = "for (Integer i; i < 4; i++) {", .to = "for (Integer i = 0; i < 4; i++) {" },
         .{ .from = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf(null, null));", .to = "List<String> parsedValues = new ArrayList<String>(ApexCollections.listOf((String) null, (String) null));" },

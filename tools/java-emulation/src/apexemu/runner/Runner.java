@@ -168,9 +168,7 @@ public final class Runner {
       registerAllClassesFast(classRegistrations, loader);
       autoRegisterTriggerManifest(config.classesDir, loader);
       registerTriggerHandlersFast(triggerHandlers, loader);
-      // TDTM trigger registration is available but disabled by default — enabling it
-      // requires TDTM handler run() methods to be fully ported first.
-      // autoRegisterTDTMTriggers(classRegistrations, loader);
+      autoRegisterTDTMTriggers(classRegistrations, loader);
       klass = Class.forName(className, true, loader);
       method = klass.getDeclaredMethod(methodName);
       testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
