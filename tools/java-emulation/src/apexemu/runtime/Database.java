@@ -648,6 +648,11 @@ public final class Database {
     ApexStore.reset();
   }
 
+  /** Seed the current user into the in-memory store so SOQL on User table works. */
+  public static void seedCurrentUser() {
+    ApexStore.seedCurrentUser();
+  }
+
   public static void clearSchemaRegistry() {
     Schema.clear();
   }

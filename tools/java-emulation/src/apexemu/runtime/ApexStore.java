@@ -346,6 +346,26 @@ final class ApexStore {
     return state;
   }
 
+  /** Seed the current user record directly into the store (no triggers, no DML overhead). */
+  static void seedCurrentUser() {
+    State state = STATE.get();
+    if (state == null) return;
+    ApexSObject user = UserContext.currentUser();
+    if (user == null) return;
+    ApexSObject copy = user.copy();
+    if (copy.getAs("Name") == null) copy.set("Name", UserInfo.getName());
+    if (copy.getAs("Username") == null) copy.set("Username", UserInfo.getUsername());
+    if (copy.getAs("Email") == null) copy.set("Email", UserInfo.getEmail());
+    String profileId = UserInfo.getProfileId();
+    if (copy.getAs("ProfileId") == null && profileId != null) copy.set("ProfileId", profileId);
+    String id = copy.id();
+    if (id == null || id.isBlank()) {
+      id = UserContext.currentUserId();
+      copy.withId(id);
+    }
+    state.active.computeIfAbsent("User", ignored -> new LinkedHashMap<>()).put(id, copy);
+  }
+
   private static void seedProfile(
       State state,
       String id,

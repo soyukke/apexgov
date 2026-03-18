@@ -147,6 +147,8 @@ public final class Runner {
       Thread.currentThread().setContextClassLoader(loader);
       Async.reset();
       Database.clearInMemoryStore();
+      // Seed the current user into the in-memory store so SOQL queries on User succeed.
+      Database.seedCurrentUser();
       Database.clearSchemaRegistry();
       Database.clearTriggerHandlers();
       Cache.clearAll();
