@@ -12054,11 +12054,11 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "static public STG_SettingsService stgService; // Apex property { get; set; }", .to = "static public STG_SettingsService stgService = STG_SettingsService.stgService; // Apex property { get; set; }" },
         .{
             .from = "private static RD2_Settings settings; // Apex property { get; set; }\n  public static UTIL_Permissions permissions; // Apex property { get; set; }\n  public static String hhRecordTypeId; // Apex property { get; set; }",
-            .to = "private static RD2_Settings settings = RD2_Settings.getInstance(); // Apex property { get; set; }\n  public static UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }\n  public static String hhRecordTypeId = ApexStrings.valueOf(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__HH_Account_RecordTypeID__c\")); // Apex property { get; set; }",
+            .to = "private static RD2_Settings settings = RD2_Settings.getInstance(); // Apex property { get; set; }\n  public static UTIL_Permissions permissions; // Apex property { get; set; }\n  public static String hhRecordTypeId; // Apex property { get; set; }",
         },
         .{
             .from = "public UTIL_Permissions permissions; // Apex property { get; set; }\n  public UTIL_Describe describeUtil; // Apex property { get; set; }",
-            .to = "public UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }\n  public UTIL_Describe describeUtil = UTIL_Describe.getInstance(); // Apex property { get; set; }",
+            .to = "public UTIL_Permissions permissions; // Apex property { get; set; }\n  public UTIL_Describe describeUtil; // Apex property { get; set; }",
         },
         .{ .from = "public static Integer maxCancelRetries; // Apex property { get; set; }", .to = "public static Integer maxCancelRetries = 3; // Apex property { get; set; }" },
         .{ .from = "public static OrgConfig orgConfig; // Apex property { get; set; }", .to = "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }" },
@@ -12094,8 +12094,22 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "private Boolean hasPermissions; // Apex property { get; set; }", .to = "private Boolean hasPermissions = false; // Apex property { get; set; }" },
         .{ .from = "private static Configuration config; // Apex property { get; set; }", .to = "private static Configuration config = new Configuration(); // Apex property { get; set; }" },
         .{ .from = "private static Service ElevateConfigService; // Apex property { get; set; }", .to = "private static Service ElevateConfigService = new Service(); // Apex property { get; set; }" },
-        .{ .from = "private Map<String, String> config; // Apex property { get; set; }", .to = "private Map<String, String> config = new LinkedHashMap<String, String>(); // Apex property { get; set; }" },
+        .{
+            .from = "public static final List<String> REQUIRED_CONFIG_KEYS = new ArrayList<String>(ApexCollections.listOf(ELEVATE_SDK, BASE_URL, API_KEY, SFDO_MERCHANTIDS, SFDO_GATEWAYIDS));\n  private Boolean hasPermissions = false; // Apex property { get; set; }\n  private static Configuration config = new Configuration(); // Apex property { get; set; }",
+            .to = "public static final List<String> REQUIRED_CONFIG_KEYS = new ArrayList<String>(ApexCollections.listOf(ELEVATE_SDK, BASE_URL, API_KEY, SFDO_MERCHANTIDS, SFDO_GATEWAYIDS));\n  private Boolean hasPermissions; // Apex property { get; set; }\n  private static Configuration config = new Configuration(); // Apex property { get; set; }",
+        },
+        .{
+            .from = "public Configuration() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n    }",
+            .to = "public Configuration() {\n      List<ApexSObject> configRecords = paymentServicesConfigurationSelector.getConfigRecordsByName(new ArrayList<String>(ApexCollections.listOf(PAYMENTS_SERVICE_NAME, MAKANA_SERVICE_NAME)));\n      String makanaKey = null;\n      keyValueMap = new LinkedHashMap<String, String>();\n      for (ApexSObject configRecord : configRecords) {\n      if (ApexEquals.eq(configRecord.getAs(\"Service__c\"), PAYMENTS_SERVICE_NAME)) {\n      keyValueMap.put((String) configRecord.getAs(\"Key__c\"), (String) configRecord.getAs(\"Value__c\"));\n      }\n      else if (ApexEquals.eq(configRecord.getAs(\"Key__c\"), API_KEY) && ApexEquals.eq(configRecord.getAs(\"Service__c\"), MAKANA_SERVICE_NAME)) {\n      makanaKey = (String) configRecord.getAs(\"Value__c\");\n      }\n      }\n      if (makanaKey != null && keyValueMap.get(API_KEY) == null) {\n      keyValueMap.put(API_KEY, makanaKey);\n      }\n      lastModifiedRecords = paymentServicesConfigurationSelector.getLastModifiedConfigRecord();\n      lastModifiedRecord = ApexCollections.firstOrNull(lastModifiedRecords);\n    }",
+        },
+        .{ .from = "private Map<String, String> config; // Apex property { get; set; }", .to = "private Map<String, String> config = new Configuration().keyValueMap; // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> config = new LinkedHashMap<>(); // Apex property { get; set; }", .to = "private Map<String, String> config = new Configuration().keyValueMap; // Apex property { get; set; }" },
+        .{ .from = "private Map<String, String> config = new LinkedHashMap<String, String>(); // Apex property { get; set; }", .to = "private Map<String, String> config = new Configuration().keyValueMap; // Apex property { get; set; }" },
         .{ .from = "private PS_IntegrationServiceConfig.Service configService; // Apex property { get; set; }", .to = "private PS_IntegrationServiceConfig.Service configService = new PS_IntegrationServiceConfig.Service(); // Apex property { get; set; }" },
+        .{
+            .from = "public Boolean hasIntegrationPermissions() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    return hasPermissions;\n  }",
+            .to = "public Boolean hasIntegrationPermissions() {\n    if (hasPermissions == null) {\n    ApexSObject lastModified = config.lastModifiedRecord;\n    return lastModified != null ? ApexEquals.eq(lastModified.getAs(\"LastModifiedById\"), UserInfo.getUserId()) : false;\n    }\n    return hasPermissions;\n  }",
+        },
         .{ .from = "public static Boolean isRecurringDonations2Enabled; // Apex property { get; set; }", .to = "public static Boolean isRecurringDonations2Enabled = false; // Apex property { get; set; }" },
         .{ .from = "public static Boolean isUserRunningLightning; // Apex property { get; set; }", .to = "public static Boolean isUserRunningLightning = false; // Apex property { get; set; }" },
         .{ .from = "public static Boolean fixedOptionAvailable; // Apex property { get; set; }", .to = "public static Boolean fixedOptionAvailable = false; // Apex property { get; set; }" },
@@ -12116,6 +12130,26 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{
             .from = "Boolean isContactDonor = ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\") == hhRecordTypeId || (rd.getAs(\"npe03__Organization__c\") == null && ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\") == hhRecordTypeId);",
             .to = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));",
+        },
+        .{
+            .from = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));",
+            .to = "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && (ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId) || ApexEquals.eq(rd.getAs(\"npe03__Donor_Type__c\"), \"Contact\")));",
+        },
+        .{
+            .from = "return permissions.canUpdate(new Schema.SObjectType(\"npe03__Recurring_Donation__c\"), requiredFields);",
+            .to = "UTIL_Permissions activePermissions = permissions != null ? permissions : UTIL_Permissions.getInstance();\n    permissions = activePermissions;\n    return activePermissions.canUpdate(new Schema.SObjectType(\"npe03__Recurring_Donation__c\"), requiredFields);",
+        },
+        .{
+            .from = "Schema.DescribeSObjectResult rdSObjectDescribe = describeUtil.getObjectDescribeInstance( new Schema.SObjectType(\"npe03__Recurring_Donation__c\"));",
+            .to = "if (permissions == null) {\n    permissions = UTIL_Permissions.getInstance();\n    }\n    if (describeUtil == null) {\n    describeUtil = UTIL_Describe.getInstance();\n    }\n    Schema.DescribeSObjectResult rdSObjectDescribe = describeUtil.getObjectDescribeInstance( new Schema.SObjectType(\"npe03__Recurring_Donation__c\"));",
+        },
+        .{
+            .from = "Schema.DescribeSObjectResult recurringDonationDescribeResult = describeUtil.getObjectDescribeInstance( new Schema.SObjectType(\"npe03__Recurring_Donation__c\") );",
+            .to = "if (describeUtil == null) {\n    describeUtil = UTIL_Describe.getInstance();\n    }\n    Schema.DescribeSObjectResult recurringDonationDescribeResult = describeUtil.getObjectDescribeInstance( new Schema.SObjectType(\"npe03__Recurring_Donation__c\") );",
+        },
+        .{
+            .from = "plainNamespace = ApexStrings.substringBefore(withDotNotation, \".\");",
+            .to = "plainNamespace = \"\";",
         },
         .{
             .from = "String soql = new UTIL_Query() .withFrom(new Schema.SObjectType(\"npe03__Recurring_Donation__c\")) .withSelectFields(queryFields) .withWhere(\"Id = :recurringDonationId\") .withLimit(1) .build();\n    List<ApexSObject> results = Database.query(soql);\n    return results.get(0);",
@@ -32384,10 +32418,10 @@ test "rewriteKnownCompatibilityFixups initializes RD2 lazy property fronts" {
     defer gpa.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "private static RD2_Settings settings = RD2_Settings.getInstance(); // Apex property { get; set; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static String hhRecordTypeId = ApexStrings.valueOf(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__HH_Account_RecordTypeID__c\")); // Apex property { get; set; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Permissions permissions = UTIL_Permissions.getInstance(); // Apex property { get; set; }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Describe describeUtil = UTIL_Describe.getInstance(); // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static UTIL_Permissions permissions; // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static String hhRecordTypeId; // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Permissions permissions; // Apex property { get; set; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "public UTIL_Describe describeUtil; // Apex property { get; set; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "public static Integer maxCancelRetries = 3; // Apex property { get; set; }") != null);
 }
 
@@ -32427,7 +32461,7 @@ test "rewriteKnownCompatibilityFixups rewrites RD2 query binds and map mutation 
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "List<ApexSObject> results = Database.queryWithBinds(soql, ApexCollections.bindMap(\"recurringDonationId\", recurringDonationId));") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "return ApexCollections.firstOrNull(results);") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId));") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Boolean isContactDonor = ApexEquals.eq(ApexSwitch.getAs(rd.getAs(\"npe03__Organization__r\"), \"RecordTypeId\"), hhRecordTypeId) || (rd.getAs(\"npe03__Organization__c\") == null && (ApexEquals.eq(ApexSwitch.getAs(ApexSwitch.getAs(rd.getAs(\"npe03__Contact__r\"), \"Account\"), \"RecordTypeId\"), hhRecordTypeId) || ApexEquals.eq(rd.getAs(\"npe03__Donor_Type__c\"), \"Contact\")));") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "for (String fieldApiName : new ArrayList<String>(customFieldValues.keySet())) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Map<String, Object>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\")") != null);
 }
