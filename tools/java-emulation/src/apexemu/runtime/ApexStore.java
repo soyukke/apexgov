@@ -3541,10 +3541,13 @@ final class ApexStore {
 
         String bindName = soql.substring(bindStart, bindEnd);
         int bindExpressionEnd = bindEnd;
+        // Skip trailing () method invocation (e.g. :UserInfo.getOrganizationId())
+        if (bindEnd + 1 < soql.length() && soql.charAt(bindEnd) == '(' && soql.charAt(bindEnd + 1) == ')') {
+          bindExpressionEnd = bindEnd + 2;
+        }
         Object bindValue;
         if (isTrimBindInvocation(soql, bindEnd, bindName)) {
           bindValue = resolveTrimmedBindValue(binds, bindName, soql);
-          bindExpressionEnd = bindEnd + 2;
         } else {
           bindValue = resolveBindValue(binds, bindName, soql);
         }
