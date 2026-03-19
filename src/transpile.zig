@@ -12139,6 +12139,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public class OPP_OpportunityNaming {", .to = "public class OPP_OpportunityNaming implements OPP_INaming {" },
         .{ .from = ".setSequence(binding.getAs(\"BindingSequence__c\"))", .to = ".setSequence(ApexStrings.toDouble(binding.getAs(\"BindingSequence__c\")))" },
         .{ .from = "public class fflib_Criteria {", .to = "public class fflib_Criteria implements Evaluator {" },
+        .{ .from = "public static OrgFiscalYearInfo fiscalYearInfo; // Apex property { get; set; }", .to = "public static OrgFiscalYearInfo fiscalYearInfo = new OrgFiscalYearInfo(1, false); // Apex property { get; set; }" },
+        .{ .from = "private SoftCredits softCredits; // Apex property { get; set; }", .to = "private SoftCredits softCredits = new SoftCredits(); // Apex property { get; set; }" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == BUCKET_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), BUCKET_PROCESSOR);" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == HH_ACCOUNT_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), HH_ACCOUNT_PROCESSOR);" },
         .{ .from = "accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\") == CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE", .to = "ApexEquals.eq(accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\"), CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE)" },
