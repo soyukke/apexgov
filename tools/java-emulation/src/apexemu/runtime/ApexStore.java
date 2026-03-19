@@ -3085,7 +3085,7 @@ final class ApexStore {
 
     String body = selectExpr.substring(6).trim();
     if (body.isEmpty()) {
-      throw new IllegalArgumentException("SELECT expression cannot be blank: " + rawSoql);
+      body = "Id"; // Fallback: select at least Id when SELECT fields are empty
     }
 
     List<String> terms = splitByComma(body);
