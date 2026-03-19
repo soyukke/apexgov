@@ -865,7 +865,10 @@ final class ApexStore {
         soql != null
             && (containsIgnoreCase(soql, "WITH USER_MODE")
                 || containsIgnoreCase(soql, "WITH SECURITY_ENFORCED"));
-    QuerySpec spec = parseQuerySpec(soql);
+    // Strip WITH clauses before parsing — they are access-control modifiers
+    // that don't affect query semantics in the emulation environment.
+    String cleanedSoql = stripWithClauses(soql);
+    QuerySpec spec = parseQuerySpec(cleanedSoql);
     if (enforceReadAccess) {
       checkReadAccessForQuery(spec);
     }
@@ -3410,6 +3413,13 @@ final class ApexStore {
   private static boolean containsIgnoreCase(String haystack, String needle) {
     if (haystack == null || needle == null) return false;
     return haystack.toLowerCase().contains(needle.toLowerCase());
+  }
+
+  /** Strip WITH SECURITY_ENFORCED / WITH USER_MODE / WITH SYSTEM_MODE clauses from SOQL. */
+  private static String stripWithClauses(String soql) {
+    if (soql == null) return soql;
+    // Remove WITH SECURITY_ENFORCED, WITH USER_MODE, WITH SYSTEM_MODE (case-insensitive)
+    return soql.replaceAll("(?i)\\bWITH\\s+(SECURITY_ENFORCED|USER_MODE|SYSTEM_MODE)\\b", "").trim();
   }
 
   /** Check that the queried object is accessible in USER_MODE queries. */
