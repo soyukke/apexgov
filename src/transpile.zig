@@ -1425,14 +1425,19 @@ fn collectInnerTypeNames(
         const declaration = field.declaration;
         if (declaration.len == 0) continue;
 
+        // Only check the declaration header (before '{') to avoid matching
+        // 'class'/'interface'/'enum' keywords inside method bodies.
+        const header_end = std.mem.indexOfScalar(u8, declaration, '{') orelse declaration.len;
+        const header = declaration[0..header_end];
+
         const KeywordMatch = struct {
             pos: usize,
             len: usize,
         };
         const keyword_match = blk: {
-            const class_pos = indexOfWordIgnoreCase(declaration, "class");
-            const interface_pos = indexOfWordIgnoreCase(declaration, "interface");
-            const enum_pos = indexOfWordIgnoreCase(declaration, "enum");
+            const class_pos = indexOfWordIgnoreCase(header, "class");
+            const interface_pos = indexOfWordIgnoreCase(header, "interface");
+            const enum_pos = indexOfWordIgnoreCase(header, "enum");
 
             if (class_pos) |pos| break :blk KeywordMatch{ .pos = pos, .len = "class".len };
             if (interface_pos) |pos| break :blk KeywordMatch{ .pos = pos, .len = "interface".len };
@@ -1440,7 +1445,7 @@ fn collectInnerTypeNames(
             continue;
         };
 
-        const after_keyword = std.mem.trimLeft(u8, declaration[(keyword_match.pos + keyword_match.len)..], " \t");
+        const after_keyword = std.mem.trimLeft(u8, header[(keyword_match.pos + keyword_match.len)..], " \t");
         const inner_name = leadingIdentifier(after_keyword) orelse continue;
         if (inner_name.len == 0) continue;
         if (std.ascii.eqlIgnoreCase(inner_name, class_name)) continue;
@@ -11893,7 +11898,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "List<ApexSObject> oppsToProcess = getRecords();", .to = "List<ApexSObject> oppsToProcess = records;" },
         .{ .from = "public class OPP_OpportunityNaming implements OPP_INaming {", .to = "public class OPP_OpportunityNaming {" },
         .{ .from = "public static void execute(apexemu.runtime.System.SchedulableContext context) {", .to = "public void execute(apexemu.runtime.System.SchedulableContext context) {" },
-        .{ .from = "public class TDTM_ObjectDataGateway implements TDTM_iTableDataGateway {", .to = "public class TDTM_ObjectDataGateway {" },
+        // Removed: core fix in collectInnerTypeNames now preserves implements correctly
+        // .{ .from = "public class TDTM_ObjectDataGateway implements TDTM_iTableDataGateway {", .to = "public class TDTM_ObjectDataGateway {" },
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
         .{ .from = "public static List<ApexSObject> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {", .to = "public static List<Object> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {" },
         .{ .from = "List<ApexSObject> pluck = (List<ApexSObject>) listType.newInstance();", .to = "List<Object> pluck = (List<Object>) listType.newInstance();" },
