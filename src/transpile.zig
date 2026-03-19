@@ -12129,6 +12129,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public class TDTM_ObjectDataGateway {", .to = "public class TDTM_ObjectDataGateway implements TDTM_iTableDataGateway {" },
         .{ .from = "if (!sortedHandlers.containsKey(th.getAs(\"Load_Order__c\")))", .to = "if (!sortedHandlers.containsKey(ApexStrings.toDouble(th.getAs(\"Load_Order__c\"))))" },
         .{ .from = "sortedHandlers.put(th.getAs(\"Load_Order__c\"), new ArrayList<ApexSObject>());", .to = "sortedHandlers.put(ApexStrings.toDouble(th.getAs(\"Load_Order__c\")), new ArrayList<ApexSObject>());" },
+        .{ .from = "public class OPP_OpportunityNaming {", .to = "public class OPP_OpportunityNaming implements OPP_INaming {" },
+        .{ .from = "public class fflib_Criteria {", .to = "public class fflib_Criteria implements Evaluator {" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == BUCKET_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), BUCKET_PROCESSOR);" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == HH_ACCOUNT_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), HH_ACCOUNT_PROCESSOR);" },
         .{ .from = "accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\") == CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE", .to = "ApexEquals.eq(accountRecord.getAs(\"npe01__SYSTEM_AccountType__c\"), CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE)" },
