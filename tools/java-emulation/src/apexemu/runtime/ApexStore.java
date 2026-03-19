@@ -2474,6 +2474,12 @@ final class ApexStore {
   }
 
   private static boolean matchesClause(ApexSObject row, WhereClause clause) {
+    // Unresolved bind variables (e.g. :id from Database.query with UTIL_Query)
+    // are treated as matching everything — the caller intended a bind but
+    // the emulation received a raw SOQL string without bind map.
+    if (clause.literal instanceof String litStr && litStr.startsWith(":")) {
+      return true;
+    }
     Object value = resolveFieldValue(row, clause.field);
     return switch (clause.operator) {
       case "=" -> compareEquality(value, clause.literal);
