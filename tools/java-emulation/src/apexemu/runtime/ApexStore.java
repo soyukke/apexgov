@@ -3435,6 +3435,11 @@ final class ApexStore {
     cleaned = cleaned.replaceAll("(?i)\\bIN\\s+:(\\w+)\\.\\w+\\(\\)", "IN :$1");
     // Insert space between aggregate function closing paren and alias: COUNT(Id)alias → COUNT(Id) alias
     cleaned = cleaned.replaceAll("\\)([a-zA-Z_])", ") $1");
+    // Strip ROLLUP/CUBE wrapper from GROUP BY: GROUP BY ROLLUP(a, b) → GROUP BY a, b
+    cleaned = cleaned.replaceAll("(?i)\\bROLLUP\\s*\\(([^)]+)\\)", "$1");
+    cleaned = cleaned.replaceAll("(?i)\\bCUBE\\s*\\(([^)]+)\\)", "$1");
+    // Replace LIMIT :var and LIMIT : var with LIMIT 2000 (Apex default)
+    cleaned = cleaned.replaceAll("(?i)\\bLIMIT\\s+:\\s*\\w+", "LIMIT 2000");
     // Normalize "IN: var" (no space before colon) to "IN :var"
     cleaned = cleaned.replaceAll("(?i)\\bIN:\\s+(\\w+)", "IN :$1");
     // Normalize "IN : var" (space around colon) to "IN :var"
