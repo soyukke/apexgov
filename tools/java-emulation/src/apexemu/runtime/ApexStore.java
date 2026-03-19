@@ -3433,6 +3433,8 @@ final class ApexStore {
     cleaned = cleaned.replaceAll("(?i)\\bIN:\\s*(\\w+)\\.\\w+\\(\\)", "IN :$1");
     // Normalize "IN :var.method()" similarly
     cleaned = cleaned.replaceAll("(?i)\\bIN\\s+:(\\w+)\\.\\w+\\(\\)", "IN :$1");
+    // Insert space between aggregate function closing paren and alias: COUNT(Id)alias → COUNT(Id) alias
+    cleaned = cleaned.replaceAll("\\)([a-zA-Z_])", ") $1");
     // Normalize "IN: var" (no space before colon) to "IN :var"
     cleaned = cleaned.replaceAll("(?i)\\bIN:\\s+(\\w+)", "IN :$1");
     // Normalize "IN : var" (space around colon) to "IN :var"
