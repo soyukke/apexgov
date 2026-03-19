@@ -593,8 +593,21 @@ public final class Runner {
     for (ClassRegistration reg : registrations) {
       try {
         Class<?> clazz = Class.forName(reg.className, false, loader);
-        for (String name : reg.registrationNames) {
-          apexemu.runtime.System.registerClass(name, clazz);
+        // Register the outer class under its own names
+        String simpleName = reg.className.contains(".")
+            ? reg.className.substring(reg.className.lastIndexOf('.') + 1) : reg.className;
+        apexemu.runtime.System.registerClass(simpleName, clazz);
+        if (simpleName.contains("$")) {
+          apexemu.runtime.System.registerClass(simpleName.replace('$', '.'), clazz);
+        }
+        apexemu.runtime.System.registerClass(reg.className, clazz);
+        // Register inner classes under their own Class<?> objects
+        for (Class<?> inner : clazz.getDeclaredClasses()) {
+          String innerSimple = inner.getSimpleName();
+          String outerSimple = simpleName.contains("$")
+              ? simpleName.substring(0, simpleName.indexOf('$')) : simpleName;
+          apexemu.runtime.System.registerClass(outerSimple + "." + innerSimple, inner);
+          apexemu.runtime.System.registerClass(innerSimple, inner);
         }
       } catch (Exception ignored) {
         // skip
