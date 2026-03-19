@@ -3565,6 +3565,11 @@ final class ApexStore {
         }
 
         String bindName = soql.substring(bindStart, bindEnd);
+        // Skip numeric-only tokens — these are date literal parts like LAST_N_DAYS:7
+        if (bindName.chars().allMatch(Character::isDigit)) {
+          out.append(ch);
+          continue;
+        }
         int bindExpressionEnd = bindEnd;
         // Skip trailing () method invocation (e.g. :UserInfo.getOrganizationId())
         if (bindEnd + 1 < soql.length() && soql.charAt(bindEnd) == '(' && soql.charAt(bindEnd + 1) == ')') {
@@ -4150,6 +4155,15 @@ final class ApexStore {
     Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
       return new WhereClause(whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
+    }
+
+    // Retry with 'equals' replaced by '=' (Apex alias)
+    String retryNormalized = normalized.replaceAll("(?i)\\bequals\\b", "=");
+    if (!retryNormalized.equals(normalized)) {
+      Matcher retryMatcher = WHERE_PATTERN.matcher(retryNormalized);
+      if (retryMatcher.matches()) {
+        return new WhereClause(retryMatcher.group(1), retryMatcher.group(2), parseLiteral(retryMatcher.group(3).trim()));
+      }
     }
 
     throw new IllegalArgumentException(
