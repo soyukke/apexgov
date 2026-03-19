@@ -3425,7 +3425,11 @@ final class ApexStore {
   private static String stripWithClauses(String soql) {
     if (soql == null) return soql;
     // Remove WITH SECURITY_ENFORCED, WITH USER_MODE, WITH SYSTEM_MODE (case-insensitive)
-    return soql.replaceAll("(?i)\\bWITH\\s+(SECURITY_ENFORCED|USER_MODE|SYSTEM_MODE)\\b", "").trim();
+    String cleaned = soql.replaceAll("(?i)\\bWITH\\s+(SECURITY_ENFORCED|USER_MODE|SYSTEM_MODE)\\b", "");
+    // Strip toLabel() and FORMAT() wrappers in SELECT — replace with just the field name
+    cleaned = cleaned.replaceAll("(?i)\\btoLabel\\(([^)]+)\\)", "$1");
+    cleaned = cleaned.replaceAll("(?i)\\bFORMAT\\(([^)]+)\\)", "$1");
+    return cleaned.trim();
   }
 
   /** Check that the queried object is accessible in USER_MODE queries. */
