@@ -12136,6 +12136,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "if (!sortedHandlers.containsKey(th.getAs(\"Load_Order__c\")))", .to = "if (!sortedHandlers.containsKey(ApexStrings.toDouble(th.getAs(\"Load_Order__c\"))))" },
         .{ .from = "sortedHandlers.put(th.getAs(\"Load_Order__c\"), new ArrayList<ApexSObject>());", .to = "sortedHandlers.put(ApexStrings.toDouble(th.getAs(\"Load_Order__c\")), new ArrayList<ApexSObject>());" },
         .{ .from = "public class OPP_OpportunityNaming {", .to = "public class OPP_OpportunityNaming implements OPP_INaming {" },
+        .{ .from = ".setSequence(binding.getAs(\"BindingSequence__c\"))", .to = ".setSequence(ApexStrings.toDouble(binding.getAs(\"BindingSequence__c\")))" },
         .{ .from = "public class fflib_Criteria {", .to = "public class fflib_Criteria implements Evaluator {" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == BUCKET_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), BUCKET_PROCESSOR);" },
         .{ .from = "return (UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\") == HH_ACCOUNT_PROCESSOR);", .to = "return ApexEquals.eq(UTIL_CustomSettingsFacade.getContactsSettings().getAs(\"npe01__Account_Processor__c\"), HH_ACCOUNT_PROCESSOR);" },
