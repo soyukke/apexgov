@@ -3429,6 +3429,14 @@ final class ApexStore {
     // Strip toLabel() and FORMAT() wrappers in SELECT — replace with just the field name
     cleaned = cleaned.replaceAll("(?i)\\btoLabel\\(([^)]+)\\)", "$1");
     cleaned = cleaned.replaceAll("(?i)\\bFORMAT\\(([^)]+)\\)", "$1");
+    // Normalize "IN: var.method()" to "IN :var" (strip method call)
+    cleaned = cleaned.replaceAll("(?i)\\bIN:\\s*(\\w+)\\.\\w+\\(\\)", "IN :$1");
+    // Normalize "IN :var.method()" similarly
+    cleaned = cleaned.replaceAll("(?i)\\bIN\\s+:(\\w+)\\.\\w+\\(\\)", "IN :$1");
+    // Normalize "IN: var" (no space before colon) to "IN :var"
+    cleaned = cleaned.replaceAll("(?i)\\bIN:\\s+(\\w+)", "IN :$1");
+    // Normalize "IN : var" (space around colon) to "IN :var"
+    cleaned = cleaned.replaceAll("(?i)\\bIN\\s+:\\s+(\\w+)", "IN :$1");
     return cleaned.trim();
   }
 
