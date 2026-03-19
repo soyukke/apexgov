@@ -57,7 +57,7 @@ final class ApexStore {
       Pattern.compile("(?i)\\s+with\\s+(user_mode|system_mode|security_enforced)\\b");
   private static final Pattern ORDER_BY_PATTERN =
       Pattern.compile(
-          "(?i)^(" + FIELD_PATH_TEXT + ")(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
+          "(?i)^(" + FIELD_PATH_TEXT + "|\\w+\\([^)]*\\))(?:\\s+(asc|desc))?(?:\\s+nulls\\s+(first|last))?$");
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("(?i)^" + IDENTIFIER_TEXT + "$");
   private static final Pattern FIELD_PATH_PATTERN = Pattern.compile("(?i)^" + FIELD_PATH_TEXT + "$");
   private static final Pattern SELECT_AGGREGATE_PATTERN =
