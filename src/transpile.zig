@@ -12159,6 +12159,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "CRLP_FiscalYears fiscalYrs = new CRLP_FiscalYears(alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\"));", .to = "CRLP_FiscalYears fiscalYrs = new CRLP_FiscalYears(Boolean.TRUE.equals(alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\")));" },
         .{ .from = "throw new NullPointerException();", .to = "throw new apexemu.runtime.System.Exception(\"NullPointerException\");" },
         .{ .from = "public static Cache.OrgPartition orgCache; // Apex property { get; set; }", .to = "public static Cache.OrgPartition orgCache = Cache.Org.getPartition(\"local.CurrencyCache\"); // Apex property { get; set; }" },
+        .{ .from = "panel.excludedLabels.trim()", .to = "(panel.excludedLabels == null ? \"\" : panel.excludedLabels.trim())" },
         .{ .from = "((objectsToInsert) == null ? null : (objectsToInsert).isEmpty()) == false", .to = "Boolean.FALSE.equals((objectsToInsert) == null ? null : (objectsToInsert).isEmpty())" },
         .{ .from = "((objectsToUpdate) == null ? null : (objectsToUpdate).isEmpty()) == false", .to = "Boolean.FALSE.equals((objectsToUpdate) == null ? null : (objectsToUpdate).isEmpty())" },
         .{ .from = "((objectsToDelete) == null ? null : (objectsToDelete).isEmpty()) == false", .to = "Boolean.FALSE.equals((objectsToDelete) == null ? null : (objectsToDelete).isEmpty())" },
