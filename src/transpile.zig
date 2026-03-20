@@ -26110,22 +26110,11 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         }
     }
 
-    // Fallback: rewrite == / != in variable assignments, ternary, etc.
-    // Skip lines already containing ApexEquals (rewritten by earlier passes).
-    if ((std.mem.indexOf(u8, trimmed, " == ") != null or std.mem.indexOf(u8, trimmed, " != ") != null) and
-        std.mem.indexOf(u8, trimmed, "ApexEquals") == null)
-    {
-        const rewritten = try rewriteEqualityOperators(gpa, trimmed, object_names);
-        defer gpa.free(rewritten);
-        if (!std.mem.eql(u8, rewritten, trimmed)) {
-            const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
-            var out: std.ArrayList(u8) = .empty;
-            errdefer out.deinit(gpa);
-            try out.appendSlice(gpa, leading);
-            try out.appendSlice(gpa, rewritten);
-            return out.toOwnedSlice(gpa);
-        }
-    }
+    // Note: fallback equality rewrite for variable assignments is disabled
+    // because it incorrectly wraps assignment = with ApexEquals.eq, breaking
+    // Java syntax (e.g. "Boolean x = expr == value" becomes
+    // "ApexEquals.eq(Boolean x = expr, value)"). The rewriter cannot reliably
+    // distinguish = (assignment) from == (comparison) in all contexts.
 
     return gpa.dupe(u8, line);
 }
