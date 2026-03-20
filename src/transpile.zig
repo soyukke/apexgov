@@ -26110,11 +26110,10 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         }
     }
 
-    // Note: fallback equality rewrite for variable assignments is disabled
-    // because it incorrectly wraps assignment = with ApexEquals.eq, breaking
-    // Java syntax (e.g. "Boolean x = expr == value" becomes
-    // "ApexEquals.eq(Boolean x = expr, value)"). The rewriter cannot reliably
-    // distinguish = (assignment) from == (comparison) in all contexts.
+    // Note: fallback equality rewrite for variable assignments is disabled.
+    // The rewriter interacts with fixup ordering (isContactDonor test pattern)
+    // in ways that break existing unit tests. The findLeftOperandStart fix
+    // for assignment = is preserved for when this is re-enabled.
 
     return gpa.dupe(u8, line);
 }
@@ -26337,6 +26336,11 @@ fn findLeftOperandStart(text: []const u8, op_pos: usize) usize {
         if (ch == '|' and pos > 0 and text[pos - 1] == '|') return pos + 1;
         if (ch == ',' or ch == ';' or ch == '{') return pos + 1;
         if (ch == '!') return pos + 1;
+        // Stop at assignment = (single = not part of ==, !=, <=, >=)
+        if (ch == '=' and
+            (pos + 1 >= text.len or text[pos + 1] != '=') and
+            (pos == 0 or (text[pos - 1] != '!' and text[pos - 1] != '<' and text[pos - 1] != '>' and text[pos - 1] != '=')))
+            return pos + 1;
     }
     return 0;
 }
