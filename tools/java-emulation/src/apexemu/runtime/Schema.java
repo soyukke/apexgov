@@ -1610,7 +1610,10 @@ public final class Schema {
       if (canonical != null) {
         return super.get(canonical);
       }
-      return null;
+      // Auto-create SObjectField for unknown fields to avoid NPE in callers
+      SObjectField autoField = new SObjectField(ownerType, textKey.trim());
+      putField(textKey.trim(), autoField);
+      return autoField;
     }
 
     @Override
