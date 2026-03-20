@@ -337,29 +337,43 @@ else
   xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
 fi
 
-# Final pass: compile placeholder stubs, then retry original sources
+# Final pass: iteratively restore placeholder sources until no more progress
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
-  # First compile all placeholders so their types are available
+  # Compile all placeholders so their types are available
   while IFS= read -r fb_src; do
     javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
   done < "$compile_fallbacks"
-  # Retry original sources now that all placeholder types exist
-  restored=0
-  while IFS= read -r fb_src; do
-    rel="${fb_src#"$best_effort_sources_dir"/}"
-    orig="$tests_dir/$rel"
-    if [[ -f "$orig" ]]; then
-      cp "$orig" "$fb_src"
-      if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-        restored=$((restored + 1))
+  # Iteratively restore original sources
+  total_restored=0
+  for _round in 1 2 3 4 5; do
+    restored=0
+    next_fallbacks="$out_dir/.next-fallbacks.txt"
+    : > "$next_fallbacks"
+    while IFS= read -r fb_src; do
+      rel="${fb_src#"$best_effort_sources_dir"/}"
+      orig="$tests_dir/$rel"
+      if [[ -f "$orig" ]]; then
+        cp "$orig" "$fb_src"
+        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+          restored=$((restored + 1))
+        else
+          render_placeholder_source "$fb_src"
+          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          printf '%s\n' "$fb_src" >> "$next_fallbacks"
+        fi
       else
-        render_placeholder_source "$fb_src"
-        javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+        printf '%s\n' "$fb_src" >> "$next_fallbacks"
       fi
+    done < "$compile_fallbacks"
+    total_restored=$((total_restored + restored))
+    cp "$next_fallbacks" "$compile_fallbacks"
+    rm -f "$next_fallbacks"
+    if [[ "$restored" -eq 0 ]]; then
+      break
     fi
-  done < "$compile_fallbacks"
-  if [[ "$restored" -gt 0 ]]; then
-    echo "best-effort: restored $restored source(s) from placeholders"
+  done
+  if [[ "$total_restored" -gt 0 ]]; then
+    echo "best-effort: restored $total_restored source(s) from placeholders in $_round round(s)"
   fi
 fi
 
