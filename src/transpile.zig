@@ -26082,7 +26082,15 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         if (std.mem.indexOfScalar(u8, trimmed, '(')) |open| {
             if (findMatchingParen(trimmed, open)) |close| {
                 if (close > open + 1) {
-                    const condition = trimmed[open + 1 .. close];
+                    var condition = trimmed[open + 1 .. close];
+                    // For for-each loops (Type var : expr), only rewrite the expr part
+                    var for_each_prefix: []const u8 = "";
+                    if (startsWithWordIgnoreCase(trimmed, "for")) {
+                        if (std.mem.indexOf(u8, condition, " : ")) |colon_pos| {
+                            for_each_prefix = condition[0 .. colon_pos + " : ".len];
+                            condition = condition[colon_pos + " : ".len ..];
+                        }
+                    }
                     const rewritten = try rewriteEqualityOperators(gpa, condition, object_names);
                     defer gpa.free(rewritten);
                     if (!std.mem.eql(u8, rewritten, condition)) {
@@ -26091,6 +26099,7 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
                         errdefer out.deinit(gpa);
                         try out.appendSlice(gpa, leading);
                         try out.appendSlice(gpa, trimmed[0 .. open + 1]);
+                        try out.appendSlice(gpa, for_each_prefix);
                         try out.appendSlice(gpa, rewritten);
                         try out.append(gpa, ')');
                         if (close + 1 < trimmed.len) try out.appendSlice(gpa, trimmed[close + 1 ..]);
