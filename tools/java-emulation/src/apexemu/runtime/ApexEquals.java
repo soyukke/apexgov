@@ -13,6 +13,9 @@ public final class ApexEquals {
   /** Null-safe value equality, matching Apex == semantics. */
   public static boolean eq(Object a, Object b) {
     if (a == b) return true;
+    // Apex treats null and empty string as equal
+    if (a == null && b instanceof String s && s.isEmpty()) return true;
+    if (b == null && a instanceof String s && s.isEmpty()) return true;
     if (a == null || b == null) return false;
     // Handle numeric cross-type comparison (Integer == Long, etc.)
     if (a instanceof Number && b instanceof Number) {
