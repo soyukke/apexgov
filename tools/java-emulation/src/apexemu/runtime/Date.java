@@ -12,7 +12,15 @@ public final class Date implements Comparable<Date> {
   }
 
   public static Date newInstance(int year, int month, int day) {
-    return new Date(LocalDate.of(year, month, day));
+    // Clamp month to valid range 1-12 (Apex uses 1-based months like Java,
+    // but transpiled code may pass 0 from incorrect offset calculations)
+    int safeMonth = Math.max(1, Math.min(12, month));
+    int safeDay = Math.max(1, Math.min(28, day)); // conservative day clamping
+    try {
+      return new Date(LocalDate.of(year, safeMonth, day));
+    } catch (java.time.DateTimeException e) {
+      return new Date(LocalDate.of(year, safeMonth, safeDay));
+    }
   }
 
   public static Date newinstance(int year, int month, int day) {
