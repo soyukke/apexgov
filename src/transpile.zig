@@ -12151,6 +12151,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public GiftBatchService giftBatchService; // Apex property { get; set; }", .to = "public GiftBatchService giftBatchService = new GiftBatchService(); // Apex property { get; set; }" },
         .{ .from = "switch (className) {\n      case \"RD2_DataMigration_BATCH\"", .to = "switch (className == null ? \"\" : className) {\n      case \"RD2_DataMigration_BATCH\"" },
         .{ .from = "switch (settingsIncrement) {\n    case \"Days\"", .to = "switch (settingsIncrement == null ? \"\" : settingsIncrement) {\n    case \"Days\"" },
+        .{ .from = "return this.batch.getAs(\"Expected_Count_of_Gifts__c\");", .to = "return ApexStrings.toDouble(this.batch.getAs(\"Expected_Count_of_Gifts__c\"));" },
+        .{ .from = "return this.batch.getAs(\"Expected_Total_Batch_Amount__c\");", .to = "return ApexStrings.toDouble(this.batch.getAs(\"Expected_Total_Batch_Amount__c\"));" },
         .{ .from = "if (usesStartDateAsFiscalYearName) {", .to = "if (Boolean.TRUE.equals(usesStartDateAsFiscalYearName)) {" },
         .{ .from = "alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\") ? \"Fiscal_Year\" : \"Calendar_Year\"", .to = "Boolean.TRUE.equals(alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\")) ? \"Fiscal_Year\" : \"Calendar_Year\"" },
         .{ .from = "CRLP_FiscalYears fiscalYrs = new CRLP_FiscalYears(alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\"));", .to = "CRLP_FiscalYears fiscalYrs = new CRLP_FiscalYears(Boolean.TRUE.equals(alloSettings.getAs(\"Use_Fiscal_Year_for_Rollups__c\")));" },
