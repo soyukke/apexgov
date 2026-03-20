@@ -26110,10 +26110,22 @@ fn rewriteObjectEqualityLine(gpa: std.mem.Allocator, line: []const u8, object_na
         }
     }
 
-    // Note: fallback equality rewrite for variable assignments is disabled.
-    // The rewriter interacts with fixup ordering (isContactDonor test pattern)
-    // in ways that break existing unit tests. The findLeftOperandStart fix
-    // for assignment = is preserved for when this is re-enabled.
+    // Fallback: rewrite == / != in variable assignments, ternary, etc.
+    // Skip lines already containing ApexEquals (rewritten by earlier passes).
+    if ((std.mem.indexOf(u8, trimmed, " == ") != null or std.mem.indexOf(u8, trimmed, " != ") != null) and
+        std.mem.indexOf(u8, trimmed, "ApexEquals") == null)
+    {
+        const rewritten = try rewriteEqualityOperators(gpa, trimmed, object_names);
+        defer gpa.free(rewritten);
+        if (!std.mem.eql(u8, rewritten, trimmed)) {
+            const leading = line[0 .. @intFromPtr(trimmed.ptr) - @intFromPtr(line.ptr)];
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(gpa);
+            try out.appendSlice(gpa, leading);
+            try out.appendSlice(gpa, rewritten);
+            return out.toOwnedSlice(gpa);
+        }
+    }
 
     return gpa.dupe(u8, line);
 }
@@ -26329,20 +26341,26 @@ fn findLeftOperandStart(text: []const u8, op_pos: usize) usize {
                 paren_depth -= 1;
                 continue;
             }
-            return pos + 1;
+            return skipWhitespace(text, pos + 1, op_pos);
         }
         if (paren_depth > 0) continue;
-        if (ch == '&' and pos > 0 and text[pos - 1] == '&') return pos + 1;
-        if (ch == '|' and pos > 0 and text[pos - 1] == '|') return pos + 1;
-        if (ch == ',' or ch == ';' or ch == '{') return pos + 1;
-        if (ch == '!') return pos + 1;
+        if (ch == '&' and pos > 0 and text[pos - 1] == '&') return skipWhitespace(text, pos + 1, op_pos);
+        if (ch == '|' and pos > 0 and text[pos - 1] == '|') return skipWhitespace(text, pos + 1, op_pos);
+        if (ch == ',' or ch == ';' or ch == '{') return skipWhitespace(text, pos + 1, op_pos);
+        if (ch == '!') return skipWhitespace(text, pos + 1, op_pos);
         // Stop at assignment = (single = not part of ==, !=, <=, >=)
         if (ch == '=' and
             (pos + 1 >= text.len or text[pos + 1] != '=') and
             (pos == 0 or (text[pos - 1] != '!' and text[pos - 1] != '<' and text[pos - 1] != '>' and text[pos - 1] != '=')))
-            return pos + 1;
+            return skipWhitespace(text, pos + 1, op_pos);
     }
     return 0;
+}
+
+fn skipWhitespace(text: []const u8, start: usize, limit: usize) usize {
+    var pos = start;
+    while (pos < limit and (text[pos] == ' ' or text[pos] == '\t')) pos += 1;
+    return pos;
 }
 
 fn findExpressionEnd(text: []const u8, start: usize) usize {
