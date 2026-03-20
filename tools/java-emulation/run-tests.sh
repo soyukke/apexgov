@@ -337,6 +337,32 @@ else
   xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
 fi
 
+# Final pass: compile placeholder stubs, then retry original sources
+if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
+  # First compile all placeholders so their types are available
+  while IFS= read -r fb_src; do
+    javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+  done < "$compile_fallbacks"
+  # Retry original sources now that all placeholder types exist
+  restored=0
+  while IFS= read -r fb_src; do
+    rel="${fb_src#"$best_effort_sources_dir"/}"
+    orig="$tests_dir/$rel"
+    if [[ -f "$orig" ]]; then
+      cp "$orig" "$fb_src"
+      if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+        restored=$((restored + 1))
+      else
+        render_placeholder_source "$fb_src"
+        javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+      fi
+    fi
+  done < "$compile_fallbacks"
+  if [[ "$restored" -gt 0 ]]; then
+    echo "best-effort: restored $restored source(s) from placeholders"
+  fi
+fi
+
 if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
   cp "$tests_dir/apex-triggers.txt" "$out_dir/build/apex-triggers.txt"
 fi
