@@ -336,6 +336,9 @@ public final class JSON {
     if (typeName == null || typeName.isBlank()) {
       return false;
     }
+    if (typeName.equalsIgnoreCase("SObject") || typeName.equalsIgnoreCase("ApexSObject")) {
+      return true;
+    }
     for (String knownType : Schema.getGlobalDescribe().keySet()) {
       if (knownType != null && knownType.equalsIgnoreCase(typeName)) {
         return true;

@@ -799,6 +799,10 @@ public final class System {
         return null;
       }
       String candidate = normalized.trim();
+      // SObject is the Apex base type for all database records.
+      if (candidate.equalsIgnoreCase("SObject") || candidate.equalsIgnoreCase("ApexSObject")) {
+        return new Type("SObject");
+      }
       if (isKnownSObjectTypeToken(candidate)) {
         return new Type(candidate);
       }
