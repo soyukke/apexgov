@@ -7658,6 +7658,15 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "RD2_DataMigrationBase_BATCH.LOG_CONTEXT_MIGRATION", .to = "\"RDDataMigration:\"" },
         // TDTM_ObjectDataGateway: static method can't implement interface method
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
+        // CAO_Constants_API: property getters delegate to CAO_Constants but transpiled as stub fields
+        .{ .from = "public static String ONE_TO_ONE_PROCESSOR; // Apex property { get; set; }", .to = "public static String ONE_TO_ONE_PROCESSOR = CAO_Constants.ONE_TO_ONE_PROCESSOR; // Apex property { get; set; }" },
+        .{ .from = "public static String ONE_TO_ONE_ORGANIZATION_TYPE; // Apex property { get; set; }", .to = "public static String ONE_TO_ONE_ORGANIZATION_TYPE = CAO_Constants.ONE_TO_ONE_ORGANIZATION_TYPE; // Apex property { get; set; }" },
+        .{ .from = "public static String BUCKET_PROCESSOR; // Apex property { get; set; }", .to = "public static String BUCKET_PROCESSOR = CAO_Constants.BUCKET_PROCESSOR; // Apex property { get; set; }" },
+        .{ .from = "public static String BUCKET_ORGANIZATION_TYPE; // Apex property { get; set; }", .to = "public static String BUCKET_ORGANIZATION_TYPE = CAO_Constants.BUCKET_ORGANIZATION_TYPE; // Apex property { get; set; }" },
+        .{ .from = "public static String HH_ACCOUNT_PROCESSOR; // Apex property { get; set; }", .to = "public static String HH_ACCOUNT_PROCESSOR = CAO_Constants.HH_ACCOUNT_PROCESSOR; // Apex property { get; set; }" },
+        .{ .from = "public static String HH_ACCOUNT_TYPE; // Apex property { get; set; }", .to = "public static String HH_ACCOUNT_TYPE = CAO_Constants.HH_ACCOUNT_TYPE; // Apex property { get; set; }" },
+        .{ .from = "public static String HH_TYPE; // Apex property { get; set; }", .to = "public static String HH_TYPE = CAO_Constants.HH_TYPE; // Apex property { get; set; }" },
+        .{ .from = "public static String BUCKET_ACCOUNT_NAME; // Apex property { get; set; }", .to = "public static String BUCKET_ACCOUNT_NAME = CAO_Constants.BUCKET_ACCOUNT_NAME; // Apex property { get; set; }" },
         .{ .from = "SystemAssert.assertEquals(true, evalService.hasKeyFieldChanged(updatedRd, rd), \"Opps should be evaluated when currency on related RD is changed only\");", .to = "SystemAssert.assertEquals(true, evalService.hasKeyFieldChanged(updatedRD, rd), \"Opps should be evaluated when currency on related RD is changed only\");" },
         .{ .from = "while (closeDate <= today) {", .to = "while (ApexCompare.lte(closeDate, today)) {" },
         .{ .from = "while (closeDate <= Date.newInstance(2019, 11, 1)) {", .to = "while (ApexCompare.lte(closeDate, Date.newInstance(2019, 11, 1))) {" },
