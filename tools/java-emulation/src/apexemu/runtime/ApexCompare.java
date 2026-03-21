@@ -39,6 +39,13 @@ public final class ApexCompare {
   @SuppressWarnings({"unchecked", "rawtypes"})
   private static int cmp(Object a, Object b) {
     if (a == null || b == null) return a == b ? 0 : (a == null ? -1 : 1);
+    // Handle Date/DateTime cross-type comparison by normalizing to DateTime.
+    if (a instanceof Date ad && b instanceof DateTime bdt) {
+      return DateTime.fromDate(ad).compareTo(bdt);
+    }
+    if (a instanceof DateTime adt && b instanceof Date bd) {
+      return adt.compareTo(DateTime.fromDate(bd));
+    }
     if (a instanceof Comparable ca && b instanceof Comparable) {
       try { return ca.compareTo(b); } catch (ClassCastException e) { return 0; }
     }
