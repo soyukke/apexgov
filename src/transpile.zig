@@ -8238,6 +8238,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
             .to = "public static class AnyDatetime implements fflib_IMatcher {\n  public Boolean matches(Object arg) {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return arg != null && (arg instanceof DateTime || arg instanceof Date);\n    }",
         },
         .{ .from = "return arg != null && arg instanceof Double;", .to = "return arg != null && arg instanceof Number;" },
+        .{ .from = "return arg != null && arg instanceof Decimal;", .to = "return arg != null && arg instanceof Number;" },
         .{ .from = "return arg != null && arg instanceof Long;", .to = "return arg != null && (arg instanceof Long || arg instanceof Integer);" },
         .{
             .from = "public static class AnyId implements fflib_IMatcher {\n  public Boolean matches(Object arg) {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return arg != null && arg instanceof String;\n    }",
@@ -8353,6 +8354,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "public DecimalMoreThan(Double toMatch, Boolean inclusive)", .to = "public DecimalMoreThan(Number toMatch, Boolean inclusive)" },
         .{ .from = "this.toMatch = (Double)validateNotNull(toMatch);", .to = "this.toMatch = ((Number)validateNotNull(toMatch)).doubleValue();" },
         .{ .from = "if (arg != null && arg instanceof Double) {", .to = "if (arg instanceof Number) {" },
+        .{ .from = "if (arg != null && arg instanceof Decimal) {", .to = "if (arg instanceof Number) {" },
         .{ .from = "Double longArg = (Double)arg;", .to = "Double longArg = ((Number)arg).doubleValue();" },
         .{ .from = "instanceof Datetime", .to = "instanceof DateTime" },
         .{ .from = "instanceof Decimal", .to = "instanceof Double" },
