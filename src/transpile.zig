@@ -8251,6 +8251,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "if (o == toMatch) {", .to = "if (ApexEquals.eq(o, toMatch)) {" },
         .{ .from = "return ApexSwitch.getSObjectType(soArg) == objectType;", .to = "return ApexEquals.eq(ApexSwitch.getSObjectType(soArg), objectType);" },
         // (RefEq fixup moved to rewriteLateCompatibilityFixups — equality rewriter runs before late fixups)
+        .{ .from = "if (id1Prefix != id2Prefix) {", .to = "if (ApexEquals.ne(id1Prefix, id2Prefix)) {" },
         .{
             .from = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", \"\" + lower, inclusiveUpper ? \"less than or equal to\" : \"less than\", \"\" + upper)));",
             .to = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", ApexStrings.formatNumber(lower), inclusiveUpper ? \"less than or equal to\" : \"less than\", ApexStrings.formatNumber(upper))));",

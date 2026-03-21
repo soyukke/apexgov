@@ -21,6 +21,19 @@ public final class ApexEquals {
     if (a instanceof Number && b instanceof Number) {
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();
     }
+    // Handle Date/DateTime/String cross-type comparison (Apex compares by value)
+    if (a instanceof Date && b instanceof String) {
+      return a.toString().equals(b);
+    }
+    if (b instanceof Date && a instanceof String) {
+      return b.toString().equals(a);
+    }
+    if (a instanceof DateTime && b instanceof String) {
+      return a.toString().equals(b);
+    }
+    if (b instanceof DateTime && a instanceof String) {
+      return b.toString().equals(a);
+    }
     return a.equals(b);
   }
 
