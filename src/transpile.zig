@@ -8252,6 +8252,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return ApexSwitch.getSObjectType(soArg) == objectType;", .to = "return ApexEquals.eq(ApexSwitch.getSObjectType(soArg), objectType);" },
         // (RefEq fixup moved to rewriteLateCompatibilityFixups — equality rewriter runs before late fixups)
         .{ .from = "if (id1Prefix != id2Prefix) {", .to = "if (ApexEquals.ne(id1Prefix, id2Prefix)) {" },
+        // URL scheme-check fixup moved to rewriteLateCompatibilityFixups (where new Url() → URI.create() lives)
         .{
             .from = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", \"\" + lower, inclusiveUpper ? \"less than or equal to\" : \"less than\", \"\" + upper)));",
             .to = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", ApexStrings.formatNumber(lower), inclusiveUpper ? \"less than or equal to\" : \"less than\", ApexStrings.formatNumber(upper))));",
@@ -11909,7 +11910,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "public static List<ApexSObject> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {", .to = "public static List<Object> extractField(apexemu.runtime.System.Type listType, List<ApexSObject> records, String field) {" },
         .{ .from = "List<ApexSObject> pluck = (List<ApexSObject>) listType.newInstance();", .to = "List<Object> pluck = (List<Object>) listType.newInstance();" },
         .{ .from = "return new fflib_SObjects((List<ApexSObject>) objects);", .to = "return new fflib_SObjects((List<ApexSObject>) (List<?>) objects);" },
-        .{ .from = "internalUrl = new Url(url).getPath();", .to = "internalUrl = (url == null ? null : java.net.URI.create(url).getPath());" },
+        .{ .from = "internalUrl = new Url(url).getPath();", .to = "internalUrl = (url == null ? null : (java.net.URI.create(url).getScheme() != null ? java.net.URI.create(url).getPath() : null));" },
         .{ .from = "if (fieldSetDescribe == null) {\n    return null;\n    }", .to = "if (fieldSetDescribe == null) {\n    return new ArrayList<>();\n    }" },
         .{ .from = "allOpportunityContactRoles.addAll(moreOpportunityContactRoles);", .to = "if (moreOpportunityContactRoles != null) {\n    allOpportunityContactRoles.addAll(moreOpportunityContactRoles);\n    }" },
         .{ .from = "arg instanceof SObjectField", .to = "arg instanceof Schema.SObjectField" },
@@ -32456,7 +32457,7 @@ test "rewriteKnownCompatibilityFixups guards URL path extraction against null in
     const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
     defer gpa.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "internalUrl = (url == null ? null : java.net.URI.create(url).getPath());") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "internalUrl = (url == null ? null : (java.net.URI.create(url).getScheme() != null ? java.net.URI.create(url).getPath() : null));") != null);
 }
 
 test "rewriteKnownCompatibilityFixups guards GiftBatch and lead affiliation index fronts" {
