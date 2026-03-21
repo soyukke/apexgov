@@ -8254,8 +8254,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "if (id1Prefix != id2Prefix) {", .to = "if (ApexEquals.ne(id1Prefix, id2Prefix)) {" },
         // URL scheme-check fixup moved to rewriteLateCompatibilityFixups (where new Url() → URI.create() lives)
         // Break TDTM_Runnable → UTIL_IntegrationGateway dependency to prevent placeholder cascade.
-        // ERR_Handler type erasure: deferred — ERR_Handler_API.Context→String replacement
-        // causes cascading duplicate method errors. Needs per-file fixup approach.
+        // ERR_Handler: remove Context-parameter overloads entirely (they duplicate String-parameter versions).
+        // The transpiler doesn't convert Context→String here because ERR_Handler_API.Context is a qualified name.
+        .{ .from = "public static Errors getErrorsOnly(apexemu.runtime.System.Exception e, ERR_Handler_API.Context context) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    Errors errors = new Errors();\n    errors.errorsExist = true;\n    errors.errorRecords.add(createError(e, context.name()));\n    return errors;\n  }\n\n  public static void processError(apexemu.runtime.System.Exception e, ERR_Handler_API.Context context) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    processError(e, context.name());\n  }", .to = "// (Context-parameter overloads of getErrorsOnly/processError removed to avoid type erasure conflict)" },
+        .{ .from = "public static void processErrors(List<apexemu.runtime.System.Exception> exceptions, ERR_Handler_API.Context context) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    List<ApexSObject> errors = new ArrayList<ApexSObject>();\n    for (apexemu.runtime.System.Exception e : exceptions) {\n    errors.add(createError(e, context.name()));\n    }\n    processErrors(errors, context.name());\n  }", .to = "// (Context-parameter processErrors removed to avoid type erasure conflict)" },
         // RD2_StatusMapper: getMapping() creates a local mappingByStatus that shadows the field.
         // Change to update the field so getAll/getState/etc. see the computed values.
         .{ .from = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    Map<String, Mapping> mappingByStatus = new LinkedHashMap<>();", .to = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    this.mappingByStatus = new LinkedHashMap<>();" },
@@ -12268,7 +12270,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // RefEq must use reference equality, not value equality.
         // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
         .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
-        // (ERR_Handler late fixups deferred)
+        // (ERR_Handler Context-parameter methods removed via early fixup)
     };
 
     var current = try gpa.dupe(u8, text);
