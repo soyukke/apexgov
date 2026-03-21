@@ -8253,6 +8253,11 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // (RefEq fixup moved to rewriteLateCompatibilityFixups — equality rewriter runs before late fixups)
         .{ .from = "if (id1Prefix != id2Prefix) {", .to = "if (ApexEquals.ne(id1Prefix, id2Prefix)) {" },
         // URL scheme-check fixup moved to rewriteLateCompatibilityFixups (where new Url() → URI.create() lives)
+        // RD2_StatusMapper: getMapping() creates a local mappingByStatus that shadows the field.
+        // Change to update the field so getAll/getState/etc. see the computed values.
+        .{ .from = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    Map<String, Mapping> mappingByStatus = new LinkedHashMap<>();", .to = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    this.mappingByStatus = new LinkedHashMap<>();" },
+        // getAll() needs lazy init since tests call it directly without getMapping() first.
+        .{ .from = "public Map<String, Mapping> getAll() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    return mappingByStatus;\n  }", .to = "public Map<String, Mapping> getAll() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    if (mappingByStatus.isEmpty() && !statusLabelByValue.isEmpty()) {\n    mappingByStatus = getMapping();\n    }\n    return mappingByStatus;\n  }" },
         .{
             .from = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", \"\" + lower, inclusiveUpper ? \"less than or equal to\" : \"less than\", \"\" + upper)));",
             .to = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", ApexStrings.formatNumber(lower), inclusiveUpper ? \"less than or equal to\" : \"less than\", ApexStrings.formatNumber(upper))));",

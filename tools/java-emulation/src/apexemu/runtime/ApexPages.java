@@ -129,6 +129,13 @@ public final class ApexPages {
     }
 
     public PageReference save() {
+      if (record != null) {
+        if (record.id() != null && !record.id().isBlank()) {
+          Database.update(record);
+        } else {
+          Database.insert(record);
+        }
+      }
       return new PageReference("");
     }
 
