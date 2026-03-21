@@ -384,7 +384,11 @@ fi
 _t=$(_timer_start)
 set +e
 runner_cmd=(
-  java -cp "$out_dir/build" apexemu.runner.Runner
+  java
+  --add-opens java.base/java.lang=ALL-UNNAMED
+  --add-opens java.base/java.lang.reflect=ALL-UNNAMED
+  --add-opens java.base/java.util=ALL-UNNAMED
+  -cp "$out_dir/build" apexemu.runner.Runner
   --classes-dir "$out_dir/build"
   --out "$out_dir/report.json"
   --cpu-limit-ms "$cpu_limit_ms"

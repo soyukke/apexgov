@@ -8127,11 +8127,11 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "(fflib_MyList.IList)", .to = "(fflib_MyList)" },
         .{
             .from = "public class fflib_MyList {",
-            .to = "public class fflib_MyList {\n  private apexemu.runtime.System.StubProvider __stubProvider;\n\n  public void __setStubProvider(apexemu.runtime.System.StubProvider provider) {\n    this.__stubProvider = provider;\n  }",
+            .to = "public class fflib_MyList {\n  private transient apexemu.runtime.System.StubProvider __stubProvider;\n\n  public void __setStubProvider(apexemu.runtime.System.StubProvider provider) {\n    this.__stubProvider = provider;\n  }",
         },
         .{
             .from = "public class fflib_Inheritor {",
-            .to = "public class fflib_Inheritor {\n  private apexemu.runtime.System.StubProvider __stubProvider;\n\n  public void __setStubProvider(apexemu.runtime.System.StubProvider provider) {\n    this.__stubProvider = provider;\n  }",
+            .to = "public class fflib_Inheritor {\n  private transient apexemu.runtime.System.StubProvider __stubProvider;\n\n  public void __setStubProvider(apexemu.runtime.System.StubProvider provider) {\n    this.__stubProvider = provider;\n  }",
         },
         .{
             .from = "public void add(List<String> value) {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n  }",

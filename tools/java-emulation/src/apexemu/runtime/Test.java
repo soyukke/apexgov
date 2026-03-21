@@ -462,6 +462,12 @@ public final class Test {
     return null;
   }
 
+  /** Returns the stub provider registered for the given instance, or null if none. */
+  public static System.StubProvider getStubProvider(Object instance) {
+    if (instance == null) return null;
+    return STUB_PROVIDERS.get().get(instance);
+  }
+
   private static boolean attachLegacyStubProvider(Object instance, System.StubProvider provider) {
     if (instance == null || provider == null) {
       return false;
@@ -553,9 +559,32 @@ public final class Test {
       ctor.setAccessible(true);
       Object instance = ctor.newInstance();
       STUB_PROVIDERS.get().put(instance, provider);
+      // Also set __stubProvider field for classes that use the legacy fixup pattern
+      // (e.g. fflib_MyList.add checks __stubProvider directly).
+      setStubProviderField(instance, provider);
       return instance;
     } catch (ReflectiveOperationException ignored) {
       return null;
+    }
+  }
+
+  /** Directly set __stubProvider field via reflection, bypassing method dispatch. */
+  private static void setStubProviderField(Object instance, System.StubProvider provider) {
+    if (instance == null || provider == null) return;
+    try {
+      // Walk up the class hierarchy to find the __stubProvider field.
+      for (Class<?> c = instance.getClass(); c != null; c = c.getSuperclass()) {
+        try {
+          java.lang.reflect.Field f = c.getDeclaredField("__stubProvider");
+          f.setAccessible(true);
+          f.set(instance, provider);
+          return;
+        } catch (NoSuchFieldException ignored) {
+          // try superclass
+        }
+      }
+    } catch (ReflectiveOperationException ignored) {
+      // silently fail
     }
   }
 
