@@ -8250,6 +8250,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{ .from = "if (o == toMatch) {", .to = "if (ApexEquals.eq(o, toMatch)) {" },
         .{ .from = "return ApexSwitch.getSObjectType(soArg) == objectType;", .to = "return ApexEquals.eq(ApexSwitch.getSObjectType(soArg), objectType);" },
+        // (RefEq fixup moved to rewriteLateCompatibilityFixups — equality rewriter runs before late fixups)
         .{
             .from = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", \"\" + lower, inclusiveUpper ? \"less than or equal to\" : \"less than\", \"\" + upper)));",
             .to = "return ApexStrings.format(\"{0} {1} and {2} {3}\", new ArrayList<String>(ApexCollections.listOf(inclusiveLower ? \"greater than or equal to\" : \"greater than\", ApexStrings.formatNumber(lower), inclusiveUpper ? \"less than or equal to\" : \"less than\", ApexStrings.formatNumber(upper))));",
@@ -12254,6 +12255,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Id\"), new Schema.SObjectField(\"Account\", \"Name\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(accountId, \"Hello\"))) );", .to = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Id\"), new Schema.SObjectField(\"Account\", \"Name\"), (Map<String, Object>) (Map<?, ?>) new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(accountId, \"Hello\"))) );" },
         .{ .from = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Name\"), new Schema.SObjectField(\"Account\", \"Rating\"), new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"Hello\", \"Warm\"))) );", .to = "domain.setFieldValue( new Schema.SObjectField(\"Account\", \"Name\"), new Schema.SObjectField(\"Account\", \"Rating\"), (Map<String, Object>) (Map<?, ?>) new LinkedHashMap<String, String>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"Hello\", \"Warm\"))) );" },
         .{ .from = "public interface IIndividualBucketAccountSelector {\n}", .to = "public interface IIndividualBucketAccountSelector {\n  public ApexSObject getIndividualBucketAccount();\n}" },
+        // RefEq must use reference equality, not value equality.
+        // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
+        .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
     };
 
     var current = try gpa.dupe(u8, text);

@@ -1118,6 +1118,10 @@ public final class Schema {
     }
 
     public Integer getRelationshipOrder() {
+      // Relationship fields (lookup/master-detail) return 0 or 1; non-relationship fields return null.
+      if (fieldName != null && (fieldName.endsWith("Id") || fieldName.endsWith("__c"))) {
+        return 0;
+      }
       return null;
     }
 
