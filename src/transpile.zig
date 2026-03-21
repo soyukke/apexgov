@@ -7965,6 +7965,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "this.methodName == that.methodName", .to = "ApexEquals.eq(this.methodName, that.methodName)" },
         .{ .from = "this.methodArgTypes == that.methodArgTypes", .to = "ApexEquals.eq(this.methodArgTypes, that.methodArgTypes)" },
         .{ .from = "if( arg == methodArg) count++;", .to = "if(ApexEquals.eq(arg, methodArg)) count++;" },
+        .{ .from = "if( arg == methodArg) { count++; }", .to = "if(ApexEquals.eq(arg, methodArg)) { count++; }" },
         .{ .from = "(qualifiedMethod == invocation.getMethod())", .to = "(ApexEquals.eq(qualifiedMethod, invocation.getMethod()))" },
         .{ .from = "else if(calledMethodArg == methodArg) {", .to = "else if(ApexEquals.eq(calledMethodArg, methodArg)) {" },
         .{
