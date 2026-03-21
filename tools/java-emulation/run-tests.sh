@@ -349,22 +349,63 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
     restored=0
     next_fallbacks="$out_dir/.next-fallbacks.txt"
     : > "$next_fallbacks"
+
+    # First, try batch-restoring all placeholders at once (handles circular deps).
+    batch_restore=()
     while IFS= read -r fb_src; do
       rel="${fb_src#"$best_effort_sources_dir"/}"
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
-        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-          restored=$((restored + 1))
-        else
-          render_placeholder_source "$fb_src"
-          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
-          printf '%s\n' "$fb_src" >> "$next_fallbacks"
-        fi
+        batch_restore+=("$fb_src")
       else
         printf '%s\n' "$fb_src" >> "$next_fallbacks"
       fi
     done < "$compile_fallbacks"
+
+    if [[ ${#batch_restore[@]} -gt 0 ]]; then
+      if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${batch_restore[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+        restored=${#batch_restore[@]}
+        rm -f "$out_dir/.javac.err"
+      else
+        # Batch failed — identify which files have errors and revert those to placeholders.
+        batch_error_files=()
+        while IFS= read -r err_src; do
+          batch_error_files+=("$err_src")
+        done < <(
+          awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" \
+            | grep "^$best_effort_sources_dir/" \
+            | sort -u
+        )
+        rm -f "$out_dir/.javac.err"
+
+        # Revert error files to placeholders, keep the rest
+        for fb_src in "${batch_restore[@]}"; do
+          is_error=false
+          for err_src in "${batch_error_files[@]}"; do
+            if [[ "$fb_src" == "$err_src" ]]; then
+              is_error=true
+              break
+            fi
+          done
+          if [[ "$is_error" == "true" ]]; then
+            render_placeholder_source "$fb_src"
+            javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+            printf '%s\n' "$fb_src" >> "$next_fallbacks"
+          else
+            # Try individual compile to confirm
+            if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+              restored=$((restored + 1))
+            else
+              render_placeholder_source "$fb_src"
+              javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+              printf '%s\n' "$fb_src" >> "$next_fallbacks"
+            fi
+          fi
+        done
+      fi
+    fi
+
     total_restored=$((total_restored + restored))
     cp "$next_fallbacks" "$compile_fallbacks"
     rm -f "$next_fallbacks"

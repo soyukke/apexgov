@@ -8253,6 +8253,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // (RefEq fixup moved to rewriteLateCompatibilityFixups — equality rewriter runs before late fixups)
         .{ .from = "if (id1Prefix != id2Prefix) {", .to = "if (ApexEquals.ne(id1Prefix, id2Prefix)) {" },
         // URL scheme-check fixup moved to rewriteLateCompatibilityFixups (where new Url() → URI.create() lives)
+        // Break TDTM_Runnable → UTIL_IntegrationGateway dependency to prevent placeholder cascade.
+        // ERR_Handler type erasure: deferred — ERR_Handler_API.Context→String replacement
+        // causes cascading duplicate method errors. Needs per-file fixup approach.
         // RD2_StatusMapper: getMapping() creates a local mappingByStatus that shadows the field.
         // Change to update the field so getAll/getState/etc. see the computed values.
         .{ .from = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    Map<String, Mapping> mappingByStatus = new LinkedHashMap<>();", .to = "public Map<String, Mapping> getMapping() {\n    // TODO(apex): method body is copied as comments and needs manual porting.\n    this.mappingByStatus = new LinkedHashMap<>();" },
@@ -12265,6 +12268,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // RefEq must use reference equality, not value equality.
         // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
         .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
+        // (ERR_Handler late fixups deferred)
     };
 
     var current = try gpa.dupe(u8, text);

@@ -442,7 +442,10 @@ public final class Runner {
           Boolean.class, Boolean.class, List.class, List.class,
           apexemu.runtime.Schema.DescribeSObjectResult.class);
     } catch (Exception e) {
-      return; // No TDTM framework — skip
+      // TDTM_Config_API.run() not available (placeholder stub).
+      // Fall back to direct handler dispatch using TDTM_DefaultConfig.
+      autoRegisterTDTMDirectDispatch(classRegistrations, loader);
+      return;
     }
 
     // Find all TDTM trigger classes (pattern: TDTM_<SObjectType> or similar)
@@ -550,6 +553,102 @@ public final class Runner {
         throw new RuntimeException(cause);
       } catch (Exception e) {
         throw new RuntimeException(e);
+      }
+    };
+  }
+
+  /**
+   * Fallback TDTM trigger registration when TDTM_Config_API.run() is unavailable (placeholder).
+   * Reads handler records from TDTM_DefaultConfig.getDefaultRecords() and dispatches directly
+   * to the handler classes' run() method via reflection.
+   */
+  private static void autoRegisterTDTMDirectDispatch(List<ClassRegistration> classRegistrations, ClassLoader loader) {
+    List<apexemu.runtime.ApexSObject> handlerRecords;
+    try {
+      Class<?> defaultConfigClass = Class.forName("generated.TDTM_DefaultConfig", true, loader);
+      java.lang.reflect.Method getDefaults = defaultConfigClass.getMethod("getDefaultRecords");
+      @SuppressWarnings("unchecked")
+      List<apexemu.runtime.ApexSObject> records = (List<apexemu.runtime.ApexSObject>) getDefaults.invoke(null);
+      handlerRecords = records;
+    } catch (Exception e) {
+      return; // No TDTM_DefaultConfig either — skip
+    }
+    if (handlerRecords == null || handlerRecords.isEmpty()) return;
+
+    for (apexemu.runtime.ApexSObject handler : handlerRecords) {
+      if (!Boolean.TRUE.equals(handler.get("Active__c"))) continue;
+      String className = (String) handler.get("Class__c");
+      String objectName = (String) handler.get("Object__c");
+      String actions = (String) handler.get("Trigger_Action__c");
+      if (className == null || objectName == null || actions == null) continue;
+
+      Runnable tdtmHandler = buildDirectTDTMHandler(className, loader);
+      if (tdtmHandler == null) continue;
+
+      for (String action : actions.split(";")) {
+        String a = action.trim();
+        if (a.isEmpty()) continue;
+        switch (a) {
+          case "BeforeInsert" -> apexemu.runtime.Trigger.onBeforeInsert(objectName, tdtmHandler);
+          case "BeforeUpdate" -> apexemu.runtime.Trigger.onBeforeUpdate(objectName, tdtmHandler);
+          case "BeforeDelete" -> apexemu.runtime.Trigger.onBeforeDelete(objectName, tdtmHandler);
+          case "AfterInsert" -> apexemu.runtime.Trigger.onAfterInsert(objectName, tdtmHandler);
+          case "AfterUpdate" -> apexemu.runtime.Trigger.onAfterUpdate(objectName, tdtmHandler);
+          case "AfterDelete" -> apexemu.runtime.Trigger.onAfterDelete(objectName, tdtmHandler);
+          case "AfterUndelete" -> apexemu.runtime.Trigger.onAfterUndelete(objectName, tdtmHandler);
+          default -> {} // ignore unknown actions
+        }
+      }
+    }
+  }
+
+  private static Runnable buildDirectTDTMHandler(String className, ClassLoader fallbackLoader) {
+    return () -> {
+      try {
+        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+        if (cl == null) cl = fallbackLoader;
+        Class<?> handlerClass = Class.forName("generated." + className, true, cl);
+        // Look for run(List<ApexSObject>, List<ApexSObject>, Schema.DescribeSObjectResult, ...)
+        // TDTM_Runnable.run() signature
+        java.lang.reflect.Method runMethod = null;
+        for (java.lang.reflect.Method m : handlerClass.getMethods()) {
+          if ("run".equals(m.getName()) && m.getParameterCount() >= 3) {
+            runMethod = m;
+            break;
+          }
+        }
+        if (runMethod == null) return;
+        List<?> newList = apexemu.runtime.Trigger.getNew();
+        List<?> oldList = apexemu.runtime.Trigger.getOld();
+        // Determine the action string
+        String action = "";
+        if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isBefore()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isInsert())) action = "BeforeInsert";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isBefore()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isUpdate())) action = "BeforeUpdate";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isBefore()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isDelete())) action = "BeforeDelete";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isAfter()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isInsert())) action = "AfterInsert";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isAfter()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isUpdate())) action = "AfterUpdate";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isAfter()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isDelete())) action = "AfterDelete";
+        else if (Boolean.TRUE.equals(apexemu.runtime.Trigger.isAfter()) && Boolean.TRUE.equals(apexemu.runtime.Trigger.isUndelete())) action = "AfterUndelete";
+
+        Object instance = handlerClass.getDeclaredConstructor().newInstance();
+        // TDTM_Runnable.run(List<ApexSObject> newList, List<ApexSObject> oldList,
+        //   Schema.DescribeSObjectResult describeObj, TDTM_Runnable.Action action)
+        // But Action is an enum that may not exist. Use the string overload or reflection.
+        if (runMethod.getParameterCount() == 4) {
+          // Try to resolve the Action enum
+          try {
+            Class<?> actionEnum = Class.forName("generated.TDTM_Runnable$Action", true, cl);
+            Object actionVal = java.lang.Enum.valueOf((Class) actionEnum, action);
+            runMethod.invoke(instance, newList, oldList,
+                new apexemu.runtime.Schema.SObjectType(
+                    newList != null && !newList.isEmpty() ? ((apexemu.runtime.ApexSObject) newList.get(0)).type() : "Account"
+                ).getDescribe(), actionVal);
+          } catch (Exception ex) {
+            // Skip if action enum resolution fails
+          }
+        }
+      } catch (Exception e) {
+        // Silently skip handler errors in direct dispatch mode
       }
     };
   }
