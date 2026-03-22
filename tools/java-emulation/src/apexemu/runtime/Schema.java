@@ -519,6 +519,8 @@ public final class Schema {
       addChildRelationship(out, "Task", "WhoId");
     }
     if (parentType.equalsIgnoreCase("Account")) {
+      addChildRelationship(out, "Contact", "AccountId");
+      addChildRelationship(out, "Opportunity", "AccountId");
       addChildRelationship(out, "User", "AccountId");
       addChildRelationship(out, "Task", "WhatId");
     }
