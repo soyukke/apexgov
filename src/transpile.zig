@@ -7691,6 +7691,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // TDTM_ObjectDataGateway: static method can't implement interface method
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
+        // (ExistingRecords fix moved to late fixups)
         // FormulaFilter: null formula result should be treated as false, not NPE
         .{ .from = "if ((Boolean) fx.evaluate(toProcess) == true) {", .to = "if (Boolean.TRUE.equals(fx.evaluate(toProcess))) {" },
         // FlowChangeEventHeader.equals: Java == on List/String is reference comparison, needs value equality
@@ -12330,6 +12331,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
         .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
         // (ERR_Handler Context-parameter methods removed via early fixup)
+        // fflib_SObjectDomain: ExistingRecords empty map should fall through to Test.Database.oldRecords
+        .{ .from = "this.ExistingRecords != null ? this.ExistingRecords", .to = "(this.ExistingRecords != null && !this.ExistingRecords.isEmpty()) ? this.ExistingRecords" },
     };
 
     var current = try gpa.dupe(u8, text);
