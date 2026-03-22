@@ -29,12 +29,20 @@ public final class ApexEquals {
       return b.toString().equals(a);
     }
     if (a instanceof DateTime && b instanceof String) {
-      return a.toString().equals(b);
+      return normalizeDateTimeString(a.toString()).equals(normalizeDateTimeString((String) b));
     }
     if (b instanceof DateTime && a instanceof String) {
-      return b.toString().equals(a);
+      return normalizeDateTimeString(b.toString()).equals(normalizeDateTimeString((String) a));
     }
     return a.equals(b);
+  }
+
+  /** Normalize DateTime strings: remove trailing .000 millis for comparison. */
+  private static String normalizeDateTimeString(String s) {
+    if (s != null && s.endsWith(".000Z")) {
+      return s.substring(0, s.length() - 5) + "Z";
+    }
+    return s;
   }
 
   /** Null-safe value inequality, matching Apex != semantics. */

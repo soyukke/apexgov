@@ -301,7 +301,10 @@ public class ApexSObject {
         || normalizedField.equals("createddate")
         || normalizedField.equals("lastmodifieddate")
         || normalizedField.equals("systemmodstamp")
-        || normalizedField.equals("completeddate");
+        || normalizedField.equals("completeddate")
+        || normalizedField.equals("lastreferenceddate")
+        || normalizedField.equals("lastvieweddate")
+        || normalizedField.equals("reminderdatetime");
   }
 
   private static boolean isLikelyDateField(String normalizedField) {
