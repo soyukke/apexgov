@@ -173,7 +173,7 @@ public final class System {
     }
   }
 
-  public static final class NullPointerException extends java.lang.NullPointerException {
+  public static final class NullPointerException extends Exception {
     public NullPointerException() {
       super();
     }
