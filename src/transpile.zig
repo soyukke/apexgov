@@ -431,26 +431,58 @@ fn parseTriggerRegistration(
     var events = parseTriggerEvents(gpa, content[events_start..events_end]) catch return null;
     errdefer events.deinit(gpa);
 
+    // Try fflib_SObjectDomain.triggerHandler(X.class) pattern first
     const handler_prefix = "fflib_SObjectDomain.triggerHandler(";
-    const handler_idx = indexOfIgnoreCase(content, handler_prefix) orelse {
-        events.deinit(gpa);
-        return null;
-    };
-    const handler_open = std.mem.indexOfScalarPos(u8, content, handler_idx, '(') orelse {
-        events.deinit(gpa);
-        return null;
-    };
-    const handler_close = std.mem.indexOfScalarPos(u8, content, handler_open + 1, ')') orelse {
-        events.deinit(gpa);
-        return null;
-    };
-    const raw_handler = std.mem.trim(u8, content[handler_open + 1 .. handler_close], " \t\r\n");
-    if (!endsWithIgnoreCase(raw_handler, ".class")) {
-        events.deinit(gpa);
-        return null;
+    var handler_class: ?[]const u8 = null;
+    if (indexOfIgnoreCase(content, handler_prefix)) |handler_idx| {
+        if (std.mem.indexOfScalarPos(u8, content, handler_idx, '(')) |handler_open| {
+            if (std.mem.indexOfScalarPos(u8, content, handler_open + 1, ')')) |handler_close| {
+                const raw_handler = std.mem.trim(u8, content[handler_open + 1 .. handler_close], " \t\r\n");
+                if (endsWithIgnoreCase(raw_handler, ".class") and raw_handler.len > ".class".len) {
+                    handler_class = std.mem.trim(u8, raw_handler[0 .. raw_handler.len - ".class".len], " \t\r\n");
+                }
+            }
+        }
     }
-    const handler_class = std.mem.trim(u8, raw_handler[0 .. raw_handler.len - ".class".len], " \t\r\n");
-    if (handler_class.len == 0) {
+    // Fallback: new X().run() pattern (skip comments)
+    if (handler_class == null or handler_class.?.len == 0) {
+        const new_prefix = "new ";
+        var search_pos: usize = events_end;
+        while (indexOfIgnoreCasePos(content, search_pos, new_prefix)) |new_idx| {
+            // Skip if inside a comment
+            if (isInsideComment(content, new_idx)) {
+                search_pos = new_idx + 1;
+                continue;
+            }
+            const name_start = new_idx + new_prefix.len;
+            if (name_start >= content.len) break;
+            // Skip whitespace after "new "
+            var ns = name_start;
+            while (ns < content.len and (content[ns] == ' ' or content[ns] == '\t')) ns += 1;
+            // Read identifier
+            var ne = ns;
+            while (ne < content.len and (std.ascii.isAlphanumeric(content[ne]) or content[ne] == '_')) ne += 1;
+            if (ne > ns) {
+                // Check for ().run() pattern
+                var check = ne;
+                while (check < content.len and (content[check] == ' ' or content[check] == '\t')) check += 1;
+                if (check + 1 < content.len and content[check] == '(' and content[check + 1] == ')') {
+                    check += 2;
+                    while (check < content.len and (content[check] == ' ' or content[check] == '\t')) check += 1;
+                    if (check < content.len and content[check] == '.') {
+                        check += 1;
+                        while (check < content.len and (content[check] == ' ' or content[check] == '\t')) check += 1;
+                        if (check + 3 <= content.len and startsWithWordIgnoreCase(content[check..], "run")) {
+                            handler_class = content[ns..ne];
+                            break;
+                        }
+                    }
+                }
+            }
+            search_pos = new_idx + 1;
+        }
+    }
+    if (handler_class == null or handler_class.?.len == 0) {
         events.deinit(gpa);
         return null;
     }
@@ -458,7 +490,7 @@ fn parseTriggerRegistration(
     return TriggerRegistration{
         .source_path = try gpa.dupe(u8, source_path),
         .sobject_type = try gpa.dupe(u8, sobject_type),
-        .handler_class = try gpa.dupe(u8, handler_class),
+        .handler_class = try gpa.dupe(u8, handler_class.?),
         .events = events,
     };
 }
@@ -28115,9 +28147,54 @@ fn endsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     );
 }
 
-fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
-    if (needle.len == 0 or haystack.len < needle.len) return null;
+fn isInsideComment(text: []const u8, pos: usize) bool {
+    // Check if pos is inside a // or /* */ comment by scanning from the last newline
+    var line_start: usize = 0;
+    if (pos > 0) {
+        var i = pos - 1;
+        while (i > 0) : (i -= 1) {
+            if (text[i] == '\n') {
+                line_start = i + 1;
+                break;
+            }
+        }
+    }
+    // Check for // comment
+    const line_to_pos = text[line_start..pos];
+    if (std.mem.indexOf(u8, line_to_pos, "//")) |slash_pos| {
+        // Ensure the // is not inside a string
+        var in_string = false;
+        for (line_to_pos[0..slash_pos]) |ch| {
+            if (ch == '\'') in_string = !in_string;
+        }
+        if (!in_string) return true;
+    }
+    // Check for /* */ block comment
     var i: usize = 0;
+    var in_block = false;
+    while (i < pos) {
+        if (i + 1 < text.len and text[i] == '/' and text[i + 1] == '*') {
+            in_block = true;
+            i += 2;
+            continue;
+        }
+        if (in_block and i + 1 < text.len and text[i] == '*' and text[i + 1] == '/') {
+            in_block = false;
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    return in_block;
+}
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    return indexOfIgnoreCasePos(haystack, 0, needle);
+}
+
+fn indexOfIgnoreCasePos(haystack: []const u8, start: usize, needle: []const u8) ?usize {
+    if (needle.len == 0 or haystack.len < needle.len) return null;
+    var i: usize = start;
     while (i + needle.len <= haystack.len) : (i += 1) {
         if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return i;
     }
