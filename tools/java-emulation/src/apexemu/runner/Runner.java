@@ -328,6 +328,7 @@ public final class Runner {
       Runnable factory =
           () -> {
             try {
+              // Try fflib_SObjectDomain.triggerHandler pattern first
               Class<?> domainBase = Class.forName("generated.fflib_SObjectDomain", true, loader);
               domainBase
                   .getMethod("triggerHandler", apexemu.runtime.System.Type.class)
@@ -338,7 +339,22 @@ public final class Runner {
               if (cause instanceof Error err) throw err;
               throw new RuntimeException(cause);
             } catch (ReflectiveOperationException e) {
-              throw new RuntimeException(e);
+              // Fallback: new Handler().run() pattern
+              try {
+                apexemu.runtime.System.Type handlerType = apexemu.runtime.System.Type.forName(handlerClassName);
+                if (handlerType == null) return;
+                Object instance = handlerType.newInstance();
+                if (instance == null) return;
+                java.lang.reflect.Method runMethod = instance.getClass().getMethod("run");
+                runMethod.invoke(instance);
+              } catch (InvocationTargetException ie) {
+                Throwable cause = ie.getCause();
+                if (cause instanceof RuntimeException re) throw re;
+                if (cause instanceof Error err) throw err;
+                throw new RuntimeException(cause);
+              } catch (ReflectiveOperationException ignored) {
+                // silently skip
+              }
             }
           };
 

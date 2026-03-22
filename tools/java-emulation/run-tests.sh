@@ -422,6 +422,9 @@ if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
   cp "$tests_dir/apex-triggers.txt" "$out_dir/build/apex-triggers.txt"
 fi
 
+# Auto-generate trigger manifest from .trigger source files (disabled by default —
+# requires APEXGOV_AUTO_TRIGGERS=1 because some handlers have side effects).
+
 _t=$(_timer_start)
 set +e
 runner_cmd=(
