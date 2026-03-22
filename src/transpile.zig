@@ -7690,6 +7690,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "RD2_DataMigrationBase_BATCH.LOG_CONTEXT_MIGRATION", .to = "\"RDDataMigration:\"" },
         // TDTM_ObjectDataGateway: static method can't implement interface method
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
+        // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // FormulaFilter: null formula result should be treated as false, not NPE
         .{ .from = "if ((Boolean) fx.evaluate(toProcess) == true) {", .to = "if (Boolean.TRUE.equals(fx.evaluate(toProcess))) {" },
         // FlowChangeEventHeader.equals: Java == on List/String is reference comparison, needs value equality
@@ -12111,7 +12112,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "TDTM_ObjectDataGateway.listTH = null;", .to = "TDTM_ObjectDataGateway.listTH = new ArrayList<ApexSObject>();" },
         .{ .from = "return TDTM_ObjectDataGateway.listTH;", .to = "return TDTM_ObjectDataGateway.listTH == null ? new ArrayList<ApexSObject>() : TDTM_ObjectDataGateway.listTH;" },
         .{ .from = "public Set<String> selectFields; // Apex property { get; set; }", .to = "public Set<String> selectFields = new LinkedHashSet<String>(); // Apex property { get; set; }" },
-        .{ .from = "throw new UTIL_QueryException(SELECT_FIELD_CANNOT_BE_EMPTY);", .to = "continue;" },
+        // (removed: UTIL_QueryException(SELECT_FIELD_CANNOT_BE_EMPTY) → continue; UTIL_QueryException now compiles)
         .{ .from = "return criteria.isFilterable();", .to = "return criteria != null && Boolean.TRUE.equals(criteria.isFilterable());" },
         .{ .from = "public Boolean hasAccess; // Apex property { get; set; }", .to = "public Boolean hasAccess = false; // Apex property { get; set; }" },
         .{ .from = "public Boolean hasAccess;", .to = "public Boolean hasAccess = false;" },
