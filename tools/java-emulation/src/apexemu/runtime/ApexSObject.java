@@ -202,13 +202,13 @@ public class ApexSObject {
     if (field.equalsIgnoreCase("id")) {
       return Id;
     }
-    if (field.equalsIgnoreCase("description")) {
-      return description;
-    }
     for (Map.Entry<String, Object> entry : fields.entrySet()) {
       if (entry.getKey().equalsIgnoreCase(field)) {
         return entry.getValue();
       }
+    }
+    if (field.equalsIgnoreCase("description") && description != null) {
+      return description;
     }
     if (field.equalsIgnoreCase("name")) {
       Object firstName = get("FirstName");
