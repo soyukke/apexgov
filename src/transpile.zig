@@ -12349,6 +12349,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "String method = (ApexEquals.eq(this.method, UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name()));", .to = "String method = (this.method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name());" },
         // fflib_SObjectSelectorTest: expectedQueryString property getter
         .{ .from = "public static String expectedQueryString; // Apex property { get; set; }", .to = "public static String expectedQueryString = \"SELECT (.*) FROM Account ORDER BY AnnualRevenue ASC NULLS LAST \"; // Apex property { get; set; }" },
+        // CMT_MetadataAPI: stub out telemetry call to break compilation dependency
+        .{ .from = "UTIL_OrgTelemetry_SVC.asyncProcessCMTChange(buildChangedMetadata(result));", .to = "// UTIL_OrgTelemetry_SVC.asyncProcessCMTChange(buildChangedMetadata(result));" },
         // CMT_MetadataAPI: equality rewriter corrupted != null ternary
         .{ .from = "(result !ApexEquals.eq(= null ? result.getAs(\"status\"), Metadata.DeployStatus.Succeeded : false))", .to = "(result != null ? ApexEquals.eq(result.getAs(\"status\"), Metadata.DeployStatus.Succeeded) : false)" },
         .{ .from = "result !ApexEquals.eq(= null && result.getAs(\"status\") != Metadata.DeployStatus.Succeeded)", .to = "result != null && !ApexEquals.eq(result.getAs(\"status\"), Metadata.DeployStatus.Succeeded)" },
