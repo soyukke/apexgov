@@ -7701,6 +7701,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "public class fflib_Criteria implements Evaluator {", .to = "public class fflib_Criteria {" },
         // HH_ManageHH_CTRL: lazy property isHHAccount — defer to UTIL_Describe
         .{ .from = "hhId = pageParams.get(\"Id\");", .to = "hhId = pageParams.get(\"Id\");\n    isHHAccount = UTIL_Describe.isObjectIdThisType(hhId, \"Account\");" },
+        // (FormulaFilter ClassCast fix moved to late fixups)
         // FormulaFilter: null formula result should be treated as false, not NPE
         .{ .from = "if ((Boolean) fx.evaluate(toProcess) == true) {", .to = "if (Boolean.TRUE.equals(fx.evaluate(toProcess))) {" },
         // FlowChangeEventHeader.equals: Java == on List/String is reference comparison, needs value equality
@@ -12360,6 +12361,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // Specific ERR_Handler_API.Context.X → string literal conversions (targeted)
         .{ .from = "ERR_Handler.processError(ex, ERR_Handler_API.Context.STTG);", .to = "ERR_Handler.processError(ex, \"STTG\");" },
         // (ERR_LogService context.name() fix deferred — broad pattern match causes regressions)
+        // FormulaFilter: catch ClassCastException for non-TriggerRecord classes
+        .{ .from = "catch (apexemu.runtime.System.TypeException e) {\n    throw new IllegalArgumentException( ApexStrings.format( INVALID_SUBTYPE", .to = "catch (ClassCastException | apexemu.runtime.System.TypeException e) {\n    throw new IllegalArgumentException( ApexStrings.format( INVALID_SUBTYPE" },
         // fflib_Comparator: add String/DateTime cross-type comparison
         .{ .from = "else { throw new IllegalArgumentException( \"Both arguments must be type Boolean, Date, Datetime, Decimal, Double, ID, Integer, Long, Time, or String\"); }", .to = "else if (object1 instanceof String && object2 instanceof DateTime) { return compare(DateTime.valueOf((String) object1), (DateTime) object2); }\n    else if (object1 instanceof DateTime && object2 instanceof String) { return compare((DateTime) object1, DateTime.valueOf((String) object2)); }\n    else if (object1 instanceof String && object2 instanceof Date) { return compare(Date.valueOf((String) object1), (Date) object2); }\n    else if (object1 instanceof Date && object2 instanceof String) { return compare((Date) object1, Date.valueOf((String) object2)); }\n    else { throw new IllegalArgumentException( \"Both arguments must be type Boolean, Date, Datetime, Decimal, Double, ID, Integer, Long, Time, or String\"); }" },
         // UTIL_BatchJobService: stub RD2_DataMigrationEnablement dependency to break cascade
