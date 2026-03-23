@@ -7690,6 +7690,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "RD2_DataMigrationBase_BATCH.LOG_CONTEXT_MIGRATION", .to = "\"RDDataMigration:\"" },
         // TDTM_ObjectDataGateway: static method can't implement interface method
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
+        // Fix static call sites for the now-instance method
+        .{ .from = "TDTM_ObjectDataGateway.getClassesToCallForObject(", .to = "new TDTM_ObjectDataGateway().getClassesToCallForObject(" },
+        // (CRLP_Operation ternary fix moved to late fixups)
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
         // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause
@@ -12339,6 +12342,8 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
         .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
         // (ERR_Handler Context-parameter methods removed via early fixup)
+        // CRLP_Operation: equality rewriter broke ternary chain with enum comparison
+        .{ .from = "return (ApexEquals.eq(rlpType, RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1));", .to = "return rlpType == RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1;" },
         // fflib_SObjectDomain: ExistingRecords empty map should fall through to Test.Database.oldRecords
         .{ .from = "this.ExistingRecords != null ? this.ExistingRecords", .to = "(this.ExistingRecords != null && !this.ExistingRecords.isEmpty()) ? this.ExistingRecords" },
     };
