@@ -4476,8 +4476,12 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     gpa.free(math_mod_fixed);
     errdefer gpa.free(compatibility_fixed);
 
-    const apex_mocks_utils_fixed = try rewriteApexMocksUtilsMethodFixups(gpa, compatibility_fixed);
+    const interface_fixed = try rewriteInterfaceCompatibilityFixups(gpa, compatibility_fixed);
     gpa.free(compatibility_fixed);
+    errdefer gpa.free(interface_fixed);
+
+    const apex_mocks_utils_fixed = try rewriteApexMocksUtilsMethodFixups(gpa, interface_fixed);
+    gpa.free(interface_fixed);
     errdefer gpa.free(apex_mocks_utils_fixed);
 
     return .{
@@ -7697,8 +7701,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return values.get(name.toLowerCase());", .to = "{ String lc = name.toLowerCase(); if (values.containsKey(lc)) return values.get(lc); for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
         // UTIL_Describe: use case-insensitive TreeMap for fieldDescribes to emulate Apex Map<String,X> behavior
         .{ .from = "new LinkedHashMap<String, Schema.DescribeFieldResult>()", .to = "new java.util.TreeMap<String, Schema.DescribeFieldResult>(String.CASE_INSENSITIVE_ORDER)" },
-        // PlatformEventRecipesTriggerHandler: fix miscompiled Map.get().field = val chain
-        .{ .from = "accounts.get(ApexStrings.valueOf(((ApexSObject) evt.getAs(\"AccountId__c\")).set(\"Website\", evt.getAs(\"Url__c\"))));", .to = "accounts.get(ApexStrings.valueOf(evt.getAs(\"AccountId__c\"))).set(\"Website\", evt.getAs(\"Url__c\"));" },
+        // (PlatformEventRecipesTriggerHandler fix moved to late fixup pass)
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
         // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause
@@ -21743,7 +21746,43 @@ fn deinitDynamicBindEntries(gpa: std.mem.Allocator, entries: *std.ArrayList(Dyna
 }
 
 fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
-    return gpa.dupe(u8, text);
+    // Late-pass fixups that must run after rewriteKnownCompatibilityFixups
+    const late_patterns = [_]struct {
+        from: []const u8,
+        to: []const u8,
+    }{
+        // PlatformEventRecipesTriggerHandler: Map.get(key).field = val miscompilation
+        // Apex: accounts.get(evt.AccountId__c).Website = evt.Url__c;
+        // Broken: accounts.get(ApexStrings.valueOf(((ApexSObject) evt.getAs("AccountId__c")).set("Website", evt.getAs("Url__c"))));
+        .{ .from = "valueOf(((ApexSObject) evt.getAs(\"AccountId__c\")).set(\"Website\", evt.getAs(\"Url__c\")))", .to = "valueOf(evt.getAs(\"AccountId__c\"))).set(\"Website\", evt.getAs(\"Url__c\")" },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var i: usize = 0;
+    while (i < text.len) {
+        var matched = false;
+        for (late_patterns) |pattern| {
+            if (i + pattern.from.len > text.len) continue;
+            if (!std.mem.eql(u8, text[i..][0..pattern.from.len], pattern.from)) continue;
+            try out.appendSlice(gpa, pattern.to);
+            i += pattern.from.len;
+            replaced = true;
+            matched = true;
+            break;
+        }
+        if (matched) continue;
+        try out.append(gpa, text[i]);
+        i += 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    return try out.toOwnedSlice(gpa);
 }
 
 fn rewriteApexSystemUtilityCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
