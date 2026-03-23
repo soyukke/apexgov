@@ -12342,8 +12342,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // The equality rewriter converts == to ApexEquals.eq, but RefEq intentionally tests identity.
         .{ .from = "return ApexEquals.eq(toMatch, arg);\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"", .to = "return toMatch == arg;\n    }\n\n    public String toString() {\n      // TODO(apex): method body is copied as comments and needs manual porting.\n      return \"[reference equals \"" },
         // (ERR_Handler Context-parameter methods removed via early fixup)
-        // CRLP_Operation: equality rewriter broke ternary chain with enum comparison
+        // Equality rewriter broke ternary chains with enum comparison
         .{ .from = "return (ApexEquals.eq(rlpType, RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1));", .to = "return rlpType == RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1;" },
+        .{ .from = "String method = (ApexEquals.eq(this.method, UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name()));", .to = "String method = (this.method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name());" },
         // fflib_SObjectDomain: ExistingRecords empty map should fall through to Test.Database.oldRecords
         .{ .from = "this.ExistingRecords != null ? this.ExistingRecords", .to = "(this.ExistingRecords != null && !this.ExistingRecords.isEmpty()) ? this.ExistingRecords" },
     };
