@@ -1096,6 +1096,16 @@ public final class Schema {
     }
 
     public List<PicklistEntry> getPicklistValues() {
+      // Seed picklist values for well-known NPSP fields.
+      if ("Status__c".equalsIgnoreCase(fieldName) && ownerType != null
+          && ownerType.toLowerCase().contains("recurring_donation")) {
+        return List.of(
+            new PicklistEntry("Active", "Active"),
+            new PicklistEntry("Lapsed", "Lapsed"),
+            new PicklistEntry("Closed", "Closed"),
+            new PicklistEntry("Paused", "Paused"),
+            new PicklistEntry("Failing", "Failing"));
+      }
       return Collections.emptyList();
     }
 
