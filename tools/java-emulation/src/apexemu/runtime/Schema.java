@@ -1318,13 +1318,16 @@ public final class Schema {
       }
       if (fieldName.equalsIgnoreCase("OwnerId")
           || fieldName.equalsIgnoreCase("CreatedById")
-          || fieldName.equalsIgnoreCase("LastModifiedById")) {
+          || fieldName.equalsIgnoreCase("LastModifiedById")
+          || fieldName.equalsIgnoreCase("Owner")
+          || fieldName.equalsIgnoreCase("CreatedBy")
+          || fieldName.equalsIgnoreCase("LastModifiedBy")) {
         return List.of(SObjectType.User);
       }
       if (fieldName.equalsIgnoreCase("ManagerId")) {
         return List.of(SObjectType.User);
       }
-      if (fieldName.equalsIgnoreCase("AccountId")) {
+      if (fieldName.equalsIgnoreCase("AccountId") || fieldName.equalsIgnoreCase("Account")) {
         return List.of(SObjectType.Account);
       }
       if (fieldName.equalsIgnoreCase("ProfileId")) {
