@@ -379,7 +379,8 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
         )
         rm -f "$out_dir/.javac.err"
 
-        # Revert error files to placeholders, keep the rest
+        # Revert error files to placeholders, collect non-error files for retry batch
+        retry_batch=()
         for fb_src in "${batch_restore[@]}"; do
           is_error=false
           for err_src in "${batch_error_files[@]}"; do
@@ -393,16 +394,26 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
             javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
             printf '%s\n' "$fb_src" >> "$next_fallbacks"
           else
-            # Try individual compile to confirm
-            if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-              restored=$((restored + 1))
-            else
-              render_placeholder_source "$fb_src"
-              javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
-              printf '%s\n' "$fb_src" >> "$next_fallbacks"
-            fi
+            retry_batch+=("$fb_src")
           fi
         done
+        # Re-try non-error files as batch (handles circular deps among them)
+        if [[ ${#retry_batch[@]} -gt 0 ]]; then
+          if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${retry_batch[@]}" >/dev/null 2>&1; then
+            restored=$((restored + ${#retry_batch[@]}))
+          else
+            # Batch still failed — fall back to individual compile
+            for fb_src in "${retry_batch[@]}"; do
+              if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+                restored=$((restored + 1))
+              else
+                render_placeholder_source "$fb_src"
+                javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+                printf '%s\n' "$fb_src" >> "$next_fallbacks"
+              fi
+            done
+          fi
+        fi
       fi
     fi
 
