@@ -12357,6 +12357,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = ", ERR_Handler_API.Context errContext) {", .to = ", String errContext) {" },
         .{ .from = "ERR_Handler_API.Context errContext;", .to = "String errContext;" },
         .{ .from = "(ERR_Handler_API.Context context,", .to = "(String context," },
+        // Specific ERR_Handler_API.Context.X → string literal conversions (targeted)
+        .{ .from = "ERR_Handler.processError(ex, ERR_Handler_API.Context.STTG);", .to = "ERR_Handler.processError(ex, \"STTG\");" },
+        .{ .from = "ERR_Handler_API.Context.name()", .to = "context" },
         // UTIL_BatchJobService: stub RD2_DataMigrationEnablement dependency to break cascade
         .{ .from = "summary = new RD2_DataMigrationEnablement.BatchJob().getSummary(batchId, className);", .to = "// summary = new RD2_DataMigrationEnablement.BatchJob().getSummary(batchId, className);" },
         // PS_IntegrationService: transpiler converted string 'true'/'false' to boolean keywords
