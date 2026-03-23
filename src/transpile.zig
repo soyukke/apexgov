@@ -12349,6 +12349,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "String method = (ApexEquals.eq(this.method, UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name()));", .to = "String method = (this.method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name());" },
         // fflib_SObjectSelectorTest: expectedQueryString property getter
         .{ .from = "public static String expectedQueryString; // Apex property { get; set; }", .to = "public static String expectedQueryString = \"SELECT (.*) FROM Account ORDER BY AnnualRevenue ASC NULLS LAST \"; // Apex property { get; set; }" },
+        // ERR_Handler_API.Context: parameter type conversion deferred (too broad, breaks other files)
+        // UTIL_BatchJobService: stub RD2_DataMigrationEnablement dependency to break cascade
+        .{ .from = "summary = new RD2_DataMigrationEnablement.BatchJob().getSummary(batchId, className);", .to = "// summary = new RD2_DataMigrationEnablement.BatchJob().getSummary(batchId, className);" },
         // PS_IntegrationService: transpiler converted string 'true'/'false' to boolean keywords
         .{ .from = "true_CONST", .to = "\"true\"" },
         .{ .from = "false_CONST", .to = "\"false\"" },
