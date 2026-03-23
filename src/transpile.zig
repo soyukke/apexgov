@@ -7693,7 +7693,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // Fix static call sites for the now-instance method
         .{ .from = "TDTM_ObjectDataGateway.getClassesToCallForObject(", .to = "new TDTM_ObjectDataGateway().getClassesToCallForObject(" },
         // (CRLP_Operation ternary fix moved to late fixups)
-        // fflib_QueryFactory field case: toLowerCase is needed for NamespacedAttributeMap
+        // fflib_SObjectDescribe.NamespacedAttributeMap: add case-insensitive fallback in getObject
+        .{ .from = "return values.get(name.toLowerCase());", .to = "{ Object v = values.get(name.toLowerCase()); if (v != null) return v; for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
         // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause
