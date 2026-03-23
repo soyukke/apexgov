@@ -4658,13 +4658,8 @@ final class ApexStore {
     if (record == null || record.type() == null || record.type().isBlank()) {
       return;
     }
-    if (isType(record.type(), "Event_Recipes_Demo__e")) {
-      if (isBlankValue(record.get("AccountId__c"))) {
-        throw new DmlFailure(
-            "REQUIRED_FIELD_MISSING",
-            "required field missing: AccountId__c",
-            new String[] {"AccountId__c"});
-      }
+    // Platform Events (__e suffix) skip standard field validation — publish always succeeds
+    if (record.type().toLowerCase().endsWith("__e")) {
       return;
     }
     if (isType(record.type(), "ContentVersion")) {

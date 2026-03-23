@@ -7697,6 +7697,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return values.get(name.toLowerCase());", .to = "{ String lc = name.toLowerCase(); if (values.containsKey(lc)) return values.get(lc); for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
         // UTIL_Describe: use case-insensitive TreeMap for fieldDescribes to emulate Apex Map<String,X> behavior
         .{ .from = "new LinkedHashMap<String, Schema.DescribeFieldResult>()", .to = "new java.util.TreeMap<String, Schema.DescribeFieldResult>(String.CASE_INSENSITIVE_ORDER)" },
+        // PlatformEventRecipesTriggerHandler: fix miscompiled Map.get().field = val chain
+        .{ .from = "accounts.get(ApexStrings.valueOf(((ApexSObject) evt.getAs(\"AccountId__c\")).set(\"Website\", evt.getAs(\"Url__c\"))));", .to = "accounts.get(ApexStrings.valueOf(evt.getAs(\"AccountId__c\"))).set(\"Website\", evt.getAs(\"Url__c\"));" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
         // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause

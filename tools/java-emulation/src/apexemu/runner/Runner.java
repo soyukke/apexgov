@@ -157,6 +157,7 @@ public final class Runner {
       Database.seedCurrentUser();
       Database.clearSchemaRegistry();
       Database.clearTriggerHandlers();
+      Schema.clear();
       Cache.clearAll();
       Database.setSoqlNullOrderDefault(config.soqlNullOrderDefault);
       if (config.registerStandardSchema) {
