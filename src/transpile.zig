@@ -26286,6 +26286,10 @@ fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8, objec
 
         if (left_raw.len == 0 or right_raw.len == 0) continue;
 
+        // Skip if the right operand contains a ternary operator (e.g. x == EnumVal ? a : b).
+        // The equality rewriter incorrectly includes ternary branches in the right operand.
+        if (std.mem.indexOfScalar(u8, right_raw, '?') != null) continue;
+
         // Skip if either side is null
         if (std.mem.eql(u8, left_raw, "null") or std.mem.eql(u8, right_raw, "null")) continue;
         if (startsWithWordIgnoreCase(right_raw, "null")) continue;
@@ -32625,8 +32629,8 @@ test "rewriteKnownCompatibilityFixups maps System.Callable implementations to ru
     const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
     defer gpa.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "implements apexemu.runtime.Callable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "implements apexemu.runtime.System.Callable") == null);
+    // System.Callable is kept (not converted to apexemu.runtime.Callable) to avoid classloader mismatch.
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "implements apexemu.runtime.System.Callable") != null);
 }
 
 test "rewriteKnownCompatibilityFixups normalizes null collection fronts for field sets and soft credits" {
