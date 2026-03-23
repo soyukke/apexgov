@@ -4672,6 +4672,35 @@ final class ApexStore {
       }
     }
     validateUniqueFields(state, record, definition, null);
+    validateReferenceIntegrity(state, record);
+  }
+
+  private static void validateReferenceIntegrity(State state, ApexSObject record) {
+    if (record == null || record.type() == null) {
+      return;
+    }
+    for (Map.Entry<String, Object> entry : record.fields().entrySet()) {
+      String fieldName = entry.getKey();
+      if (fieldName == null || entry.getValue() == null) {
+        continue;
+      }
+      if (!fieldName.endsWith("Id") || fieldName.equalsIgnoreCase("Id")) {
+        continue;
+      }
+      String refId = String.valueOf(entry.getValue()).trim();
+      if (refId.isEmpty()) {
+        continue;
+      }
+      // Check if referenced record was deleted
+      for (Map.Entry<String, Map<String, ApexSObject>> deletedEntry : state.deleted.entrySet()) {
+        if (deletedEntry.getValue() != null && deletedEntry.getValue().containsKey(refId)) {
+          throw new DmlFailure(
+              "ENTITY_IS_DELETED",
+              "entity is deleted",
+              new String[] {fieldName});
+        }
+      }
+    }
   }
 
   private static void validateCustomInsertConstraints(ApexSObject record) {
