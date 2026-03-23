@@ -222,7 +222,8 @@ public class ApexSObject {
     }
     if (strictQueryAccess && !isFieldQueryable(field)) {
       if (isKnownChildRelationship(field)) {
-        return new ArrayList<ApexSObject>();
+        throw new SObjectException(
+            "row was retrieved via SOQL without querying the requested field: " + field);
       }
       String normalized = field.trim();
       if (normalized.endsWith("__r")) {
@@ -359,7 +360,16 @@ public class ApexSObject {
   }
 
   public List<ApexSObject> getSObjects(String relationshipName) {
-    Object raw = get(relationshipName);
+    Object raw;
+    try {
+      raw = get(relationshipName);
+    } catch (SObjectException e) {
+      // Re-throw to let callers catch SObjectException for unqueried fields
+      throw e;
+    }
+    if (raw == null) {
+      return null;
+    }
     if (!(raw instanceof Iterable<?> iterable)) {
       return new ArrayList<>();
     }
