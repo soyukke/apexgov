@@ -58,7 +58,13 @@ public final class Runner {
         continue;
       }
 
-      Method[] methods = klass.getDeclaredMethods();
+      Method[] methods;
+      try {
+        methods = klass.getDeclaredMethods();
+      } catch (Throwable methodError) {
+        results.add(TestResult.loadError(className, shortMessage(methodError)));
+        continue;
+      }
       Arrays.sort(methods, Comparator.comparing(Method::getName));
       List<String> testSetupMethods = new ArrayList<>();
       List<TestMethodSpec> testMethods = new ArrayList<>();

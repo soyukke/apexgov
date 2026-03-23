@@ -7693,8 +7693,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // Fix static call sites for the now-instance method
         .{ .from = "TDTM_ObjectDataGateway.getClassesToCallForObject(", .to = "new TDTM_ObjectDataGateway().getClassesToCallForObject(" },
         // (CRLP_Operation ternary fix moved to late fixups)
-        // fflib_SObjectDescribe.NamespacedAttributeMap: add case-insensitive fallback in getObject
-        .{ .from = "return values.get(name.toLowerCase());", .to = "{ Object v = values.get(name.toLowerCase()); if (v != null) return v; for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
+        // fflib_SObjectDescribe.NamespacedAttributeMap: add case-insensitive fallback in getObject, use containsKey to avoid FieldMap auto-create
+        .{ .from = "return values.get(name.toLowerCase());", .to = "{ String lc = name.toLowerCase(); if (values.containsKey(lc)) return values.get(lc); for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
         // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause
@@ -7702,6 +7702,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // HH_ManageHH_CTRL: lazy property isHHAccount — defer to UTIL_Describe
         .{ .from = "hhId = pageParams.get(\"Id\");", .to = "hhId = pageParams.get(\"Id\");\n    isHHAccount = UTIL_Describe.isObjectIdThisType(hhId, \"Account\");" },
         // (FormulaFilter ClassCast fix moved to late fixups)
+        // CRLP_Query_SEL: inline bind expression that transpiler left as SOQL bind variable
+        .{ .from = ":ApexStrings.valueOf(Opportunity.SObjectType)", .to = "'Opportunity'" },
+        .{ .from = ":ApexStrings.valueOf(Account.SObjectType)", .to = "'Account'" },
+        .{ .from = ":ApexStrings.valueOf(Contact.SObjectType)", .to = "'Contact'" },
         // FormulaFilter: null formula result should be treated as false, not NPE
         .{ .from = "if ((Boolean) fx.evaluate(toProcess) == true) {", .to = "if (Boolean.TRUE.equals(fx.evaluate(toProcess))) {" },
         // FlowChangeEventHeader.equals: Java == on List/String is reference comparison, needs value equality

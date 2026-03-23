@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 tests_dir="$repo_root/tools/java-emulation/examples"
@@ -220,14 +220,15 @@ if [[ "$best_effort" == "true" ]]; then
   done < "$best_effort_sources_file"
 
   fallback_count=0
-  declare -A fallback_set=()
+  _fallback_list=""
   record_fallback() {
     local src="$1"
-    if [[ -z "${fallback_set[$src]+x}" ]]; then
-      fallback_set[$src]=1
-      printf '%s\n' "$src" >> "$compile_fallbacks"
-      fallback_count=$((fallback_count + 1))
-    fi
+    case "$_fallback_list" in
+      *"|$src|"*) return ;;  # already recorded
+    esac
+    _fallback_list="${_fallback_list}|${src}|"
+    printf '%s\n' "$src" >> "$compile_fallbacks"
+    fallback_count=$((fallback_count + 1))
   }
 
   # --- Phase 1: Try compiling all files at once ---
@@ -273,7 +274,8 @@ if [[ "$best_effort" == "true" ]]; then
         # Rebuild pending list excluding placeholders
         next_pending=()
         for src in "${pending[@]}"; do
-          if [[ -z "${fallback_set[$src]+x}" ]]; then
+          case "$_fallback_list" in *"|$src|"*) continue ;; esac
+          if true; then
             next_pending+=("$src")
           fi
         done

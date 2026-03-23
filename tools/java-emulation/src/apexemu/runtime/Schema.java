@@ -1061,13 +1061,14 @@ public final class Schema {
     }
 
     public String getRelationshipName() {
-      if (fieldName.endsWith("Id") && fieldName.length() > 2) {
-        return fieldName.substring(0, fieldName.length() - 2);
+      String canonical = canonicalFieldName();
+      if (canonical.endsWith("Id") && canonical.length() > 2) {
+        return canonical.substring(0, canonical.length() - 2);
       }
-      if (fieldName.endsWith("__c") && fieldName.length() > 3) {
-        return fieldName.substring(0, fieldName.length() - 3) + "__r";
+      if (canonical.endsWith("__c") && canonical.length() > 3) {
+        return canonical.substring(0, canonical.length() - 3) + "__r";
       }
-      return fieldName;
+      return canonical;
     }
 
     public List<SObjectType> getReferenceTo() {
@@ -1426,6 +1427,12 @@ public final class Schema {
     public final SObjectField StageName;
     public final SObjectField CloseDate;
     public final SObjectField Amount;
+    public final SObjectField CreatedById;
+    public final SObjectField LastModifiedById;
+    public final SObjectField Phone;
+    public final SObjectField Fax;
+    public final SObjectField HomePhone;
+    public final SObjectField ManagerId;
 
     private final String typeName;
 
@@ -1447,6 +1454,12 @@ public final class Schema {
       this.StageName = field("StageName");
       this.CloseDate = field("CloseDate");
       this.Amount = field("Amount");
+      this.CreatedById = field("CreatedById");
+      this.LastModifiedById = field("LastModifiedById");
+      this.Phone = field("Phone");
+      this.Fax = field("Fax");
+      this.HomePhone = field("HomePhone");
+      this.ManagerId = field("ManagerId");
     }
 
     public SObjectField get(String fieldName) {
@@ -1629,9 +1642,18 @@ public final class Schema {
       if (canonical != null) {
         return super.get(canonical);
       }
+      // Try relationship name → Id field fallback (e.g., "createdby" → "CreatedById")
+      String trimmed = textKey.trim();
+      if (!trimmed.endsWith("Id") && !trimmed.endsWith("__c") && !trimmed.endsWith("__r")) {
+        String idVariant = normalize(trimmed + "Id");
+        String idCanonical = normalizedToCanonical.get(idVariant);
+        if (idCanonical != null) {
+          return super.get(idCanonical);
+        }
+      }
       // Auto-create SObjectField for unknown fields to avoid NPE in callers
-      SObjectField autoField = new SObjectField(ownerType, textKey.trim());
-      putField(textKey.trim(), autoField);
+      SObjectField autoField = new SObjectField(ownerType, trimmed);
+      putField(trimmed, autoField);
       return autoField;
     }
 
