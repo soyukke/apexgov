@@ -7701,6 +7701,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return values.get(name.toLowerCase());", .to = "{ String lc = name.toLowerCase(); if (values.containsKey(lc)) return values.get(lc); for (Map.Entry<String, ?> e : values.entrySet()) { if (e.getKey().equalsIgnoreCase(name)) return e.getValue(); } return null; }" },
         // UTIL_Describe: use case-insensitive TreeMap for fieldDescribes to emulate Apex Map<String,X> behavior
         .{ .from = "new LinkedHashMap<String, Schema.DescribeFieldResult>()", .to = "new java.util.TreeMap<String, Schema.DescribeFieldResult>(String.CASE_INSENSITIVE_ORDER)" },
+        // (RD2_StatusMapper fixes moved to late fixup pass)
         // (PlatformEventRecipesTriggerHandler fix moved to late fixup pass)
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
@@ -21755,6 +21756,8 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         // Apex: accounts.get(evt.AccountId__c).Website = evt.Url__c;
         // Broken: accounts.get(ApexStrings.valueOf(((ApexSObject) evt.getAs("AccountId__c")).set("Website", evt.getAs("Url__c"))));
         .{ .from = "valueOf(((ApexSObject) evt.getAs(\"AccountId__c\")).set(\"Website\", evt.getAs(\"Url__c\")))", .to = "valueOf(evt.getAs(\"AccountId__c\"))).set(\"Website\", evt.getAs(\"Url__c\")" },
+        // RD2_StatusMapper: property getter lost — mappingByStatus access must go through getAll()
+        .{ .from = "List<Mapping> allmappings = new ArrayList<>(mappingByStatus.values());", .to = "List<Mapping> allmappings = new ArrayList<>(getAll().values());" },
     };
 
     var out: std.ArrayList(u8) = .empty;
