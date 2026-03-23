@@ -148,6 +148,12 @@ public final class Database {
     return toSaveResultList(results);
   }
 
+  /** Insert without trigger dispatch — used by EventBus to avoid double-firing. */
+  static List<SaveResult> insertSkipTriggers(List<? extends ApexSObject> records) {
+    SaveResult[] results = ApexStore.insertSkipTriggers(toApexSObjectCollection(records));
+    return toSaveResultList(results);
+  }
+
   public static List<SaveResult> insert(List<? extends ApexSObject> records, System.AccessLevel accessLevel) {
     return insert(records, true, accessLevel);
   }

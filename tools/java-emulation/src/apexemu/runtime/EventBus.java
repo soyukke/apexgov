@@ -115,7 +115,9 @@ public final class EventBus {
       return List.of();
     }
 
-    List<Database.SaveResult> results = Database.insert(rows, false);
+    // Use Database.insertWithoutTriggers to avoid double-firing triggers.
+    // The EventBus flushPending mechanism handles trigger dispatch separately.
+    List<Database.SaveResult> results = Database.insertSkipTriggers(rows);
     List<Database.SaveResult> safeResults =
         results == null ? List.of() : new ArrayList<>(results);
 
@@ -210,8 +212,11 @@ public final class EventBus {
       }
 
       String canonicalType = rows.get(0).type();
-      Trigger.dispatchAfter(canonicalType, Trigger.Operation.INSERT, rows, null);
-      invokeInferredTriggerHandlers(canonicalType, rows);
+      boolean dispatched = Trigger.dispatchAfter(canonicalType, Trigger.Operation.INSERT, rows, null);
+      // Only use inferred handler discovery when no explicit trigger handler was registered
+      if (!dispatched) {
+        invokeInferredTriggerHandlers(canonicalType, rows);
+      }
     }
   }
 

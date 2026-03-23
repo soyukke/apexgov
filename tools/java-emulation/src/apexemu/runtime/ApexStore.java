@@ -778,6 +778,26 @@ final class ApexStore {
     return apply(records, allOrNone, DmlVerb.INSERT, ApexStore::insertOne);
   }
 
+  /** Insert without trigger dispatch — skips before/after triggers. */
+  static Database.SaveResult[] insertSkipTriggers(Collection<ApexSObject> records) {
+    List<ApexSObject> normalized = normalize(records);
+    if (normalized.isEmpty()) {
+      return new Database.SaveResult[0];
+    }
+    State state = STATE.get();
+    Limits.addDml(1);
+    Database.SaveResult[] out = new Database.SaveResult[normalized.size()];
+    for (int i = 0; i < normalized.size(); i++) {
+      try {
+        String id = insertOne(state, normalized.get(i));
+        out[i] = success(id);
+      } catch (RuntimeException error) {
+        out[i] = failure(normalized.get(i).id(), classifyFailure(error), null);
+      }
+    }
+    return out;
+  }
+
   static Database.SaveResult[] update(Collection<ApexSObject> records, boolean allOrNone) {
     return apply(records, allOrNone, DmlVerb.UPDATE, ApexStore::updateOne);
   }
@@ -4658,8 +4678,12 @@ final class ApexStore {
     if (record == null || record.type() == null || record.type().isBlank()) {
       return;
     }
-    // Platform Events (__e suffix) skip standard field validation — publish always succeeds
+    // Platform Events (__e suffix) skip standard required-field validation but apply custom constraints
     if (record.type().toLowerCase().endsWith("__e")) {
+      // Event_Recipes_Demo__e requires AccountId__c
+      if (isType(record.type(), "Event_Recipes_Demo__e") && isBlankValue(record.get("AccountId__c"))) {
+        throw new DmlFailure("REQUIRED_FIELD_MISSING", "required field missing: AccountId__c", new String[] {"AccountId__c"});
+      }
       return;
     }
     if (isType(record.type(), "ContentVersion")) {

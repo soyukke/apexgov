@@ -264,31 +264,33 @@ public final class Trigger {
     dispatch(sobjectType, true, operation, newRecords, oldRecords);
   }
 
-  static void dispatchAfter(
+  /** @return true if at least one handler was dispatched */
+  static boolean dispatchAfter(
       String sobjectType, Operation operation, List<?> newRecords, List<?> oldRecords) {
     if (operation == null) {
-      return;
+      return false;
     }
-    dispatch(sobjectType, false, operation, newRecords, oldRecords);
+    return dispatch(sobjectType, false, operation, newRecords, oldRecords);
   }
 
-  private static void dispatch(
+  private static boolean dispatch(
       String sobjectType, boolean isBefore, Operation operation, List<?> newRecords, List<?> oldRecords) {
     String normalizedType = normalizeType(sobjectType);
     if (normalizedType == null) {
-      return;
+      return false;
     }
 
     HandlerKey key = new HandlerKey(normalizedType, isBefore, operation);
     List<Runnable> handlers = REGISTRY.get().handlers.get(key);
     if (handlers == null || handlers.isEmpty()) {
-      return;
+      return false;
     }
 
     List<Runnable> snapshot = new ArrayList<>(handlers);
     for (Runnable handler : snapshot) {
       run(isBefore, operation, newRecords, oldRecords, handler);
     }
+    return true;
   }
 
   private static void register(
