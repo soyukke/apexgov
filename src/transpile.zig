@@ -7885,7 +7885,11 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         },
         .{ .from = ":giftBatchId.value()", .to = ":giftBatchIdValue" },
         .{ .from = "\"giftBatchId.value\", giftBatchId.value", .to = "\"giftBatchIdValue\", giftBatchId.value()" },
-        .{ .from = "implements apexemu.runtime.System.Callable", .to = "implements apexemu.runtime.Callable" },
+        // Keep implements System.Callable (not apexemu.runtime.Callable) to avoid classloader mismatch.
+        // The Callable cast in test code must also use System.Callable.
+        .{ .from = "(Callable) Type.forName(", .to = "(apexemu.runtime.System.Callable) Type.forName(" },
+        .{ .from = "Callable callableApi = (apexemu.runtime.System.Callable)", .to = "apexemu.runtime.System.Callable callableApi = (apexemu.runtime.System.Callable)" },
+        .{ .from = "Callable npspApi = (apexemu.runtime.System.Callable)", .to = "apexemu.runtime.System.Callable npspApi = (apexemu.runtime.System.Callable)" },
         .{ .from = "this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\"));", .to = "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));"},
         .{ .from = "return this.batch.getAs(\"Latest_Apex_Job_Id__c\");", .to = "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");"},
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
