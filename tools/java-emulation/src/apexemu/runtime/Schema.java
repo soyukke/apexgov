@@ -1107,6 +1107,40 @@ public final class Schema {
             new PicklistEntry("Paused", "Paused"),
             new PicklistEntry("Failing", "Failing"));
       }
+      // CRLP Rollup__mdt picklist fields
+      if ("Operation__c".equalsIgnoreCase(fieldName) && ownerType != null
+          && ownerType.toLowerCase().contains("rollup")) {
+        return List.of(
+            new PicklistEntry("COUNT", "COUNT"),
+            new PicklistEntry("SUM", "SUM"),
+            new PicklistEntry("AVERAGE", "AVERAGE"),
+            new PicklistEntry("LARGEST", "LARGEST"),
+            new PicklistEntry("SMALLEST", "SMALLEST"),
+            new PicklistEntry("FIRST", "FIRST"),
+            new PicklistEntry("LAST", "LAST"),
+            new PicklistEntry("YEARS_DONATED", "YEARS_DONATED"),
+            new PicklistEntry("DONOR_STREAK", "DONOR_STREAK"),
+            new PicklistEntry("BEST_YEAR", "BEST_YEAR"),
+            new PicklistEntry("BEST_YEAR_TOTAL", "BEST_YEAR_TOTAL"));
+      }
+      if ("Time_Bound_Operation_Type__c".equalsIgnoreCase(fieldName) && ownerType != null
+          && ownerType.toLowerCase().contains("rollup")) {
+        return List.of(
+            new PicklistEntry("ALL_TIME", "ALL_TIME"),
+            new PicklistEntry("YEARS_AGO", "YEARS_AGO"),
+            new PicklistEntry("DAYS_BACK", "DAYS_BACK"));
+      }
+      // RecurringDonationSchedule__c.DayOfMonth__c
+      if ("DayOfMonth__c".equalsIgnoreCase(fieldName) && ownerType != null
+          && ownerType.toLowerCase().contains("recurringdonationschedule")) {
+        List<PicklistEntry> entries = new ArrayList<>();
+        for (int day = 1; day <= 28; day++) {
+          String val = String.valueOf(day);
+          entries.add(new PicklistEntry(val, val));
+        }
+        entries.add(new PicklistEntry("Last_Day", "Last_Day"));
+        return entries;
+      }
       return Collections.emptyList();
     }
 
