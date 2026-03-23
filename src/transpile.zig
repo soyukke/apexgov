@@ -12347,6 +12347,9 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         // Equality rewriter broke ternary chains with enum comparison
         .{ .from = "return (ApexEquals.eq(rlpType, RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1));", .to = "return rlpType == RollupType.FIRST ? 0 : rlpType == RollupType.LAST ? 1 : rlpType == RollupType.LARGEST ? 2 : rlpType == RollupType.SMALLEST ? 3 : -1;" },
         .{ .from = "String method = (ApexEquals.eq(this.method, UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name()));", .to = "String method = (this.method == UTIL_Http.Method.DEL ? DELETE_HTTP_VERB : this.method.name());" },
+        // CMT_MetadataAPI: equality rewriter corrupted != null ternary
+        .{ .from = "(result !ApexEquals.eq(= null ? result.getAs(\"status\"), Metadata.DeployStatus.Succeeded : false))", .to = "(result != null ? ApexEquals.eq(result.getAs(\"status\"), Metadata.DeployStatus.Succeeded) : false)" },
+        .{ .from = "result !ApexEquals.eq(= null && result.getAs(\"status\") != Metadata.DeployStatus.Succeeded)", .to = "result != null && !ApexEquals.eq(result.getAs(\"status\"), Metadata.DeployStatus.Succeeded)" },
         // fflib_SObjectDomain: ExistingRecords empty map should fall through to Test.Database.oldRecords
         .{ .from = "this.ExistingRecords != null ? this.ExistingRecords", .to = "(this.ExistingRecords != null && !this.ExistingRecords.isEmpty()) ? this.ExistingRecords" },
     };
