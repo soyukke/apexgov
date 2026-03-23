@@ -7692,6 +7692,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
+        // HH_ManageHH_CTRL: lazy property isHHAccount — defer to UTIL_Describe
+        .{ .from = "hhId = pageParams.get(\"Id\");", .to = "hhId = pageParams.get(\"Id\");\n    isHHAccount = UTIL_Describe.isObjectIdThisType(hhId, \"Account\");" },
         // FormulaFilter: null formula result should be treated as false, not NPE
         .{ .from = "if ((Boolean) fx.evaluate(toProcess) == true) {", .to = "if (Boolean.TRUE.equals(fx.evaluate(toProcess))) {" },
         // FlowChangeEventHeader.equals: Java == on List/String is reference comparison, needs value equality
