@@ -862,8 +862,10 @@ public final class Database {
           statusCode = errors[0].getStatusCode();
         }
       }
-      throw new apexemu.runtime.System.DmlException(
+      DmlException dmlEx = new DmlException(
           operation + " failed: " + statusCode + ": " + message);
+      dmlEx.addDmlInfo(statusCode, message, errors.length > 0 && errors[0] != null ? errors[0].getFields() : new String[0]);
+      throw dmlEx;
     }
   }
 
