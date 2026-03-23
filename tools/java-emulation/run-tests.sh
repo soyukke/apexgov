@@ -397,23 +397,48 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
             retry_batch+=("$fb_src")
           fi
         done
-        # Re-try non-error files as batch (handles circular deps among them)
-        if [[ ${#retry_batch[@]} -gt 0 ]]; then
-          if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${retry_batch[@]}" >/dev/null 2>&1; then
+        # Re-try non-error files as batch with iterative error removal
+        for _retry in 1 2 3; do
+          if [[ ${#retry_batch[@]} -eq 0 ]]; then break; fi
+          if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${retry_batch[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
             restored=$((restored + ${#retry_batch[@]}))
-          else
-            # Batch still failed — fall back to individual compile
-            for fb_src in "${retry_batch[@]}"; do
-              if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-                restored=$((restored + 1))
-              else
-                render_placeholder_source "$fb_src"
-                javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
-                printf '%s\n' "$fb_src" >> "$next_fallbacks"
-              fi
-            done
+            rm -f "$out_dir/.javac.err"
+            retry_batch=()
+            break
           fi
-        fi
+          # Extract error files from this retry and remove them
+          retry_errors=()
+          while IFS= read -r err_src; do
+            retry_errors+=("$err_src")
+          done < <(awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" | grep "^$best_effort_sources_dir/" | sort -u)
+          rm -f "$out_dir/.javac.err"
+          if [[ ${#retry_errors[@]} -eq 0 ]]; then break; fi
+          next_retry=()
+          for fb_src in "${retry_batch[@]}"; do
+            is_err=false
+            for err_src in "${retry_errors[@]}"; do
+              if [[ "$fb_src" == "$err_src" ]]; then is_err=true; break; fi
+            done
+            if [[ "$is_err" == "true" ]]; then
+              render_placeholder_source "$fb_src"
+              javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+              printf '%s\n' "$fb_src" >> "$next_fallbacks"
+            else
+              next_retry+=("$fb_src")
+            fi
+          done
+          retry_batch=("${next_retry[@]}")
+        done
+        # Any remaining retry files that still fail
+        for fb_src in "${retry_batch[@]}"; do
+          if ! javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+            render_placeholder_source "$fb_src"
+            javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+            printf '%s\n' "$fb_src" >> "$next_fallbacks"
+          else
+            restored=$((restored + 1))
+          fi
+        done
       fi
     fi
 
