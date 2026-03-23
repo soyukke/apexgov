@@ -7692,6 +7692,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "public static List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {", .to = "public List<ApexSObject> getClassesToCallForObject(String objectName, TDTM_Runnable.Action action) {" },
         // (UTIL_Query empty field validation: removed late fixup that turned throw→continue)
         // (ExistingRecords fix moved to late fixups)
+        // fflib_Criteria: private inner interface Evaluator can't be referenced in implements clause
+        .{ .from = "public class fflib_Criteria implements Evaluator {", .to = "public class fflib_Criteria {" },
         // HH_ManageHH_CTRL: lazy property isHHAccount — defer to UTIL_Describe
         .{ .from = "hhId = pageParams.get(\"Id\");", .to = "hhId = pageParams.get(\"Id\");\n    isHHAccount = UTIL_Describe.isObjectIdThisType(hhId, \"Account\");" },
         // FormulaFilter: null formula result should be treated as false, not NPE
@@ -12220,7 +12222,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "return Database.queryWithBinds(\"SELECT RecordId, HasDeleteAccess FROM UserRecordAccess WHERE UserId = :UserInfo.getUserId() AND RecordId = :recordId\", ApexCollections.bindMap(\"UserInfo.getUserId\", UserInfo.getUserId(), \"recordId\", recordId));", .to = "return (UserRecordAccess) ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT RecordId, HasDeleteAccess FROM UserRecordAccess WHERE UserId = :UserInfo.getUserId() AND RecordId = :recordId\", ApexCollections.bindMap(\"UserInfo.getUserId\", UserInfo.getUserId(), \"recordId\", recordId)));" },
         .{ .from = "public class OPP_OpportunityNaming {", .to = "public class OPP_OpportunityNaming implements OPP_INaming {" },
         .{ .from = ".setSequence(binding.getAs(\"BindingSequence__c\"))", .to = ".setSequence(ApexStrings.toDouble(binding.getAs(\"BindingSequence__c\")))" },
-        .{ .from = "public class fflib_Criteria {", .to = "public class fflib_Criteria implements Evaluator {" },
+        // (removed: fflib_Criteria implements Evaluator — Evaluator is private inner interface, can't be in implements clause)
         .{ .from = "public static OrgFiscalYearInfo fiscalYearInfo; // Apex property { get; set; }", .to = "public static OrgFiscalYearInfo fiscalYearInfo = new OrgFiscalYearInfo(1, false); // Apex property { get; set; }" },
         .{ .from = "private SoftCredits softCredits; // Apex property { get; set; }", .to = "private SoftCredits softCredits = new SoftCredits(); // Apex property { get; set; }" },
         .{ .from = "if (other.isExcludedFromName()) {\n    excludeFromName();\n    }\n    if (other.isExcludedFromFormalGreeting()) {\n    excludeFormalGreeting();\n    }\n    if (other.isExcludedFromInformalGreeting()) {\n    excludeInformalGreeting();\n    }", .to = "if (Boolean.TRUE.equals(other.isExcludedFromName())) {\n    excludeFromName();\n    }\n    if (Boolean.TRUE.equals(other.isExcludedFromFormalGreeting())) {\n    excludeFormalGreeting();\n    }\n    if (Boolean.TRUE.equals(other.isExcludedFromInformalGreeting())) {\n    excludeInformalGreeting();\n    }" },
