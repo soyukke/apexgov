@@ -347,7 +347,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   done < "$compile_fallbacks"
   # Iteratively restore original sources
   total_restored=0
-  for _round in 1 2 3 4 5; do
+  for _round in 1 2 3 4 5 6 7 8; do
     restored=0
     next_fallbacks="$out_dir/.next-fallbacks.txt"
     : > "$next_fallbacks"
