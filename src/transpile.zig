@@ -7716,6 +7716,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "public class UTIL_Currency {", .to = "public class UTIL_Currency implements UTIL_Currency.Interface_x {" },
         // CRLP_Rollup_SEL: break placeholder cascade — replace inner exception with standard Exception
         .{ .from = "CRLP_Rollup_SVC.CRLP_Exception(", .to = "apexemu.runtime.System.Exception(" },
+        // Break CAO_Constants <-> UTIL_CustomSettingsFacade circular dependency
+        .{ .from = "CAO_Constants.OCR_DONOR_ROLE", .to = "\"Donor\"" },
         // (NPSP Labels fixup moved to late fixup pass)
         // RemoveRecord: collection.remove(Integer) calls object-remove in Java, need index-remove
         .{ .from = "collection.remove(index);", .to = "collection.remove(index.intValue());" },
