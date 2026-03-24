@@ -7712,6 +7712,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
         // UTIL_IntegrationConfig.getConfig: null enum causes NPE in Java switch
         .{ .from = "switch (integrationPackage) {\n    case ArchiveBridge", .to = "if (integrationPackage == null) { return null; }\n    switch (integrationPackage) {\n    case ArchiveBridge" },
+        // Break GE_GiftEntryController → PS_GatewayService cascade
+        .{ .from = "List<PS_GatewayService.GatewayTemplateSetting>", .to = "List<Object>" },
+        .{ .from = "PS_GatewayService.GatewayTemplateSetting", .to = "ApexSObject" },
         // (UTIL_Currency implements Interface_x removed — causes circular inheritance in Java)
         // CRLP_Rollup_SEL: break placeholder cascade — replace inner exception with standard Exception
         .{ .from = "CRLP_Rollup_SVC.CRLP_Exception(", .to = "apexemu.runtime.System.Exception(" },
