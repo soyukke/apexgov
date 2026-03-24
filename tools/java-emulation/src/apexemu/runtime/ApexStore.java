@@ -4951,6 +4951,22 @@ final class ApexStore {
     if (stored == null) {
       return;
     }
+    // Auto-assign OwnerId and CreatedById to current user if not set
+    String currentUserId = UserInfo.getUserId();
+    if (currentUserId != null && !currentUserId.isBlank()) {
+      if (!stored.hasField("OwnerId") || stored.get("OwnerId") == null) {
+        stored.set("OwnerId", currentUserId);
+        if (inputRecord != null) inputRecord.set("OwnerId", currentUserId);
+      }
+      if (!stored.hasField("CreatedById") || stored.get("CreatedById") == null) {
+        stored.set("CreatedById", currentUserId);
+        if (inputRecord != null) inputRecord.set("CreatedById", currentUserId);
+      }
+      if (!stored.hasField("LastModifiedById") || stored.get("LastModifiedById") == null) {
+        stored.set("LastModifiedById", currentUserId);
+        if (inputRecord != null) inputRecord.set("LastModifiedById", currentUserId);
+      }
+    }
     DateTime now = DateTime.now();
     if (!stored.hasField("CreatedDate") || stored.get("CreatedDate") == null) {
       stored.set("CreatedDate", now);
