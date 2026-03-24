@@ -870,7 +870,12 @@ public final class Database {
       }
       DmlException dmlEx = new DmlException(
           operation + " failed: " + statusCode + ": " + message);
-      dmlEx.addDmlInfo(statusCode, message, errors.length > 0 && errors[0] != null ? errors[0].getFields() : new String[0]);
+      // Strip "allOrNone rollback: " prefix from per-DML message to match Salesforce behavior
+      String dmlMessage = message;
+      if (dmlMessage.startsWith("allOrNone rollback: ")) {
+        dmlMessage = dmlMessage.substring("allOrNone rollback: ".length());
+      }
+      dmlEx.addDmlInfo(statusCode, dmlMessage, errors.length > 0 && errors[0] != null ? errors[0].getFields() : new String[0]);
       throw dmlEx;
     }
   }
