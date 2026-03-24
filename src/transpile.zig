@@ -21839,7 +21839,16 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .class_marker = "class ContactAdapter", .from = "new Households(householdSelector.findByIds(ids))", .to = "null" },
         // TEST_RecurringDonationBuilder: stub RD2_RecurringDonation dependency
         .{ .class_marker = "class TEST_RecurringDonationBuilder", .from = "new RD2_RecurringDonation(rd) .reviseNextDonationDateBeforeInsert(new RD2_ScheduleService());", .to = "/* stubbed RD2 */" },
-        // (HouseholdService stubs reverted — still has HouseholdNamingService dep)
+        // AccountAdapter: stub domain model dependencies
+        .{ .class_marker = "class AccountAdapter", .from = "Addresses.getExistingAddresses(", .to = "new java.util.LinkedHashMap<>(/* stubbed */ java.util.Collections.emptyMap()); Object _stub_addr = apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class AccountAdapter", .from = "Households.updateNameAndMemberCount(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class AccountAdapter", .from = "Households.setNameAndGreetingsToReplacementText(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class AccountAdapter", .from = "Households.setCustomNamingField(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class AccountAdapter", .from = "Households.getHouseholdsNeedingNameUpdates(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        // HouseholdNamingService: stub AccountAdapter/HouseholdMembers dependencies
+        .{ .class_marker = "class HouseholdNamingService", .from = "AccountAdapter.isAllMembersDeceasedUpdateEnabled", .to = "false" },
+        .{ .class_marker = "class HouseholdNamingService", .from = "AccountAdapter.enableHouseholdDeceasedUpdate(", .to = "/* stubbed */ Boolean.valueOf(" },
+        .{ .class_marker = "class HouseholdNamingService", .from = "HouseholdMembers.householdMembersFor(", .to = "new HouseholdMembers(apexemu.runtime.ApexCollections.listOf(/* stubbed */" },
     };
 
     var out: std.ArrayList(u8) = .empty;
