@@ -21815,7 +21815,10 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
         // Break RD2_EnablementDelegate_CTRL → CRLP_EnablementService cascade (1 line only)
         .{ .from = "CRLP_EnablementService.RollupMetadataHandler changeHandler = new CRLP_ApiService()", .to = "Object changeHandler = new CRLP_ApiService()" },
-        // (TDTM reflection dispatch reverted — caused compilation regression)
+        // Break RD2_EnablementService → RD2_EnablementDelegate_CTRL.EnablementState cascade
+        .{ .from = "public static RD2_EnablementDelegate_CTRL.EnablementState getEnablementState() {", .to = "public static Object getEnablementState() {" },
+        .{ .from = "RD2_EnablementDelegate_CTRL.EnablementState state = new RD2_EnablementDelegate_CTRL.EnablementState();", .to = "ApexSObject state = ApexSObject.of(\"EnablementState\");" },
+        .{ .from = "state = (RD2_EnablementDelegate_CTRL.EnablementState) JSON.deserialize(", .to = "state = (ApexSObject) JSON.deserialize(" },
     };
 
     var out: std.ArrayList(u8) = .empty;
