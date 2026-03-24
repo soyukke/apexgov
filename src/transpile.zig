@@ -7704,8 +7704,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // UTIL_IntegrationConfig: namespace lazy init — property getter was lost in transpile
         .{ .from = "if (ApexStrings.isBlank(namespace))", .to = "if (namespace == null) { namespace = initNamespace(); }\n    if (ApexStrings.isBlank(namespace))" },
         .{ .from = "Type.forName(namespace, callableApiClassName)", .to = "Type.forName((namespace == null ? (namespace = initNamespace()) : namespace), callableApiClassName)" },
-        // UTIL_IntegrationConfig: isInstalled() returns field but needs lazy init
+        // UTIL_IntegrationConfig: isInstalled property getter lost — add lazy init
         .{ .from = "return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()", .to = "if (isInstalled == null) { isInstalled = initIsInstalled(); }\n    return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()" },
+        // UTIL_IntegrationConfig: callableApi property getter lost — add lazy init
+        .{ .from = "return callableApi;\n  }", .to = "if (callableApi == null && namespace != null) { try { callableApi = (apexemu.runtime.System.Callable) Type.forName((namespace == null ? (namespace = initNamespace()) : namespace), callableApiClassName).newInstance(); } catch (Exception ignored) {} }\n    return callableApi;\n  }" },
         // ERR_ExceptionHandler_TEST: Id foo = 'foo' should throw StringException in Apex
         .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
         // (NPSP Labels fixup moved to late fixup pass)
