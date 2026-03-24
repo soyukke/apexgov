@@ -7725,6 +7725,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // Break Contacts → LegacyHouseholds cascade (inline simple checks)
         .{ .from = "LegacyHouseholds.isWithoutAccount(contactRecord)", .to = "(contactRecord.get(\"AccountId\") == null)" },
         .{ .from = "LegacyHouseholds.isOrganizationContact(contactRecord, accountFor(contactRecord))", .to = "false" },
+        // (ContactAdapter stubs reverted — broad patterns caused regression in other files)
         // (TDTM_TriggerHandler reflection dispatch moved to late fixup)
         // (RD2 cascade fixups reverted — caused regression in best-effort compilation)
         // BDI_DataImport_TEST.newDi inline — avoid cross-test-class dependency
@@ -21821,6 +21822,23 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "state = (RD2_EnablementDelegate_CTRL.EnablementState) JSON.deserialize(", .to = "state = (ApexSObject) JSON.deserialize(" },
     };
 
+    // File-scoped fixups: only applied when the text contains a specific class marker
+    const scoped_fixups = [_]struct {
+        class_marker: []const u8, // text must contain this to trigger
+        from: []const u8,
+        to: []const u8,
+    }{
+        // ContactAdapter-only: stub LegacyHouseholds/Households/RLLP dependencies
+        .{ .class_marker = "class ContactAdapter", .from = "LegacyHouseholds.updateOneToOneAccounts(contactsWithAccountAndAddressFields, dmlWrapper);", .to = "/* stubbed */" },
+        .{ .class_marker = "class ContactAdapter", .from = "LegacyHouseholds.attachToBucketAccount(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class ContactAdapter", .from = "LegacyHouseholds.handleContactsAfterUpdate(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class ContactAdapter", .from = "Households.renameHouseholdAccountsAfterInsert(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class ContactAdapter", .from = "RLLP_OppRollup.rollupContactsandHouseholdsForTrigger(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class ContactAdapter", .from = "RLLP_OppRollup.rollupContactsandHouseholdsForTriggerFuture(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
+        .{ .class_marker = "class ContactAdapter", .from = "households.handleContactDeletion(dmlWrapper);", .to = "/* stubbed */" },
+        .{ .class_marker = "class ContactAdapter", .from = "new Households(householdSelector.findByIds(ids))", .to = "null" },
+    };
+
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
@@ -21842,11 +21860,20 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         i += 1;
     }
 
-    if (!replaced) {
+    var base = if (!replaced) blk: {
         out.deinit(gpa);
-        return gpa.dupe(u8, text);
+        break :blk try gpa.dupe(u8, text);
+    } else try out.toOwnedSlice(gpa);
+
+    // Apply file-scoped fixups (only when class_marker is found in text)
+    for (scoped_fixups) |sf| {
+        if (std.mem.indexOf(u8, base, sf.class_marker) == null) continue;
+        if (std.mem.indexOf(u8, base, sf.from) == null) continue;
+        const new_text = try std.mem.replaceOwned(u8, gpa, base, sf.from, sf.to);
+        gpa.free(base);
+        base = new_text;
     }
-    return try out.toOwnedSlice(gpa);
+    return base;
 }
 
 fn rewriteApexSystemUtilityCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
