@@ -7719,6 +7719,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
         // Break AccountAdapter → RD2_SustainerEvaluationService cascade
         .{ .from = "RD2_SustainerEvaluationService.isSustainerUpdateEnabled", .to = "false" },
+        // Break RD2_EnablementService cascades (blocks 65+ files)
+        .{ .from = "RD2_EnablementService.isRecurringDonations2Enabled", .to = "false" },
+        .{ .from = "RD2_EnablementService.isMetadataDeployed", .to = "false" },
         // Break Contacts → LegacyHouseholds cascade (inline simple checks)
         .{ .from = "LegacyHouseholds.isWithoutAccount(contactRecord)", .to = "(contactRecord.get(\"AccountId\") == null)" },
         .{ .from = "LegacyHouseholds.isOrganizationContact(contactRecord, accountFor(contactRecord))", .to = "false" },
