@@ -422,13 +422,19 @@ public final class Runner {
         }
       };
 
-      Trigger.onBeforeInsert(entry.sobjectType, factory);
-      Trigger.onBeforeUpdate(entry.sobjectType, factory);
-      Trigger.onBeforeDelete(entry.sobjectType, factory);
-      Trigger.onAfterInsert(entry.sobjectType, factory);
-      Trigger.onAfterUpdate(entry.sobjectType, factory);
-      Trigger.onAfterDelete(entry.sobjectType, factory);
-      Trigger.onAfterUndelete(entry.sobjectType, factory);
+      // Register for both bare name and __c variant to match custom objects
+      String[] typeVariants = entry.sobjectType.contains("__")
+          ? new String[] {entry.sobjectType}
+          : new String[] {entry.sobjectType, entry.sobjectType + "__c"};
+      for (String type : typeVariants) {
+        Trigger.onBeforeInsert(type, factory);
+        Trigger.onBeforeUpdate(type, factory);
+        Trigger.onBeforeDelete(type, factory);
+        Trigger.onAfterInsert(type, factory);
+        Trigger.onAfterUpdate(type, factory);
+        Trigger.onAfterDelete(type, factory);
+        Trigger.onAfterUndelete(type, factory);
+      }
     }
   }
 

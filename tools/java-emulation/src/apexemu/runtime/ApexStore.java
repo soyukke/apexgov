@@ -5114,8 +5114,20 @@ final class ApexStore {
     if (!(value instanceof String referenceId) || referenceId.isBlank()) {
       return;
     }
+    // Skip validation for polymorphic lookup fields (WhatId, WhoId, etc.)
+    if (field.name != null && (field.name.equalsIgnoreCase("WhatId")
+        || field.name.equalsIgnoreCase("WhoId")
+        || field.name.equalsIgnoreCase("RelatedToId")
+        || field.name.equalsIgnoreCase("ParentId"))) {
+      return;
+    }
     ApexSObject related = findActiveRowByIdAndType(referenceId, field.referenceType);
     if (related == null) {
+      // Fall back to checking if the ID exists in any type
+      ApexSObject anyMatch = findActiveRowById(referenceId);
+      if (anyMatch != null) {
+        return; // Record exists in a different type — polymorphic reference OK
+      }
       throw new DmlFailure(
           "FIELD_INTEGRITY_EXCEPTION",
           "invalid reference for field " + field.name + ": " + referenceId,
