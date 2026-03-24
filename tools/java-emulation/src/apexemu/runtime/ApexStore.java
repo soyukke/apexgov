@@ -1263,7 +1263,28 @@ final class ApexStore {
     if (isType(stored.type(), "EmailMessage")) {
       ensureEmailMessageToRelations(state, stored, record, id);
     }
+    // NPSP Household Account model: auto-create Household Account for Contacts without AccountId
+    if (isType(stored.type(), "Contact") && isBlankValue(stored.get("AccountId"))) {
+      autoCreateHouseholdAccount(state, stored, record);
+    }
     return id;
+  }
+
+  private static void autoCreateHouseholdAccount(State state, ApexSObject stored, ApexSObject record) {
+    String firstName = stored.get("FirstName") != null ? String.valueOf(stored.get("FirstName")) : "";
+    String lastName = stored.get("LastName") != null ? String.valueOf(stored.get("LastName")) : "";
+    String hhName = (firstName.isBlank() ? "" : firstName + " ") + lastName + " Household";
+    ApexSObject hhAccount = ApexSObject.of("Account")
+        .set("Name", hhName.trim())
+        .set("npe01__SYSTEMIsIndividual__c", true)
+        .set("npe01__SYSTEM_AccountType__c", "Household Account")
+        .set("IsDeleted", Boolean.FALSE);
+    String hhId = nextId(state, "Account");
+    hhAccount.withId(hhId);
+    applySystemTimestampsOnInsert(hhAccount, null);
+    state.active.computeIfAbsent("Account", ignored -> new LinkedHashMap<>()).put(hhId, hhAccount);
+    stored.set("AccountId", hhId);
+    record.set("AccountId", hhId);
   }
 
   private static String updateOne(State state, ApexSObject raw) {
