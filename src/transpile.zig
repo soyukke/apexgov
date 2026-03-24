@@ -21774,7 +21774,12 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         // RD2_StatusMapper: property getter lost — mappingByStatus access must go through getAll()
         .{ .from = "List<Mapping> allmappings = new ArrayList<>(mappingByStatus.values());", .to = "List<Mapping> allmappings = new ArrayList<>(getAll().values());" },
         .{ .from = "Mapping mapping = mappingByStatus.get(status);\n    return mapping == null ? null : mapping.state;", .to = "Mapping mapping = getAll().get(status);\n    return mapping == null ? null : mapping.state;" },
-        // UTIL_CurrencyCache orgCache — keep default init (regression risk with null)
+        // UTIL_CurrencyCache: orgCache property delegates to UTIL_PlatformCache.orgCache (lazy)
+        .{ .from = "public static Cache.OrgPartition orgCache = Cache.Org.getPartition(\"local.CurrencyCache\"); // Apex property { get; set; }", .to = "public static Cache.OrgPartition orgCache; // delegated via orgCache() helper\n  private static Cache.OrgPartition orgCache() { return UTIL_PlatformCache.orgCache; }" },
+        .{ .from = "orgCache.get(", .to = "orgCache().get(" },
+        .{ .from = "orgCache.getKeys()", .to = "orgCache().getKeys()" },
+        .{ .from = "orgCache.remove(", .to = "orgCache().remove(" },
+        .{ .from = "orgCache.put(", .to = "orgCache().put(" },
         // NPSP Labels: seed commonly used custom labels as compile-time constants
         .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
     };
