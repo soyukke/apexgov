@@ -7715,8 +7715,15 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // Break GE_GiftEntryController → PS_GatewayService cascade
         .{ .from = "List<PS_GatewayService.GatewayTemplateSetting>", .to = "List<Object>" },
         .{ .from = "PS_GatewayService.GatewayTemplateSetting", .to = "ApexSObject" },
-        // Break UTIL_UnitTestData_TEST → GE_GiftEntryController cascade
+        // Break UTIL_UnitTestData_TEST cascades
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
+        // BDI_DataImport_TEST.newDi inline — avoid cross-test-class dependency
+        .{ .from = "BDI_DataImport_TEST.newDi(\"John\"+i,\"Doe\"+i, 200)", .to = "ApexSObject.of(\"DataImport__c\").set(\"Contact1_Firstname__c\",\"John\"+i).set(\"Contact1_Lastname__c\",\"Doe\"+i).set(\"Contact1_Personal_Email__c\",\"John\"+i+\"@Doe\"+i+\".com\").set(\"Donation_Amount__c\",200).set(\"Donation_Date__c\",apexemu.runtime.System.today())" },
+        .{ .from = "BDI_DataImport_API.BestMatchOrCreate", .to = "\"Best_Match_or_Create\"" },
+        .{ .from = "BDI_DataImport_API.RequireBestMatch", .to = "\"Require_Best_Match\"" },
+        .{ .from = "BDI_DataImport_API.RequireExactMatch", .to = "\"Require_Exact_Match\"" },
+        .{ .from = "BDI_DataImport_API.RequireNoMatch", .to = "\"No_Match\"" },
+        .{ .from = "BDI_DataImport_API.DoNotMatch", .to = "\"Do_Not_Match\"" },
         // (UTIL_Currency implements Interface_x removed — causes circular inheritance in Java)
         // CRLP_Rollup_SEL: break placeholder cascade — replace inner exception with standard Exception
         .{ .from = "CRLP_Rollup_SVC.CRLP_Exception(", .to = "apexemu.runtime.System.Exception(" },
