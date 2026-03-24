@@ -648,10 +648,29 @@ public final class Runner {
         // Look for run(List<ApexSObject>, List<ApexSObject>, Schema.DescribeSObjectResult, ...)
         // TDTM_Runnable.run() signature
         java.lang.reflect.Method runMethod = null;
-        for (java.lang.reflect.Method m : handlerClass.getMethods()) {
-          if ("run".equals(m.getName()) && m.getParameterCount() >= 3) {
+        // Use getDeclaredMethods to get methods from the handler's OWN classloader,
+        // avoiding parent-loader TDTM_Runnable.run() whose Action param has different identity
+        for (java.lang.reflect.Method m : handlerClass.getDeclaredMethods()) {
+          if ("run".equals(m.getName()) && m.getParameterCount() == 4) {
             runMethod = m;
             break;
+          }
+        }
+        if (runMethod == null) {
+          for (java.lang.reflect.Method m : handlerClass.getDeclaredMethods()) {
+            if ("run".equals(m.getName()) && m.getParameterCount() >= 3) {
+              runMethod = m;
+              break;
+            }
+          }
+        }
+        // Fallback to inherited methods if handler doesn't declare run()
+        if (runMethod == null) {
+          for (java.lang.reflect.Method m : handlerClass.getMethods()) {
+            if ("run".equals(m.getName()) && m.getParameterCount() == 4) {
+              runMethod = m;
+              break;
+            }
           }
         }
         if (runMethod == null) return;
@@ -676,17 +695,16 @@ public final class Runner {
           try {
             Class<?> actionEnum = Class.forName("generated.TDTM_Runnable$Action", true, cl);
             Object actionVal = java.lang.Enum.valueOf((Class) actionEnum, action);
-            runMethod.invoke(instance, newList, oldList,
-                new apexemu.runtime.Schema.SObjectType(
-                    newList != null && !newList.isEmpty() ? ((apexemu.runtime.ApexSObject) newList.get(0)).type() : "Account"
-                ).getDescribe(), actionVal);
+            String sobjectTypeName = newList != null && !newList.isEmpty() ? ((apexemu.runtime.ApexSObject) newList.get(0)).type() : (oldList != null && !oldList.isEmpty() ? ((apexemu.runtime.ApexSObject) oldList.get(0)).type() : "Account");
+            runMethod.invoke(instance, newList, oldList, actionVal,
+                new apexemu.runtime.Schema.SObjectType(sobjectTypeName).getDescribe());
           } catch (java.lang.reflect.InvocationTargetException ex) {
             Throwable cause = ex.getCause();
             if (cause instanceof RuntimeException re) throw re;
             if (cause instanceof Error err) throw err;
             throw new RuntimeException(cause);
           } catch (Exception ex) {
-            // Skip if action enum resolution fails
+            // Skip handler — likely classloader or missing class issue
           }
         }
       } catch (Exception e) {
