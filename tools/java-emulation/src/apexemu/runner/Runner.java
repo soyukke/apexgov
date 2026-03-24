@@ -527,7 +527,12 @@ public final class Runner {
     triggerToSObject.put("PartialSoftCredit", "Partial_Soft_Credit__c");
     triggerToSObject.put("AccountSoftCredit", "Account_Soft_Credit__c");
 
-    if (registeredTypes.isEmpty()) {
+    // If no valid SObject type mappings found, register all defaults
+    boolean hasValidMapping = false;
+    for (String rt : registeredTypes) {
+      if (triggerToSObject.containsKey(rt)) { hasValidMapping = true; break; }
+    }
+    if (!hasValidMapping) {
       registeredTypes.addAll(triggerToSObject.keySet());
     }
     for (var entry : triggerToSObject.entrySet()) {
