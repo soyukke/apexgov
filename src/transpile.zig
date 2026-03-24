@@ -7715,6 +7715,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         // Break GE_GiftEntryController → PS_GatewayService cascade
         .{ .from = "List<PS_GatewayService.GatewayTemplateSetting>", .to = "List<Object>" },
         .{ .from = "PS_GatewayService.GatewayTemplateSetting", .to = "ApexSObject" },
+        // Break UTIL_UnitTestData_TEST → GE_GiftEntryController cascade
+        .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
         // (UTIL_Currency implements Interface_x removed — causes circular inheritance in Java)
         // CRLP_Rollup_SEL: break placeholder cascade — replace inner exception with standard Exception
         .{ .from = "CRLP_Rollup_SVC.CRLP_Exception(", .to = "apexemu.runtime.System.Exception(" },
