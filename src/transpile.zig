@@ -7719,6 +7719,9 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
         // Break AccountAdapter → RD2_SustainerEvaluationService cascade
         .{ .from = "RD2_SustainerEvaluationService.isSustainerUpdateEnabled", .to = "false" },
+        // Break Contacts → LegacyHouseholds cascade (inline simple checks)
+        .{ .from = "LegacyHouseholds.isWithoutAccount(contactRecord)", .to = "(contactRecord.get(\"AccountId\") == null)" },
+        .{ .from = "LegacyHouseholds.isOrganizationContact(contactRecord, accountFor(contactRecord))", .to = "false" },
         // (TDTM_TriggerHandler reflection dispatch moved to late fixup)
         // (RD2 cascade fixups reverted — caused regression in best-effort compilation)
         // BDI_DataImport_TEST.newDi inline — avoid cross-test-class dependency
