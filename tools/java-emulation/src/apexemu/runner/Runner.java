@@ -461,12 +461,10 @@ public final class Runner {
    * handler for all SObject types that have TDTM trigger classes (named TDTM_<SObjectType>).
    */
   private static void autoRegisterTDTMTriggers(List<ClassRegistration> classRegistrations, ClassLoader loader) {
-    // Always use direct dispatch to avoid classloader identity issues with
-    // TDTM_Config_API.run() → TDTM_TriggerHandler → TDTM_Runnable.Action chain.
-    // Direct dispatch uses reflection per-handler, resolving Action enum from
-    // each handler's own classloader.
-    autoRegisterTDTMDirectDispatch(classRegistrations, loader);
-    if (true) return; // skip TDTM_Config_API path
+    // Direct TDTM dispatch is available but disabled until ContactAdapter cascade is resolved.
+    // Enabling it causes NoSuchMethodError in ACCT_IndividualAccounts_TDTM → ContactAdapter
+    // which rolls back Contact DML and breaks ~80 tests that were previously passing.
+    // autoRegisterTDTMDirectDispatch(classRegistrations, loader);
 
     Class<?> configApiClass;
     java.lang.reflect.Method runMethod;
