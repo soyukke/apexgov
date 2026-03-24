@@ -21837,6 +21837,8 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .class_marker = "class ContactAdapter", .from = "RLLP_OppRollup.rollupContactsandHouseholdsForTriggerFuture(", .to = "/* stubbed */ apexemu.runtime.ApexCollections.listOf(" },
         .{ .class_marker = "class ContactAdapter", .from = "households.handleContactDeletion(dmlWrapper);", .to = "/* stubbed */" },
         .{ .class_marker = "class ContactAdapter", .from = "new Households(householdSelector.findByIds(ids))", .to = "null" },
+        // TEST_RecurringDonationBuilder: stub RD2_RecurringDonation dependency
+        .{ .class_marker = "class TEST_RecurringDonationBuilder", .from = "new RD2_RecurringDonation(rd) .reviseNextDonationDateBeforeInsert(new RD2_ScheduleService());", .to = "/* stubbed RD2 */" },
     };
 
     var out: std.ArrayList(u8) = .empty;
