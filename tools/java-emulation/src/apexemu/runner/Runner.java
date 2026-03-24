@@ -461,7 +461,13 @@ public final class Runner {
    * handler for all SObject types that have TDTM trigger classes (named TDTM_<SObjectType>).
    */
   private static void autoRegisterTDTMTriggers(List<ClassRegistration> classRegistrations, ClassLoader loader) {
-    // Check if TDTM_Config_API exists with the expected run() method
+    // Always use direct dispatch to avoid classloader identity issues with
+    // TDTM_Config_API.run() → TDTM_TriggerHandler → TDTM_Runnable.Action chain.
+    // Direct dispatch uses reflection per-handler, resolving Action enum from
+    // each handler's own classloader.
+    autoRegisterTDTMDirectDispatch(classRegistrations, loader);
+    if (true) return; // skip TDTM_Config_API path
+
     Class<?> configApiClass;
     java.lang.reflect.Method runMethod;
     try {
@@ -471,10 +477,7 @@ public final class Runner {
           Boolean.class, Boolean.class, List.class, List.class,
           apexemu.runtime.Schema.DescribeSObjectResult.class);
     } catch (Exception e) {
-      // TDTM_Config_API.run() not available (placeholder stub).
-      // Fall back to direct handler dispatch using TDTM_DefaultConfig.
-      autoRegisterTDTMDirectDispatch(classRegistrations, loader);
-      return;
+      return; // already registered via direct dispatch
     }
 
     // Find all TDTM trigger classes (pattern: TDTM_<SObjectType> or similar)
@@ -677,6 +680,11 @@ public final class Runner {
                 new apexemu.runtime.Schema.SObjectType(
                     newList != null && !newList.isEmpty() ? ((apexemu.runtime.ApexSObject) newList.get(0)).type() : "Account"
                 ).getDescribe(), actionVal);
+          } catch (java.lang.reflect.InvocationTargetException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException re) throw re;
+            if (cause instanceof Error err) throw err;
+            throw new RuntimeException(cause);
           } catch (Exception ex) {
             // Skip if action enum resolution fails
           }
