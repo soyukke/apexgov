@@ -173,6 +173,12 @@ public final class System {
     }
   }
 
+  public static final class StringException extends Exception {
+    public StringException(String message) {
+      super(message);
+    }
+  }
+
   public static final class NullPointerException extends Exception {
     public NullPointerException() {
       super();

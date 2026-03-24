@@ -775,4 +775,23 @@ public final class ApexStrings {
       return fallback;
     }
   }
+
+  /** Validates that a string is a valid Salesforce ID (15 or 18 chars, alphanumeric).
+   *  Throws StringException for invalid IDs, matching Apex Id assignment behavior. */
+  public static String validateId(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    if (trimmed.length() != 15 && trimmed.length() != 18) {
+      throw new System.StringException("Invalid id: " + value);
+    }
+    for (int i = 0; i < trimmed.length(); i++) {
+      char ch = trimmed.charAt(i);
+      if (!Character.isLetterOrDigit(ch)) {
+        throw new System.StringException("Invalid id: " + value);
+      }
+    }
+    return trimmed;
+  }
 }

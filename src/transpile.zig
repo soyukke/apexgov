@@ -7706,6 +7706,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "Type.forName(namespace, callableApiClassName)", .to = "Type.forName((namespace == null ? (namespace = initNamespace()) : namespace), callableApiClassName)" },
         // UTIL_IntegrationConfig: isInstalled() returns field but needs lazy init
         .{ .from = "return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()", .to = "if (isInstalled == null) { isInstalled = initIsInstalled(); }\n    return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()" },
+        // ERR_ExceptionHandler_TEST: Id foo = 'foo' should throw StringException in Apex
+        .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
         // (UTIL_CurrencyCache orgCache fix moved to late fixup pass)
         // (RD2_StatusMapper fixes moved to late fixup pass)
         // (PlatformEventRecipesTriggerHandler fix moved to late fixup pass)
