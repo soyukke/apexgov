@@ -21773,6 +21773,7 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "valueOf(((ApexSObject) evt.getAs(\"AccountId__c\")).set(\"Website\", evt.getAs(\"Url__c\")))", .to = "valueOf(evt.getAs(\"AccountId__c\"))).set(\"Website\", evt.getAs(\"Url__c\")" },
         // RD2_StatusMapper: property getter lost — mappingByStatus access must go through getAll()
         .{ .from = "List<Mapping> allmappings = new ArrayList<>(mappingByStatus.values());", .to = "List<Mapping> allmappings = new ArrayList<>(getAll().values());" },
+        .{ .from = "Mapping mapping = mappingByStatus.get(status);\n    return mapping == null ? null : mapping.state;", .to = "Mapping mapping = getAll().get(status);\n    return mapping == null ? null : mapping.state;" },
         // UTIL_CurrencyCache orgCache — keep default init (regression risk with null)
         // NPSP Labels: seed commonly used custom labels as compile-time constants
         .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
