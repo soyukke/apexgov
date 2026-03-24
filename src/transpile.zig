@@ -7708,8 +7708,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()", .to = "if (isInstalled == null) { isInstalled = initIsInstalled(); }\n    return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()" },
         // ERR_ExceptionHandler_TEST: Id foo = 'foo' should throw StringException in Apex
         .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
-        // NPSP Labels: seed commonly used custom labels
-        .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
+        // (NPSP Labels fixup moved to late fixup pass)
         // RemoveRecord: collection.remove(Integer) calls object-remove in Java, need index-remove
         .{ .from = "collection.remove(index);", .to = "collection.remove(index.intValue());" },
         // (UTIL_CurrencyCache orgCache fix moved to late fixup pass)
@@ -21771,6 +21770,8 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         // RD2_StatusMapper: property getter lost — mappingByStatus access must go through getAll()
         .{ .from = "List<Mapping> allmappings = new ArrayList<>(mappingByStatus.values());", .to = "List<Mapping> allmappings = new ArrayList<>(getAll().values());" },
         // UTIL_CurrencyCache orgCache — keep default init (regression risk with null)
+        // NPSP Labels: seed commonly used custom labels as compile-time constants
+        .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
     };
 
     var out: std.ArrayList(u8) = .empty;
