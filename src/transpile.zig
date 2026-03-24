@@ -7717,9 +7717,7 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "PS_GatewayService.GatewayTemplateSetting", .to = "ApexSObject" },
         // Break UTIL_UnitTestData_TEST cascades
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
-        // TDTM_TriggerHandler: use full reflection to avoid ALL classloader identity mismatches
-        .{ .from = "if (classInstance != null) {\n    TDTM_Runnable classToRun = (TDTM_Runnable)classInstance;", .to = "if (classInstance != null) {\n    Object classToRun = classInstance; // avoid direct cast — classloader mismatch" },
-        .{ .from = "return classToRun.run(newlist, oldlist, thisAction, describeObj);", .to = "{ try { ClassLoader hl = classInstance.getClass().getClassLoader(); Class<?> actionClass = hl.loadClass(\"generated.TDTM_Runnable$Action\"); java.lang.reflect.Method rm = classInstance.getClass().getMethod(\"run\", java.util.List.class, java.util.List.class, actionClass, apexemu.runtime.Schema.DescribeSObjectResult.class); Object actionVal = java.lang.Enum.valueOf((Class)actionClass, thisAction.name()); return (TDTM_Runnable.DmlWrapper) rm.invoke(classInstance, newlist, oldlist, actionVal, describeObj); } catch (java.lang.reflect.InvocationTargetException ite) { Throwable c = ite.getCause(); if (c instanceof RuntimeException re) throw re; if (c instanceof Error er) throw er; throw new RuntimeException(c); } catch (Exception reflErr) { throw new RuntimeException(reflErr); } }" },
+        // (TDTM_TriggerHandler reflection dispatch moved to late fixup)
         // (RD2 cascade fixups reverted — caused regression in best-effort compilation)
         // BDI_DataImport_TEST.newDi inline — avoid cross-test-class dependency
         .{ .from = "BDI_DataImport_TEST.newDi(\"John\"+i,\"Doe\"+i, 200)", .to = "ApexSObject.of(\"DataImport__c\").set(\"Contact1_Firstname__c\",\"John\"+i).set(\"Contact1_Lastname__c\",\"Doe\"+i).set(\"Contact1_Personal_Email__c\",\"John\"+i+\"@Doe\"+i+\".com\").set(\"Donation_Amount__c\",200).set(\"Donation_Date__c\",apexemu.runtime.System.today())" },
@@ -21809,6 +21807,7 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
         // Break RD2_EnablementDelegate_CTRL → CRLP_EnablementService cascade (1 line only)
         .{ .from = "CRLP_EnablementService.RollupMetadataHandler changeHandler = new CRLP_ApiService()", .to = "Object changeHandler = new CRLP_ApiService()" },
+        // (TDTM reflection dispatch reverted — caused compilation regression)
     };
 
     var out: std.ArrayList(u8) = .empty;
