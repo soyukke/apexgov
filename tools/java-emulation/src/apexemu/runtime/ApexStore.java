@@ -1264,10 +1264,29 @@ final class ApexStore {
       ensureEmailMessageToRelations(state, stored, record, id);
     }
     // NPSP Household Account model: auto-create Household Account for Contacts without AccountId
-    if (isType(stored.type(), "Contact") && isBlankValue(stored.get("AccountId"))) {
+    // Only when npe01__Contacts_and_Orgs_Settings__c Account_Processor is "Household Account"
+    if (isType(stored.type(), "Contact") && isBlankValue(stored.get("AccountId"))
+        && isHouseholdAccountModel(state)) {
       autoCreateHouseholdAccount(state, stored, record);
     }
     return id;
+  }
+
+  private static boolean isHouseholdAccountModel(State state) {
+    // Check if npe01__Contacts_and_Orgs_Settings__c has Account_Processor = "Household Account"
+    Map<String, ApexSObject> settingsBucket = findBucketByType(state.active, "npe01__Contacts_and_Orgs_Settings__c");
+    if (settingsBucket == null || settingsBucket.isEmpty()) {
+      // Default to Household Account model when no settings exist
+      return true;
+    }
+    for (ApexSObject settings : settingsBucket.values()) {
+      Object processor = settings.get("npe01__Account_Processor__c");
+      if (processor != null) {
+        String val = String.valueOf(processor).trim();
+        return val.equalsIgnoreCase("Household Account") || val.isEmpty();
+      }
+    }
+    return true;
   }
 
   private static void autoCreateHouseholdAccount(State state, ApexSObject stored, ApexSObject record) {
