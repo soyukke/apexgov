@@ -7710,6 +7710,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return callableApi;\n  }", .to = "if (callableApi == null && namespace != null) { try { callableApi = (apexemu.runtime.System.Callable) Type.forName((namespace == null ? (namespace = initNamespace()) : namespace), callableApiClassName).newInstance(); } catch (Exception ignored) {} }\n    return callableApi;\n  }" },
         // ERR_ExceptionHandler_TEST: Id foo = 'foo' should throw StringException in Apex
         .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
+        // UTIL_IntegrationConfig.getConfig: null enum causes NPE in Java switch
+        .{ .from = "switch (integrationPackage) {\n    case ArchiveBridge", .to = "if (integrationPackage == null) { return null; }\n    switch (integrationPackage) {\n    case ArchiveBridge" },
         // (NPSP Labels fixup moved to late fixup pass)
         // RemoveRecord: collection.remove(Integer) calls object-remove in Java, need index-remove
         .{ .from = "collection.remove(index);", .to = "collection.remove(index.intValue());" },
