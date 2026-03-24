@@ -7718,6 +7718,10 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "CRLP_Rollup_SVC.CRLP_Exception(", .to = "apexemu.runtime.System.Exception(" },
         // Break CAO_Constants <-> UTIL_CustomSettingsFacade circular dependency
         .{ .from = "CAO_Constants.OCR_DONOR_ROLE", .to = "\"Donor\"" },
+        .{ .from = "CAO_Constants.HH_ACCOUNT_PROCESSOR", .to = "\"Household Account\"" },
+        .{ .from = "CAO_Constants.HH_ACCOUNT_RT_DEVELOPER_NAME", .to = "\"HH_Account\"" },
+        .{ .from = "CAO_Constants.HH_MEMBER_CONTACT_ROLE", .to = "\"Household Member\"" },
+        .{ .from = "CAO_Constants.ONE_TO_ONE_PROCESSOR", .to = "\"One-to-One\"" },
         // (NPSP Labels fixup moved to late fixup pass)
         // RemoveRecord: collection.remove(Integer) calls object-remove in Java, need index-remove
         .{ .from = "collection.remove(index);", .to = "collection.remove(index.intValue());" },
