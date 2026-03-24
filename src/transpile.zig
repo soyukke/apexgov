@@ -7708,6 +7708,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()", .to = "if (isInstalled == null) { isInstalled = initIsInstalled(); }\n    return isInstalled;\n  }\n\n  public apexemu.runtime.System.Callable getCallableApi()" },
         // ERR_ExceptionHandler_TEST: Id foo = 'foo' should throw StringException in Apex
         .{ .from = "String foo = \"foo\";", .to = "String foo = apexemu.runtime.ApexStrings.validateId(\"foo\");" },
+        // NPSP Labels: seed commonly used custom labels
+        .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
         // RemoveRecord: collection.remove(Integer) calls object-remove in Java, need index-remove
         .{ .from = "collection.remove(index);", .to = "collection.remove(index.intValue());" },
         // (UTIL_CurrencyCache orgCache fix moved to late fixup pass)

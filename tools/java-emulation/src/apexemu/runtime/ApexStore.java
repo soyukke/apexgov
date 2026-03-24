@@ -4668,7 +4668,7 @@ final class ApexStore {
       }
       if (!record.hasField(field.name) || record.get(field.name) == null) {
         throw new DmlFailure(
-            "REQUIRED_FIELD_MISSING", "required field missing: " + field.name, new String[] {field.name});
+            "REQUIRED_FIELD_MISSING", "Required fields are missing: [" + field.name + "]", new String[] {field.name});
       }
     }
     validateUniqueFields(state, record, definition, null);
@@ -4711,7 +4711,7 @@ final class ApexStore {
     if (record.type().toLowerCase().endsWith("__e")) {
       // Event_Recipes_Demo__e requires AccountId__c
       if (isType(record.type(), "Event_Recipes_Demo__e") && isBlankValue(record.get("AccountId__c"))) {
-        throw new DmlFailure("REQUIRED_FIELD_MISSING", "required field missing: AccountId__c", new String[] {"AccountId__c"});
+        throw new DmlFailure("REQUIRED_FIELD_MISSING", "Required fields are missing: [AccountId__c]", new String[] {"AccountId__c"});
       }
       return;
     }
@@ -4999,7 +4999,7 @@ final class ApexStore {
       if (value == null) {
         if (field.required) {
           throw new DmlFailure(
-              "REQUIRED_FIELD_MISSING", "required field missing: " + field.name, new String[] {field.name});
+              "REQUIRED_FIELD_MISSING", "Required fields are missing: [" + field.name + "]", new String[] {field.name});
         }
         continue;
       }
@@ -5023,7 +5023,7 @@ final class ApexStore {
       boolean missingOrBlankName = isBlankValue(record.get("Name"));
       if (isInsert && missingOrBlankName) {
         throw new DmlFailure(
-            "REQUIRED_FIELD_MISSING", "required field missing: Name", new String[] {"Name"});
+            "REQUIRED_FIELD_MISSING", "Required fields are missing: [Name]", new String[] {"Name"});
       }
       if (!isInsert && record.hasField("Name") && missingOrBlankName) {
         throw new DmlFailure(
