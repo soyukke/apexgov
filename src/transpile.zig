@@ -21804,6 +21804,8 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "orgCache.put(", .to = "orgCache().put(" },
         // NPSP Labels: seed commonly used custom labels as compile-time constants
         .{ .from = "Labels.get(\"exceptionRequiredField\")", .to = "\"Required fields are missing:\"" },
+        // Break RD2_EnablementDelegate_CTRL → CRLP_EnablementService cascade (1 line only)
+        .{ .from = "CRLP_EnablementService.RollupMetadataHandler changeHandler = new CRLP_ApiService()", .to = "Object changeHandler = new CRLP_ApiService()" },
     };
 
     var out: std.ArrayList(u8) = .empty;
