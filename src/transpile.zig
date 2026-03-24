@@ -7717,8 +7717,8 @@ fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]
         .{ .from = "PS_GatewayService.GatewayTemplateSetting", .to = "ApexSObject" },
         // Break UTIL_UnitTestData_TEST cascades
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
-        // TDTM_TriggerHandler: skip instanceof check to avoid classloader identity mismatch
-        .{ .from = "if (classInstance instanceof TDTM_Runnable) {\n    TDTM_Runnable classToRun = (TDTM_Runnable)classInstance;", .to = "if (classInstance != null) {\n    TDTM_Runnable classToRun = (TDTM_Runnable)classInstance;" },
+        // TDTM_TriggerHandler: use reflection to avoid classloader identity mismatch on Action enum
+        .{ .from = "return classToRun.run(newlist, oldlist, thisAction, describeObj);", .to = "{ try { java.lang.reflect.Method rm = classInstance.getClass().getMethod(\"run\", java.util.List.class, java.util.List.class, classInstance.getClass().getClassLoader().loadClass(\"generated.TDTM_Runnable$Action\"), apexemu.runtime.Schema.DescribeSObjectResult.class); Object actionVal = java.lang.Enum.valueOf((Class)classInstance.getClass().getClassLoader().loadClass(\"generated.TDTM_Runnable$Action\"), thisAction.name()); return (TDTM_Runnable.DmlWrapper) rm.invoke(classInstance, newlist, oldlist, actionVal, describeObj); } catch (Exception reflErr) { if (reflErr.getCause() instanceof RuntimeException rte) throw rte; throw new RuntimeException(reflErr); } }" },
         // (RD2 cascade fixups reverted — caused regression in best-effort compilation)
         // BDI_DataImport_TEST.newDi inline — avoid cross-test-class dependency
         .{ .from = "BDI_DataImport_TEST.newDi(\"John\"+i,\"Doe\"+i, 200)", .to = "ApexSObject.of(\"DataImport__c\").set(\"Contact1_Firstname__c\",\"John\"+i).set(\"Contact1_Lastname__c\",\"Doe\"+i).set(\"Contact1_Personal_Email__c\",\"John\"+i+\"@Doe\"+i+\".com\").set(\"Donation_Amount__c\",200).set(\"Donation_Date__c\",apexemu.runtime.System.today())" },
