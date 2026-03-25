@@ -454,6 +454,34 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   if [[ "$total_restored" -gt 0 ]]; then
     echo "best-effort: restored $total_restored source(s) from placeholders in $_round round(s)"
   fi
+
+  # Final individual-compile pass: try each remaining fallback one at a time
+  if [[ -s "$compile_fallbacks" ]]; then
+    individual_restored=0
+    next_fallbacks="$out_dir/.final-fallbacks.txt"
+    : > "$next_fallbacks"
+    while IFS= read -r fb_src; do
+      rel="${fb_src#"$best_effort_sources_dir"/}"
+      orig="$tests_dir/$rel"
+      if [[ -f "$orig" ]]; then
+        cp "$orig" "$fb_src"
+        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+          individual_restored=$((individual_restored + 1))
+        else
+          render_placeholder_source "$fb_src"
+          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          printf '%s\n' "$fb_src" >> "$next_fallbacks"
+        fi
+      else
+        printf '%s\n' "$fb_src" >> "$next_fallbacks"
+      fi
+    done < "$compile_fallbacks"
+    cp "$next_fallbacks" "$compile_fallbacks"
+    rm -f "$next_fallbacks"
+    if [[ "$individual_restored" -gt 0 ]]; then
+      echo "best-effort: individually restored $individual_restored additional source(s)"
+    fi
+  fi
 fi
 
 if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
