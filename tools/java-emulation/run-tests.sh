@@ -489,6 +489,44 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   fi
 fi
 
+# Full recompilation pass: recompile ALL sources against the final build state.
+# This catches files that couldn't compile during initial best-effort but can now
+# because their dependencies were restored in later rounds.
+if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
+  _t_recomp=$(_timer_start)
+  recomp_restored=0
+  for _rr in 1 2 3 4 5; do
+    rr_progress=0
+    next_fallbacks="$out_dir/.recomp-fallbacks.txt"
+    : > "$next_fallbacks"
+    while IFS= read -r fb_src; do
+      rel="${fb_src#"$best_effort_sources_dir"/}"
+      orig="$tests_dir/$rel"
+      if [[ -f "$orig" ]]; then
+        cp "$orig" "$fb_src"
+        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+          rr_progress=$((rr_progress + 1))
+        else
+          render_placeholder_source "$fb_src"
+          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          printf '%s\n' "$fb_src" >> "$next_fallbacks"
+        fi
+      else
+        printf '%s\n' "$fb_src" >> "$next_fallbacks"
+      fi
+    done < "$compile_fallbacks"
+    cp "$next_fallbacks" "$compile_fallbacks"
+    rm -f "$next_fallbacks"
+    recomp_restored=$((recomp_restored + rr_progress))
+    if [[ "$rr_progress" -eq 0 ]]; then break; fi
+  done
+  if [[ "$recomp_restored" -gt 0 ]]; then
+    remaining=$(wc -l < "$compile_fallbacks" | tr -d ' ')
+    echo "best-effort: recompilation restored $recomp_restored source(s), $remaining remaining" >&2
+  fi
+  echo "phase:recompile $(_timer_elapsed $_t_recomp)" >&2
+fi
+
 if [[ -f "$tests_dir/apex-triggers.txt" ]]; then
   cp "$tests_dir/apex-triggers.txt" "$out_dir/build/apex-triggers.txt"
 fi
