@@ -494,6 +494,23 @@ fi
 # because their dependencies were restored in later rounds.
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   _t_recomp=$(_timer_start)
+  # First: delete ALL placeholder .class files and restore original sources
+  recomp_batch=()
+  while IFS= read -r fb_src; do
+    rel="${fb_src#"$best_effort_sources_dir"/}"
+    orig="$tests_dir/$rel"
+    if [[ -f "$orig" ]]; then
+      cp "$orig" "$fb_src"
+      class_name="$(basename "$fb_src" .java)"
+      rm -f "$out_dir/build/generated/${class_name}.class" "$out_dir/build/generated/${class_name}\$"*.class 2>/dev/null
+      recomp_batch+=("$fb_src")
+    fi
+  done < "$compile_fallbacks"
+  # Try batch compile of all restored sources
+  if [[ ${#recomp_batch[@]} -gt 0 ]]; then
+    javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${recomp_batch[@]}" >/dev/null 2>/dev/null || true
+  fi
+
   recomp_restored=0
   for _rr in 1 2 3 4 5; do
     rr_progress=0
