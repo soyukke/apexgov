@@ -342,6 +342,14 @@ else
   xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
 fi
 
+# Phase 3: Recompile all test sources against final build state with placeholders.
+# Files that failed in batch-bisect may succeed now that all placeholders exist.
+if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
+  _t_p3=$(_timer_start)
+  xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$best_effort_sources_file" >/dev/null 2>/dev/null || true
+  echo "phase:recompile-all $(_timer_elapsed $_t_p3)" >&2
+fi
+
 # Final pass: iteratively restore placeholder sources until no more progress
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   # Compile all placeholders so their types are available
