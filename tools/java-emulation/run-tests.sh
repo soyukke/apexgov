@@ -231,8 +231,11 @@ if [[ "$best_effort" == "true" ]]; then
     fallback_count=$((fallback_count + 1))
   }
 
+  # Best-effort javac flags: add -sourcepath to resolve deps from source
+  BE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
+
   # --- Phase 1: Try compiling all files at once ---
-  if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
+  if javac "${BE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
     pending=()
   fi
 
@@ -242,7 +245,7 @@ if [[ "$best_effort" == "true" ]]; then
 
     # Try batch compile to identify error sources
     class_count_before="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
-    if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+    if javac "${BE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
       progress=true
       pending=()
       rm -f "$out_dir/.javac.err"
