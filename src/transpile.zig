@@ -21849,6 +21849,11 @@ fn rewriteInterfaceCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .class_marker = "class HouseholdNamingService", .from = "AccountAdapter.isAllMembersDeceasedUpdateEnabled", .to = "false" },
         .{ .class_marker = "class HouseholdNamingService", .from = "AccountAdapter.enableHouseholdDeceasedUpdate(", .to = "/* stubbed */ Boolean.valueOf(" },
         .{ .class_marker = "class HouseholdNamingService", .from = "HouseholdMembers.householdMembersFor(", .to = "new HouseholdMembers(apexemu.runtime.ApexCollections.listOf(/* stubbed */" },
+        // RD2_Settings: inline lazy init for settings property
+        .{ .class_marker = "public static RD2_Settings getInstance()", .from = "private ApexSObject settings; // Apex property { get; set; }", .to = "private ApexSObject settings; // Apex property { get; set; }\n  private ApexSObject ensureSettings() { if (settings == null) settings = UTIL_CustomSettingsFacade.getRecurringDonationsSettings(); return settings; }" },
+        .{ .class_marker = "public static RD2_Settings getInstance()", .from = "Boolean.TRUE.equals(settings.getAs(", .to = "Boolean.TRUE.equals(ensureSettings().getAs(" },
+        .{ .class_marker = "public static RD2_Settings getInstance()", .from = "ApexEquals.eq(settings.getAs(", .to = "ApexEquals.eq(ensureSettings().getAs(" },
+        .{ .class_marker = "public static RD2_Settings getInstance()", .from = "ApexStrings.valueOf(settings.getAs(", .to = "ApexStrings.valueOf(ensureSettings().getAs(" },
     };
 
     var out: std.ArrayList(u8) = .empty;
