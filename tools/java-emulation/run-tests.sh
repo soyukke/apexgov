@@ -393,8 +393,9 @@ fi
 # Final pass: iteratively restore placeholder sources until no more progress
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   # Compile all placeholders so their types are available
+  RESTORE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
   while IFS= read -r fb_src; do
-    javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+    javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
   done < "$compile_fallbacks"
   # Iteratively restore original sources
   total_restored=0
@@ -417,7 +418,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
     done < "$compile_fallbacks"
 
     if [[ ${#batch_restore[@]} -gt 0 ]]; then
-      if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${batch_restore[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+      if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${batch_restore[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
         restored=${#batch_restore[@]}
         rm -f "$out_dir/.javac.err"
       else
@@ -444,7 +445,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
           done
           if [[ "$is_error" == "true" ]]; then
             render_placeholder_source "$fb_src"
-            javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+            javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
             printf '%s\n' "$fb_src" >> "$next_fallbacks"
           else
             retry_batch+=("$fb_src")
@@ -453,7 +454,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
         # Re-try non-error files as batch with iterative error removal
         for _retry in 1 2 3; do
           if [[ ${#retry_batch[@]} -eq 0 ]]; then break; fi
-          if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${retry_batch[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+          if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${retry_batch[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
             restored=$((restored + ${#retry_batch[@]}))
             rm -f "$out_dir/.javac.err"
             retry_batch=()
@@ -474,7 +475,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
             done
             if [[ "$is_err" == "true" ]]; then
               render_placeholder_source "$fb_src"
-              javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+              javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
               printf '%s\n' "$fb_src" >> "$next_fallbacks"
             else
               next_retry+=("$fb_src")
@@ -484,9 +485,9 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
         done
         # Any remaining retry files that still fail
         for fb_src in "${retry_batch[@]}"; do
-          if ! javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+          if ! javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
             render_placeholder_source "$fb_src"
-            javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+            javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
             printf '%s\n' "$fb_src" >> "$next_fallbacks"
           else
             restored=$((restored + 1))
@@ -519,11 +520,11 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
-        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+        if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
           round_restored=$((round_restored + 1))
         else
           render_placeholder_source "$fb_src"
-          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
           printf '%s\n' "$fb_src" >> "$next_fallbacks"
         fi
       else
