@@ -291,12 +291,15 @@ if [[ "$best_effort" == "true" ]]; then
       salvage_progress=false
       next_pending=()
       for src in "${pending[@]}"; do
-        render_placeholder_source "$src"
+        # Try compiling original source individually first
         if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
           salvage_progress=true
           progress=true
-          record_fallback "$src"
         else
+          # Original failed — make it a placeholder
+          render_placeholder_source "$src"
+          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1 || true
+          record_fallback "$src"
           next_pending+=("$src")
         fi
       done
