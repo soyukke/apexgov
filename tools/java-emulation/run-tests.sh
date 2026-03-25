@@ -342,12 +342,49 @@ else
   xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$test_sources_file"
 fi
 
-# Phase 3: Recompile all test sources against final build state with placeholders.
-# Files that failed in batch-bisect may succeed now that all placeholders exist.
+# Phase 3: Recompile fallback sources using -sourcepath to resolve dependencies
+# from original transpile output instead of placeholder .class stubs.
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   _t_p3=$(_timer_start)
-  xargs -0 javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" < "$best_effort_sources_file" >/dev/null 2>/dev/null || true
-  echo "phase:recompile-all $(_timer_elapsed $_t_p3)" >&2
+  # Restore all fallback sources from transpile output
+  while IFS= read -r fb_src; do
+    rel="${fb_src#"$best_effort_sources_dir"/}"
+    orig="$tests_dir/$rel"
+    [ -f "$orig" ] && cp "$orig" "$fb_src"
+  done < "$compile_fallbacks"
+  # Compile with -sourcepath so javac resolves deps from source, not placeholder .class
+  p3_files=()
+  while IFS= read -r fb_src; do p3_files+=("$fb_src"); done < "$compile_fallbacks"
+  if [[ ${#p3_files[@]} -gt 0 ]]; then
+    javac "${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir" \
+      -cp "$out_dir/build" -d "$out_dir/build" \
+      "${p3_files[@]}" >/dev/null 2>/dev/null || true
+  fi
+  # Re-check which files still fail individually and revert those to placeholders
+  p3_restored=0
+  next_fallbacks="$out_dir/.p3-fallbacks.txt"
+  : > "$next_fallbacks"
+  while IFS= read -r fb_src; do
+    class_name="$(basename "$fb_src" .java)"
+    if [ -f "$out_dir/build/generated/${class_name}.class" ]; then
+      # Check if .class was updated (not just the placeholder)
+      class_size=$(wc -c < "$out_dir/build/generated/${class_name}.class" 2>/dev/null | tr -d ' ')
+      if [ "$class_size" -gt 500 ] 2>/dev/null; then
+        p3_restored=$((p3_restored + 1))
+      else
+        printf '%s\n' "$fb_src" >> "$next_fallbacks"
+      fi
+    else
+      printf '%s\n' "$fb_src" >> "$next_fallbacks"
+    fi
+  done < "$compile_fallbacks"
+  cp "$next_fallbacks" "$compile_fallbacks"
+  rm -f "$next_fallbacks"
+  if [ "$p3_restored" -gt 0 ]; then
+    remaining=$(wc -l < "$compile_fallbacks" | tr -d ' ')
+    echo "best-effort: sourcepath recompile restored $p3_restored source(s), $remaining remaining" >&2
+  fi
+  echo "phase:recompile-sourcepath $(_timer_elapsed $_t_p3)" >&2
 fi
 
 # Final pass: iteratively restore placeholder sources until no more progress
