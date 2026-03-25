@@ -455,9 +455,12 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
     echo "best-effort: restored $total_restored source(s) from placeholders in $_round round(s)"
   fi
 
-  # Final individual-compile pass: try each remaining fallback one at a time
-  if [[ -s "$compile_fallbacks" ]]; then
-    individual_restored=0
+  # Final individual-compile passes: iteratively try each remaining fallback
+  # Multiple rounds needed because restoring one file may unblock others
+  total_individual=0
+  for _iround in 1 2 3 4 5 6 7 8 9 10; do
+    if [[ ! -s "$compile_fallbacks" ]]; then break; fi
+    round_restored=0
     next_fallbacks="$out_dir/.final-fallbacks.txt"
     : > "$next_fallbacks"
     while IFS= read -r fb_src; do
@@ -466,7 +469,7 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
         if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-          individual_restored=$((individual_restored + 1))
+          round_restored=$((round_restored + 1))
         else
           render_placeholder_source "$fb_src"
           javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
@@ -478,9 +481,11 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
     done < "$compile_fallbacks"
     cp "$next_fallbacks" "$compile_fallbacks"
     rm -f "$next_fallbacks"
-    if [[ "$individual_restored" -gt 0 ]]; then
-      echo "best-effort: individually restored $individual_restored additional source(s)"
-    fi
+    total_individual=$((total_individual + round_restored))
+    if [[ "$round_restored" -eq 0 ]]; then break; fi
+  done
+  if [[ "$total_individual" -gt 0 ]]; then
+    echo "best-effort: individually restored $total_individual additional source(s) in $_iround round(s)"
   fi
 fi
 
