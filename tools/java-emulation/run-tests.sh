@@ -264,10 +264,13 @@ if [[ "$best_effort" == "true" ]]; then
       rm -f "$out_dir/.javac.err"
 
       if [[ ${#batch_error_sources[@]} -gt 0 ]]; then
-        # Replace error sources with placeholders
+        # Try individual compile first; only placeholder if individual also fails
         for src in "${batch_error_sources[@]}"; do
-          render_placeholder_source "$src"
-          record_fallback "$src"
+          if ! javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
+            render_placeholder_source "$src"
+            javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1 || true
+            record_fallback "$src"
+          fi
         done
         progress=true
 
