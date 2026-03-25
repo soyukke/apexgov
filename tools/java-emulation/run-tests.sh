@@ -504,6 +504,9 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
+        # Delete placeholder .class before recompiling so javac uses the source
+        class_name="$(basename "$fb_src" .java)"
+        rm -f "$out_dir/build/generated/${class_name}.class" "$out_dir/build/generated/${class_name}\$"*.class 2>/dev/null
         if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
           rr_progress=$((rr_progress + 1))
         else
