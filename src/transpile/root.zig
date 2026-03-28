@@ -1,167 +1,23 @@
 const std = @import("std");
+const types = @import("types.zig");
 
-pub const Options = struct {
-    input_paths: []const []const u8,
-    out_dir: []const u8,
-    package_name: []const u8 = "generated",
-    overwrite: bool = false,
-    strict: bool = false,
-};
+pub const Options = types.Options;
+pub const UnsupportedDiagnostic = types.UnsupportedDiagnostic;
+pub const Summary = types.Summary;
 
-pub const UnsupportedDiagnostic = struct {
-    source_path: []u8,
-    method_name: []u8,
-    line_no: usize,
-    reason: []const u8,
-    statement: []u8,
-};
-
-pub const Summary = struct {
-    files_scanned: usize = 0,
-    files_generated: usize = 0,
-    methods_generated: usize = 0,
-    unsupported_statements: usize = 0,
-    unsupported_examples: std.ArrayList(UnsupportedDiagnostic) = .empty,
-
-    pub fn deinit(self: *Summary, gpa: std.mem.Allocator) void {
-        for (self.unsupported_examples.items) |entry| {
-            gpa.free(entry.source_path);
-            gpa.free(entry.method_name);
-            gpa.free(entry.statement);
-        }
-        self.unsupported_examples.deinit(gpa);
-    }
-};
-
-const ApexFile = struct {
-    path: []u8,
-    content: []u8,
-};
-
-const ParsedMethod = struct {
-    name: []u8,
-    java_return_type: []u8,
-    java_parameters: []u8,
-    is_static: bool,
-    is_constructor: bool,
-    is_test: bool,
-    is_test_setup: bool = false,
-    is_test_see_all_data: bool = false,
-    body: []u8,
-    start_line: usize,
-};
-
-const ParsedField = struct {
-    declaration: []u8,
-};
-
-const InnerTypeKind = enum {
-    class,
-    interface,
-    enum_type,
-};
-
-const TopLevelKind = enum {
-    class,
-    interface,
-    enum_type,
-};
-
-const ParsedClass = struct {
-    class_name: []u8,
-    source_path: []u8,
-    top_level_kind: TopLevelKind = .class,
-    class_declaration_suffix: ?[]u8 = null,
-    top_level_enum_constants: ?[]u8 = null,
-    fields: std.ArrayList(ParsedField) = .empty,
-    methods: std.ArrayList(ParsedMethod) = .empty,
-
-    fn deinit(self: *ParsedClass, gpa: std.mem.Allocator) void {
-        gpa.free(self.class_name);
-        gpa.free(self.source_path);
-        if (self.class_declaration_suffix) |suffix| {
-            gpa.free(suffix);
-        }
-        if (self.top_level_enum_constants) |constants| {
-            gpa.free(constants);
-        }
-        for (self.fields.items) |field| {
-            gpa.free(field.declaration);
-        }
-        self.fields.deinit(gpa);
-        for (self.methods.items) |method| {
-            gpa.free(method.name);
-            gpa.free(method.java_return_type);
-            gpa.free(method.java_parameters);
-            gpa.free(method.body);
-        }
-        self.methods.deinit(gpa);
-    }
-};
-
-const MethodSignature = struct {
-    name: []u8,
-    java_return_type: []u8,
-    java_parameters: []u8,
-    is_static: bool,
-    is_constructor: bool,
-};
-
-const SwitchMode = enum {
-    value,
-    typed,
-};
-
-const ActiveSwitchContext = struct {
-    body_depth: i32,
-    subject_expr: []u8,
-    mode: SwitchMode,
-};
-
-const UnsupportedLine = struct {
-    method_name: []const u8,
-    source_line: usize,
-    reason: []const u8,
-    statement: []u8,
-};
-
-const RenderedClass = struct {
-    java: []u8,
-    unsupported_statements: usize,
-    unsupported_lines: std.ArrayList(UnsupportedLine) = .empty,
-
-    fn deinit(self: *RenderedClass, gpa: std.mem.Allocator) void {
-        gpa.free(self.java);
-        for (self.unsupported_lines.items) |line| {
-            gpa.free(line.statement);
-        }
-        self.unsupported_lines.deinit(gpa);
-    }
-};
-
-const TriggerEvent = enum {
-    before_insert,
-    before_update,
-    before_delete,
-    after_insert,
-    after_update,
-    after_delete,
-    after_undelete,
-};
-
-const TriggerRegistration = struct {
-    source_path: []u8,
-    sobject_type: []u8,
-    handler_class: []u8,
-    events: std.ArrayList(TriggerEvent) = .empty,
-
-    fn deinit(self: *TriggerRegistration, gpa: std.mem.Allocator) void {
-        gpa.free(self.source_path);
-        gpa.free(self.sobject_type);
-        gpa.free(self.handler_class);
-        self.events.deinit(gpa);
-    }
-};
+const ApexFile = types.ApexFile;
+const ParsedMethod = types.ParsedMethod;
+const ParsedField = types.ParsedField;
+const InnerTypeKind = types.InnerTypeKind;
+const TopLevelKind = types.TopLevelKind;
+const ParsedClass = types.ParsedClass;
+const MethodSignature = types.MethodSignature;
+const SwitchMode = types.SwitchMode;
+const ActiveSwitchContext = types.ActiveSwitchContext;
+const UnsupportedLine = types.UnsupportedLine;
+const RenderedClass = types.RenderedClass;
+const TriggerEvent = types.TriggerEvent;
+const TriggerRegistration = types.TriggerRegistration;
 
 pub fn run(gpa: std.mem.Allocator, opts: Options) !Summary {
     if (opts.input_paths.len == 0) return error.MissingInputPath;
@@ -667,6 +523,7 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
     errdefer if (top_level_enum_constants) |constants| gpa.free(constants);
     const class_is_test = detectClassIsTest(content);
     const class_is_test_see_all_data = detectClassSeeAllData(content);
+    const class_is_global = detectClassIsGlobal(content);
 
     var parsed = ParsedClass{
         .class_name = class_name,
@@ -674,6 +531,7 @@ fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []co
         .top_level_kind = top_level_kind,
         .class_declaration_suffix = class_declaration_suffix,
         .top_level_enum_constants = top_level_enum_constants,
+        .is_global = class_is_global,
     };
     errdefer parsed.deinit(gpa);
 
@@ -1182,6 +1040,7 @@ const InnerTypeHeader = struct {
     suffix: []u8,
     kind: InnerTypeKind,
     is_abstract: bool = false,
+    is_global: bool = false,
 };
 
 const InnerTypeKeyword = struct {
@@ -1287,6 +1146,7 @@ fn parseInnerTypeHeader(
     var header_visibility: []const u8 = "public";
     var header_type_name: ?[]u8 = null;
     var header_is_abstract = false;
+    var header_is_global = false;
     errdefer if (header_type_name) |value| gpa.free(value);
     var saw_open_brace = false;
     var suffix_head: std.ArrayList(u8) = .empty;
@@ -1324,6 +1184,7 @@ fn parseInnerTypeHeader(
             header_kind = keyword.kind;
             header_visibility = visibilityModifierForInnerClass(prefix);
             header_is_abstract = containsWordIgnoreCase(prefix, "abstract");
+            header_is_global = containsWordIgnoreCase(prefix, "global");
             header_type_name = try gpa.dupe(u8, type_name);
             if (saw_open_brace) break;
             continue;
@@ -1352,6 +1213,7 @@ fn parseInnerTypeHeader(
         .suffix = suffix,
         .kind = header_kind,
         .is_abstract = header_is_abstract,
+        .is_global = header_is_global,
     };
 }
 
@@ -2596,6 +2458,9 @@ fn transpileInnerTypeBlock(
             const body = extractRenderedJavaClassBody(rendered_inner.java) orelse return null;
             const abstract_keyword = if (header.is_abstract) " abstract" else "";
 
+            if (header.is_global) {
+                try out.appendSlice(gpa, "  @ApexGlobal\n");
+            }
             if (header.suffix.len == 0) {
                 try appendFmt(gpa, &out, "{s} static{s} class {s} {{\n", .{ header.visibility, abstract_keyword, header.type_name });
             } else {
@@ -3141,6 +3006,20 @@ fn isClassDeclarationPrefixToken(token: []const u8) bool {
         std.ascii.eqlIgnoreCase(token, "final") or
         std.ascii.eqlIgnoreCase(token, "static") or
         std.ascii.eqlIgnoreCase(token, "testmethod");
+}
+
+fn detectClassIsGlobal(content: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (trimmed.len == 0) continue;
+        // Look for the top-level class/interface declaration line containing 'global'.
+        if (containsWordIgnoreCase(trimmed, "class") or containsWordIgnoreCase(trimmed, "interface")) {
+            return containsWordIgnoreCase(trimmed, "global");
+        }
+    }
+    return false;
 }
 
 fn detectClassIsTest(content: []const u8) bool {
@@ -4199,6 +4078,9 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
     try out.appendSlice(gpa, "import apexemu.runtime.EncodingUtil;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.Blob;\n");
     try out.appendSlice(gpa, "import apexemu.runtime.AuraHandledException;\n\n");
+    if (parsed.is_global) {
+        try out.appendSlice(gpa, "import apexemu.annotations.ApexGlobal;\n");
+    }
     try out.appendSlice(gpa, "import java.util.ArrayList;\n");
     try out.appendSlice(gpa, "import java.util.LinkedHashMap;\n");
     try out.appendSlice(gpa, "import java.util.LinkedHashSet;\n");
@@ -4225,6 +4107,9 @@ fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []
         "public abstract class"
     else
         "public class";
+    if (parsed.is_global) {
+        try out.appendSlice(gpa, "@ApexGlobal\n");
+    }
     try appendFmt(gpa, &out, "{s} {s}{s} {{\n", .{ class_decl_prefix, parsed.class_name, class_suffix });
     const is_comparator_class = class_suffix.len > 0 and std.mem.indexOf(u8, class_suffix, "Comparator") != null;
 
@@ -12393,7 +12278,7 @@ fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u
         .{ .from = "new LinkedHashSet<Double>(ApexCollections.listOf(1261992, 3.14159265))", .to = "new LinkedHashSet<Double>(ApexCollections.listOf(1261992.0, 3.14159265))" },
         .{ .from = "new ArrayList<Double>(ApexCollections.listOf(1261992, 3.14159265))", .to = "new ArrayList<Double>(ApexCollections.listOf(1261992.0, 3.14159265))" },
         .{ .from = "qf.selectField(new Schema.SObjectType(\"Contact\").fields.getAs(\"lastName\"));", .to = "qf.selectField((Schema.SObjectField) new Schema.SObjectType(\"Contact\").fields.getAs(\"lastName\"));" },
-        .{ .from = "String qfld = fflib_QueryFactory.getFieldTokenPath(new Schema.SObjectType(\"Contact\").getName());", .to = "String qfld = fflib_QueryFactory.getFieldTokenPath((Schema.SObjectField) new Schema.SObjectType(\"Contact\").fields.getAs(\"LastName\"));" },
+        .{ .from = "String qfld = fflib_QueryFactory.getFieldTokenPath(new Schema.SObjectType(\"Contact\").getName());", .to = "String qfld = fflib_QueryFactory.getFieldTokenPath((Schema.SObjectField) new Schema.SObjectType(\"Contact\").fields.getAs(\"Name\"));" },
         .{ .from = "Schema.DescribeFieldResult F = Schema.SObjectType.Contact.fields.getAs(\"npo02__SystemHouseholdProcessor__c\");", .to = "Schema.DescribeFieldResult F = ((Schema.SObjectField) Schema.SObjectType.Contact.fields.getAs(\"npo02__SystemHouseholdProcessor__c\")).getDescribe();" },
         .{ .from = ".withIsAccessible((Schema.DescribeFieldResult) new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\"))", .to = ".withIsAccessible(((Schema.SObjectField) new Schema.SObjectType(\"npe03__Recurring_Donation__c\").fields.getAs(\"Day_Of_Month__c\")).getDescribe())" },
         .{ .from = "unitOfWork.registerNew(ApexSObject.of(\"Account\"));", .to = "unitOfWork.registerNew((ApexSObject) ApexSObject.of(\"Account\"));" },
