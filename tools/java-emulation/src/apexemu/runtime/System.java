@@ -800,6 +800,22 @@ public final class System {
       }
     }
 
+    /**
+     * Resolve the underlying Java class for this Type so callers can inspect
+     * annotations such as {@code @ApexGlobal}.  Returns {@code null} when the
+     * class cannot be found (e.g. SObject type tokens).
+     */
+    public Class<?> resolveClassForGlobalCheck() {
+      Class<?> klass = resolveClass(typeName);
+      if (klass == null) {
+        String normalized = normalizeApexSimpleTypeName(typeName);
+        if (!normalized.equals(typeName)) {
+          klass = resolveClass(normalized);
+        }
+      }
+      return klass;
+    }
+
     private static Type forResolvedName(String normalized) {
       if (normalized == null || normalized.isBlank()) {
         return null;

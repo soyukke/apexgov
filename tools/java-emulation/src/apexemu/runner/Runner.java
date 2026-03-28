@@ -176,6 +176,8 @@ public final class Runner {
       autoRegisterTriggerManifest(config.classesDir, loader);
       registerTriggerHandlersFast(triggerHandlers, loader);
       autoRegisterTDTMTriggers(classRegistrations, loader);
+      // If a generated PicklistRegistry exists, invoke it to seed picklist metadata.
+      invokePicklistRegistry(loader);
       klass = Class.forName(className, true, loader);
       method = klass.getDeclaredMethod(methodName);
       testSetupMethods = resolveMethodsByName(klass, testSetupMethodNames);
@@ -1109,6 +1111,23 @@ public final class Runner {
           yield Database.NullOrderDefault.FIRST;
         }
       };
+    }
+  }
+
+  /**
+   * If a {@code generated.PicklistRegistry} class exists on the classpath,
+   * invoke its {@code register()} method to seed picklist metadata from
+   * Salesforce field-meta.xml files.
+   */
+  private static void invokePicklistRegistry(ClassLoader loader) {
+    try {
+      Class<?> registry = Class.forName("generated.PicklistRegistry", true, loader);
+      java.lang.reflect.Method registerMethod = registry.getDeclaredMethod("register");
+      registerMethod.invoke(null);
+    } catch (ClassNotFoundException ignored) {
+      // No picklist registry generated — nothing to do.
+    } catch (ReflectiveOperationException ex) {
+      java.lang.System.err.println("WARNING: PicklistRegistry.register() failed: " + ex);
     }
   }
 }

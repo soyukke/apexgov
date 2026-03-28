@@ -45,6 +45,14 @@ public final class Formula {
       if (formula == null || formula.isBlank()) {
         throw new System.FormulaValidationException("formula must not be blank");
       }
+      // In Salesforce, Formula.builder().withType() requires the type to be global.
+      if (type != null) {
+        Class<?> resolved = type.resolveClassForGlobalCheck();
+        if (resolved != null && !resolved.isAnnotationPresent(apexemu.annotations.ApexGlobal.class)) {
+          throw new System.FormulaValidationException(
+              "type " + type.getName() + " is not global");
+        }
+      }
       String normalized = formula.trim();
       if (normalized.contains("!!!")) {
         throw new System.FormulaValidationException("invalid formula syntax");

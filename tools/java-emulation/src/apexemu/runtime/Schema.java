@@ -1141,6 +1141,11 @@ public final class Schema {
         entries.add(new PicklistEntry("Last_Day", "Last_Day"));
         return entries;
       }
+      // Check dynamic picklist registry (populated from metadata XML).
+      List<PicklistEntry> registered = lookupRegisteredPicklist(ownerType, fieldName);
+      if (registered != null) {
+        return registered;
+      }
       return Collections.emptyList();
     }
 
@@ -2579,5 +2584,35 @@ public final class Schema {
   private static final class State {
     final Map<String, ObjectDefinition> definitions = new LinkedHashMap<>();
     final Map<String, Map<String, FieldSet>> fieldSets = new LinkedHashMap<>();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dynamic picklist registry — populated by generated PicklistRegistry classes
+  // from metadata XML scanning.
+  // ---------------------------------------------------------------------------
+  private static final Map<String, List<PicklistEntry>> PICKLIST_REGISTRY = new LinkedHashMap<>();
+
+  /**
+   * Register picklist values for a given SObject field.
+   * Called from generated PicklistRegistry classes.
+   */
+  public static void registerPicklist(String objectName, String fieldName, String... values) {
+    if (objectName == null || fieldName == null) return;
+    String key = normalize(objectName) + "." + normalize(fieldName);
+    List<PicklistEntry> entries = new ArrayList<>();
+    if (values != null) {
+      for (String v : values) {
+        if (v != null) {
+          entries.add(new PicklistEntry(v, v));
+        }
+      }
+    }
+    PICKLIST_REGISTRY.put(key, Collections.unmodifiableList(entries));
+  }
+
+  static List<PicklistEntry> lookupRegisteredPicklist(String objectName, String fieldName) {
+    if (objectName == null || fieldName == null) return null;
+    String key = normalize(objectName) + "." + normalize(fieldName);
+    return PICKLIST_REGISTRY.get(key);
   }
 }

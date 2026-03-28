@@ -223,6 +223,17 @@ echo "apex files: $cls_count"
 "${cmd[@]}"
 
 if [[ "$run_tests" == "true" ]]; then
+  # Generate picklist registry from metadata XML if objects/ directories exist.
+  picklist_script="$repo_root/tools/java-emulation/generate-picklist-registry.sh"
+  picklist_java="$out_dir/$package_name/PicklistRegistry.java"
+  if [[ -x "$picklist_script" ]]; then
+    # Search for objects/ under the resolved source (project root).
+    if find "$resolved_source" -path "*/objects/*/fields/*.field-meta.xml" -print -quit 2>/dev/null | grep -q .; then
+      echo "generating picklist registry from metadata..."
+      "$picklist_script" "$resolved_source" "$picklist_java"
+    fi
+  fi
+
   test_out="$out_dir/test"
   test_cmd=(
     zig build run -- emulate test
