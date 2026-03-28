@@ -1,3 +1,9 @@
+//! parser — メソッド宣言・型宣言のパース。
+//!
+//! ソース行からメソッドシグネチャ（名前・パラメータ型）を抽出する
+//! `parseMethodStart` と、クラス/インターフェース/列挙型の宣言を認識して
+//! 継承・実装関係を登録する `parseTypeDecl` / `registerTypeDecl` を提供する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

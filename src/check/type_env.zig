@@ -1,3 +1,9 @@
+//! type_env — 変数の型環境追跡。
+//!
+//! ローカル変数・パラメータの型バインディングを管理し、
+//! `for-each` ループの要素型推論やコレクション型引数の追跡を行う。
+//! メソッド呼び出し解決時のレシーバー型マッチングに使用される。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

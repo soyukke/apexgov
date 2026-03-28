@@ -1,3 +1,8 @@
+//! file_collector — ファイルシステムからの Apex ソース収集。
+//!
+//! 指定パス（ファイルまたはディレクトリ）を走査し、`.cls` / `.trigger`
+//! 拡張子を持つ Apex ソースファイルを再帰的に収集する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

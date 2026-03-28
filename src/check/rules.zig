@@ -1,3 +1,9 @@
+//! rules — Governor 制限ルールの定数と Finding 生成。
+//!
+//! SOQL (100), DML (150), SOSL (20), Callout (100) 等の Governor 制限値を
+//! 定義し、検出された違反パターンから `Finding` を組み立てて結果リストに追加する。
+//! AG009 (CPU 見積もり) の推定ロジックもここに含まれる。
+
 const std = @import("std");
 const model = @import("../model.zig");
 const utils = @import("utils.zig");

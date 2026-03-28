@@ -1,3 +1,8 @@
+//! query — SOQL/SOSL クエリ式の Java 変換。
+//!
+//! `[SELECT ...]` インライン SOQL や SOSL を Java の
+//! `Database.query()` / `Database.getQueryLocator()` 呼び出しに変換する。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

@@ -1,3 +1,7 @@
+//! file_io — トランスパイル対象ファイルの読み書き。
+//!
+//! Apex ソースの読み込みと、変換後の Java ソースのファイル出力を行う。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

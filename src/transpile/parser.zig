@@ -1,3 +1,8 @@
+//! parser — Apex クラス構造のパース。
+//!
+//! クラス宣言、メソッドシグネチャ、フィールド、インナークラス、
+//! インターフェースなどの Apex クラス構造を解析し AST 相当の情報を抽出する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

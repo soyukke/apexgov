@@ -1,3 +1,8 @@
+//! compat — Apex 固有構文の Java 互換変換ファサード。
+//!
+//! 演算子・数値・クエリ・ SObject アクセス・型キャストなど、
+//! Apex 特有の式を Java 互換のコードに変換するサブモジュール群を再エクスポートする。
+
 // Auto-generated facade - re-exports from compat/ sub-modules
 // Do not edit directly; edit the sub-modules instead.
 

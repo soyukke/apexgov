@@ -1,3 +1,9 @@
+//! scope — クラス・トリガーおよびループのスコープ管理。
+//!
+//! ブレース深さに基づくオーナースコープ (class/trigger/enum) の
+//! 開始・終了追跡と、ループスコープのプッシュ・ポップを行い、
+//! 解析中に「現在どのクラスのどのループ内にいるか」を管理する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

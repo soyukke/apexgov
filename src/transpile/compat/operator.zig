@@ -1,3 +1,8 @@
+//! operator — Apex 演算子の Java 互換変換。
+//!
+//! `==`, `!=`, `+` などの Apex 演算子を、参照等価性や型の違いを
+//! 考慮した Java のメソッド呼び出し (`equals()`, `ApexRuntime.add()` 等) に変換する。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

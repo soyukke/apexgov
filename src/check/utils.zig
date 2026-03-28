@@ -1,3 +1,9 @@
+//! utils — 静的解析全体で使われる汎用ユーティリティ関数群。
+//!
+//! 識別子抽出、ブレース深さ追跡、飽和整数演算、型名正規化、
+//! Apex 固有のリテラル・ソース判定など、複数サブモジュールから
+//! 共通利用される低レベル操作を提供する。
+
 const std = @import("std");
 
 pub fn extractLastIdentifier(raw: []const u8) ?[]const u8 {

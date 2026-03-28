@@ -1,3 +1,9 @@
+//! preprocessor — ソースコードの前処理。
+//!
+//! 解析前にコメント（行コメント・ブロックコメント）を除去しつつ
+//! 行番号を保持する `stripCommentsPreserveLines` と、do-while ループの
+//! 条件式位置を事前収集する `collectDoWhileStartConditions` を提供する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

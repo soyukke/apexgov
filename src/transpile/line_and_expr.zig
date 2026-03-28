@@ -1,3 +1,8 @@
+//! line_and_expr — 行単位の式変換エンジン。
+//!
+//! Apex の各行を解析し、式レベルでの Apex→Java 構文変換を適用する。
+//! 文字列リテラル、型キャスト、メソッド呼び出しなどの式変換を担当する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

@@ -1,3 +1,8 @@
+//! misc — その他の Apex 互換変換。
+//!
+//! 他のカテゴリに分類されない Apex 固有構文（キャスト、
+//! コレクション初期化、システムメソッド等）の Java 変換。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

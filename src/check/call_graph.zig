@@ -1,3 +1,10 @@
+//! call_graph — メソッド呼び出しグラフの構築と解決。
+//!
+//! 各メソッドの Governor 制限消費サマリー (`MethodSummary`) を構築し、
+//! クロスクラス・間接呼び出しのメトリクスをカスケード伝播する。
+//! 型の継承/インターフェース実装を考慮したメソッドマッチングにより、
+//! ポリモーフィックな呼び出しも追跡する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

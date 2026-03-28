@@ -1,3 +1,8 @@
+//! config — `apexgov.toml` 設定ファイルのパーサー。
+//!
+//! CPU/Heap バジェット上限、各操作のコスト係数 (`cpu.model`)、
+//! CI リグレッション閾値などの設定を手書き TOML パーサーで読み込む。
+
 const std = @import("std");
 
 pub const Budget = struct {

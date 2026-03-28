@@ -1,3 +1,9 @@
+//! scanner — メイン解析ループ。
+//!
+//! 前処理済みソースを1行ずつ走査し、スコープ追跡・ループ検出・
+//! Governor 制限パターンマッチング・メソッド呼び出しグラフ構築を
+//! オーケストレーションする。`scanContent` が解析のエントリポイント。
+
 const std = @import("std");
 const model = @import("../model.zig");
 const config = @import("../config.zig");

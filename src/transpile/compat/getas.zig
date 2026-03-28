@@ -1,3 +1,8 @@
+//! getas — SObject の型付きフィールド取得 (`getAs*`) の変換。
+//!
+//! `get()` / `getSObject()` / `getSObjects()` など Apex の SObject
+//! フィールドアクセスを Java のキャスト付きメソッド呼び出しに変換する。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

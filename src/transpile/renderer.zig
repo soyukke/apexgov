@@ -1,3 +1,8 @@
+//! renderer — Java ソースコードのレンダリング。
+//!
+//! 解析・変換済みの Apex コードを Java クラスファイルとして
+//! フォーマットし出力する。import 文、クラス定義、メソッド本体の組み立て。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

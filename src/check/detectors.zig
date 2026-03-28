@@ -1,3 +1,9 @@
+//! detectors — Governor 制限に関連する操作のパターン検出。
+//!
+//! ソース行に SOQL (`[SELECT ...`), DML (`insert/update/delete/upsert`),
+//! SOSL, HTTP Callout, Messaging, JSON 操作, clone, コレクション生成,
+//! 文字列連結などの Governor 制限消費パターンが含まれるか判定する。
+
 const std = @import("std");
 const utils = @import("utils.zig");
 

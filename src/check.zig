@@ -1,3 +1,9 @@
+//! check — Apex 静的解析のファサード。
+//!
+//! Governor 制限違反（ループ内 SOQL/DML/Callout 等）のヒューリスティック検出を行う。
+//! 解析の実体は `check/` 配下のサブモジュールに分割されており、本ファイルは
+//! 公開 API (`run`, `runWithConfig`) の再エクスポートとテストを提供する。
+
 const std = @import("std");
 const model = @import("model.zig");
 const config = @import("config.zig");

@@ -1,3 +1,7 @@
+//! main — CLI エントリポイント。
+//!
+//! `check`, `profile`, `emulate` サブコマンドのルーティングと引数パースを行う。
+
 const std = @import("std");
 const apexgov = @import("apexgov");
 

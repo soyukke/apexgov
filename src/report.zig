@@ -1,3 +1,7 @@
+//! report — 解析結果のフォーマッター。
+//!
+//! `Finding` や `ProfileResult` を text / JSON / SARIF 形式で出力する。
+
 const std = @import("std");
 const model = @import("model.zig");
 

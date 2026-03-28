@@ -1,3 +1,8 @@
+//! patterns — Apex 構文パターンの認識と変換。
+//!
+//! `instanceof`, テルナリ条件演算子、安全ナビゲーション (`?.`) など、
+//! 複数の Apex 構文パターンを Java 互換の式に変換する。
+
 const parser = @import("../parser.zig");
 const std = @import("std");
 const util = @import("../util.zig");

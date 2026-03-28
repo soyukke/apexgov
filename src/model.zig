@@ -1,3 +1,9 @@
+//! model — 解析結果の共通データ型。
+//!
+//! `Finding` (静的解析の検出結果), `ProfileResult` (デバッグログプロファイル結果),
+//! `Severity`, `OutputFormat` など、check / profile / report モジュール間で
+//! 共有されるデータ型を定義する。
+
 const std = @import("std");
 
 pub const Severity = enum {

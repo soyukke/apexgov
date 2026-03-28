@@ -1,3 +1,10 @@
+//! types — 静的解析で共有されるデータ型定義。
+//!
+//! ループスコープ (`LoopScope`, `LoopInfo`)、メソッド解析 (`MethodSummary`,
+//! `MethodDecl`, `MethodScope`)、型追跡 (`TypeBinding`, `TypeDecl`,
+//! `TypeRelations`)、バウンド推論 (`Bound`, `BoundUpdate`) など、
+//! 解析パイプライン全体で参照される構造体・列挙型を集約する。
+
 const std = @import("std");
 const utils = @import("utils.zig");
 

@@ -1,3 +1,10 @@
+//! bounds — ループ反復回数のバウンド推論。
+//!
+//! ループの反復上限をヒューリスティックに推定する。`Trigger.new` の
+//! バッチサイズ (200)、`Limits.getLimitXxx()` によるガード条件、
+//! コレクション `.size()` からのバウンド伝播などを解析し、
+//! CPU 見積もり (AG009) の乗数として使用する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");

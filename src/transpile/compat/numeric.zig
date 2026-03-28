@@ -1,3 +1,8 @@
+//! numeric — Apex 数値型の Java 互換変換。
+//!
+//! Apex の Decimal/Integer/Double リテラルやメソッド呼び出しを
+//! Java の BigDecimal / int / double 相当の式に変換する。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

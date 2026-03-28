@@ -1,3 +1,8 @@
+//! trigger — Apex トリガーの Java 変換。
+//!
+//! `trigger ... on Object (before insert, ...)` 構文を解析し、
+//! Java クラスとして再構成する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

@@ -1,3 +1,7 @@
+//! helpers — 互換変換共通ヘルパー。
+//!
+//! 他の compat サブモジュールから共通利用されるユーティリティ関数。
+
 const line_and_expr = @import("../line_and_expr.zig");
 const std = @import("std");
 const util = @import("../util.zig");

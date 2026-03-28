@@ -1,3 +1,8 @@
+//! root — トランスパイルのエントリポイント。
+//!
+//! Apex ファイル群を受け取り、パース→式変換→レンダリングの
+//! パイプラインを統合制御する。
+
 const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");

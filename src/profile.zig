@@ -1,3 +1,8 @@
+//! profile — デバッグログパーサー & CPU/Heap プロファイラー。
+//!
+//! Salesforce のデバッグログを解析し、CPU 時間・Heap 使用量を計測する。
+//! マルチトランザクション分割、ベースライン比較によるリグレッション検出に対応。
+
 const std = @import("std");
 const model = @import("model.zig");
 const config = @import("config.zig");
