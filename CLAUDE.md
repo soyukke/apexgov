@@ -32,12 +32,57 @@ Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
 ### src/ — Zig コア (外部依存ゼロ)
 
 - **main.zig** — CLI エントリポイント。サブコマンドルーティングと引数パース
-- **check.zig** — 静的解析エンジン (最重要)。ルール AG001〜AG011 の検出、ループ上限推論、メソッド呼び出しグラフによるクロスクラス間接呼び出し追跡
-- **transpile.zig** — Apex→Java トランスパイラー (最大ファイル ~13K行)。クラス/メソッドパース、Apex 構文の Java 変換
-- **profile.zig** — デバッグログパーサー。CPU/Heap 計測、マルチトランザクション分割、ベースライン比較によるリグレッション検出
 - **model.zig** — 共通データ型 (`Severity`, `OutputFormat`, `Finding`, `ProfileResult`)
 - **config.zig** — `apexgov.toml` の手書き TOML パーサー
 - **report.zig** — text/json/sarif フォーマッター
+- **profile.zig** — デバッグログパーサー。CPU/Heap 計測、マルチトランザクション分割、ベースライン比較
+
+#### src/check/ — 静的解析エンジン（ファサード + 12 サブモジュール）
+
+`check.zig` がファサードで、公開 API (`run`, `runWithConfig`) の再エクスポートとテストを提供する。
+
+| サブモジュール | 役割 |
+|---|---|
+| `types.zig` | 共有データ型（LoopScope, MethodSummary, TypeDecl 等） |
+| `utils.zig` | 汎用ユーティリティ（識別子抽出、飽和演算、型名正規化等） |
+| `preprocessor.zig` | コメント除去、do-while 条件収集 |
+| `detectors.zig` | Governor 制限操作のパターン検出（SOQL/DML/SOSL/Callout 等） |
+| `scope.zig` | クラス/トリガー/ループのスコープ管理 |
+| `parser.zig` | メソッド・型宣言のパース |
+| `type_env.zig` | 変数の型バインディング追跡 |
+| `bounds.zig` | ループ反復回数のバウンド推論 |
+| `call_graph.zig` | メソッド呼び出しグラフ構築・解決（最大サブモジュール） |
+| `rules.zig` | Governor 制限定数と Finding 生成 |
+| `file_collector.zig` | ファイルシステムからの Apex ソース収集 |
+| `scanner.zig` | メイン解析ループ（scanContent） |
+
+#### src/transpile/ — Apex→Java トランスパイラー（ファサード + 8 サブモジュール + compat/）
+
+`transpile/root.zig` がエントリポイント。
+
+| サブモジュール | 役割 |
+|---|---|
+| `types.zig` | 共有データ型（Options, クラス/メソッド情報） |
+| `util.zig` | 文字列比較・トークン分割等の汎用ユーティリティ |
+| `parser.zig` | Apex クラス構造のパース |
+| `renderer.zig` | Java ソースコードのレンダリング |
+| `line_and_expr.zig` | 行単位の式変換エンジン |
+| `file_io.zig` | ファイル読み書き |
+| `trigger.zig` | Apex トリガーの Java 変換 |
+| `compat.zig` | Apex 互換変換ファサード（8 サブモジュール） |
+
+##### src/transpile/compat/ — Apex 固有構文の Java 互換変換
+
+| サブモジュール | 役割 |
+|---|---|
+| `operator.zig` | 演算子変換 |
+| `numeric.zig` | 数値型変換 |
+| `getas.zig` | SObject 型付きフィールド取得 |
+| `patterns.zig` | 構文パターン認識・変換 |
+| `helpers.zig` | 互換変換共通ヘルパー |
+| `query.zig` | SOQL/SOSL クエリ変換 |
+| `misc.zig` | その他の互換変換 |
+| `sobject.zig` | SObject フィールドアクセス変換 |
 
 ### tools/ — Java エミュレーション環境
 
@@ -48,7 +93,7 @@ Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
 - **java-calibration/** — CPU 係数マイクロベンチマーク
 - **transpile-external.sh** — 外部リポジトリの transpile 検証
 
-### 静的解析ルール (check.zig)
+### 静的解析ルール (check/)
 
 | ID | 検出対象 |
 |---|---|
@@ -66,7 +111,12 @@ Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
 
 ## テスト構造
 
-テストは各ソースファイル内にインラインで記述 (Zig 標準の `test` ブロック)。check.zig に約50+個、transpile.zig に約30+個、profile.zig に7個のテストがある。`zig build test` でモジュールテストと実行ファイルテストが並行実行される。
+テストは各ソースファイル内にインラインで記述 (Zig 標準の `test` ブロック)。check.zig (ファサード) に約 50+ 個、transpile 系に約 30+ 個、profile.zig に 7 個のテストがある。`zig build test` でモジュールテストと実行ファイルテストが並行実行される。
+
+Java エミュレーションテスト:
+```bash
+zig build run -- emulate test --nix   # 58 テスト
+```
 
 ## 設定ファイル
 
