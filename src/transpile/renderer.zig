@@ -1,0 +1,980 @@
+const std = @import("std");
+const types = @import("types.zig");
+const util = @import("util.zig");
+const compat = @import("compat.zig");
+const line_and_expr = @import("line_and_expr.zig");
+const root = @import("root.zig");
+const parser = @import("parser.zig");
+const rewriteApexMocksUtilsMethodFixups = compat.rewriteApexMocksUtilsMethodFixups;
+
+const ApexFile = types.ApexFile;
+const ParsedMethod = types.ParsedMethod;
+const ParsedField = types.ParsedField;
+const InnerTypeKind = types.InnerTypeKind;
+const TopLevelKind = types.TopLevelKind;
+const ParsedClass = types.ParsedClass;
+const MethodSignature = types.MethodSignature;
+const SwitchMode = types.SwitchMode;
+const ActiveSwitchContext = types.ActiveSwitchContext;
+const UnsupportedLine = types.UnsupportedLine;
+const RenderedClass = types.RenderedClass;
+
+// Cross-module references
+const rewriteMathModCalls = line_and_expr.rewriteMathModCalls;
+const rewriteDynamicWhereClauseQueryBinds = compat.rewriteDynamicWhereClauseQueryBinds;
+const rewriteNoArgSortCalls = compat.rewriteNoArgSortCalls;
+const rewriteStringKeyedSetMethodCalls = compat.rewriteStringKeyedSetMethodCalls;
+const rewriteNoArgCloneCalls = compat.rewriteNoArgCloneCalls;
+const rewriteSystemTypeMethodClassLiteralArgs = compat.rewriteSystemTypeMethodClassLiteralArgs;
+const rewriteSystemTypeListOfClassLiterals = compat.rewriteSystemTypeListOfClassLiterals;
+const rewriteTestDoubleClassCtorCalls = compat.rewriteTestDoubleClassCtorCalls;
+const rewriteSpecificIdentifierCase = compat.rewriteSpecificIdentifierCase;
+const rewritePrintlnGetAsCalls = compat.rewritePrintlnGetAsCalls;
+const rewriteStringInstanceMethodCalls = compat.rewriteStringInstanceMethodCalls;
+const rewriteSObjectGetAsMethodCalls = compat.rewriteSObjectGetAsMethodCalls;
+const rewriteSObjectTypeFieldSetConstants = compat.rewriteSObjectTypeFieldSetConstants;
+const rewriteTypeSObjectFieldConstants = compat.rewriteTypeSObjectFieldConstants;
+const convertSObjectFieldAccess = compat.convertSObjectFieldAccess;
+const rewriteCommonJavaMethodCase = line_and_expr.rewriteCommonJavaMethodCase;
+const inferUnsupportedReason = line_and_expr.inferUnsupportedReason;
+const convertApexExpressionToJava = line_and_expr.convertApexExpressionToJava;
+const parseSwitchSubjectExpression = line_and_expr.parseSwitchSubjectExpression;
+const transpileExecutableLineWithContext = line_and_expr.transpileExecutableLineWithContext;
+const detectSwitchMode = line_and_expr.detectSwitchMode;
+const stripSelfInnerImplementsFromClassSuffix = parser.stripSelfInnerImplementsFromClassSuffix;
+const shouldFlushLogicalStatement = line_and_expr.shouldFlushLogicalStatement;
+const rewriteClassSuffixInnerTypeRefs = parser.rewriteClassSuffixInnerTypeRefs;
+const stripApexCommentsFromLine = line_and_expr.stripApexCommentsFromLine;
+const appendImportUnlessClassNameConflicts = parser.appendImportUnlessClassNameConflicts;
+const splitCallArguments = line_and_expr.splitCallArguments;
+const rewriteInterfaceCompatibilityFixups = compat.rewriteInterfaceCompatibilityFixups;
+const rewriteKnownCompatibilityFixups = compat.rewriteKnownCompatibilityFixups;
+const collectInterfaceMethodDeclarations = parser.collectInterfaceMethodDeclarations;
+const startsWithIgnoreCase = util.startsWithIgnoreCase;
+const endsWithIgnoreCase = util.endsWithIgnoreCase;
+const indexOfIgnoreCase = util.indexOfIgnoreCase;
+const indexOfIgnoreCasePos = util.indexOfIgnoreCasePos;
+const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
+const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
+const containsWordIgnoreCase = util.containsWordIgnoreCase;
+const containsWord = util.containsWord;
+const indexOfWord = util.indexOfWord;
+const indexOfWordIgnoreCase = util.indexOfWordIgnoreCase;
+const isIdentifierChar = util.isIdentifierChar;
+const isSimpleIdentifier = util.isSimpleIdentifier;
+const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
+const firstIdentifier = util.firstIdentifier;
+const leadingIdentifier = util.leadingIdentifier;
+const lastIdentifier = util.lastIdentifier;
+const IdentifierSpan = util.IdentifierSpan;
+const baseIdentifierBeforeDot = util.baseIdentifierBeforeDot;
+const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
+const isLikelyQualifiedTypeChain = util.isLikelyQualifiedTypeChain;
+const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpression;
+const looksLikeTypeName = util.looksLikeTypeName;
+const isTypeIdentifierPath = util.isTypeIdentifierPath;
+const isIdentifierPathExpression = util.isIdentifierPathExpression;
+const isDeclarationModifier = util.isDeclarationModifier;
+const normalizeDeclarationModifier = util.normalizeDeclarationModifier;
+const isControlKeyword = util.isControlKeyword;
+const isLikelyNonMethodLeadKeyword = util.isLikelyNonMethodLeadKeyword;
+const isMethodModifierToken = util.isMethodModifierToken;
+const isIsTestAnnotation = util.isIsTestAnnotation;
+const isTestAnnotationSeeAllDataTrue = util.isTestAnnotationSeeAllDataTrue;
+const isTestSetupAnnotation = util.isTestSetupAnnotation;
+const isTestVisibleAnnotation = util.isTestVisibleAnnotation;
+const findMatchingParen = util.findMatchingParen;
+const findMatchingParenBackward = util.findMatchingParenBackward;
+const findMatchingAngle = util.findMatchingAngle;
+const findMatchingBrace = util.findMatchingBrace;
+const findMatchingSquareBracket = util.findMatchingSquareBracket;
+const findTopLevelMapArrow = util.findTopLevelMapArrow;
+const findTopLevelAssignmentOperator = util.findTopLevelAssignmentOperator;
+const findTopLevelSafeNavigationOperator = util.findTopLevelSafeNavigationOperator;
+const findLastTopLevelDot = util.findLastTopLevelDot;
+const braceDelta = util.braceDelta;
+const parenDelta = util.parenDelta;
+const splitWhitespace = util.splitWhitespace;
+const appendFmt = util.appendFmt;
+const appendEscapedJavaStringChar = util.appendEscapedJavaStringChar;
+const quoteJavaStringLiteral = util.quoteJavaStringLiteral;
+const indexOfSoqlBracketSelect = util.indexOfSoqlBracketSelect;
+const isInsideComment = util.isInsideComment;
+const skipApexCommentsAndWhitespace = util.skipApexCommentsAndWhitespace;
+const skipInlineWhitespace = util.skipInlineWhitespace;
+const skipAsciiWhitespace = util.skipAsciiWhitespace;
+const isControlFlowLine = util.isControlFlowLine;
+const isDoWhileTailLine = util.isDoWhileTailLine;
+const TrailingIdentifierSplit = util.TrailingIdentifierSplit;
+const splitTrailingIdentifierAtTopLevel = util.splitTrailingIdentifierAtTopLevel;
+const SObjectFieldLvalue = util.SObjectFieldLvalue;
+const IndexedLvalue = util.IndexedLvalue;
+const parseIndexedLvalue = util.parseIndexedLvalue;
+const parseSObjectFieldLvalue = util.parseSObjectFieldLvalue;
+const parseJavaKeywordMemberLvalue = util.parseJavaKeywordMemberLvalue;
+const isLikelySObjectFieldName = util.isLikelySObjectFieldName;
+const isJavaReservedWord = util.isJavaReservedWord;
+const isNewKeywordAt = util.isNewKeywordAt;
+const nextNonSpace = util.nextNonSpace;
+const prevNonSpace = util.prevNonSpace;
+
+pub fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []const u8) !RenderedClass {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var unsupported_statements: usize = 0;
+    var unsupported_lines: std.ArrayList(UnsupportedLine) = .empty;
+    errdefer {
+        for (unsupported_lines.items) |line| gpa.free(line.statement);
+        unsupported_lines.deinit(gpa);
+    }
+
+    try appendFmt(gpa, &out, "package {s};\n\n", .{package_name});
+    if (parsed.top_level_kind == .enum_type) {
+        if (parsed.top_level_enum_constants) |enum_constants| {
+            try appendFmt(
+                gpa,
+                &out,
+                "// Generated by `apexgov emulate transpile` from {s}\n",
+                .{parsed.source_path},
+            );
+            try appendFmt(gpa, &out, "public enum {s} {{ {s} }}\n", .{ parsed.class_name, enum_constants });
+            return .{
+                .java = try out.toOwnedSlice(gpa),
+                .unsupported_statements = 0,
+                .unsupported_lines = unsupported_lines,
+            };
+        }
+    }
+
+    if (parsed.top_level_kind == .interface) {
+        const source_content = std.fs.cwd().readFileAlloc(gpa, parsed.source_path, 16 * 1024 * 1024) catch null;
+        defer if (source_content) |content| gpa.free(content);
+        const interface_methods = if (source_content) |content|
+            try collectInterfaceMethodDeclarations(gpa, content, parsed.class_name)
+        else
+            try gpa.dupe(u8, "");
+        defer gpa.free(interface_methods);
+
+        try out.appendSlice(gpa, "import apexemu.runtime.*;\n");
+        try out.appendSlice(gpa, "import java.util.*;\n\n");
+        try appendFmt(
+            gpa,
+            &out,
+            "// Generated by `apexgov emulate transpile` from {s}\n",
+            .{parsed.source_path},
+        );
+        if (parsed.class_declaration_suffix) |suffix| {
+            try appendFmt(gpa, &out, "public interface {s}{s} {{\n", .{ parsed.class_name, suffix });
+        } else {
+            try appendFmt(gpa, &out, "public interface {s} {{\n", .{parsed.class_name});
+        }
+        if (interface_methods.len > 0) try out.appendSlice(gpa, interface_methods);
+        try out.appendSlice(gpa, "}\n");
+
+        const raw_java = try out.toOwnedSlice(gpa);
+        errdefer gpa.free(raw_java);
+        const compatibility_fixed = try rewriteKnownCompatibilityFixups(gpa, raw_java);
+        gpa.free(raw_java);
+        const interface_fixed = try rewriteInterfaceCompatibilityFixups(gpa, compatibility_fixed);
+        gpa.free(compatibility_fixed);
+        return .{
+            .java = interface_fixed,
+            .unsupported_statements = 0,
+            .unsupported_lines = unsupported_lines,
+        };
+    }
+
+    try out.appendSlice(gpa, "import apexemu.runtime.*;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexSObject;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexCollections;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexSwitch;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexStrings;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.StringException;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexAssert;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexCompare;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexMath;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Database;\n", "Database");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.JSON;\n", "JSON");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Test;\n", "Test");
+    try out.appendSlice(gpa, "import apexemu.runtime.SystemAssert;\n\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Security;\n", "Security");
+    try out.appendSlice(gpa, "import apexemu.runtime.DmlException;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ConnectApi;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Cache;\n", "Cache");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.EventBus;\n", "EventBus");
+    try out.appendSlice(gpa, "import apexemu.runtime.DataWeave;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.DataWeaveScriptResource;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.System;\n", "System");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.System.Type;\n", "Type");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.System.AccessType;\n", "AccessType");
+    try out.appendSlice(gpa, "import apexemu.runtime.System.AccessLevel;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.System.SObjectAccessDecision;\n", "SObjectAccessDecision");
+    try out.appendSlice(gpa, "import apexemu.runtime.System.NoAccessException;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.System.SecurityException;\n\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Schema;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Trigger;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.UserInfo;\n", "UserInfo");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Limits;\n", "Limits");
+    try out.appendSlice(gpa, "import apexemu.runtime.Messaging;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.VisualEditor;\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Network;\n", "Network");
+    try out.appendSlice(gpa, "import apexemu.runtime.DateTime;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Date;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Time;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.ApexPages;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.PageReference;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Page;\n\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Queueable;\n", "Queueable");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Schedulable;\n", "Schedulable");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.RestContext;\n", "RestContext");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.RestRequest;\n", "RestRequest");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.RestResponse;\n", "RestResponse");
+    try out.appendSlice(gpa, "import apexemu.runtime.QueryException;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.JSONException;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Crypto;\n\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.Http;\n", "Http");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.HttpRequest;\n", "HttpRequest");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.HttpResponse;\n", "HttpResponse");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import apexemu.runtime.HttpCalloutMock;\n", "HttpCalloutMock");
+    try out.appendSlice(gpa, "import apexemu.runtime.URL;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.EncodingUtil;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.Blob;\n");
+    try out.appendSlice(gpa, "import apexemu.runtime.AuraHandledException;\n\n");
+    if (parsed.is_global) {
+        try out.appendSlice(gpa, "import apexemu.annotations.ApexGlobal;\n");
+    }
+    try out.appendSlice(gpa, "import java.util.ArrayList;\n");
+    try out.appendSlice(gpa, "import java.util.LinkedHashMap;\n");
+    try out.appendSlice(gpa, "import java.util.LinkedHashSet;\n");
+    try out.appendSlice(gpa, "import java.util.Iterator;\n");
+    try out.appendSlice(gpa, "import java.util.List;\n");
+    try out.appendSlice(gpa, "import java.util.Map;\n");
+    try out.appendSlice(gpa, "import java.util.Set;\n\n");
+    try out.appendSlice(gpa, "import java.util.Comparator;\n\n");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import java.util.regex.Matcher;\n", "Matcher");
+    try appendImportUnlessClassNameConflicts(gpa, &out, parsed.class_name, "import java.util.regex.Pattern;\n", "Pattern");
+    try out.append(gpa, '\n');
+    try appendFmt(
+        gpa,
+        &out,
+        "// Generated by `apexgov emulate transpile` from {s}\n",
+        .{parsed.source_path},
+    );
+    const class_suffix_raw = parsed.class_declaration_suffix orelse "";
+    const class_suffix_inner_qualified = try rewriteClassSuffixInnerTypeRefs(gpa, class_suffix_raw, parsed.class_name, parsed.fields.items);
+    defer gpa.free(class_suffix_inner_qualified);
+    const class_suffix = try stripSelfInnerImplementsFromClassSuffix(gpa, class_suffix_inner_qualified, parsed.class_name, parsed.fields.items);
+    defer gpa.free(class_suffix);
+    const class_decl_prefix = if (classContainsAbstractMethodDeclaration(parsed.fields.items))
+        "public abstract class"
+    else
+        "public class";
+    if (parsed.is_global) {
+        try out.appendSlice(gpa, "@ApexGlobal\n");
+    }
+    try appendFmt(gpa, &out, "{s} {s}{s} {{\n", .{ class_decl_prefix, parsed.class_name, class_suffix });
+    const is_comparator_class = class_suffix.len > 0 and std.mem.indexOf(u8, class_suffix, "Comparator") != null;
+
+    if (parsed.fields.items.len == 0 and parsed.methods.items.len == 0) {
+        try out.appendSlice(gpa, "  // No method body was detected in the Apex source.\n");
+    }
+
+    if (parsed.fields.items.len > 0) {
+        for (parsed.fields.items) |field| {
+            try appendFmt(gpa, &out, "  {s}\n", .{field.declaration});
+        }
+        try out.append(gpa, '\n');
+    }
+
+    var emit_method = try gpa.alloc(bool, parsed.methods.items.len);
+    defer gpa.free(emit_method);
+    @memset(emit_method, true);
+
+    for (parsed.methods.items, 0..) |method, method_idx| {
+        var lookahead = method_idx + 1;
+        while (lookahead < parsed.methods.items.len) : (lookahead += 1) {
+            if (methodsCollapseToSameJavaSignature(method, parsed.methods.items[lookahead])) {
+                emit_method[method_idx] = false;
+                break;
+            }
+        }
+    }
+
+    for (parsed.methods.items, 0..) |method, method_idx| {
+        if (!emit_method[method_idx]) continue;
+        const emitted_name = if (method.is_constructor)
+            parsed.class_name
+        else
+            method.name;
+
+        if (method.is_test_setup and !method.is_constructor) {
+            try out.appendSlice(gpa, "  @apexemu.annotations.TestSetup\n");
+        } else if (method.is_test and !method.is_constructor) {
+            if (method.is_test_see_all_data) {
+                try out.appendSlice(gpa, "  @apexemu.annotations.Test(seeAllData = true)\n");
+            } else {
+                try out.appendSlice(gpa, "  @apexemu.annotations.Test\n");
+            }
+        }
+        if (method.is_constructor) {
+            try appendFmt(gpa, &out, "  public {s}({s}) {{\n", .{ emitted_name, method.java_parameters });
+        } else {
+            const static_prefix = if (method.is_static) "static " else "";
+            const emitted_return_type = if (is_comparator_class and
+                std.ascii.eqlIgnoreCase(method.name, "compare") and
+                std.ascii.eqlIgnoreCase(method.java_return_type, "Integer"))
+                "int"
+            else if (std.ascii.eqlIgnoreCase(method.name, "hasNext") and
+                std.ascii.eqlIgnoreCase(method.java_return_type, "Boolean"))
+                "boolean"
+            else
+                method.java_return_type;
+            try appendFmt(
+                gpa,
+                &out,
+                "  public {s}{s} {s}({s}) {{\n",
+                .{ static_prefix, emitted_return_type, emitted_name, method.java_parameters },
+            );
+        }
+        try out.appendSlice(gpa, "    // TODO(apex): method body is copied as comments and needs manual porting.\n");
+
+        var statements = try collectLogicalStatements(gpa, method.body);
+        defer {
+            for (statements.items) |statement| gpa.free(statement.text);
+            statements.deinit(gpa);
+        }
+
+        var brace_depth: i32 = 0;
+        var switch_stack: std.ArrayList(ActiveSwitchContext) = .empty;
+        defer {
+            while (switch_stack.items.len > 0) {
+                const ctx = switch_stack.pop().?;
+                gpa.free(ctx.subject_expr);
+            }
+            switch_stack.deinit(gpa);
+        }
+        // Track brace depths where System.runAs lambda blocks were opened
+        var runas_depth_stack: std.ArrayList(i32) = .empty;
+        defer runas_depth_stack.deinit(gpa);
+
+        for (statements.items, 0..) |statement, idx| {
+            const trimmed = std.mem.trim(u8, statement.text, " \t");
+            if (trimmed.len == 0) continue;
+            if (idx == statements.items.len - 1 and std.mem.eql(u8, trimmed, "}")) continue;
+
+            while (switch_stack.items.len > 0 and brace_depth < switch_stack.items[switch_stack.items.len - 1].body_depth) {
+                const stale = switch_stack.pop().?;
+                gpa.free(stale.subject_expr);
+            }
+
+            // Check if this closing brace matches a runAs block
+            if (std.mem.eql(u8, trimmed, "}") and runas_depth_stack.items.len > 0) {
+                const expected_depth = runas_depth_stack.items[runas_depth_stack.items.len - 1];
+                if (brace_depth - 1 == expected_depth) {
+                    _ = runas_depth_stack.pop();
+                    try appendFmt(gpa, &out, "    }} finally {{ Test.endRunAs(); }}\n", .{});
+                    brace_depth += braceDelta(trimmed);
+                    continue;
+                }
+            }
+
+            const active_switch_expr: ?[]const u8 = if (switch_stack.items.len > 0)
+                switch_stack.items[switch_stack.items.len - 1].subject_expr
+            else
+                null;
+            const active_switch_mode = if (switch_stack.items.len > 0)
+                switch_stack.items[switch_stack.items.len - 1].mode
+            else
+                SwitchMode.value;
+
+            var switch_header_mode: ?SwitchMode = null;
+            if (startsWithWordIgnoreCase(trimmed, "switch")) {
+                switch_header_mode = try detectSwitchMode(gpa, statements.items, idx);
+            }
+
+            if (try transpileExecutableLineWithContext(
+                gpa,
+                trimmed,
+                active_switch_expr,
+                active_switch_mode,
+                switch_header_mode,
+            )) |converted| {
+                defer gpa.free(converted);
+                try appendFmt(gpa, &out, "    {s}\n", .{converted});
+
+                // Track runAs block openings
+                if (std.mem.indexOf(u8, converted, "// RUNAS_BLOCK") != null) {
+                    try runas_depth_stack.append(gpa, brace_depth);
+                }
+
+                if (switch_header_mode) |mode| {
+                    if (parseSwitchSubjectExpression(trimmed)) |switch_expr_raw| {
+                        const switch_expr_java = try convertApexExpressionToJava(gpa, switch_expr_raw);
+                        try switch_stack.append(gpa, .{
+                            .body_depth = brace_depth + 1,
+                            .subject_expr = switch_expr_java,
+                            .mode = mode,
+                        });
+                    }
+                }
+            } else {
+                unsupported_statements += 1;
+                try appendFmt(gpa, &out, "    // {s}\n", .{trimmed});
+                try unsupported_lines.append(gpa, .{
+                    .method_name = method.name,
+                    .source_line = method.start_line + statement.line_offset,
+                    .reason = inferUnsupportedReason(trimmed),
+                    .statement = try gpa.dupe(u8, trimmed),
+                });
+            }
+
+            brace_depth += braceDelta(trimmed);
+            while (switch_stack.items.len > 0 and brace_depth < switch_stack.items[switch_stack.items.len - 1].body_depth) {
+                const stale = switch_stack.pop().?;
+                gpa.free(stale.subject_expr);
+            }
+        }
+
+        try out.appendSlice(gpa, "  }\n\n");
+        try appendDoubleNumberCompatibilityOverload(gpa, &out, parsed.methods.items, method_idx, method, emitted_name);
+    }
+
+    try out.appendSlice(gpa,
+        \\  @SuppressWarnings("unchecked")
+        \\  public <T> T getAs(String field) {
+        \\    return (T) ApexSwitch.getAs(this, field);
+        \\  }
+        \\
+    );
+
+    try out.appendSlice(gpa, "}\n");
+    const raw_java = try out.toOwnedSlice(gpa);
+    errdefer gpa.free(raw_java);
+
+    const normalized_method_case = try rewriteCommonJavaMethodCase(gpa, raw_java);
+    gpa.free(raw_java);
+    errdefer gpa.free(normalized_method_case);
+
+    const sobject_field_converted = try convertSObjectFieldAccess(gpa, normalized_method_case);
+    gpa.free(normalized_method_case);
+    errdefer gpa.free(sobject_field_converted);
+
+    const sobject_type_field_constants = try rewriteTypeSObjectFieldConstants(gpa, sobject_field_converted);
+    gpa.free(sobject_field_converted);
+    errdefer gpa.free(sobject_type_field_constants);
+
+    const sobject_fieldset_constants = try rewriteSObjectTypeFieldSetConstants(gpa, sobject_type_field_constants);
+    gpa.free(sobject_type_field_constants);
+    errdefer gpa.free(sobject_fieldset_constants);
+
+    const sobject_get_as_calls = try rewriteSObjectGetAsMethodCalls(gpa, sobject_fieldset_constants);
+    gpa.free(sobject_fieldset_constants);
+    errdefer gpa.free(sobject_get_as_calls);
+
+    const string_instance_calls = try rewriteStringInstanceMethodCalls(gpa, sobject_get_as_calls);
+    gpa.free(sobject_get_as_calls);
+    errdefer gpa.free(string_instance_calls);
+
+    const println_calls = try rewritePrintlnGetAsCalls(gpa, string_instance_calls);
+    gpa.free(string_instance_calls);
+    errdefer gpa.free(println_calls);
+
+    const identifier_case_fixed = try rewriteSpecificIdentifierCase(gpa, println_calls);
+    gpa.free(println_calls);
+    errdefer gpa.free(identifier_case_fixed);
+
+    const test_double_ctor_fixed = try rewriteTestDoubleClassCtorCalls(gpa, identifier_case_fixed);
+    gpa.free(identifier_case_fixed);
+    errdefer gpa.free(test_double_ctor_fixed);
+
+    const sobject_field_after_case = try convertSObjectFieldAccess(gpa, test_double_ctor_fixed);
+    gpa.free(test_double_ctor_fixed);
+    errdefer gpa.free(sobject_field_after_case);
+
+    const system_type_list_literals = try rewriteSystemTypeListOfClassLiterals(gpa, sobject_field_after_case);
+    gpa.free(sobject_field_after_case);
+    errdefer gpa.free(system_type_list_literals);
+
+    const system_type_method_class_literals = try rewriteSystemTypeMethodClassLiteralArgs(gpa, system_type_list_literals);
+    gpa.free(system_type_list_literals);
+    errdefer gpa.free(system_type_method_class_literals);
+
+    const clone_calls = try rewriteNoArgCloneCalls(gpa, system_type_method_class_literals);
+    gpa.free(system_type_method_class_literals);
+    errdefer gpa.free(clone_calls);
+
+    const dynamic_set_calls = try rewriteStringKeyedSetMethodCalls(gpa, clone_calls);
+    gpa.free(clone_calls);
+    errdefer gpa.free(dynamic_set_calls);
+
+    const sort_calls = try rewriteNoArgSortCalls(gpa, dynamic_set_calls);
+    gpa.free(dynamic_set_calls);
+    errdefer gpa.free(sort_calls);
+
+    const dynamic_where_binds_fixed = try rewriteDynamicWhereClauseQueryBinds(gpa, sort_calls);
+    gpa.free(sort_calls);
+    errdefer gpa.free(dynamic_where_binds_fixed);
+
+    const math_mod_fixed = try rewriteMathModCalls(gpa, dynamic_where_binds_fixed);
+    gpa.free(dynamic_where_binds_fixed);
+    errdefer gpa.free(math_mod_fixed);
+
+    const compatibility_fixed = try rewriteKnownCompatibilityFixups(gpa, math_mod_fixed);
+    gpa.free(math_mod_fixed);
+    errdefer gpa.free(compatibility_fixed);
+
+    const interface_fixed = try rewriteInterfaceCompatibilityFixups(gpa, compatibility_fixed);
+    gpa.free(compatibility_fixed);
+    errdefer gpa.free(interface_fixed);
+
+    const apex_mocks_utils_fixed = try rewriteApexMocksUtilsMethodFixups(gpa, interface_fixed);
+    gpa.free(interface_fixed);
+    errdefer gpa.free(apex_mocks_utils_fixed);
+
+    return .{
+        .java = apex_mocks_utils_fixed,
+        .unsupported_statements = unsupported_statements,
+        .unsupported_lines = unsupported_lines,
+    };
+}
+
+pub fn methodsCollapseToSameJavaSignature(a: ParsedMethod, b: ParsedMethod) bool {
+    if (a.is_constructor != b.is_constructor) return false;
+    if (a.is_constructor) {
+        return std.mem.eql(u8, std.mem.trim(u8, a.java_parameters, " \t"), std.mem.trim(u8, b.java_parameters, " \t"));
+    }
+    if (!std.ascii.eqlIgnoreCase(a.name, b.name)) return false;
+    return std.mem.eql(u8, std.mem.trim(u8, a.java_parameters, " \t"), std.mem.trim(u8, b.java_parameters, " \t"));
+}
+
+pub fn classContainsAbstractMethodDeclaration(fields: []const ParsedField) bool {
+    for (fields) |field| {
+        const declaration = std.mem.trim(u8, field.declaration, " \t");
+        if (declaration.len == 0) continue;
+        if (!std.mem.containsAtLeast(u8, declaration, 1, "(")) continue;
+        if (!std.mem.endsWith(u8, declaration, ";")) continue;
+        if (startsWithIgnoreCase(declaration, "abstract ")) return true;
+        if (std.mem.indexOf(u8, declaration, " abstract ")) |_| return true;
+    }
+    return false;
+}
+
+pub fn appendDoubleNumberCompatibilityOverload(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    methods: []const ParsedMethod,
+    method_idx: usize,
+    method: ParsedMethod,
+    emitted_name: []const u8,
+) !void {
+    if (method.is_constructor) return;
+
+    var params = try splitCallArguments(gpa, method.java_parameters);
+    defer params.deinit(gpa);
+    if (params.items.len == 0) return;
+
+    var bridge_params: std.ArrayList(u8) = .empty;
+    defer bridge_params.deinit(gpa);
+    var call_args: std.ArrayList(u8) = .empty;
+    defer call_args.deinit(gpa);
+
+    var has_double_param = false;
+    for (params.items, 0..) |raw_param, idx| {
+        const param = std.mem.trim(u8, raw_param, " \t");
+        if (param.len == 0) return;
+
+        const param_name = lastIdentifier(param) orelse return;
+        const name_pos = std.mem.lastIndexOf(u8, param, param_name) orelse return;
+        const type_part = std.mem.trimRight(u8, param[0..name_pos], " \t");
+        if (type_part.len == 0) return;
+
+        const is_double = std.ascii.eqlIgnoreCase(type_part, "Double");
+        has_double_param = has_double_param or is_double;
+
+        if (idx != 0) {
+            try bridge_params.appendSlice(gpa, ", ");
+            try call_args.appendSlice(gpa, ", ");
+        }
+
+        if (is_double) {
+            try appendFmt(gpa, &bridge_params, "Number {s}", .{param_name});
+            try appendFmt(
+                gpa,
+                &call_args,
+                "{s} == null ? null : {s}.doubleValue()",
+                .{ param_name, param_name },
+            );
+        } else {
+            try bridge_params.appendSlice(gpa, param);
+            try call_args.appendSlice(gpa, param_name);
+        }
+    }
+
+    if (!has_double_param) return;
+
+    const bridge_sig = try normalizedParamTypeSignature(gpa, method.java_parameters, true);
+    defer gpa.free(bridge_sig);
+    for (methods, 0..) |other, idx| {
+        if (idx == method_idx) continue;
+        if (other.is_constructor or other.is_static != method.is_static) continue;
+        if (!std.ascii.eqlIgnoreCase(other.name, emitted_name)) continue;
+        const other_sig = try normalizedParamTypeSignature(gpa, other.java_parameters, false);
+        defer gpa.free(other_sig);
+        if (std.mem.eql(u8, other_sig, bridge_sig)) return;
+    }
+
+    const static_prefix = if (method.is_static) "static " else "";
+
+    try appendFmt(
+        gpa,
+        out,
+        "  public {s}{s} {s}({s}) {{\n",
+        .{ static_prefix, method.java_return_type, emitted_name, bridge_params.items },
+    );
+    if (std.ascii.eqlIgnoreCase(method.java_return_type, "void")) {
+        try appendFmt(gpa, out, "    {s}({s});\n", .{ emitted_name, call_args.items });
+    } else {
+        try appendFmt(gpa, out, "    return {s}({s});\n", .{ emitted_name, call_args.items });
+    }
+    try out.appendSlice(gpa, "  }\n\n");
+}
+
+pub fn normalizedParamTypeSignature(gpa: std.mem.Allocator, params_raw: []const u8, double_to_number: bool) ![]u8 {
+    var params = try splitCallArguments(gpa, params_raw);
+    defer params.deinit(gpa);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    for (params.items, 0..) |raw_param, idx| {
+        const param = std.mem.trim(u8, raw_param, " \t");
+        if (param.len == 0) continue;
+
+        const param_name = lastIdentifier(param) orelse continue;
+        const name_pos = std.mem.lastIndexOf(u8, param, param_name) orelse continue;
+        const type_part = std.mem.trimRight(u8, param[0..name_pos], " \t");
+        const normalized = if (double_to_number and std.ascii.eqlIgnoreCase(type_part, "Double"))
+            "Number"
+        else
+            type_part;
+
+        if (idx != 0) try out.appendSlice(gpa, ", ");
+        try out.appendSlice(gpa, normalized);
+    }
+
+    return out.toOwnedSlice(gpa);
+}
+
+pub const NestingState = struct {
+    paren: i32 = 0,
+    bracket: i32 = 0,
+    brace: i32 = 0,
+    in_single: bool = false,
+    in_double: bool = false,
+    escaped: bool = false,
+};
+
+pub const LogicalStatement = struct {
+    text: []u8,
+    line_offset: usize,
+};
+
+pub fn collectLogicalStatements(gpa: std.mem.Allocator, body: []const u8) !std.ArrayList(LogicalStatement) {
+    var statements: std.ArrayList(LogicalStatement) = .empty;
+    errdefer {
+        for (statements.items) |statement| gpa.free(statement.text);
+        statements.deinit(gpa);
+    }
+
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(gpa);
+    var pending_line_offset: usize = 0;
+    var line_buffer: std.ArrayList(u8) = .empty;
+    defer line_buffer.deinit(gpa);
+    var in_block_comment = false;
+
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    var line_offset: usize = 0;
+    while (lines.next()) |raw_line| {
+        const clean = std.mem.trimRight(u8, raw_line, "\r");
+        const code_only = try stripApexCommentsFromLine(
+            gpa,
+            clean,
+            &in_block_comment,
+            &line_buffer,
+        );
+        const trimmed = std.mem.trim(u8, code_only, " \t");
+        if (trimmed.len == 0) {
+            line_offset += 1;
+            continue;
+        }
+
+        if (pending.items.len == 0) {
+            pending_line_offset = line_offset;
+        } else {
+            try pending.append(gpa, ' ');
+        }
+        try pending.appendSlice(gpa, trimmed);
+
+        const current = std.mem.trim(u8, pending.items, " \t");
+        if (!shouldFlushLogicalStatement(current)) {
+            line_offset += 1;
+            continue;
+        }
+
+        try appendLogicalStatement(gpa, &statements, current, pending_line_offset);
+        pending.clearRetainingCapacity();
+        line_offset += 1;
+    }
+
+    const tail = std.mem.trim(u8, pending.items, " \t");
+    if (tail.len > 0) {
+        try appendLogicalStatement(gpa, &statements, tail, pending_line_offset);
+    }
+
+    return statements;
+}
+
+pub fn appendLogicalStatement(
+    gpa: std.mem.Allocator,
+    statements: *std.ArrayList(LogicalStatement),
+    raw_statement: []const u8,
+    line_offset: usize,
+) !void {
+    const trimmed = std.mem.trim(u8, raw_statement, " \t");
+    if (trimmed.len == 0) return;
+
+    var chunks = try splitTopLevelSemicolonChunks(gpa, trimmed);
+    defer {
+        for (chunks.items) |chunk| gpa.free(chunk);
+        chunks.deinit(gpa);
+    }
+
+    for (chunks.items) |chunk| {
+        try appendLogicalChunk(gpa, statements, chunk, line_offset);
+    }
+}
+
+pub fn appendLogicalChunk(
+    gpa: std.mem.Allocator,
+    statements: *std.ArrayList(LogicalStatement),
+    raw_chunk: []const u8,
+    line_offset: usize,
+) !void {
+    var rest = std.mem.trim(u8, raw_chunk, " \t");
+    if (rest.len == 0) return;
+
+    // Keep Apex do-while tails as one statement: `} while (cond);`
+    if (isDoWhileTailLine(rest)) {
+        try statements.append(gpa, .{
+            .text = try gpa.dupe(u8, rest),
+            .line_offset = line_offset,
+        });
+        return;
+    }
+
+    while (rest.len > 0 and rest[0] == '}') {
+        try statements.append(gpa, .{
+            .text = try gpa.dupe(u8, "}"),
+            .line_offset = line_offset,
+        });
+        rest = std.mem.trimLeft(u8, rest[1..], " \t");
+        if (rest.len == 0) return;
+        if (isDoWhileTailLine(rest)) {
+            try statements.append(gpa, .{
+                .text = try gpa.dupe(u8, rest),
+                .line_offset = line_offset,
+            });
+            return;
+        }
+    }
+
+    if (try splitInlineBlockHeader(gpa, rest)) |split| {
+        defer {
+            gpa.free(split.head);
+            gpa.free(split.tail);
+        }
+        try appendLogicalChunk(gpa, statements, split.head, line_offset);
+        try appendLogicalChunk(gpa, statements, split.tail, line_offset);
+        return;
+    }
+
+    try statements.append(gpa, .{
+        .text = try gpa.dupe(u8, rest),
+        .line_offset = line_offset,
+    });
+}
+
+pub fn splitTopLevelSemicolonChunks(
+    gpa: std.mem.Allocator,
+    statement: []const u8,
+) !std.ArrayList([]u8) {
+    var chunks: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (chunks.items) |chunk| gpa.free(chunk);
+        chunks.deinit(gpa);
+    }
+
+    var state = NestingState{};
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < statement.len) : (i += 1) {
+        const ch = statement[i];
+
+        if (state.in_double) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '"') state.in_double = false;
+            continue;
+        }
+
+        if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < statement.len and statement[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') state.in_single = false;
+            continue;
+        }
+
+        switch (ch) {
+            '"' => state.in_double = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
+            '(' => state.paren += 1,
+            ')' => {
+                if (state.paren > 0) state.paren -= 1;
+            },
+            '[' => state.bracket += 1,
+            ']' => {
+                if (state.bracket > 0) state.bracket -= 1;
+            },
+            ';' => {
+                if (state.paren == 0 and state.bracket == 0) {
+                    const piece = std.mem.trim(u8, statement[start .. i + 1], " \t");
+                    if (piece.len > 0) {
+                        try chunks.append(gpa, try gpa.dupe(u8, piece));
+                    }
+                    start = i + 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const tail = std.mem.trim(u8, statement[start..], " \t");
+    if (tail.len > 0) {
+        try chunks.append(gpa, try gpa.dupe(u8, tail));
+    }
+    return chunks;
+}
+
+pub const InlineBlockHeaderSplit = struct {
+    head: []u8,
+    tail: []u8,
+};
+
+pub fn splitInlineBlockHeader(gpa: std.mem.Allocator, statement: []const u8) !?InlineBlockHeaderSplit {
+    var state = NestingState{};
+    var i: usize = 0;
+    while (i < statement.len) : (i += 1) {
+        const ch = statement[i];
+
+        if (state.in_double) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '"') state.in_double = false;
+            continue;
+        }
+
+        if (state.in_single) {
+            if (state.escaped) {
+                state.escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                state.escaped = true;
+                continue;
+            }
+            if (ch == '\'' and i + 1 < statement.len and statement[i + 1] == '\'') {
+                i += 1;
+                continue;
+            }
+            if (ch == '\'') state.in_single = false;
+            continue;
+        }
+
+        switch (ch) {
+            '"' => state.in_double = true,
+            '\'' => {
+                state.in_single = true;
+                state.escaped = false;
+            },
+            '(' => state.paren += 1,
+            ')' => {
+                if (state.paren > 0) state.paren -= 1;
+            },
+            '[' => state.bracket += 1,
+            ']' => {
+                if (state.bracket > 0) state.bracket -= 1;
+            },
+            '{' => {
+                if (state.paren != 0 or state.bracket != 0) continue;
+
+                const before = std.mem.trim(u8, statement[0..i], " \t");
+                if (!shouldSplitInlineBlockHeader(before)) return null;
+
+                const after = std.mem.trim(u8, statement[(i + 1)..], " \t");
+                if (after.len == 0) return null;
+
+                return .{
+                    .head = try gpa.dupe(u8, std.mem.trim(u8, statement[0 .. i + 1], " \t")),
+                    .tail = try gpa.dupe(u8, after),
+                };
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+pub fn shouldSplitInlineBlockHeader(before_open_brace: []const u8) bool {
+    if (before_open_brace.len == 0) return false;
+
+    const control_headers = [_][]const u8{
+        "if", "else", "for", "while", "do", "try", "catch", "finally", "switch", "when",
+    };
+    for (control_headers) |keyword| {
+        if (startsWithWordIgnoreCase(before_open_brace, keyword)) return true;
+    }
+
+    if (startsWithIgnoreCase(before_open_brace, "System.runAs") and
+        before_open_brace[before_open_brace.len - 1] == ')')
+    {
+        return true;
+    }
+
+    return false;
+}

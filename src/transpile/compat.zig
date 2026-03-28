@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const util = @import("util.zig");
 const root = @import("root.zig");
 const line_and_expr = @import("line_and_expr.zig");
+const parser = @import("parser.zig");
 
 // Aliases for functions still in root.zig
 const splitCallArguments = line_and_expr.splitCallArguments;
@@ -13,18 +14,18 @@ const collectionKindFromName = line_and_expr.collectionKindFromName;
 const normalizeSoqlQueryForEmulation = line_and_expr.normalizeSoqlQueryForEmulation;
 const convertBindReferenceToJava = line_and_expr.convertBindReferenceToJava;
 const isSoqlBindNameChar = line_and_expr.isSoqlBindNameChar;
-const rewriteSchemaObjectNamespaceAccess = root.rewriteSchemaObjectNamespaceAccess;
-const rewriteFieldNamespacePropertyAccess = root.rewriteFieldNamespacePropertyAccess;
+const rewriteSchemaObjectNamespaceAccess = parser.rewriteSchemaObjectNamespaceAccess;
+const rewriteFieldNamespacePropertyAccess = parser.rewriteFieldNamespacePropertyAccess;
 const isSimpleBindReference = line_and_expr.isSimpleBindReference;
 const convertApexTypeList = line_and_expr.convertApexTypeList;
 const normalizeScalarTypeName = line_and_expr.normalizeScalarTypeName;
 const buildDatabaseQueryCall = line_and_expr.buildDatabaseQueryCall;
-const rewriteTokenOverloadCalls = root.rewriteTokenOverloadCalls;
+const rewriteTokenOverloadCalls = parser.rewriteTokenOverloadCalls;
 const collectionImplName = line_and_expr.collectionImplName;
 const convertApexExpressionToJava = line_and_expr.convertApexExpressionToJava;
-const rewriteMethodLocalDefaultInitializers = root.rewriteMethodLocalDefaultInitializers;
-const rewriteApexArrayStyleListLiterals = root.rewriteApexArrayStyleListLiterals;
-const rewriteTypedNullSchemaFieldCollections = root.rewriteTypedNullSchemaFieldCollections;
+const rewriteMethodLocalDefaultInitializers = parser.rewriteMethodLocalDefaultInitializers;
+const rewriteApexArrayStyleListLiterals = parser.rewriteApexArrayStyleListLiterals;
+const rewriteTypedNullSchemaFieldCollections = parser.rewriteTypedNullSchemaFieldCollections;
 
 // Aliases for util functions used by compat rewrites
 const startsWithIgnoreCase = util.startsWithIgnoreCase;

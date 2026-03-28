@@ -3,6 +3,8 @@ const types = @import("types.zig");
 const util = @import("util.zig");
 const compat = @import("compat.zig");
 const root = @import("root.zig");
+const renderer = @import("renderer.zig");
+const parser = @import("parser.zig");
 
 // Cross-module references
 const rewriteApexInstanceofChecks = compat.rewriteApexInstanceofChecks;
@@ -42,10 +44,10 @@ const rewriteDatabaseQueryStringConsumers = compat.rewriteDatabaseQueryStringCon
 const isLikelySObjectTypeForInstanceof = compat.isLikelySObjectTypeForInstanceof;
 const convertInlineSoslQueries = compat.convertInlineSoslQueries;
 const rewriteTriggerContextPropertyAccess = compat.rewriteTriggerContextPropertyAccess;
-const LogicalStatement = root.LogicalStatement;
-const NestingState = root.NestingState;
-const isIntegerLiteral = root.isIntegerLiteral;
-const transpileTypedDeclarationLine = root.transpileTypedDeclarationLine;
+const LogicalStatement = renderer.LogicalStatement;
+const NestingState = renderer.NestingState;
+const isIntegerLiteral = parser.isIntegerLiteral;
+const transpileTypedDeclarationLine = parser.transpileTypedDeclarationLine;
 const convertInlineSoqlQueries = compat.convertInlineSoqlQueries;
 const isIdSObjectMapType = compat.isIdSObjectMapType;
 const isLikelyCustomSObjectTypeName = compat.isLikelyCustomSObjectTypeName;
