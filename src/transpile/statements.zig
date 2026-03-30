@@ -1,4 +1,4 @@
-//! line_and_expr — 行単位の式変換エンジン。
+//! statements — 行単位の式変換エンジン。
 //!
 //! Apex の各行を解析し、式レベルでの Apex→Java 構文変換を適用する。
 //! 文字列リテラル、型キャスト、メソッド呼び出しなどの式変換を担当する。
@@ -7,7 +7,6 @@ const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");
 const compat = @import("compat.zig");
-const root = @import("root.zig");
 const renderer = @import("renderer.zig");
 const parser = @import("parser.zig");
 
@@ -15,6 +14,7 @@ const parser = @import("parser.zig");
 const rewriteApexInstanceofChecks = compat.rewriteApexInstanceofChecks;
 const rewriteTriggerOperationEnumConstantCase = compat.rewriteTriggerOperationEnumConstantCase;
 const rewriteDatabaseQueryCallsWithBinds = compat.rewriteDatabaseQueryCallsWithBinds;
+const rewriteDynamicWhereClauseQueryBinds = compat.rewriteDynamicWhereClauseQueryBinds;
 const rewriteFirstOrNullGetAs = compat.rewriteFirstOrNullGetAs;
 const rewriteNoArgSortCalls = compat.rewriteNoArgSortCalls;
 const rewriteStringKeyedSetMethodCalls = compat.rewriteStringKeyedSetMethodCalls;
@@ -57,78 +57,40 @@ const convertInlineSoqlQueries = compat.convertInlineSoqlQueries;
 const isIdSObjectMapType = compat.isIdSObjectMapType;
 const isLikelyCustomSObjectTypeName = compat.isLikelyCustomSObjectTypeName;
 
-const ApexFile = types.ApexFile;
-const ParsedMethod = types.ParsedMethod;
-const ParsedField = types.ParsedField;
-const InnerTypeKind = types.InnerTypeKind;
-const TopLevelKind = types.TopLevelKind;
-const ParsedClass = types.ParsedClass;
-const MethodSignature = types.MethodSignature;
+// types
 const SwitchMode = types.SwitchMode;
-const ActiveSwitchContext = types.ActiveSwitchContext;
-const UnsupportedLine = types.UnsupportedLine;
-const RenderedClass = types.RenderedClass;
 
-// Util aliases
+// util
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const endsWithIgnoreCase = util.endsWithIgnoreCase;
-const indexOfIgnoreCase = util.indexOfIgnoreCase;
 const indexOfIgnoreCasePos = util.indexOfIgnoreCasePos;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
-const containsWordIgnoreCase = util.containsWordIgnoreCase;
-const containsWord = util.containsWord;
-const indexOfWord = util.indexOfWord;
 const indexOfWordIgnoreCase = util.indexOfWordIgnoreCase;
 const isIdentifierChar = util.isIdentifierChar;
 const isSimpleIdentifier = util.isSimpleIdentifier;
 const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
-const firstIdentifier = util.firstIdentifier;
 const leadingIdentifier = util.leadingIdentifier;
 const lastIdentifier = util.lastIdentifier;
-const IdentifierSpan = util.IdentifierSpan;
 const baseIdentifierBeforeDot = util.baseIdentifierBeforeDot;
 const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
-const isLikelyQualifiedTypeChain = util.isLikelyQualifiedTypeChain;
-const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpression;
 const looksLikeTypeName = util.looksLikeTypeName;
-const isTypeIdentifierPath = util.isTypeIdentifierPath;
-const isIdentifierPathExpression = util.isIdentifierPathExpression;
 const isDeclarationModifier = util.isDeclarationModifier;
 const normalizeDeclarationModifier = util.normalizeDeclarationModifier;
-const isControlKeyword = util.isControlKeyword;
-const isLikelyNonMethodLeadKeyword = util.isLikelyNonMethodLeadKeyword;
-const isMethodModifierToken = util.isMethodModifierToken;
 const findMatchingParen = util.findMatchingParen;
-const findMatchingParenBackward = util.findMatchingParenBackward;
-const findMatchingAngleBackward = util.findMatchingAngleBackward;
 const findMatchingAngle = util.findMatchingAngle;
-const findMatchingBrace = util.findMatchingBrace;
-const findMatchingSquareBracket = util.findMatchingSquareBracket;
-const findTopLevelMapArrow = util.findTopLevelMapArrow;
 const findTopLevelAssignmentOperator = util.findTopLevelAssignmentOperator;
 const findTopLevelSafeNavigationOperator = util.findTopLevelSafeNavigationOperator;
 const findLastTopLevelDot = util.findLastTopLevelDot;
 const braceDelta = util.braceDelta;
-const parenDelta = util.parenDelta;
 const splitWhitespace = util.splitWhitespace;
 const appendFmt = util.appendFmt;
 const appendEscapedJavaStringChar = util.appendEscapedJavaStringChar;
 const quoteJavaStringLiteral = util.quoteJavaStringLiteral;
 const indexOfSoqlBracketSelect = util.indexOfSoqlBracketSelect;
-const isInsideComment = util.isInsideComment;
-const isApexClassSource = util.isApexClassSource;
-const isApexTriggerSource = util.isApexTriggerSource;
-const pathExists = util.pathExists;
-const skipApexCommentsAndWhitespace = util.skipApexCommentsAndWhitespace;
-const skipInlineWhitespace = util.skipInlineWhitespace;
-const skipAsciiWhitespace = util.skipAsciiWhitespace;
 const isControlFlowLine = util.isControlFlowLine;
 const isDoWhileTailLine = util.isDoWhileTailLine;
-const TrailingIdentifierSplit = util.TrailingIdentifierSplit;
 const splitTrailingIdentifierAtTopLevel = util.splitTrailingIdentifierAtTopLevel;
-const SObjectFieldLvalue = util.SObjectFieldLvalue;
-const IndexedLvalue = util.IndexedLvalue;
 const parseIndexedLvalue = util.parseIndexedLvalue;
 const parseSObjectFieldLvalue = util.parseSObjectFieldLvalue;
 const parseJavaKeywordMemberLvalue = util.parseJavaKeywordMemberLvalue;
@@ -885,7 +847,6 @@ pub fn isSimpleBindReference(bind_name: []const u8) bool {
     return true;
 }
 
-
 pub fn isSoqlBindNameChar(ch: u8) bool {
     return isIdentifierChar(ch) or std.ascii.isDigit(ch) or ch == '.';
 }
@@ -1578,7 +1539,6 @@ pub fn coerceLiteralForAssignmentContext(
     return std.fmt.allocPrint(gpa, "{s}.0", .{trimmed_rhs});
 }
 
-
 pub const CollectionKind = enum {
     list,
     map,
@@ -2036,7 +1996,6 @@ pub fn collectionImplName(kind: CollectionKind) []const u8 {
         .set => "LinkedHashSet",
     };
 }
-
 
 pub fn splitCallArguments(gpa: std.mem.Allocator, raw: []const u8) !std.ArrayList([]const u8) {
     var out: std.ArrayList([]const u8) = .empty;
@@ -2803,15 +2762,6 @@ pub fn rewriteMathModCalls(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
-
-
-
-
-
-
-
-
-
 pub fn normalizeApexDoWhileTailLine(gpa: std.mem.Allocator, line: []const u8) !?[]u8 {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (!isDoWhileTailLine(trimmed)) return null;
@@ -2832,8 +2782,6 @@ pub fn normalizeApexDoWhileTailLine(gpa: std.mem.Allocator, line: []const u8) !?
     }
     return try std.fmt.allocPrint(gpa, "}} while ({s})", .{converted_condition});
 }
-
-
 
 pub fn normalizeForHeaderTypes(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
     const open_paren = std.mem.indexOfScalar(u8, line, '(') orelse return gpa.dupe(u8, line);
@@ -3058,29 +3006,6 @@ pub fn detectSwitchMode(
     return .value;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 pub fn uniqueMethodName(
     gpa: std.mem.Allocator,
     name_counts: *std.StringHashMap(usize),
@@ -3095,4 +3020,1126 @@ pub fn uniqueMethodName(
 
     try name_counts.put(normalized, 1);
     return gpa.dupe(u8, method_name);
+}
+// ---------------------------------------------------------------------------
+// Tests (moved from root.zig)
+// ---------------------------------------------------------------------------
+
+test "transpileAssertionLine converts System.assert overloads" {
+    const gpa = std.testing.allocator;
+    const one = try transpileAssertionLine(gpa, "System.assert(total > 0, 'must be positive');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings(
+        "SystemAssert.assertTrue(total > 0, \"must be positive\");",
+        one.?,
+    );
+
+    const two = try transpileAssertionLine(gpa, "System.assertEquals(1, actual, 'don''t fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings(
+        "SystemAssert.assertEquals(1, actual, \"don't fail\");",
+        two.?,
+    );
+
+    const non_assert = try transpileAssertionLine(gpa, "System.debug('noop');");
+    try std.testing.expect(non_assert == null);
+}
+
+test "rewriteMathModCalls rewrites only standalone Math.mod calls" {
+    const gpa = std.testing.allocator;
+    const input = "x = Math.mod(a, 2); y = ApexMath.mod(b, 2);";
+    const rewritten = try rewriteMathModCalls(gpa, input);
+    defer gpa.free(rewritten);
+    try std.testing.expectEqualStrings(
+        "x = ApexMath.mod(a, 2); y = ApexMath.mod(b, 2);",
+        rewritten,
+    );
+}
+
+test "transpileAssertionLine converts Assert and System.Assert API" {
+    const gpa = std.testing.allocator;
+
+    const one = try transpileAssertionLine(gpa, "Assert.isTrue(total > 0, 'must be positive');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isTrue(total > 0, \"must be positive\");",
+        one.?,
+    );
+
+    const two = try transpileAssertionLine(gpa, "System.Assert.areEqual(1, actual, 'don''t fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.areEqual(1, actual, \"don't fail\");",
+        two.?,
+    );
+
+    const two_backslash = try transpileAssertionLine(gpa, "Assert.areEqual('don\\'t fail', actual, 'msg');");
+    defer if (two_backslash) |value| gpa.free(value);
+    try std.testing.expect(two_backslash != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.areEqual(\"don't fail\", actual, \"msg\");",
+        two_backslash.?,
+    );
+
+    const three = try transpileAssertionLine(gpa, "Assert.fail();");
+    defer if (three) |value| gpa.free(value);
+    try std.testing.expect(three != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.fail();",
+        three.?,
+    );
+
+    const four = try transpileAssertionLine(gpa, "Assert.isInstanceOfType(record, Account.class, 'expected account');");
+    defer if (four) |value| gpa.free(value);
+    try std.testing.expect(four != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isInstanceOfType(record, \"Account\", \"expected account\");",
+        four.?,
+    );
+
+    const five = try transpileAssertionLine(gpa, "System.Assert.isNotInstanceOfType(payload, Contact.class);");
+    defer if (five) |value| gpa.free(value);
+    try std.testing.expect(five != null);
+    try std.testing.expectEqualStrings(
+        "ApexAssert.isNotInstanceOfType(payload, \"Contact\");",
+        five.?,
+    );
+}
+
+test "transpileSystemDebugLine converts to println and keeps last arg" {
+    const gpa = std.testing.allocator;
+
+    const one = try transpileSystemDebugLine(gpa, "System.debug('hello');");
+    defer if (one) |value| gpa.free(value);
+    try std.testing.expect(one != null);
+    try std.testing.expectEqualStrings("System.out.println(\"hello\");", one.?);
+
+    const two = try transpileSystemDebugLine(gpa, "System.debug(LoggingLevel.ERROR, 'fail');");
+    defer if (two) |value| gpa.free(value);
+    try std.testing.expect(two != null);
+    try std.testing.expectEqualStrings("System.out.println(\"fail\");", two.?);
+
+    const three = try transpileSystemDebugLine(gpa, "System.debug(new List<Id>());");
+    defer if (three) |value| gpa.free(value);
+    try std.testing.expect(three != null);
+    try std.testing.expectEqualStrings("System.out.println(new ArrayList<String>());", three.?);
+}
+
+test "transpileCollectionDeclarationLine converts list map set declarations" {
+    const gpa = std.testing.allocator;
+
+    const list_line = try transpileCollectionDeclarationLine(gpa, "List<Id> ids = new List<Id>();");
+    defer if (list_line) |value| gpa.free(value);
+    try std.testing.expect(list_line != null);
+    try std.testing.expectEqualStrings(
+        "List<String> ids = new ArrayList<>();",
+        list_line.?,
+    );
+
+    const map_line = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>();",
+    );
+    defer if (map_line) |value| gpa.free(value);
+    try std.testing.expect(map_line != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = new LinkedHashMap<>();",
+        map_line.?,
+    );
+
+    const set_line = try transpileCollectionDeclarationLine(gpa, "final Set<Id> accountIds = new Set<Id>();");
+    defer if (set_line) |value| gpa.free(value);
+    try std.testing.expect(set_line != null);
+    try std.testing.expectEqualStrings(
+        "Set<String> accountIds = new LinkedHashSet<>();",
+        set_line.?,
+    );
+
+    const map_from_query = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>([SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10]);",
+    );
+    defer if (map_from_query) |value| gpa.free(value);
+    try std.testing.expect(map_from_query != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
+        map_from_query.?,
+    );
+
+    const map_from_query_spaced = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>( [ SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10 ] );",
+    );
+    defer if (map_from_query_spaced) |value| gpa.free(value);
+    try std.testing.expect(map_from_query_spaced != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
+        map_from_query_spaced.?,
+    );
+
+    const map_from_list = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> accountMap = new Map<Id, Account>(records);",
+    );
+    defer if (map_from_list) |value| gpa.free(value);
+    try std.testing.expect(map_from_list != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.toIdMap(records);",
+        map_from_list.?,
+    );
+
+    const map_from_existing_map = try transpileCollectionDeclarationLine(
+        gpa,
+        "Map<Id, Account> copied = new Map<Id, Account>(existingMap);",
+    );
+    defer if (map_from_existing_map) |value| gpa.free(value);
+    try std.testing.expect(map_from_existing_map != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> copied = ApexCollections.toIdMap(existingMap);",
+        map_from_existing_map.?,
+    );
+}
+
+test "transpileSoqlAndDmlAndControlLines" {
+    const gpa = std.testing.allocator;
+
+    const soql = try transpileSoqlLine(gpa, "List<Contact> contacts = [SELECT Id FROM Contact WHERE AccountId = :accId LIMIT 5];");
+    defer if (soql) |value| gpa.free(value);
+    try std.testing.expect(soql != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, soql.?, "Database.query(") != null or
+            std.mem.indexOf(u8, soql.?, "Database.queryWithBinds(") != null,
+    );
+
+    const dml = try transpileDmlLine(gpa, "insert contacts;");
+    defer if (dml) |value| gpa.free(value);
+    try std.testing.expect(dml != null);
+    try std.testing.expectEqualStrings("Database.insert(contacts);", dml.?);
+
+    const control = try transpileControlFlowLine(gpa, "for (Id accountId : accountIds) {");
+    defer if (control) |value| gpa.free(value);
+    try std.testing.expect(control != null);
+    try std.testing.expectEqualStrings("for (String accountId : accountIds) {", control.?);
+
+    const close_brace = try transpileControlFlowLine(gpa, "}");
+    defer if (close_brace) |value| gpa.free(value);
+    try std.testing.expect(close_brace != null);
+    try std.testing.expectEqualStrings("}", close_brace.?);
+
+    const return_with_new = try transpileControlFlowLine(gpa, "return new Map<Id, Account>();");
+    defer if (return_with_new) |value| gpa.free(value);
+    try std.testing.expect(return_with_new != null);
+    try std.testing.expectEqualStrings("return new LinkedHashMap<String, ApexSObject>();", return_with_new.?);
+}
+
+test "transpileControlFlowLine converts apex switch/when syntax" {
+    const gpa = std.testing.allocator;
+
+    const switch_header = try transpileControlFlowLine(gpa, "switch on stageName {");
+    defer if (switch_header) |value| gpa.free(value);
+    try std.testing.expect(switch_header != null);
+    try std.testing.expectEqualStrings("switch (stageName) {", switch_header.?);
+
+    const when_values = try transpileControlFlowLine(gpa, "when 'New', 'Working' {");
+    defer if (when_values) |value| gpa.free(value);
+    try std.testing.expect(when_values != null);
+    try std.testing.expectEqualStrings("case \"New\", \"Working\" -> {", when_values.?);
+
+    const when_else = try transpileControlFlowLine(gpa, "when else {");
+    defer if (when_else) |value| gpa.free(value);
+    try std.testing.expect(when_else != null);
+    try std.testing.expectEqualStrings("default -> {", when_else.?);
+
+    const unsupported_pattern = try transpileControlFlowLine(gpa, "when Account acc {");
+    try std.testing.expect(unsupported_pattern == null);
+}
+
+test "transpileControlFlowLine supports typed when with switch context" {
+    const gpa = std.testing.allocator;
+
+    const typed_switch = try transpileControlFlowLineWithContext(
+        gpa,
+        "switch on record {",
+        null,
+        .value,
+        .typed,
+    );
+    defer if (typed_switch) |value| gpa.free(value);
+    try std.testing.expect(typed_switch != null);
+    try std.testing.expectEqualStrings("switch (ApexSwitch.typeName(record)) {", typed_switch.?);
+
+    const typed_when = try transpileControlFlowLineWithContext(
+        gpa,
+        "when Account acc {",
+        "record",
+        .typed,
+        null,
+    );
+    defer if (typed_when) |value| gpa.free(value);
+    try std.testing.expect(typed_when != null);
+    try std.testing.expectEqualStrings(
+        "case \"Account\" -> { ApexSObject acc = record;",
+        typed_when.?,
+    );
+
+    const typed_else = try transpileControlFlowLineWithContext(
+        gpa,
+        "when else {",
+        "record",
+        .typed,
+        null,
+    );
+    defer if (typed_else) |value| gpa.free(value);
+    try std.testing.expect(typed_else != null);
+    try std.testing.expectEqualStrings("default -> {", typed_else.?);
+}
+
+test "transpileControlFlowLine rewrites sobject instanceof checks" {
+    const gpa = std.testing.allocator;
+
+    const sobject_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (record instanceof Account) {",
+    );
+    defer if (sobject_instanceof) |value| gpa.free(value);
+    try std.testing.expect(sobject_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (\"Account\".equals(ApexSwitch.typeName(record))) {",
+        sobject_instanceof.?,
+    );
+
+    const scalar_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (value instanceof Integer) {",
+    );
+    defer if (scalar_instanceof) |value| gpa.free(value);
+    try std.testing.expect(scalar_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (value instanceof Integer) {",
+        scalar_instanceof.?,
+    );
+
+    const negated_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (!(record instanceof Contact)) {",
+    );
+    defer if (negated_instanceof) |value| gpa.free(value);
+    try std.testing.expect(negated_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (!(\"Contact\".equals(ApexSwitch.typeName(record)))) {",
+        negated_instanceof.?,
+    );
+
+    const multi_branch_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (record instanceof Account || record instanceof Contact) {",
+    );
+    defer if (multi_branch_instanceof) |value| gpa.free(value);
+    try std.testing.expect(multi_branch_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (\"Account\".equals(ApexSwitch.typeName(record)) || \"Contact\".equals(ApexSwitch.typeName(record))) {",
+        multi_branch_instanceof.?,
+    );
+
+    const generic_sobject_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (record instanceof SObject) {",
+    );
+    defer if (generic_sobject_instanceof) |value| gpa.free(value);
+    try std.testing.expect(generic_sobject_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if ((record instanceof ApexSObject)) {",
+        generic_sobject_instanceof.?,
+    );
+
+    const class_instanceof = try transpileControlFlowLine(
+        gpa,
+        "if (value instanceof CustomService) {",
+    );
+    defer if (class_instanceof) |value| gpa.free(value);
+    try std.testing.expect(class_instanceof != null);
+    try std.testing.expectEqualStrings(
+        "if (value instanceof CustomService) {",
+        class_instanceof.?,
+    );
+
+    const do_header = try transpileControlFlowLine(gpa, "do {");
+    defer if (do_header) |value| gpa.free(value);
+    try std.testing.expect(do_header != null);
+    try std.testing.expectEqualStrings("do {", do_header.?);
+
+    const do_tail = try transpileControlFlowLine(
+        gpa,
+        "} while (records[i] instanceof Account);",
+    );
+    defer if (do_tail) |value| gpa.free(value);
+    try std.testing.expect(do_tail != null);
+    try std.testing.expectEqualStrings(
+        "} while (\"Account\".equals(ApexSwitch.typeName(records.get(i))));",
+        do_tail.?,
+    );
+}
+
+test "transpileSoqlLine supports list map and single-sobject declarations" {
+    const gpa = std.testing.allocator;
+
+    const list_decl = try transpileSoqlLine(gpa, "List<Account> rows = [SELECT Id, Name FROM Account LIMIT 10];");
+    defer if (list_decl) |value| gpa.free(value);
+    try std.testing.expect(list_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<ApexSObject> rows = Database.query(\"SELECT Id, Name FROM Account LIMIT 10\");",
+        list_decl.?,
+    );
+
+    const map_decl = try transpileSoqlLine(gpa, "Map<Id, Account> accountMap = [SELECT Id, Name FROM Account LIMIT 10];");
+    defer if (map_decl) |value| gpa.free(value);
+    try std.testing.expect(map_decl != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account LIMIT 10\"));",
+        map_decl.?,
+    );
+
+    const single_decl = try transpileSoqlLine(gpa, "Account acc = [SELECT Id, Name FROM Account LIMIT 1];");
+    defer if (single_decl) |value| gpa.free(value);
+    try std.testing.expect(single_decl != null);
+    try std.testing.expectEqualStrings(
+        "ApexSObject acc = ApexCollections.firstOrThrow(Database.query(\"SELECT Id, Name FROM Account LIMIT 1\"));",
+        single_decl.?,
+    );
+
+    const return_count = try transpileSoqlLine(gpa, "return [SELECT COUNT() FROM Account];");
+    defer if (return_count) |value| gpa.free(value);
+    try std.testing.expect(return_count != null);
+    try std.testing.expectEqualStrings(
+        "return Database.countQuery(\"SELECT COUNT() FROM Account\");",
+        return_count.?,
+    );
+
+    const return_single = try transpileSoqlLine(gpa, "return [SELECT Id FROM Account LIMIT 1];");
+    defer if (return_single) |value| gpa.free(value);
+    try std.testing.expect(return_single != null);
+    try std.testing.expectEqualStrings(
+        "return ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM Account LIMIT 1\"));",
+        return_single.?,
+    );
+
+    const assign_single = try transpileSoqlLine(gpa, "acc = [SELECT Id FROM Account LIMIT 1];");
+    defer if (assign_single) |value| gpa.free(value);
+    try std.testing.expect(assign_single != null);
+    try std.testing.expectEqualStrings(
+        "acc = ApexCollections.firstOrThrow(Database.query(\"SELECT Id FROM Account LIMIT 1\"));",
+        assign_single.?,
+    );
+
+    const assign_single_by_id = try transpileSoqlLine(gpa, "acc = [SELECT Id FROM Account WHERE Id = :accountId];");
+    defer if (assign_single_by_id) |value| gpa.free(value);
+    try std.testing.expect(assign_single_by_id != null);
+    try std.testing.expectEqualStrings(
+        "acc = ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT Id FROM Account WHERE Id = :accountId\", ApexCollections.bindMap(\"accountId\", accountId)));",
+        assign_single_by_id.?,
+    );
+
+    const assign_count = try transpileSoqlLine(gpa, "total = [SELECT COUNT() FROM Account];");
+    defer if (assign_count) |value| gpa.free(value);
+    try std.testing.expect(assign_count != null);
+    try std.testing.expectEqualStrings(
+        "total = Database.countQuery(\"SELECT COUNT() FROM Account\");",
+        assign_count.?,
+    );
+}
+
+test "transpileExecutableLine prefers collection declaration rewrite for map query initializer" {
+    const gpa = std.testing.allocator;
+    const line = "Map<Id, Account> accountMap = new Map<Id, Account>([SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10]);";
+    const converted = try transpileExecutableLine(gpa, line);
+    defer if (converted) |value| gpa.free(value);
+    try std.testing.expect(converted != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
+        converted.?,
+    );
+}
+
+test "transpileExecutableLine routes return soql to soql transpiler" {
+    const gpa = std.testing.allocator;
+    const converted = try transpileExecutableLine(gpa, "return [SELECT COUNT() FROM Account];");
+    defer if (converted) |value| gpa.free(value);
+    try std.testing.expect(converted != null);
+    try std.testing.expectEqualStrings(
+        "return Database.countQuery(\"SELECT COUNT() FROM Account\");",
+        converted.?,
+    );
+}
+
+test "convertApexExpressionToJava converts nested inline collection constructors" {
+    const gpa = std.testing.allocator;
+    const converted = try convertApexExpressionToJava(
+        gpa,
+        "new Map<Id, Account>(new Map<Id, Account>())",
+    );
+    defer gpa.free(converted);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.toIdMap(new LinkedHashMap<String, ApexSObject>())",
+        converted,
+    );
+
+    const from_list = try convertApexExpressionToJava(
+        gpa,
+        "new Map<Id, Account>(records)",
+    );
+    defer gpa.free(from_list);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.toIdMap(records)",
+        from_list,
+    );
+}
+
+test "convertApexExpressionToJava rewrites database query-string consumers" {
+    const gpa = std.testing.allocator;
+
+    const locator = try convertApexExpressionToJava(
+        gpa,
+        "Database.getQueryLocator([SELECT Id FROM Account])",
+    );
+    defer gpa.free(locator);
+    try std.testing.expectEqualStrings(
+        "Database.getQueryLocator(\"SELECT Id FROM Account\")",
+        locator,
+    );
+
+    const count = try convertApexExpressionToJava(
+        gpa,
+        "Database.countQuery([SELECT Id FROM Account WHERE Name = :name])",
+    );
+    defer gpa.free(count);
+    try std.testing.expectEqualStrings(
+        "Database.countQueryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", ApexCollections.bindMap(\"name\", name))",
+        count,
+    );
+
+    const with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.queryWithBinds([SELECT Id FROM Account WHERE Name = :name], binds)",
+    );
+    defer gpa.free(with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.queryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", binds)",
+        with_binds,
+    );
+
+    const count_with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.countQueryWithBinds([SELECT Id FROM Account WHERE Name = :name], binds)",
+    );
+    defer gpa.free(count_with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.countQueryWithBinds(\"SELECT Id FROM Account WHERE Name = :name\", binds)",
+        count_with_binds,
+    );
+
+    const locator_with_binds = try convertApexExpressionToJava(
+        gpa,
+        "Database.getQueryLocatorWithBinds([SELECT Id FROM Account WHERE Name IN :names], binds)",
+    );
+    defer gpa.free(locator_with_binds);
+    try std.testing.expectEqualStrings(
+        "Database.getQueryLocatorWithBinds(\"SELECT Id FROM Account WHERE Name IN :names\", binds)",
+        locator_with_binds,
+    );
+
+    const query_get_as = try convertApexExpressionToJava(
+        gpa,
+        "Database.query([SELECT Id FROM Profile WHERE Name = :profile]).getAs('Id')",
+    );
+    defer gpa.free(query_get_as);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.firstOrThrow(Database.queryWithBinds(\"SELECT Id FROM Profile WHERE Name = :profile\", ApexCollections.bindMap(\"profile\", profile))).getAs(\"Id\")",
+        query_get_as,
+    );
+
+    const escaped_quote_literal = try convertApexExpressionToJava(
+        gpa,
+        "'AND Name = ''{1}'''",
+    );
+    defer gpa.free(escaped_quote_literal);
+    try std.testing.expectEqualStrings(
+        "\"AND Name = '{1}'\"",
+        escaped_quote_literal,
+    );
+
+    const escaped_double_quote_literal = try convertApexExpressionToJava(
+        gpa,
+        "'{\\\"name\\\":\\\"value\\\"}'",
+    );
+    defer gpa.free(escaped_double_quote_literal);
+    try std.testing.expectEqualStrings(
+        "\"{\\\"name\\\":\\\"value\\\"}\"",
+        escaped_double_quote_literal,
+    );
+
+    const idempotent_java_literal = try convertApexExpressionToJava(
+        gpa,
+        "\"AND Name = '{1}'\"",
+    );
+    defer gpa.free(idempotent_java_literal);
+    try std.testing.expectEqualStrings(
+        "\"AND Name = '{1}'\"",
+        idempotent_java_literal,
+    );
+}
+
+test "rewriteDynamicWhereClauseQueryBinds generalizes dynamic where bind propagation" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class Demo {
+        \\  public static void run() {
+        \\    String key = null, whereClause = "";
+        \\    List<String> criteria = new ArrayList<String>();
+        \\    criteria.add("Name LIKE :key");
+        \\    whereClause = "WHERE " + ApexStrings.join(criteria, " AND ");
+        \\    Integer total = Database.countQuery("SELECT count() FROM Account " + whereClause);
+        \\    List<ApexSObject> rows = Database.queryWithBinds("SELECT Id FROM Account " + whereClause + " ORDER BY Name LIMIT :limit", ApexCollections.bindMap("limit", 10));
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteDynamicWhereClauseQueryBinds(gpa, source);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.countQueryWithBinds(\"SELECT count() FROM Account \" + whereClause, ApexCollections.bindMap(\"key\", key))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Database.queryWithBinds(\"SELECT Id FROM Account \" + whereClause + \" ORDER BY Name LIMIT :limit\", ApexCollections.bindMap(\"limit\", 10, \"key\", key))") != null);
+}
+
+test "convertApexExpressionToJava rewrites apex string utility calls" {
+    const gpa = std.testing.allocator;
+
+    const is_blank = try convertApexExpressionToJava(gpa, "String.isBlank(name)");
+    defer gpa.free(is_blank);
+    try std.testing.expectEqualStrings("ApexStrings.isBlank(name)", is_blank);
+
+    const join_call = try convertApexExpressionToJava(
+        gpa,
+        "String.join(new List<String>{'A', 'B'}, ',')",
+    );
+    defer gpa.free(join_call);
+    try std.testing.expectEqualStrings(
+        "ApexStrings.join(new ArrayList<String>(ApexCollections.listOf(\"A\", \"B\")), \",\")",
+        join_call,
+    );
+
+    const escape_call = try convertApexExpressionToJava(gpa, "String.escapeSingleQuotes(lastName)");
+    defer gpa.free(escape_call);
+    try std.testing.expectEqualStrings("ApexStrings.escapeSingleQuotes(lastName)", escape_call);
+
+    const valueof_fix = try convertApexExpressionToJava(gpa, "Integer.valueof(x)");
+    defer gpa.free(valueof_fix);
+    try std.testing.expectEqualStrings("Integer.valueOf(x)", valueof_fix);
+
+    const valueof_numeric = try convertApexExpressionToJava(
+        gpa,
+        "Integer.valueof((Math.random() * 100000))",
+    );
+    defer gpa.free(valueof_numeric);
+    try std.testing.expectEqualStrings(
+        "Integer.valueOf((int) ((Math.random() * 100000)))",
+        valueof_numeric,
+    );
+
+    const call_index = try convertApexExpressionToJava(gpa, "createAccounts(1)[0].Id");
+    defer gpa.free(call_index);
+    try std.testing.expectEqualStrings(
+        "createAccounts(1).get(0).getAs(\"Id\")",
+        call_index,
+    );
+
+    const nested_index = try convertApexExpressionToJava(
+        gpa,
+        "alloWrapper.oppsAllocations.get(oppIds[7])[0]",
+    );
+    defer gpa.free(nested_index);
+    try std.testing.expectEqualStrings(
+        "alloWrapper.oppsAllocations.get(oppIds.get(7)).get(0)",
+        nested_index,
+    );
+
+    const null_coalescing = try convertApexExpressionToJava(gpa, "maxPrice ?? DEFAULT_MAX_PRICE");
+    defer gpa.free(null_coalescing);
+    try std.testing.expectEqualStrings(
+        "((maxPrice) != null ? (maxPrice) : (DEFAULT_MAX_PRICE))",
+        null_coalescing,
+    );
+
+    const cast_and_class_literal = try convertApexExpressionToJava(
+        gpa,
+        "(List<Broker__c>) JSON.deserialize(payload, List<Broker__c>.class)",
+    );
+    defer gpa.free(cast_and_class_literal);
+    try std.testing.expectEqualStrings(
+        "(List<ApexSObject>) JSON.deserializeList(payload, ApexSObject.class)",
+        cast_and_class_literal,
+    );
+
+    const typed_list_deserialize = try convertApexExpressionToJava(
+        gpa,
+        "(List<Coordinates>) JSON.deserialize(payload, List<Coordinates>.class)",
+    );
+    defer gpa.free(typed_list_deserialize);
+    try std.testing.expectEqualStrings(
+        "(List<Coordinates>) JSON.deserializeList(payload, Coordinates.class)",
+        typed_list_deserialize,
+    );
+
+    const sosl = try convertApexExpressionToJava(
+        gpa,
+        "[ FIND :keyword IN ALL FIELDS RETURNING Account(Name), Contact(LastName, Account.Name) ]",
+    );
+    defer gpa.free(sosl);
+    try std.testing.expectEqualStrings(
+        "Database.searchWithBinds(\"FIND :keyword IN ALL FIELDS RETURNING Account(Name), Contact(LastName, Account.Name)\", ApexCollections.bindMap(\"keyword\", keyword))",
+        sosl,
+    );
+
+    const system_today = try convertApexExpressionToJava(gpa, "System.today() - 7");
+    defer gpa.free(system_today);
+    try std.testing.expectEqualStrings(
+        "apexemu.runtime.System.today().addDays(-(7))",
+        system_today,
+    );
+
+    const inline_system_assert = try convertApexExpressionToJava(
+        gpa,
+        "if(UserInfo.isMultiCurrencyOrganization()) system.assert(fieldSet.contains(\"CurrencyIsoCode\"))",
+    );
+    defer gpa.free(inline_system_assert);
+    try std.testing.expectEqualStrings(
+        "if(UserInfo.isMultiCurrencyOrganization()) SystemAssert.assertTrue(fieldSet.contains(\"CurrencyIsoCode\"))",
+        inline_system_assert,
+    );
+
+    const system_type_ref = try convertApexExpressionToJava(gpa, "System.Type.forName('Account')");
+    defer gpa.free(system_type_ref);
+    try std.testing.expectEqualStrings(
+        "apexemu.runtime.System.Type.forName(\"Account\")",
+        system_type_ref,
+    );
+
+    const fully_qualified_today = try convertApexExpressionToJava(gpa, "apexemu.runtime.System.today()");
+    defer gpa.free(fully_qualified_today);
+    try std.testing.expectEqualStrings(
+        "apexemu.runtime.System.today()",
+        fully_qualified_today,
+    );
+
+    const safe_nav = try convertApexExpressionToJava(gpa, "error?.getMessage()");
+    defer gpa.free(safe_nav);
+    try std.testing.expectEqualStrings(
+        "((error) == null ? null : (error).getMessage())",
+        safe_nav,
+    );
+
+    const safe_nav_with_getas = try convertApexExpressionToJava(gpa, "acct.ShippingState?.length()");
+    defer gpa.free(safe_nav_with_getas);
+    try std.testing.expectEqualStrings(
+        "((acct.getAs(\"ShippingState\")) == null ? null : (ApexStrings.length(acct.getAs(\"ShippingState\"))))",
+        safe_nav_with_getas,
+    );
+
+    const strict_equality = try convertApexExpressionToJava(gpa, "current === expected");
+    defer gpa.free(strict_equality);
+    try std.testing.expectEqualStrings(
+        "current == expected",
+        strict_equality,
+    );
+
+    const trigger_context = try convertApexExpressionToJava(gpa, "Trigger.newMap.get(id)");
+    defer gpa.free(trigger_context);
+    try std.testing.expectEqualStrings(
+        "Trigger.getNewMap().get(id)",
+        trigger_context,
+    );
+
+    const type_like_chain = try convertApexExpressionToJava(gpa, "Messaging.inboundEmail.BinaryAttachment");
+    defer gpa.free(type_like_chain);
+    try std.testing.expectEqualStrings(
+        "Messaging.InboundEmail.BinaryAttachment",
+        type_like_chain,
+    );
+
+    const inbound_email_result = try convertApexExpressionToJava(gpa, "new Messaging.InboundEmailresult()");
+    defer gpa.free(inbound_email_result);
+    try std.testing.expectEqualStrings(
+        "new Messaging.InboundEmailResult()",
+        inbound_email_result,
+    );
+
+    const type_sobject_constant = try convertApexExpressionToJava(gpa, "Schema.Account.SObjectType");
+    defer gpa.free(type_sobject_constant);
+    try std.testing.expectEqualStrings(
+        "new Schema.SObjectType(\"Account\")",
+        type_sobject_constant,
+    );
+
+    const type_get_sobject = try convertApexExpressionToJava(gpa, "Account.getSObjectType()");
+    defer gpa.free(type_get_sobject);
+    try std.testing.expectEqualStrings(
+        "new Schema.SObjectType(\"Account\")",
+        type_get_sobject,
+    );
+
+    const non_sobject_get_sobject = try convertApexExpressionToJava(gpa, "MetadataTriggerService.getSobjectType()");
+    defer gpa.free(non_sobject_get_sobject);
+    try std.testing.expectEqualStrings(
+        "MetadataTriggerService.getSObjectType()",
+        non_sobject_get_sobject,
+    );
+
+    const instance_get_sobject = try convertApexExpressionToJava(gpa, "sObj.getSObjectType()");
+    defer gpa.free(instance_get_sobject);
+    try std.testing.expectEqualStrings(
+        "ApexSwitch.getSObjectType(sObj)",
+        instance_get_sobject,
+    );
+
+    const schema_type_namespace_chain = try convertApexExpressionToJava(gpa, "Schema.SObjectType.Account.fields.Name");
+    defer gpa.free(schema_type_namespace_chain);
+    try std.testing.expectEqualStrings(
+        "Schema.SObjectType.Account.fields.getAs(\"Name\")",
+        schema_type_namespace_chain,
+    );
+
+    const trigger_operation_case = try convertApexExpressionToJava(gpa, "System.TriggerOperation.After_UPDATE");
+    defer gpa.free(trigger_operation_case);
+    try std.testing.expectEqualStrings(
+        "System.TriggerOperation.AFTER_UPDATE",
+        trigger_operation_case,
+    );
+
+    const trigger_operation_bare_case = try convertApexExpressionToJava(gpa, "TriggerOperation.After_UPDATE");
+    defer gpa.free(trigger_operation_bare_case);
+    try std.testing.expectEqualStrings(
+        "System.TriggerOperation.AFTER_UPDATE",
+        trigger_operation_bare_case,
+    );
+
+    const contains_ignore_case = try convertApexExpressionToJava(gpa, "message.containsIgnoreCase('error')");
+    defer gpa.free(contains_ignore_case);
+    try std.testing.expectEqualStrings(
+        "ApexStrings.containsIgnoreCase(message, \"error\")",
+        contains_ignore_case,
+    );
+
+    const bind_static_getter = try convertApexExpressionToJava(
+        gpa,
+        "[SELECT Id FROM User WHERE Username = :UserInfo.getUsername()]",
+    );
+    defer gpa.free(bind_static_getter);
+    try std.testing.expectEqualStrings(
+        "Database.queryWithBinds(\"SELECT Id FROM User WHERE Username = :UserInfo.getUsername()\", ApexCollections.bindMap(\"UserInfo.getUsername\", UserInfo.getUsername()))",
+        bind_static_getter,
+    );
+}
+
+test "convertApexExpressionToJava preserves cast target before chained call" {
+    const gpa = std.testing.allocator;
+    const cast_input = "((List<Object>) responseMap.get(\"Contacts\")).size()";
+
+    const cast_only = try rewriteApexTypeCasts(gpa, cast_input);
+    defer gpa.free(cast_only);
+    try std.testing.expectEqualStrings(
+        cast_input,
+        cast_only,
+    );
+
+    const converted = try convertApexExpressionToJava(
+        gpa,
+        "((List<Object>) responseMap.get('Contacts')).size()",
+    );
+    defer gpa.free(converted);
+    try std.testing.expectEqualStrings(
+        "((List<Object>) responseMap.get(\"Contacts\")).size()",
+        converted,
+    );
+}
+
+test "transpileGenericStatementLine converts declarations assignments and calls" {
+    const gpa = std.testing.allocator;
+
+    const decl = try transpileGenericStatementLine(gpa, "Integer sizeHint = tasksToInsert.size();");
+    defer if (decl) |value| gpa.free(value);
+    try std.testing.expect(decl != null);
+    try std.testing.expectEqualStrings("Integer sizeHint = tasksToInsert.size();", decl.?);
+
+    const assign = try transpileGenericStatementLine(gpa, "payload = records[0].Id;");
+    defer if (assign) |value| gpa.free(value);
+    try std.testing.expect(assign != null);
+    try std.testing.expectEqualStrings("payload = records.get(0).getAs(\"Id\");", assign.?);
+
+    const call = try transpileGenericStatementLine(gpa, "doWork(records[0].Id);");
+    defer if (call) |value| gpa.free(value);
+    try std.testing.expect(call != null);
+    try std.testing.expectEqualStrings("doWork(records.get(0).getAs(\"Id\"));", call.?);
+
+    const plus_assign = try transpileGenericStatementLine(gpa, "payload += 'Contact: ' + records[0].LastName;");
+    defer if (plus_assign) |value| gpa.free(value);
+    try std.testing.expect(plus_assign != null);
+    try std.testing.expectEqualStrings("payload += \"Contact: \" + records.get(0).getAs(\"LastName\");", plus_assign.?);
+
+    const sobject_field_assign = try transpileGenericStatementLine(gpa, "acc.Name = records[0].Name;");
+    defer if (sobject_field_assign) |value| gpa.free(value);
+    try std.testing.expect(sobject_field_assign != null);
+    try std.testing.expectEqualStrings(
+        "acc.set(\"Name\", records.get(0).getAs(\"Name\"));",
+        sobject_field_assign.?,
+    );
+
+    const static_property_assign = try transpileGenericStatementLine(gpa, "fflib_ApexMocksConfig.HasIndependentMocks = true;");
+    defer if (static_property_assign) |value| gpa.free(value);
+    try std.testing.expect(static_property_assign != null);
+    try std.testing.expectEqualStrings(
+        "fflib_ApexMocksConfig.HasIndependentMocks = true;",
+        static_property_assign.?,
+    );
+
+    const this_assign = try transpileGenericStatementLine(gpa, "this.Name = name;");
+    defer if (this_assign) |value| gpa.free(value);
+    try std.testing.expect(this_assign != null);
+    try std.testing.expectEqualStrings("this.Name = name;", this_assign.?);
+
+    const camel_assign = try transpileGenericStatementLine(gpa, "link.shareType = 'V';");
+    defer if (camel_assign) |value| gpa.free(value);
+    try std.testing.expect(camel_assign != null);
+    try std.testing.expectEqualStrings("link.set(\"shareType\", \"V\");", camel_assign.?);
+
+    const query_single_assign = try transpileGenericStatementLine(
+        gpa,
+        "contentVersion = Database.query('SELECT Id FROM ContentVersion WHERE Id = :recordId');",
+    );
+    defer if (query_single_assign) |value| gpa.free(value);
+    try std.testing.expect(query_single_assign != null);
+    try std.testing.expectEqualStrings(
+        "contentVersion = ApexCollections.firstOrNull(Database.queryWithBinds(\"SELECT Id FROM ContentVersion WHERE Id = :recordId\", ApexCollections.bindMap(\"recordId\", recordId)));",
+        query_single_assign.?,
+    );
+
+    const query_plural_assign = try transpileGenericStatementLine(
+        gpa,
+        "records = Database.query('SELECT Id FROM Account');",
+    );
+    defer if (query_plural_assign) |value| gpa.free(value);
+    try std.testing.expect(query_plural_assign != null);
+    try std.testing.expectEqualStrings(
+        "records = Database.query(\"SELECT Id FROM Account\");",
+        query_plural_assign.?,
+    );
+
+    const multi_decl = try transpileGenericStatementLine(
+        gpa,
+        "String[] categories, materials, levels, criteria = new List<String>{};",
+    );
+    defer if (multi_decl) |value| gpa.free(value);
+    try std.testing.expect(multi_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<String> categories, materials, levels, criteria = new ArrayList<String>();",
+        multi_decl.?,
+    );
+
+    const sized_array_decl = try transpileGenericStatementLine(
+        gpa,
+        "List<Id> fixedSearchResults = new Id[contactSize];",
+    );
+    defer if (sized_array_decl) |value| gpa.free(value);
+    try std.testing.expect(sized_array_decl != null);
+    try std.testing.expectEqualStrings(
+        "List<String> fixedSearchResults = ApexCollections.newListWithSize(contactSize);",
+        sized_array_decl.?,
+    );
+
+    const member_price_assign =
+        try transpileGenericStatementLine(gpa, "filters.maxPrice = 2000;");
+    defer if (member_price_assign) |value| gpa.free(value);
+    try std.testing.expect(member_price_assign != null);
+    try std.testing.expectEqualStrings("filters.maxPrice = 2000.0;", member_price_assign.?);
+
+    const instanceof_assign = try transpileGenericStatementLine(gpa, "Boolean isAccount = record instanceof Account;");
+    defer if (instanceof_assign) |value| gpa.free(value);
+    try std.testing.expect(instanceof_assign != null);
+    try std.testing.expectEqualStrings(
+        "Boolean isAccount = \"Account\".equals(ApexSwitch.typeName(record));",
+        instanceof_assign.?,
+    );
+
+    const negated_instanceof_assign = try transpileGenericStatementLine(
+        gpa,
+        "Boolean isNotContact = !(record instanceof Contact);",
+    );
+    defer if (negated_instanceof_assign) |value| gpa.free(value);
+    try std.testing.expect(negated_instanceof_assign != null);
+    try std.testing.expectEqualStrings(
+        "Boolean isNotContact = !(\"Contact\".equals(ApexSwitch.typeName(record)));",
+        negated_instanceof_assign.?,
+    );
+
+    const safe_nav_call = try transpileGenericStatementLine(
+        gpa,
+        "instanceToFinalize?.finalizeDmlOperation();",
+    );
+    defer if (safe_nav_call) |value| gpa.free(value);
+    try std.testing.expect(safe_nav_call != null);
+    try std.testing.expectEqualStrings(
+        "if ((instanceToFinalize) != null) { instanceToFinalize.finalizeDmlOperation(); }",
+        safe_nav_call.?,
+    );
+}
+
+test "transpileDmlLine supports upsert with external id hint and merge" {
+    const gpa = std.testing.allocator;
+    const line = try transpileDmlLine(gpa, "upsert tasksToInsert External_Id__c;");
+    defer if (line) |value| gpa.free(value);
+    try std.testing.expect(line != null);
+    try std.testing.expectEqualStrings(
+        "Database.upsert(tasksToInsert); // external id field: External_Id__c",
+        line.?,
+    );
+
+    const merge_two = try transpileDmlLine(gpa, "merge masterAccount duplicateAccount;");
+    defer if (merge_two) |value| gpa.free(value);
+    try std.testing.expect(merge_two != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, duplicateAccount);",
+        merge_two.?,
+    );
+
+    const merge_three = try transpileDmlLine(gpa, "merge masterAccount, duplicateA, duplicateB;");
+    defer if (merge_three) |value| gpa.free(value);
+    try std.testing.expect(merge_three != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, java.util.List.of(duplicateA, duplicateB));",
+        merge_three.?,
+    );
+
+    const merge_indexed = try transpileDmlLine(gpa, "merge masterAccount duplicateAccounts[0];");
+    defer if (merge_indexed) |value| gpa.free(value);
+    try std.testing.expect(merge_indexed != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(masterAccount, duplicateAccounts.get(0));",
+        merge_indexed.?,
+    );
+
+    const merge_expr = try transpileDmlLine(
+        gpa,
+        "merge pickMaster(records, 0) pickDuplicate(records, 1);",
+    );
+    defer if (merge_expr) |value| gpa.free(value);
+    try std.testing.expect(merge_expr != null);
+    try std.testing.expectEqualStrings(
+        "Database.merge(pickMaster(records, 0), pickDuplicate(records, 1));",
+        merge_expr.?,
+    );
+
+    const update_user = try transpileDmlLine(gpa, "update as user acc;");
+    defer if (update_user) |value| gpa.free(value);
+    try std.testing.expect(update_user != null);
+    try std.testing.expectEqualStrings(
+        "Database.update(acc); // Apex DML mode: user",
+        update_user.?,
+    );
+}
+
+test "convertApexExpressionToJava converts collection literals and sobject constructor args" {
+    const gpa = std.testing.allocator;
+
+    const list_literal = try convertApexExpressionToJava(gpa, "new List<Id>{'a', 'b'}");
+    defer gpa.free(list_literal);
+    try std.testing.expectEqualStrings(
+        "new ArrayList<String>(ApexCollections.listOf(\"a\", \"b\"))",
+        list_literal,
+    );
+
+    const map_literal = try convertApexExpressionToJava(gpa, "new Map<Id, Account>{'001' => record}");
+    defer gpa.free(map_literal);
+    try std.testing.expectEqualStrings(
+        "new LinkedHashMap<String, ApexSObject>(ApexCollections.mapOfEntries(ApexCollections.mapEntry(\"001\", record)))",
+        map_literal,
+    );
+
+    const sobject_ctor = try convertApexExpressionToJava(gpa, "new Task(Subject = 'Bulk', WhatId = records[0].Id)");
+    defer gpa.free(sobject_ctor);
+    try std.testing.expectEqualStrings(
+        "ApexSObject.of(\"Task\").set(\"Subject\", \"Bulk\").set(\"WhatId\", records.get(0).getAs(\"Id\"))",
+        sobject_ctor,
+    );
+
+    const nested_literal = try convertApexExpressionToJava(
+        gpa,
+        "new List<Task>{ new Task(WhatId = records[0].Id) }",
+    );
+    defer gpa.free(nested_literal);
+    try std.testing.expectEqualStrings(
+        "new ArrayList<ApexSObject>(ApexCollections.listOf(ApexSObject.of(\"Task\").set(\"WhatId\", records.get(0).getAs(\"Id\"))))",
+        nested_literal,
+    );
+
+    const escaped_apex_string = try convertApexExpressionToJava(
+        gpa,
+        "'Couldn\\'t update account with ID ' + accountId",
+    );
+    defer gpa.free(escaped_apex_string);
+    try std.testing.expectEqualStrings(
+        "\"Couldn't update account with ID \" + accountId",
+        escaped_apex_string,
+    );
+
+    const sized_array_expr = try convertApexExpressionToJava(gpa, "new Id[contactSize]");
+    defer gpa.free(sized_array_expr);
+    try std.testing.expectEqualStrings(
+        "ApexCollections.newListWithSize(contactSize)",
+        sized_array_expr,
+    );
+}
+
+test "transpileControlFlowLine converts System.runAs scoped block header" {
+    const gpa = std.testing.allocator;
+    const converted = try transpileControlFlowLine(gpa, "System.runAs(testUser) {");
+    defer if (converted) |value| gpa.free(value);
+
+    try std.testing.expect(converted != null);
+    try std.testing.expectEqualStrings(
+        "Test.beginRunAs(testUser); try { // RUNAS_BLOCK",
+        converted.?,
+    );
+}
+
+test "convertApexExpressionToJava rewrites nested id relational comparisons" {
+    const gpa = std.testing.allocator;
+    const input = "(currentEndId == null || lastIdInScope > currentEndId) ? lastIdInScope : currentEndId";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.compareTo(lastIdInScope, currentEndId) > 0") != null);
+}
+
+test "convertApexExpressionToJava keeps numeric guards out of string relational rewrites" {
+    const gpa = std.testing.allocator;
+    const input = "ich < strNameSpec.length()-1 && strNameSpec.substring(ich+1, ich+2) != \" \"";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexStrings.compareTo(ich,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ich < strNameSpec.length()-1") != null);
+}
+
+test "convertApexExpressionToJava rewrites date relational comparisons with ApexCompare" {
+    const gpa = std.testing.allocator;
+    const input = "closeDate <= Date.newInstance(2019, 11, 1)";
+
+    const rewritten = try convertApexExpressionToJava(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ApexCompare.lte(closeDate, Date.newInstance(2019, 11, 1))") != null);
 }

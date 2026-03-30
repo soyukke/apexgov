@@ -21,7 +21,6 @@ const rules = @import("rules.zig");
 const MethodSummary = types.MethodSummary;
 const MethodScope = types.MethodScope;
 const LoopScope = types.LoopScope;
-const LoopInfo = types.LoopInfo;
 const PendingLoopScopeStart = types.PendingLoopScopeStart;
 const OwnerScope = types.OwnerScope;
 const Bound = types.Bound;
@@ -55,6 +54,140 @@ const inferCalledMethodMetrics = call_graph.inferCalledMethodMetrics;
 const appendFinding = rules.appendFinding;
 const appendGovernorFinding = rules.appendGovernorFinding;
 const appendCpuEstimateFinding = rules.appendCpuEstimateFinding;
+
+// ---------------------------------------------------------------------------
+// ルール検出テーブル
+// ---------------------------------------------------------------------------
+
+/// ルール検出時の Finding 出力種別。
+const EmitKind = enum {
+    /// Governor 制限 Finding + CPU 見積もり Finding (AG002/AG003/AG008)
+    governor_with_cpu,
+    /// Governor 制限 Finding のみ (AG010/AG011)
+    governor_only,
+    /// 一般 Finding + CPU 見積もり Finding (AG004/AG005)
+    finding_with_cpu,
+    /// 一般 Finding のみ (AG006/AG007)
+    finding_only,
+};
+
+/// テーブル駆動ルール検出の仕様。
+/// `field` は MethodMetrics のフィールド名（comptime）で、`@field` によるアクセスに使用。
+/// `cpu_cost_field` は CpuModel のフィールド名（comptime）。
+const RuleSpec = struct {
+    field: []const u8,
+    emit: EmitKind,
+    // Governor ルール用
+    gov_kind: rules.GovernorKind = .soql,
+    // 一般 Finding 用
+    rule_id: []const u8 = "",
+    title: []const u8 = "",
+    message: []const u8 = "",
+    severity: model.Severity = .warning,
+    category: []const u8 = "",
+    // CPU 見積もり用
+    cpu_label: []const u8 = "",
+    cpu_cost_field: []const u8 = "soql_ms",
+};
+
+/// AG002–AG011 のルール仕様テーブル（AG001 はネストループ検出で別処理）。
+const rule_specs = [_]RuleSpec{
+    // Governor + CPU estimate
+    .{ .field = "soql", .emit = .governor_with_cpu, .gov_kind = .soql, .cpu_label = "SOQL", .cpu_cost_field = "soql_ms" },
+    .{ .field = "dml", .emit = .governor_with_cpu, .gov_kind = .dml, .cpu_label = "DML", .cpu_cost_field = "dml_ms" },
+    .{ .field = "sosl", .emit = .governor_with_cpu, .gov_kind = .sosl, .cpu_label = "SOSL", .cpu_cost_field = "soql_ms" },
+    // Governor only
+    .{ .field = "callout", .emit = .governor_only, .gov_kind = .callout },
+    .{ .field = "messaging", .emit = .governor_only, .gov_kind = .messaging },
+    // Finding + CPU estimate
+    .{ .field = "json", .emit = .finding_with_cpu, .rule_id = "AG004", .title = "JSON processing inside loop", .message = "Serialize/deserialize outside loops where possible.", .severity = .warning, .category = "cpu", .cpu_label = "JSON", .cpu_cost_field = "json_ms" },
+    .{ .field = "clone", .emit = .finding_with_cpu, .rule_id = "AG005", .title = "Clone/deepClone inside loop", .message = "Repeated cloning can increase heap and CPU cost.", .severity = .warning, .category = "heap", .cpu_label = "clone/deepClone", .cpu_cost_field = "clone_ms" },
+    // Finding only
+    .{ .field = "collection_alloc", .emit = .finding_only, .rule_id = "AG006", .title = "Collection allocation inside loop", .message = "Reuse collections or move allocation outside the loop.", .severity = .warning, .category = "heap" },
+    .{ .field = "string_append", .emit = .finding_only, .rule_id = "AG007", .title = "String concatenation inside loop", .message = "Prefer StringBuilder-style batching patterns to reduce CPU.", .severity = .info, .category = "cpu" },
+};
+
+// ---------------------------------------------------------------------------
+// ルール検出ヘルパー
+// ---------------------------------------------------------------------------
+
+/// 全検出器を実行し、各操作の直接検出カウント (0 or 1) を返す。
+/// MethodMetrics と同じフィールド構造を再利用して `@field` アクセスを可能にする。
+fn runDetectors(trimmed: []const u8, type_env: *std.StringHashMap([]const u8)) MethodMetrics {
+    return .{
+        .soql = if (detectors.containsSoql(trimmed)) 1 else 0,
+        .dml = if (detectors.containsDml(trimmed)) 1 else 0,
+        .sosl = if (detectors.containsSosl(trimmed)) 1 else 0,
+        .callout = if (detectors.containsCallout(trimmed, type_env)) 1 else 0,
+        .messaging = if (detectors.containsMessaging(trimmed)) 1 else 0,
+        .json = if (detectors.containsJsonWork(trimmed)) 1 else 0,
+        .clone = if (detectors.containsCloneWork(trimmed)) 1 else 0,
+        .collection_alloc = if (detectors.containsCollectionAlloc(trimmed)) 1 else 0,
+        .string_append = if (detectors.containsStringAppend(trimmed)) 1 else 0,
+    };
+}
+
+/// テーブル駆動でルール検出結果を Finding に変換する。
+/// `inline for` により comptime 展開され、各ルールに最適化されたコードが生成される。
+fn emitRuleFindings(
+    gpa: std.mem.Allocator,
+    findings: *std.ArrayList(model.Finding),
+    path: []const u8,
+    line_no: usize,
+    direct: MethodMetrics,
+    call_metrics: MethodMetrics,
+    loop_upper_bound: ?u64,
+    cpu_model: config.CpuModel,
+) !void {
+    inline for (rule_specs) |spec| {
+        const count = satAdd(@field(direct, spec.field), @field(call_metrics, spec.field));
+        if (count > 0) {
+            switch (spec.emit) {
+                .governor_with_cpu => {
+                    try appendGovernorFinding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
+                    try appendCpuEstimateFinding(gpa, findings, path, line_no, spec.cpu_label, satMul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                },
+                .governor_only => {
+                    try appendGovernorFinding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
+                },
+                .finding_with_cpu => {
+                    try appendFinding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
+                    try appendCpuEstimateFinding(gpa, findings, path, line_no, spec.cpu_label, satMul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                },
+                .finding_only => {
+                    try appendFinding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
+                },
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// スコープ管理ヘルパー
+// ---------------------------------------------------------------------------
+
+/// メソッドスコープの終了判定と後処理。
+/// brace_depth の変化後に呼び出し、メソッド本体を抜けた場合にスコープをクリアする。
+fn checkMethodScopeEnd(
+    current_method: *?MethodScope,
+    brace_depth: i32,
+    type_env: *std.StringHashMap([]const u8),
+    arena_allocator: std.mem.Allocator,
+) void {
+    if (current_method.*) |*scope| {
+        if (!scope.entered_body and brace_depth >= scope.end_depth) {
+            scope.entered_body = true;
+        }
+        if (scope.entered_body and brace_depth < scope.end_depth) {
+            current_method.* = null;
+            type_env.* = std.StringHashMap([]const u8).init(arena_allocator);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// メイン解析エントリポイント
+// ---------------------------------------------------------------------------
 
 pub fn scanContent(
     gpa: std.mem.Allocator,
@@ -131,15 +264,7 @@ pub fn scanContent(
             if (pending_loop_scope) |pending| {
                 if (brace_depth < pending.expected_depth) pending_loop_scope = null;
             }
-            if (current_method) |*scope| {
-                if (!scope.entered_body and brace_depth >= scope.end_depth) {
-                    scope.entered_body = true;
-                }
-                if (scope.entered_body and brace_depth < scope.end_depth) {
-                    current_method = null;
-                    type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                }
-            }
+            checkMethodScopeEnd(&current_method, brace_depth, &type_env, arena_allocator);
             continue;
         }
 
@@ -159,12 +284,8 @@ pub fn scanContent(
         const loop_started = loop_info != null;
         const loop_level = loop_scopes.items.len;
         const in_loop = loop_started or loop_level > 0;
-        const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
-        const call_metrics = if (in_loop)
-            inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries, type_relations)
-        else
-            MethodMetrics{};
 
+        // AG001: ネストされたループ検出（他ルールとパターンが異なるため個別処理）
         if (loop_started and loop_level > 0) {
             try appendFinding(
                 gpa,
@@ -179,206 +300,12 @@ pub fn scanContent(
             );
         }
 
-        const soql_count = satAdd(
-            if (detectors.containsSoql(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.soql,
-        );
-        if (in_loop and soql_count > 0) {
-            try appendGovernorFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                .soql,
-                loop_upper_bound,
-                soql_count,
-            );
-            try appendCpuEstimateFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "SOQL",
-                satMul(cfg.cpu_model.soql_ms, soql_count),
-                loop_upper_bound,
-                cfg.cpu_model.base_ms,
-            );
-        }
-
-        const dml_count = satAdd(
-            if (detectors.containsDml(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.dml,
-        );
-        if (in_loop and dml_count > 0) {
-            try appendGovernorFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                .dml,
-                loop_upper_bound,
-                dml_count,
-            );
-            try appendCpuEstimateFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "DML",
-                satMul(cfg.cpu_model.dml_ms, dml_count),
-                loop_upper_bound,
-                cfg.cpu_model.base_ms,
-            );
-        }
-
-        const sosl_count = satAdd(
-            if (detectors.containsSosl(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.sosl,
-        );
-        if (in_loop and sosl_count > 0) {
-            try appendGovernorFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                .sosl,
-                loop_upper_bound,
-                sosl_count,
-            );
-            try appendCpuEstimateFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "SOSL",
-                satMul(cfg.cpu_model.soql_ms, sosl_count),
-                loop_upper_bound,
-                cfg.cpu_model.base_ms,
-            );
-        }
-
-        const callout_count = satAdd(
-            if (detectors.containsCallout(trimmed, &type_env)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.callout,
-        );
-        if (in_loop and callout_count > 0) {
-            try appendGovernorFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                .callout,
-                loop_upper_bound,
-                callout_count,
-            );
-        }
-
-        const messaging_count = satAdd(
-            if (detectors.containsMessaging(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.messaging,
-        );
-        if (in_loop and messaging_count > 0) {
-            try appendGovernorFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                .messaging,
-                loop_upper_bound,
-                messaging_count,
-            );
-        }
-
-        const json_count = satAdd(
-            if (detectors.containsJsonWork(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.json,
-        );
-        if (in_loop and json_count > 0) {
-            try appendFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "AG004",
-                "JSON processing inside loop",
-                "Serialize/deserialize outside loops where possible.",
-                .warning,
-                "cpu",
-            );
-            try appendCpuEstimateFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "JSON",
-                satMul(cfg.cpu_model.json_ms, json_count),
-                loop_upper_bound,
-                cfg.cpu_model.base_ms,
-            );
-        }
-
-        const clone_count = satAdd(
-            if (detectors.containsCloneWork(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.clone,
-        );
-        if (in_loop and clone_count > 0) {
-            try appendFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "AG005",
-                "Clone/deepClone inside loop",
-                "Repeated cloning can increase heap and CPU cost.",
-                .warning,
-                "heap",
-            );
-            try appendCpuEstimateFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "clone/deepClone",
-                satMul(cfg.cpu_model.clone_ms, clone_count),
-                loop_upper_bound,
-                cfg.cpu_model.base_ms,
-            );
-        }
-
-        const collection_alloc_count = satAdd(
-            if (detectors.containsCollectionAlloc(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.collection_alloc,
-        );
-        if (in_loop and collection_alloc_count > 0) {
-            try appendFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "AG006",
-                "Collection allocation inside loop",
-                "Reuse collections or move allocation outside the loop.",
-                .warning,
-                "heap",
-            );
-        }
-
-        const string_append_count = satAdd(
-            if (detectors.containsStringAppend(trimmed)) @as(u64, 1) else @as(u64, 0),
-            call_metrics.string_append,
-        );
-        if (in_loop and string_append_count > 0) {
-            try appendFinding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "AG007",
-                "String concatenation inside loop",
-                "Prefer StringBuilder-style batching patterns to reduce CPU.",
-                .info,
-                "cpu",
-            );
+        // AG002–AG011: テーブル駆動ルール検出
+        if (in_loop) {
+            const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
+            const call_metrics = inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries, type_relations);
+            const direct = runDetectors(trimmed, &type_env);
+            try emitRuleFindings(gpa, findings, path, line_no, direct, call_metrics, loop_upper_bound, cfg.cpu_model);
         }
 
         if (loop_started and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
@@ -399,14 +326,6 @@ pub fn scanContent(
         if (pending_loop_scope) |pending| {
             if (brace_depth < pending.expected_depth) pending_loop_scope = null;
         }
-        if (current_method) |*scope| {
-            if (!scope.entered_body and brace_depth >= scope.end_depth) {
-                scope.entered_body = true;
-            }
-            if (scope.entered_body and brace_depth < scope.end_depth) {
-                current_method = null;
-                type_env = std.StringHashMap([]const u8).init(arena_allocator);
-            }
-        }
+        checkMethodScopeEnd(&current_method, brace_depth, &type_env, arena_allocator);
     }
 }

@@ -3,14 +3,15 @@
 //! `record.Name`, `record.put('Field', value)` など Apex の
 //! SObject フィールド操作を Java の getter/setter 呼び出しに変換する。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
-const CompatibilityState = getas.CompatibilityState;
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 const appendUniqueIdentifier = helpers.appendUniqueIdentifier;
 const extractDeclaredVariableName = helpers.extractDeclaredVariableName;
 const extractForEachVariableNameOfType = helpers.extractForEachVariableNameOfType;
@@ -38,7 +39,7 @@ const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
 const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpression;
 const isSimpleIdentifier = util.isSimpleIdentifier;
 const nextNonSpace = util.nextNonSpace;
-const splitCallArguments = line_and_expr.splitCallArguments;
+const splitCallArguments = stmt_mod.splitCallArguments;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 
 pub fn rewriteVisualforceComponentQualifiedAccess(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -208,145 +209,86 @@ pub fn rewriteLabelNamespaceAccess(gpa: std.mem.Allocator, text: []const u8) ![]
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
 
-    const State = enum {
-        normal,
-        line_comment,
-        block_comment,
-        string_literal,
-        char_literal,
-    };
-
-    var state: State = .normal;
+    var state: CompatibilityState = .normal;
     var replaced = false;
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
-                    i += 1;
-                    continue;
-                }
+        if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+            i += 1;
+            continue;
+        }
 
-                var matched_prefix: ?[]const u8 = null;
-                for (prefixes) |prefix| {
-                    if (startsWithIgnoreCase(text[i..], prefix)) {
-                        matched_prefix = prefix;
-                        break;
-                    }
-                }
-                if (matched_prefix == null) {
-                    i += 1;
-                    continue;
-                }
+        var matched_prefix: ?[]const u8 = null;
+        for (prefixes) |prefix| {
+            if (startsWithIgnoreCase(text[i..], prefix)) {
+                matched_prefix = prefix;
+                break;
+            }
+        }
+        if (matched_prefix == null) {
+            i += 1;
+            continue;
+        }
 
-                const prefix = matched_prefix.?;
-                const first_start = i + prefix.len;
-                if (first_start >= text.len or !isIdentifierChar(text[first_start])) {
-                    i += 1;
-                    continue;
-                }
+        const prefix = matched_prefix.?;
+        const first_start = i + prefix.len;
+        if (first_start >= text.len or !isIdentifierChar(text[first_start])) {
+            i += 1;
+            continue;
+        }
 
-                var first_end = first_start;
-                while (first_end < text.len and isIdentifierChar(text[first_end])) : (first_end += 1) {}
-                const first_ident = text[first_start..first_end];
+        var first_end = first_start;
+        while (first_end < text.len and isIdentifierChar(text[first_end])) : (first_end += 1) {}
+        const first_ident = text[first_start..first_end];
 
-                var replacement: ?[]u8 = null;
-                var replace_end = first_end;
+        var replacement: ?[]u8 = null;
+        var replace_end = first_end;
 
-                if (std.ascii.eqlIgnoreCase(first_ident, "getAs") and first_end < text.len and text[first_end] == '(') {
-                    replacement = try std.fmt.allocPrint(gpa, "Labels.", .{});
-                    replace_end = first_start;
-                } else if (std.ascii.eqlIgnoreCase(prefix, "label.") and first_end < text.len and text[first_end] == '(') {
-                    i += 1;
-                    continue;
-                } else if (first_end < text.len and text[first_end] == '.') {
-                    const second_start = first_end + 1;
-                    if (second_start < text.len and isIdentifierChar(text[second_start])) {
-                        var second_end = second_start;
-                        while (second_end < text.len and isIdentifierChar(text[second_end])) : (second_end += 1) {}
-                        const second_ident = text[second_start..second_end];
-                        if (std.ascii.eqlIgnoreCase(second_ident, "getAs") and second_end < text.len and text[second_end] == '(') {
-                            replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
-                            replace_end = first_end;
-                        } else if (second_end < text.len and text[second_end] == '(') {
-                            replacement = try std.fmt.allocPrint(gpa, "Labels.get(\"{s}\")", .{first_ident});
-                            replace_end = first_end;
-                        } else {
-                            replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\").get(\"{s}\")", .{ first_ident, second_ident });
-                            replace_end = second_end;
-                        }
-                    } else {
-                        replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
-                        replace_end = first_end;
-                    }
-                } else {
+        if (std.ascii.eqlIgnoreCase(first_ident, "getAs") and first_end < text.len and text[first_end] == '(') {
+            replacement = try std.fmt.allocPrint(gpa, "Labels.", .{});
+            replace_end = first_start;
+        } else if (std.ascii.eqlIgnoreCase(prefix, "label.") and first_end < text.len and text[first_end] == '(') {
+            i += 1;
+            continue;
+        } else if (first_end < text.len and text[first_end] == '.') {
+            const second_start = first_end + 1;
+            if (second_start < text.len and isIdentifierChar(text[second_start])) {
+                var second_end = second_start;
+                while (second_end < text.len and isIdentifierChar(text[second_end])) : (second_end += 1) {}
+                const second_ident = text[second_start..second_end];
+                if (std.ascii.eqlIgnoreCase(second_ident, "getAs") and second_end < text.len and text[second_end] == '(') {
+                    replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
+                    replace_end = first_end;
+                } else if (second_end < text.len and text[second_end] == '(') {
                     replacement = try std.fmt.allocPrint(gpa, "Labels.get(\"{s}\")", .{first_ident});
                     replace_end = first_end;
+                } else {
+                    replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\").get(\"{s}\")", .{ first_ident, second_ident });
+                    replace_end = second_end;
                 }
-
-                if (replacement) |rewritten| {
-                    defer gpa.free(rewritten);
-                    try out.appendSlice(gpa, text[last_emit..i]);
-                    try out.appendSlice(gpa, rewritten);
-                    replaced = true;
-                    last_emit = replace_end;
-                    i = replace_end;
-                    continue;
-                }
-
-                i += 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            } else {
+                replacement = try std.fmt.allocPrint(gpa, "Labels.namespace(\"{s}\")", .{first_ident});
+                replace_end = first_end;
+            }
+        } else {
+            replacement = try std.fmt.allocPrint(gpa, "Labels.get(\"{s}\")", .{first_ident});
+            replace_end = first_end;
         }
+
+        if (replacement) |rewritten| {
+            defer gpa.free(rewritten);
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, rewritten);
+            replaced = true;
+            last_emit = replace_end;
+            i = replace_end;
+            continue;
+        }
+
+        i += 1;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -388,87 +330,36 @@ pub fn rewriteCustomSchemaSObjectTypeAccess(gpa: std.mem.Allocator, text: []cons
     const prefix = "Schema.SObjectType.";
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                if (!startsWithIgnoreCase(text[i..], prefix)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
-                    i += 1;
-                    continue;
-                }
-
-                const name_start = i + prefix.len;
-                if (name_start >= text.len or !isIdentifierChar(text[name_start])) {
-                    i += 1;
-                    continue;
-                }
-
-                var name_end = name_start;
-                while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
-                const type_name = text[name_start..name_end];
-                if (std.mem.indexOf(u8, type_name, "__") == null) {
-                    i = name_end;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{type_name});
-                replaced = true;
-                last_emit = name_end;
-                i = name_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], prefix)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+            i += 1;
+            continue;
+        }
+
+        const name_start = i + prefix.len;
+        if (name_start >= text.len or !isIdentifierChar(text[name_start])) {
+            i += 1;
+            continue;
+        }
+
+        var name_end = name_start;
+        while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+        const type_name = text[name_start..name_end];
+        if (std.mem.indexOf(u8, type_name, "__") == null) {
+            i = name_end;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{type_name});
+        replaced = true;
+        last_emit = name_end;
+        i = name_end;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -486,95 +377,45 @@ pub fn rewriteBareCustomSObjectTypeAccess(gpa: std.mem.Allocator, text: []const 
     var i: usize = 0;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                const suffix = blk: {
-                    if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
-                    if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
-                    if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
-                    break :blk "";
-                };
-                if (suffix.len == 0) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const suffix_end = i + suffix.len;
-                if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
-                    i += 1;
-                    continue;
-                }
-
-                const base_start = findMemberAccessBaseStart(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-                if (base_expr.len == 0 or std.mem.indexOf(u8, base_expr, "__") == null) {
-                    i = suffix_end;
-                    continue;
-                }
-                if (std.mem.indexOfScalar(u8, base_expr, '(') != null) {
-                    i = suffix_end;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..base_start]);
-                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
-                replaced = true;
-                const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
-                last_emit = if (drop_suffix) suffix_end else i;
-                i = suffix_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const suffix = blk: {
+            if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
+            if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
+            if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
+            break :blk "";
+        };
+        if (suffix.len == 0) {
+            i += 1;
+            continue;
         }
+
+        const suffix_end = i + suffix.len;
+        if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
+            i += 1;
+            continue;
+        }
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (base_expr.len == 0 or std.mem.indexOf(u8, base_expr, "__") == null) {
+            i = suffix_end;
+            continue;
+        }
+        if (std.mem.indexOfScalar(u8, base_expr, '(') != null) {
+            i = suffix_end;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
+        replaced = true;
+        const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
+        last_emit = if (drop_suffix) suffix_end else i;
+        i = suffix_end;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -625,95 +466,45 @@ pub fn rewriteBareStandardSObjectTypeAccess(gpa: std.mem.Allocator, text: []cons
     var i: usize = 0;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                const suffix = blk: {
-                    if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
-                    if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
-                    if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
-                    break :blk "";
-                };
-                if (suffix.len == 0) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const suffix_end = i + suffix.len;
-                if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
-                    i += 1;
-                    continue;
-                }
-
-                const base_start = findMemberAccessBaseStart(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-                if (!isLikelyBareStandardSObjectTypeToken(base_expr)) {
-                    i = suffix_end;
-                    continue;
-                }
-                if (std.mem.indexOfScalar(u8, base_expr, '(') != null) {
-                    i = suffix_end;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..base_start]);
-                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
-                replaced = true;
-                const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
-                last_emit = if (drop_suffix) suffix_end else i;
-                i = suffix_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const suffix = blk: {
+            if (startsWithIgnoreCase(text[i..], ".sObjectType")) break :blk ".sObjectType";
+            if (startsWithIgnoreCase(text[i..], ".fields")) break :blk ".fields";
+            if (startsWithIgnoreCase(text[i..], ".fieldSets")) break :blk ".fieldSets";
+            break :blk "";
+        };
+        if (suffix.len == 0) {
+            i += 1;
+            continue;
         }
+
+        const suffix_end = i + suffix.len;
+        if (suffix_end < text.len and isIdentifierChar(text[suffix_end])) {
+            i += 1;
+            continue;
+        }
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (!isLikelyBareStandardSObjectTypeToken(base_expr)) {
+            i = suffix_end;
+            continue;
+        }
+        if (std.mem.indexOfScalar(u8, base_expr, '(') != null) {
+            i = suffix_end;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{base_expr});
+        replaced = true;
+        const drop_suffix = std.ascii.eqlIgnoreCase(suffix, ".sObjectType");
+        last_emit = if (drop_suffix) suffix_end else i;
+        i = suffix_end;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -731,123 +522,73 @@ pub fn rewriteBareCustomSettingsSingletonAccess(gpa: std.mem.Allocator, text: []
     var i: usize = 0;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!isIdentifierChar(text[i])) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                var name_end = i;
-                while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
-                const type_name = text[i..name_end];
-                const is_custom_token = endsWithIgnoreCase(type_name, "__c") or endsWithIgnoreCase(type_name, "__mdt");
-                if (!is_custom_token) {
-                    i = name_end;
-                    continue;
-                }
-                if (i > 0) {
-                    const prev = findPreviousNonWhitespace(text, i) orelse null;
-                    if (prev != null and text[prev.?] == '.') {
-                        i = name_end;
-                        continue;
-                    }
-                }
-
-                const dot_idx = nextNonSpace(text, name_end);
-                if (dot_idx >= text.len or text[dot_idx] != '.') {
-                    i = name_end;
-                    continue;
-                }
-                const method_start = nextNonSpace(text, dot_idx + 1);
-                const method = blk: {
-                    if (startsWithIgnoreCase(text[method_start..], "getInstance")) break :blk "getInstance";
-                    if (startsWithIgnoreCase(text[method_start..], "getOrgDefaults")) break :blk "getOrgDefaults";
-                    if (startsWithIgnoreCase(text[method_start..], "getAll")) break :blk "getAll";
-                    break :blk "";
-                };
-                if (method.len == 0) {
-                    i = name_end;
-                    continue;
-                }
-                const open_idx = nextNonSpace(text, method_start + method.len);
-                if (open_idx >= text.len or text[open_idx] != '(') {
-                    i = name_end;
-                    continue;
-                }
-                const close_idx = findMatchingParen(text, open_idx) orelse {
-                    i = name_end;
-                    continue;
-                };
-                const args = std.mem.trim(u8, text[(open_idx + 1)..close_idx], " \t\r\n");
-                if (args.len != 0) {
-                    i = close_idx + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                if (std.ascii.eqlIgnoreCase(method, "getAll")) {
-                    try appendFmt(gpa, &out, "ApexSObject.getAll(\"{s}\")", .{type_name});
-                } else {
-                    try appendFmt(gpa, &out, "ApexSObject.of(\"{s}\")", .{type_name});
-                }
-                replaced = true;
-                last_emit = close_idx + 1;
-                i = close_idx + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!isIdentifierChar(text[i])) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and isIdentifierChar(text[i - 1])) {
+            i += 1;
+            continue;
+        }
+
+        var name_end = i;
+        while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+        const type_name = text[i..name_end];
+        const is_custom_token = endsWithIgnoreCase(type_name, "__c") or endsWithIgnoreCase(type_name, "__mdt");
+        if (!is_custom_token) {
+            i = name_end;
+            continue;
+        }
+        if (i > 0) {
+            const prev = findPreviousNonWhitespace(text, i) orelse null;
+            if (prev != null and text[prev.?] == '.') {
+                i = name_end;
+                continue;
+            }
+        }
+
+        const dot_idx = nextNonSpace(text, name_end);
+        if (dot_idx >= text.len or text[dot_idx] != '.') {
+            i = name_end;
+            continue;
+        }
+        const method_start = nextNonSpace(text, dot_idx + 1);
+        const method = blk: {
+            if (startsWithIgnoreCase(text[method_start..], "getInstance")) break :blk "getInstance";
+            if (startsWithIgnoreCase(text[method_start..], "getOrgDefaults")) break :blk "getOrgDefaults";
+            if (startsWithIgnoreCase(text[method_start..], "getAll")) break :blk "getAll";
+            break :blk "";
+        };
+        if (method.len == 0) {
+            i = name_end;
+            continue;
+        }
+        const open_idx = nextNonSpace(text, method_start + method.len);
+        if (open_idx >= text.len or text[open_idx] != '(') {
+            i = name_end;
+            continue;
+        }
+        const close_idx = findMatchingParen(text, open_idx) orelse {
+            i = name_end;
+            continue;
+        };
+        const args = std.mem.trim(u8, text[(open_idx + 1)..close_idx], " \t\r\n");
+        if (args.len != 0) {
+            i = close_idx + 1;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        if (std.ascii.eqlIgnoreCase(method, "getAll")) {
+            try appendFmt(gpa, &out, "ApexSObject.getAll(\"{s}\")", .{type_name});
+        } else {
+            try appendFmt(gpa, &out, "ApexSObject.of(\"{s}\")", .{type_name});
+        }
+        replaced = true;
+        last_emit = close_idx + 1;
+        i = close_idx + 1;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -866,83 +607,32 @@ pub fn rewritePageNamespaceAccess(gpa: std.mem.Allocator, text: []const u8) ![]u
     const prefix = "Page.";
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                if (!startsWithIgnoreCase(text[i..], prefix)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
-                    i += 1;
-                    continue;
-                }
-
-                const name_start = i + prefix.len;
-                if (name_start >= text.len or !isIdentifierChar(text[name_start])) {
-                    i += 1;
-                    continue;
-                }
-
-                var name_end = name_start;
-                while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
-                const page_name = text[name_start..name_end];
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "new PageReference(\"/apex/{s}\")", .{page_name});
-                replaced = true;
-                last_emit = name_end;
-                i = name_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], prefix)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+            i += 1;
+            continue;
+        }
+
+        const name_start = i + prefix.len;
+        if (name_start >= text.len or !isIdentifierChar(text[name_start])) {
+            i += 1;
+            continue;
+        }
+
+        var name_end = name_start;
+        while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+        const page_name = text[name_start..name_end];
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "new PageReference(\"/apex/{s}\")", .{page_name});
+        replaced = true;
+        last_emit = name_end;
+        i = name_end;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -1043,79 +733,29 @@ pub fn rewriteLegacyLiteralTokens(gpa: std.mem.Allocator, text: []const u8) ![]u
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!isIdentifierChar(text[i])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const start = i;
-                while (i < text.len and isIdentifierChar(text[i])) : (i += 1) {}
-                const token = text[start..i];
-                const replacement: ?[]const u8 = if (std.ascii.eqlIgnoreCase(token, "NULL") or std.ascii.eqlIgnoreCase(token, "Null"))
-                    "null"
-                else if (std.ascii.eqlIgnoreCase(token, "TRUE"))
-                    "true"
-                else if (std.ascii.eqlIgnoreCase(token, "FALSE"))
-                    "false"
-                else
-                    null;
-                if (replacement) |next| {
-                    try out.appendSlice(gpa, text[last_emit..start]);
-                    try out.appendSlice(gpa, next);
-                    replaced = true;
-                    last_emit = i;
-                }
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!isIdentifierChar(text[i])) {
+            i += 1;
+            continue;
+        }
+
+        const start = i;
+        while (i < text.len and isIdentifierChar(text[i])) : (i += 1) {}
+        const token = text[start..i];
+        const replacement: ?[]const u8 = if (std.ascii.eqlIgnoreCase(token, "NULL") or std.ascii.eqlIgnoreCase(token, "Null"))
+            "null"
+        else if (std.ascii.eqlIgnoreCase(token, "TRUE"))
+            "true"
+        else if (std.ascii.eqlIgnoreCase(token, "FALSE"))
+            "false"
+        else
+            null;
+        if (replacement) |next| {
+            try out.appendSlice(gpa, text[last_emit..start]);
+            try out.appendSlice(gpa, next);
+            replaced = true;
+            last_emit = i;
         }
     }
 
@@ -1144,80 +784,29 @@ pub fn rewriteBareSchemaEnumConstantAccess(gpa: std.mem.Allocator, text: []const
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                var did_replace = false;
-                for (mappings) |mapping| {
-                    if (!startsWithIgnoreCase(text[i..], mapping.prefix)) continue;
-                    if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) continue;
+        var did_replace = false;
+        for (mappings) |mapping| {
+            if (!startsWithIgnoreCase(text[i..], mapping.prefix)) continue;
+            if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) continue;
 
-                    const const_start = i + mapping.prefix.len;
-                    if (const_start >= text.len or !isIdentifierChar(text[const_start])) continue;
-                    var const_end = const_start;
-                    while (const_end < text.len and isIdentifierChar(text[const_end])) : (const_end += 1) {}
+            const const_start = i + mapping.prefix.len;
+            if (const_start >= text.len or !isIdentifierChar(text[const_start])) continue;
+            var const_end = const_start;
+            while (const_end < text.len and isIdentifierChar(text[const_end])) : (const_end += 1) {}
 
-                    try out.appendSlice(gpa, text[last_emit..i]);
-                    try out.appendSlice(gpa, mapping.replacement);
-                    try out.appendSlice(gpa, text[const_start..const_end]);
-                    replaced = true;
-                    last_emit = const_end;
-                    i = const_end;
-                    did_replace = true;
-                    break;
-                }
-                if (did_replace) continue;
-                i += 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, mapping.replacement);
+            try out.appendSlice(gpa, text[const_start..const_end]);
+            replaced = true;
+            last_emit = const_end;
+            i = const_end;
+            did_replace = true;
+            break;
         }
+        if (did_replace) continue;
+        i += 1;
     }
 
     if (!replaced) {
@@ -1238,85 +827,35 @@ pub fn rewriteBareSObjectTypeAccess(gpa: std.mem.Allocator, text: []const u8) ![
     var state: CompatibilityState = .normal;
     const prefix = "SObjectType.";
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], prefix)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const name_start = i + prefix.len;
-                var cursor = name_start;
-                while (cursor < text.len and isIdentifierChar(text[cursor])) : (cursor += 1) {}
-                if (cursor == name_start) {
-                    i += 1;
-                    continue;
-                }
-                const after_type = nextNonSpace(text, cursor);
-                if (after_type < text.len and text[after_type] == '(') {
-                    i += 1;
-                    continue;
-                }
-                const type_name = text[name_start..cursor];
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{type_name});
-                replaced = true;
-                last_emit = cursor;
-                i = cursor;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], prefix)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+            i += 1;
+            continue;
+        }
+
+        const name_start = i + prefix.len;
+        var cursor = name_start;
+        while (cursor < text.len and isIdentifierChar(text[cursor])) : (cursor += 1) {}
+        if (cursor == name_start) {
+            i += 1;
+            continue;
+        }
+        const after_type = nextNonSpace(text, cursor);
+        if (after_type < text.len and text[after_type] == '(') {
+            i += 1;
+            continue;
+        }
+        const type_name = text[name_start..cursor];
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "new Schema.SObjectType(\"{s}\")", .{type_name});
+        replaced = true;
+        last_emit = cursor;
+        i = cursor;
     }
 
     if (!replaced) {
@@ -1338,118 +877,68 @@ pub fn rewriteSObjectFieldNameObjectNameUses(gpa: std.mem.Allocator, text: []con
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], prefix)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                var open = i + prefix.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-
-                var args = try splitCallArguments(gpa, text[(open + 1)..close]);
-                defer args.deinit(gpa);
-                if (args.items.len != 2) {
-                    i = close + 1;
-                    continue;
-                }
-                const owner_arg = std.mem.trim(u8, args.items[0], " \t");
-                const field_arg = std.mem.trim(u8, args.items[1], " \t");
-                if (field_arg.len < 2 or field_arg[0] != '"' or field_arg[field_arg.len - 1] != '"') {
-                    i = close + 1;
-                    continue;
-                }
-                const field_name = field_arg[1 .. field_arg.len - 1];
-                if (!std.ascii.eqlIgnoreCase(field_name, "name")) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const line_start = if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| pos + 1 else 0;
-                const prefix_line = std.mem.trim(u8, text[line_start..i], " \t");
-                const expects_object_name =
-                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldName(") != null or
-                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldDescribe(") != null or
-                    std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getAllFieldsDescribe(") != null or
-                    std.mem.indexOf(u8, prefix_line, "constructSimulatedObjectMapping(") != null or
-                    blk: {
-                        const eq_pos = std.mem.lastIndexOfScalar(u8, prefix_line, '=') orelse break :blk false;
-                        const lhs = std.mem.trim(u8, prefix_line[0..eq_pos], " \t");
-                        break :blk extractTypedVariableName(lhs, "String") != null;
-                    };
-                if (!expects_object_name) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "new Schema.SObjectType({s}).getName()", .{owner_arg});
-                replaced = true;
-                last_emit = close + 1;
-                i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], prefix)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and isIdentifierChar(text[i - 1])) {
+            i += 1;
+            continue;
+        }
+
+        var open = i + prefix.len;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') {
+            i += 1;
+            continue;
+        }
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+
+        var args = try splitCallArguments(gpa, text[(open + 1)..close]);
+        defer args.deinit(gpa);
+        if (args.items.len != 2) {
+            i = close + 1;
+            continue;
+        }
+        const owner_arg = std.mem.trim(u8, args.items[0], " \t");
+        const field_arg = std.mem.trim(u8, args.items[1], " \t");
+        if (field_arg.len < 2 or field_arg[0] != '"' or field_arg[field_arg.len - 1] != '"') {
+            i = close + 1;
+            continue;
+        }
+        const field_name = field_arg[1 .. field_arg.len - 1];
+        if (!std.ascii.eqlIgnoreCase(field_name, "name")) {
+            i = close + 1;
+            continue;
+        }
+
+        const line_start = if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| pos + 1 else 0;
+        const prefix_line = std.mem.trim(u8, text[line_start..i], " \t");
+        const expects_object_name =
+            std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldName(") != null or
+            std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getFieldDescribe(") != null or
+            std.mem.indexOf(u8, prefix_line, "UTIL_Describe.getAllFieldsDescribe(") != null or
+            std.mem.indexOf(u8, prefix_line, "constructSimulatedObjectMapping(") != null or
+            blk: {
+                const eq_pos = std.mem.lastIndexOfScalar(u8, prefix_line, '=') orelse break :blk false;
+                const lhs = std.mem.trim(u8, prefix_line[0..eq_pos], " \t");
+                break :blk extractTypedVariableName(lhs, "String") != null;
+            };
+        if (!expects_object_name) {
+            i = close + 1;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try appendFmt(gpa, &out, "new Schema.SObjectType({s}).getName()", .{owner_arg});
+        replaced = true;
+        last_emit = close + 1;
+        i = close + 1;
     }
 
     if (!replaced) {
@@ -1576,157 +1065,107 @@ pub fn rewriteCustomSObjectMemberAccess(gpa: std.mem.Allocator, text: []const u8
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] != '.') {
-                    i += 1;
-                    continue;
-                }
-                if (i + 1 >= text.len or !isIdentifierChar(text[i + 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const base_start = findMemberAccessBaseStart(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-                if (base_expr.len == 0) {
-                    i += 1;
-                    continue;
-                }
-                if (isSObjectTypeNamespaceBase(base_expr)) {
-                    i += 1;
-                    continue;
-                }
-
-                var segments: std.ArrayList([]const u8) = .empty;
-                defer segments.deinit(gpa);
-
-                var scan = i;
-                var chain_end = i;
-                var saw_custom = false;
-                var first_segment = true;
-                while (scan < text.len) {
-                    while (scan < text.len and std.ascii.isWhitespace(text[scan])) : (scan += 1) {}
-                    if (scan >= text.len or text[scan] != '.') break;
-                    if (scan + 1 >= text.len or !isIdentifierChar(text[scan + 1])) break;
-
-                    const name_start = scan + 1;
-                    var name_end = name_start;
-                    while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
-                    const segment = text[name_start..name_end];
-
-                    const after_name = nextNonSpace(text, name_end);
-                    if (after_name < text.len and text[after_name] == '(') break;
-
-                    if (first_segment) {
-                        if (!isLikelyCustomFieldSegment(segment)) break;
-                        saw_custom = true;
-                        first_segment = false;
-                    }
-
-                    try segments.append(gpa, segment);
-                    chain_end = name_end;
-                    scan = name_end;
-                }
-
-                if (!saw_custom or segments.items.len == 0) {
-                    i += 1;
-                    continue;
-                }
-
-                const after_chain = nextNonSpace(text, chain_end);
-                if (segments.items.len == 1 and after_chain < text.len and text[after_chain] == '=' and (after_chain + 1 >= text.len or text[after_chain + 1] != '=')) {
-                    const rhs_start = nextNonSpace(text, after_chain + 1);
-                    const rhs_end = findExpressionEnd(text, rhs_start);
-                    if (rhs_end <= rhs_start) {
-                        i = chain_end;
-                        continue;
-                    }
-                    const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
-                    if (rhs_expr.len == 0) {
-                        i = chain_end;
-                        continue;
-                    }
-
-                    try out.appendSlice(gpa, text[last_emit..base_start]);
-                    try appendFmt(
-                        gpa,
-                        &out,
-                        "ApexSwitch.set({s}, \"{s}\", {s})",
-                        .{ base_expr, segments.items[0], rhs_expr },
-                    );
-                    replaced = true;
-                    last_emit = rhs_end;
-                    i = rhs_end;
-                    continue;
-                }
-
-                var current = try gpa.dupe(u8, base_expr);
-                defer gpa.free(current);
-                for (segments.items) |segment| {
-                    const next = try std.fmt.allocPrint(gpa, "ApexSwitch.getAs({s}, \"{s}\")", .{ current, segment });
-                    gpa.free(current);
-                    current = next;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..base_start]);
-                try out.appendSlice(gpa, current);
-                replaced = true;
-                last_emit = chain_end;
-                i = chain_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (text[i] != '.') {
+            i += 1;
+            continue;
         }
+        if (i + 1 >= text.len or !isIdentifierChar(text[i + 1])) {
+            i += 1;
+            continue;
+        }
+
+        const base_start = findMemberAccessBaseStart(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (base_expr.len == 0) {
+            i += 1;
+            continue;
+        }
+        if (isSObjectTypeNamespaceBase(base_expr)) {
+            i += 1;
+            continue;
+        }
+
+        var segments: std.ArrayList([]const u8) = .empty;
+        defer segments.deinit(gpa);
+
+        var scan = i;
+        var chain_end = i;
+        var saw_custom = false;
+        var first_segment = true;
+        while (scan < text.len) {
+            while (scan < text.len and std.ascii.isWhitespace(text[scan])) : (scan += 1) {}
+            if (scan >= text.len or text[scan] != '.') break;
+            if (scan + 1 >= text.len or !isIdentifierChar(text[scan + 1])) break;
+
+            const name_start = scan + 1;
+            var name_end = name_start;
+            while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+            const segment = text[name_start..name_end];
+
+            const after_name = nextNonSpace(text, name_end);
+            if (after_name < text.len and text[after_name] == '(') break;
+
+            if (first_segment) {
+                if (!isLikelyCustomFieldSegment(segment)) break;
+                saw_custom = true;
+                first_segment = false;
+            }
+
+            try segments.append(gpa, segment);
+            chain_end = name_end;
+            scan = name_end;
+        }
+
+        if (!saw_custom or segments.items.len == 0) {
+            i += 1;
+            continue;
+        }
+
+        const after_chain = nextNonSpace(text, chain_end);
+        if (segments.items.len == 1 and after_chain < text.len and text[after_chain] == '=' and (after_chain + 1 >= text.len or text[after_chain + 1] != '=')) {
+            const rhs_start = nextNonSpace(text, after_chain + 1);
+            const rhs_end = findExpressionEnd(text, rhs_start);
+            if (rhs_end <= rhs_start) {
+                i = chain_end;
+                continue;
+            }
+            const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
+            if (rhs_expr.len == 0) {
+                i = chain_end;
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(
+                gpa,
+                &out,
+                "ApexSwitch.set({s}, \"{s}\", {s})",
+                .{ base_expr, segments.items[0], rhs_expr },
+            );
+            replaced = true;
+            last_emit = rhs_end;
+            i = rhs_end;
+            continue;
+        }
+
+        var current = try gpa.dupe(u8, base_expr);
+        defer gpa.free(current);
+        for (segments.items) |segment| {
+            const next = try std.fmt.allocPrint(gpa, "ApexSwitch.getAs({s}, \"{s}\")", .{ current, segment });
+            gpa.free(current);
+            current = next;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try out.appendSlice(gpa, current);
+        replaced = true;
+        last_emit = chain_end;
+        i = chain_end;
     }
 
     if (!replaced) {
@@ -1755,126 +1194,76 @@ pub fn rewriteKnownSObjectBooleanPropertyAccess(gpa: std.mem.Allocator, text: []
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] != '.') {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const field = blk: {
-                    for (fields) |candidate| {
-                        if (startsWithIgnoreCase(text[(i + 1)..], candidate.property)) break :blk candidate;
-                    }
-                    break :blk null;
-                };
-                if (field == null) {
-                    i += 1;
-                    continue;
-                }
-
-                const field_end = i + 1 + field.?.property.len;
-                if (field_end < text.len and isIdentifierChar(text[field_end])) {
-                    i += 1;
-                    continue;
-                }
-                const base_start = findMemberAccessBaseStart(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-                if (base_expr.len == 0) {
-                    i += 1;
-                    continue;
-                }
-                if ((std.mem.eql(u8, field.?.field_name, "Amount") or std.mem.eql(u8, field.?.field_name, "CloseDate")) and
-                    (!isSimpleIdentifier(base_expr) or std.ascii.eqlIgnoreCase(base_expr, "this")))
-                {
-                    i += 1;
-                    continue;
-                }
-
-                const after_field = nextNonSpace(text, field_end);
-                if (after_field < text.len and text[after_field] == '(') {
-                    i += 1;
-                    continue;
-                }
-
-                if (after_field < text.len and text[after_field] == '=' and (after_field + 1 >= text.len or text[after_field + 1] != '=')) {
-                    const rhs_start = nextNonSpace(text, after_field + 1);
-                    const rhs_end = std.mem.indexOfScalarPos(u8, text, rhs_start, ';') orelse {
-                        i += 1;
-                        continue;
-                    };
-                    const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
-                    if (rhs_expr.len == 0) {
-                        i += 1;
-                        continue;
-                    }
-
-                    try out.appendSlice(gpa, text[last_emit..base_start]);
-                    try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s})", .{ base_expr, field.?.field_name, rhs_expr });
-                    replaced = true;
-                    last_emit = rhs_end;
-                    i = rhs_end;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..base_start]);
-                try appendFmt(gpa, &out, "{s}.getAs(\"{s}\")", .{ base_expr, field.?.field_name });
-                replaced = true;
-                last_emit = field_end;
-                i = field_end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (text[i] != '.') {
+            i += 1;
+            continue;
         }
+
+        const field = blk: {
+            for (fields) |candidate| {
+                if (startsWithIgnoreCase(text[(i + 1)..], candidate.property)) break :blk candidate;
+            }
+            break :blk null;
+        };
+        if (field == null) {
+            i += 1;
+            continue;
+        }
+
+        const field_end = i + 1 + field.?.property.len;
+        if (field_end < text.len and isIdentifierChar(text[field_end])) {
+            i += 1;
+            continue;
+        }
+        const base_start = findMemberAccessBaseStart(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+        if (base_expr.len == 0) {
+            i += 1;
+            continue;
+        }
+        if ((std.mem.eql(u8, field.?.field_name, "Amount") or std.mem.eql(u8, field.?.field_name, "CloseDate")) and
+            (!isSimpleIdentifier(base_expr) or std.ascii.eqlIgnoreCase(base_expr, "this")))
+        {
+            i += 1;
+            continue;
+        }
+
+        const after_field = nextNonSpace(text, field_end);
+        if (after_field < text.len and text[after_field] == '(') {
+            i += 1;
+            continue;
+        }
+
+        if (after_field < text.len and text[after_field] == '=' and (after_field + 1 >= text.len or text[after_field + 1] != '=')) {
+            const rhs_start = nextNonSpace(text, after_field + 1);
+            const rhs_end = std.mem.indexOfScalarPos(u8, text, rhs_start, ';') orelse {
+                i += 1;
+                continue;
+            };
+            const rhs_expr = std.mem.trim(u8, text[rhs_start..rhs_end], " \t");
+            if (rhs_expr.len == 0) {
+                i += 1;
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s})", .{ base_expr, field.?.field_name, rhs_expr });
+            replaced = true;
+            last_emit = rhs_end;
+            i = rhs_end;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..base_start]);
+        try appendFmt(gpa, &out, "{s}.getAs(\"{s}\")", .{ base_expr, field.?.field_name });
+        replaced = true;
+        last_emit = field_end;
+        i = field_end;
     }
 
     if (!replaced) {
@@ -1904,86 +1293,35 @@ pub fn rewriteRecordTypeInfoMapDeclarations(gpa: std.mem.Allocator, text: []cons
     var i: usize = 0;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                if (!startsWithIgnoreCase(text[i..], from_type)) {
-                    i += 1;
-                    continue;
-                }
-
-                const line_end = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse text.len;
-                const statement = text[i..line_end];
-                if (std.mem.indexOfScalar(u8, statement, '=')) |eq_idx| {
-                    const rhs = statement[(eq_idx + 1)..];
-                    var matches_record_type_info = false;
-                    for (markers) |marker| {
-                        if (std.mem.indexOf(u8, rhs, marker) != null) {
-                            matches_record_type_info = true;
-                            break;
-                        }
-                    }
-                    if (matches_record_type_info) {
-                        try out.appendSlice(gpa, text[last_emit..i]);
-                        try out.appendSlice(gpa, to_type);
-                        replaced = true;
-                        i += from_type.len;
-                        last_emit = i;
-                        continue;
-                    }
-                }
-
-                i += 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], from_type)) {
+            i += 1;
+            continue;
         }
+
+        const line_end = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse text.len;
+        const statement = text[i..line_end];
+        if (std.mem.indexOfScalar(u8, statement, '=')) |eq_idx| {
+            const rhs = statement[(eq_idx + 1)..];
+            var matches_record_type_info = false;
+            for (markers) |marker| {
+                if (std.mem.indexOf(u8, rhs, marker) != null) {
+                    matches_record_type_info = true;
+                    break;
+                }
+            }
+            if (matches_record_type_info) {
+                try out.appendSlice(gpa, text[last_emit..i]);
+                try out.appendSlice(gpa, to_type);
+                replaced = true;
+                i += from_type.len;
+                last_emit = i;
+                continue;
+            }
+        }
+
+        i += 1;
     }
 
     if (!replaced) return gpa.dupe(u8, text);

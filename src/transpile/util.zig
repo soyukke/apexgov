@@ -1286,3 +1286,26 @@ pub fn prevNonSpace(text: []const u8, from: usize) ?u8 {
     }
     return null;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "braceDelta ignores braces inside string literals" {
+    try std.testing.expectEqual(@as(i32, 1), braceDelta("if (ready) {"));
+    try std.testing.expectEqual(@as(i32, -1), braceDelta("}"));
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        braceDelta("String payload = '{\"ok\":true}'; if (go) {"),
+    );
+    try std.testing.expectEqual(
+        @as(i32, 0),
+        braceDelta("System.debug(\"{still string}\");"),
+    );
+}
+
+test "startsWithWordIgnoreCase accepts punctuation boundaries" {
+    try std.testing.expect(startsWithWordIgnoreCase("else{", "else"));
+    try std.testing.expect(startsWithWordIgnoreCase("try{", "try"));
+    try std.testing.expect(!startsWithWordIgnoreCase("elseif", "else"));
+}

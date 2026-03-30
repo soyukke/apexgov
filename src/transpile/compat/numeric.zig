@@ -3,14 +3,15 @@
 //! Apex の Decimal/Integer/Double リテラルやメソッド呼び出しを
 //! Java の BigDecimal / int / double 相当の式に変換する。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
-const CompatibilityState = getas.CompatibilityState;
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 const containsFieldKeywordToken = helpers.containsFieldKeywordToken;
 const containsIgnoreCaseNameSlice = helpers.containsIgnoreCaseNameSlice;
 const containsKnownObjectIdentifier = helpers.containsKnownObjectIdentifier;
@@ -34,7 +35,7 @@ const isIdentifierChar = util.isIdentifierChar;
 const isSimpleIdentifier = util.isSimpleIdentifier;
 const leadingIdentifier = util.leadingIdentifier;
 const nextNonSpace = util.nextNonSpace;
-const splitCallArguments = line_and_expr.splitCallArguments;
+const splitCallArguments = stmt_mod.splitCallArguments;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 
@@ -676,97 +677,48 @@ pub fn rewriteApexStringsToIntegerIntCast(gpa: std.mem.Allocator, text: []const 
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
 
-                const open = i + marker.len - 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
+            const open = i + marker.len - 1;
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
+            const arg_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            if (!startsWithIgnoreCase(arg_raw, "(int)")) {
+                i = close + 1;
+                continue;
+            }
+
+            var rest = std.mem.trim(u8, arg_raw["(int)".len..], " \t");
+            if (rest.len == 0) {
+                i = close + 1;
+                continue;
+            }
+            if (rest[0] == '(' and rest[rest.len - 1] == ')') {
+                const inner_close = findMatchingParen(rest, 0) orelse {
+                    i = close + 1;
                     continue;
                 };
-                const arg_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                if (!startsWithIgnoreCase(arg_raw, "(int)")) {
-                    i = close + 1;
-                    continue;
+                if (inner_close == rest.len - 1) {
+                    rest = std.mem.trim(u8, rest[1 .. rest.len - 1], " \t");
                 }
-
-                var rest = std.mem.trim(u8, arg_raw["(int)".len..], " \t");
-                if (rest.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-                if (rest[0] == '(' and rest[rest.len - 1] == ')') {
-                    const inner_close = findMatchingParen(rest, 0) orelse {
-                        i = close + 1;
-                        continue;
-                    };
-                    if (inner_close == rest.len - 1) {
-                        rest = std.mem.trim(u8, rest[1 .. rest.len - 1], " \t");
-                    }
-                }
-                if (rest.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "ApexStrings.toInteger({s})", .{rest});
-                replaced = true;
-                last_emit = close + 1;
+            }
+            if (rest.len == 0) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try appendFmt(gpa, &out, "ApexStrings.toInteger({s})", .{rest});
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 

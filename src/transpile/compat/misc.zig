@@ -3,14 +3,15 @@
 //! 他のカテゴリに分類されない Apex 固有構文（キャスト、
 //! コレクション初期化、システムメソッド等）の Java 変換。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
-const CompatibilityState = getas.CompatibilityState;
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 const containsIgnoreCaseNameSlice = helpers.containsIgnoreCaseNameSlice;
 const containsKnownObjectIdentifier = helpers.containsKnownObjectIdentifier;
 const countUppercaseChars = helpers.countUppercaseChars;
@@ -26,11 +27,11 @@ const lowercaseIdentifier = helpers.lowercaseIdentifier;
 const replaceLiteralAll = helpers.replaceLiteralAll;
 
 const appendFmt = util.appendFmt;
-const collectionImplName = line_and_expr.collectionImplName;
-const collectionKindFromName = line_and_expr.collectionKindFromName;
+const collectionImplName = stmt_mod.collectionImplName;
+const collectionKindFromName = stmt_mod.collectionKindFromName;
 const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
-const convertApexExpressionToJava = line_and_expr.convertApexExpressionToJava;
-const convertApexTypeList = line_and_expr.convertApexTypeList;
+const convertApexExpressionToJava = stmt_mod.convertApexExpressionToJava;
+const convertApexTypeList = stmt_mod.convertApexTypeList;
 const endsWithIgnoreCase = util.endsWithIgnoreCase;
 const findMatchingAngle = util.findMatchingAngle;
 const findMatchingBrace = util.findMatchingBrace;
@@ -50,11 +51,11 @@ const lastIdentifier = util.lastIdentifier;
 const leadingIdentifier = util.leadingIdentifier;
 const looksLikeTypeName = util.looksLikeTypeName;
 const nextNonSpace = util.nextNonSpace;
-const normalizeScalarTypeName = line_and_expr.normalizeScalarTypeName;
+const normalizeScalarTypeName = stmt_mod.normalizeScalarTypeName;
 const prevNonSpace = util.prevNonSpace;
-const splitCallArguments = line_and_expr.splitCallArguments;
-const splitTopLevelCommaExpressions = line_and_expr.splitTopLevelCommaExpressions;
-const splitTypeArguments = line_and_expr.splitTypeArguments;
+const splitCallArguments = stmt_mod.splitCallArguments;
+const splitTopLevelCommaExpressions = stmt_mod.splitTopLevelCommaExpressions;
+const splitTypeArguments = stmt_mod.splitTypeArguments;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 
@@ -479,112 +480,63 @@ pub fn rewriteCaseInsensitiveIdentifierVariants(gpa: std.mem.Allocator, text: []
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!isIdentifierChar(text[i])) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!isIdentifierChar(text[i])) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
 
-                const start = i;
-                var end = i + 1;
-                while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
-                i = end;
-                const token = text[start..end];
-                if (token.len == 0) continue;
-                if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
-                if (isImportOrPackageLineAt(text, start)) continue;
+            const start = i;
+            var end = i + 1;
+            while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
+            i = end;
+            const token = text[start..end];
+            if (token.len == 0) continue;
+            if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
+            if (isImportOrPackageLineAt(text, start)) continue;
 
-                const lower = try lowercaseIdentifier(gpa, token);
-                errdefer gpa.free(lower);
+            const lower = try lowercaseIdentifier(gpa, token);
+            errdefer gpa.free(lower);
 
-                if (group_index_by_key.get(lower)) |group_index| {
-                    gpa.free(lower);
-                    var found = false;
-                    for (groups.items[group_index].variants.items) |*variant| {
-                        if (std.mem.eql(u8, variant.spelling, token)) {
-                            variant.count += 1;
-                            found = true;
-                            break;
-                        }
+            if (group_index_by_key.get(lower)) |group_index| {
+                gpa.free(lower);
+                var found = false;
+                for (groups.items[group_index].variants.items) |*variant| {
+                    if (std.mem.eql(u8, variant.spelling, token)) {
+                        variant.count += 1;
+                        found = true;
+                        break;
                     }
-                    if (!found) {
-                        try groups.items[group_index].variants.append(gpa, .{
-                            .spelling = try gpa.dupe(u8, token),
-                            .count = 1,
-                            .first_seen = start,
-                            .uppercase_count = countUppercaseChars(token),
-                        });
-                    }
-                    continue;
                 }
+                if (!found) {
+                    try groups.items[group_index].variants.append(gpa, .{
+                        .spelling = try gpa.dupe(u8, token),
+                        .count = 1,
+                        .first_seen = start,
+                        .uppercase_count = countUppercaseChars(token),
+                    });
+                }
+                continue;
+            }
 
-                var variants: std.ArrayList(IdentifierVariant) = .empty;
-                errdefer {
-                    for (variants.items) |variant| gpa.free(variant.spelling);
-                    variants.deinit(gpa);
-                }
-                try variants.append(gpa, .{
-                    .spelling = try gpa.dupe(u8, token),
-                    .count = 1,
-                    .first_seen = start,
-                    .uppercase_count = countUppercaseChars(token),
-                });
-                try groups.append(gpa, .{ .key_lower = lower, .variants = variants });
-                try group_index_by_key.put(groups.items[groups.items.len - 1].key_lower, groups.items.len - 1);
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            var variants: std.ArrayList(IdentifierVariant) = .empty;
+            errdefer {
+                for (variants.items) |variant| gpa.free(variant.spelling);
+                variants.deinit(gpa);
+            }
+            try variants.append(gpa, .{
+                .spelling = try gpa.dupe(u8, token),
+                .count = 1,
+                .first_seen = start,
+                .uppercase_count = countUppercaseChars(token),
+            });
+            try groups.append(gpa, .{ .key_lower = lower, .variants = variants });
+            try group_index_by_key.put(groups.items[groups.items.len - 1].key_lower, groups.items.len - 1);
         }
     }
 
@@ -625,84 +577,35 @@ pub fn rewriteCaseInsensitiveIdentifierVariants(gpa: std.mem.Allocator, text: []
     i = 0;
     state = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!isIdentifierChar(text[i])) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!isIdentifierChar(text[i])) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
 
-                const start = i;
-                var end = i + 1;
-                while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
-                i = end;
-                const token = text[start..end];
-                if (token.len == 0) continue;
-                if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
-                if (isImportOrPackageLineAt(text, start)) continue;
+            const start = i;
+            var end = i + 1;
+            while (end < text.len and isIdentifierChar(text[end])) : (end += 1) {}
+            i = end;
+            const token = text[start..end];
+            if (token.len == 0) continue;
+            if (!(std.ascii.isLower(token[0]) or token[0] == '_')) continue;
+            if (isImportOrPackageLineAt(text, start)) continue;
 
-                const lower = try lowercaseIdentifier(gpa, token);
-                defer gpa.free(lower);
-                const canonical = canonical_by_key.get(lower) orelse continue;
-                if (std.mem.eql(u8, token, canonical)) continue;
+            const lower = try lowercaseIdentifier(gpa, token);
+            defer gpa.free(lower);
+            const canonical = canonical_by_key.get(lower) orelse continue;
+            if (std.mem.eql(u8, token, canonical)) continue;
 
-                try out.appendSlice(gpa, text[last_emit..start]);
-                try out.appendSlice(gpa, canonical);
-                replaced = true;
-                last_emit = end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..start]);
+            try out.appendSlice(gpa, canonical);
+            replaced = true;
+            last_emit = end;
         }
     }
 
@@ -723,81 +626,32 @@ pub fn rewriteUnaryPlusStringLiterals(gpa: std.mem.Allocator, text: []const u8) 
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] != '+') {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (text[i] != '+') {
+                i += 1;
+                continue;
+            }
 
-                const prev = findPreviousNonWhitespace(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const prev_ch = text[prev];
-                if (prev_ch != ',' and prev_ch != '(' and prev_ch != '[' and prev_ch != '=' and prev_ch != '?' and prev_ch != ':') {
-                    i += 1;
-                    continue;
-                }
-                const next = nextNonSpace(text, i + 1);
-                if (next >= text.len or text[next] != '"') {
-                    i += 1;
-                    continue;
-                }
+            const prev = findPreviousNonWhitespace(text, i) orelse {
+                i += 1;
+                continue;
+            };
+            const prev_ch = text[prev];
+            if (prev_ch != ',' and prev_ch != '(' and prev_ch != '[' and prev_ch != '=' and prev_ch != '?' and prev_ch != ':') {
+                i += 1;
+                continue;
+            }
+            const next = nextNonSpace(text, i + 1);
+            if (next >= text.len or text[next] != '"') {
+                i += 1;
+                continue;
+            }
 
-                try out.appendSlice(gpa, text[last_emit..i]);
-                replaced = true;
-                last_emit = next;
-                i = next;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..i]);
+            replaced = true;
+            last_emit = next;
+            i = next;
         }
     }
 
@@ -824,99 +678,49 @@ pub fn rewriteStringCollectionListOfArguments(gpa: std.mem.Allocator, text: []co
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            var matched_prefix: ?[]const u8 = null;
+            for (prefixes) |prefix| {
+                if (!startsWithIgnoreCase(text[i..], prefix)) continue;
+                matched_prefix = prefix;
+                break;
+            }
+            if (matched_prefix == null) {
+                i += 1;
+                continue;
+            }
+            const prefix = matched_prefix.?;
+            const list_open = i + prefix.len - 1;
+            const list_close = findMatchingParen(text, list_open) orelse {
+                i += 1;
+                continue;
+            };
 
-                var matched_prefix: ?[]const u8 = null;
-                for (prefixes) |prefix| {
-                    if (!startsWithIgnoreCase(text[i..], prefix)) continue;
-                    matched_prefix = prefix;
-                    break;
-                }
-                if (matched_prefix == null) {
-                    i += 1;
-                    continue;
-                }
-                const prefix = matched_prefix.?;
-                const list_open = i + prefix.len - 1;
-                const list_close = findMatchingParen(text, list_open) orelse {
-                    i += 1;
-                    continue;
-                };
-
-                const raw_args = text[(list_open + 1)..list_close];
-                var args = try splitCallArguments(gpa, raw_args);
-                defer args.deinit(gpa);
-                if (args.items.len == 0) {
-                    i = list_close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, prefix);
-                for (args.items, 0..) |arg_raw, arg_idx| {
-                    const arg = std.mem.trim(u8, arg_raw, " \t");
-                    if (arg_idx != 0) try out.appendSlice(gpa, ", ");
-                    if (shouldWrapStringCollectionArgument(arg)) {
-                        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
-                    } else {
-                        try out.appendSlice(gpa, arg);
-                    }
-                }
-                try out.append(gpa, ')');
-
-                replaced = true;
-                last_emit = list_close + 1;
+            const raw_args = text[(list_open + 1)..list_close];
+            var args = try splitCallArguments(gpa, raw_args);
+            defer args.deinit(gpa);
+            if (args.items.len == 0) {
                 i = list_close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, prefix);
+            for (args.items, 0..) |arg_raw, arg_idx| {
+                const arg = std.mem.trim(u8, arg_raw, " \t");
+                if (arg_idx != 0) try out.appendSlice(gpa, ", ");
+                if (shouldWrapStringCollectionArgument(arg)) {
+                    try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
+                } else {
+                    try out.appendSlice(gpa, arg);
                 }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            }
+            try out.append(gpa, ')');
+
+            replaced = true;
+            last_emit = list_close + 1;
+            i = list_close + 1;
         }
     }
 
@@ -952,80 +756,31 @@ pub fn rewriteApexStringsValueOfCollectionWrappers(gpa: std.mem.Allocator, text:
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
 
-                const open = i + marker.len - 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                if (!startsWithIgnoreCase(inner, "new ArrayList<String>(") and
-                    !startsWithIgnoreCase(inner, "new LinkedHashSet<String>("))
-                {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, inner);
-                replaced = true;
-                last_emit = close + 1;
+            const open = i + marker.len - 1;
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
+            const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            if (!startsWithIgnoreCase(inner, "new ArrayList<String>(") and
+                !startsWithIgnoreCase(inner, "new LinkedHashSet<String>("))
+            {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, inner);
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -1047,93 +802,44 @@ pub fn rewriteValuesMethodCollectionViews(gpa: std.mem.Allocator, text: []const 
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] != '.') {
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], ".values()")) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (text[i] != '.') {
+                i += 1;
+                continue;
+            }
+            if (!startsWithIgnoreCase(text[i..], ".values()")) {
+                i += 1;
+                continue;
+            }
 
-                const base_start = findMemberAccessBaseStart(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const line_start = blk: {
-                    if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| break :blk pos + 1;
-                    break :blk 0;
-                };
-                if (base_start < line_start) {
-                    i += 1;
-                    continue;
-                }
-                const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
-                if (base_expr.len == 0) {
-                    i += 1;
-                    continue;
-                }
-                if (isLikelyTypeReferencePathExpression(base_expr)) {
-                    i += 1;
-                    continue;
-                }
+            const base_start = findMemberAccessBaseStart(text, i) orelse {
+                i += 1;
+                continue;
+            };
+            const line_start = blk: {
+                if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |pos| break :blk pos + 1;
+                break :blk 0;
+            };
+            if (base_start < line_start) {
+                i += 1;
+                continue;
+            }
+            const base_expr = std.mem.trim(u8, text[base_start..i], " \t");
+            if (base_expr.len == 0) {
+                i += 1;
+                continue;
+            }
+            if (isLikelyTypeReferencePathExpression(base_expr)) {
+                i += 1;
+                continue;
+            }
 
-                try out.appendSlice(gpa, text[last_emit..base_start]);
-                try appendFmt(gpa, &out, "new ArrayList<>({s}.values())", .{base_expr});
-                replaced = true;
-                last_emit = i + ".values()".len;
-                i = last_emit;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..base_start]);
+            try appendFmt(gpa, &out, "new ArrayList<>({s}.values())", .{base_expr});
+            replaced = true;
+            last_emit = i + ".values()".len;
+            i = last_emit;
         }
     }
 
@@ -1470,119 +1176,70 @@ pub fn rewriteCollectionGenericInstanceof(gpa: std.mem.Allocator, text: []const 
     const marker = "instanceof";
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
+            if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                i += 1;
+                continue;
+            }
 
-                var type_start = i + marker.len;
-                while (type_start < text.len and std.ascii.isWhitespace(text[type_start])) : (type_start += 1) {}
-                if (type_start >= text.len) {
-                    i += 1;
+            var type_start = i + marker.len;
+            while (type_start < text.len and std.ascii.isWhitespace(text[type_start])) : (type_start += 1) {}
+            if (type_start >= text.len) {
+                i += 1;
+                continue;
+            }
+
+            const is_set = startsWithIgnoreCase(text[type_start..], "Set<");
+            const is_list = startsWithIgnoreCase(text[type_start..], "List<");
+            if (!is_set and !is_list) {
+                i = type_start + 1;
+                continue;
+            }
+
+            const type_len: usize = if (is_set) 3 else 4;
+            const angle_open = type_start + type_len;
+            if (angle_open >= text.len or text[angle_open] != '<') {
+                i = type_start + 1;
+                continue;
+            }
+
+            var depth: i32 = 0;
+            var cursor = angle_open;
+            var angle_close: ?usize = null;
+            while (cursor < text.len) : (cursor += 1) {
+                if (text[cursor] == '<') {
+                    depth += 1;
                     continue;
                 }
-
-                const is_set = startsWithIgnoreCase(text[type_start..], "Set<");
-                const is_list = startsWithIgnoreCase(text[type_start..], "List<");
-                if (!is_set and !is_list) {
-                    i = type_start + 1;
-                    continue;
-                }
-
-                const type_len: usize = if (is_set) 3 else 4;
-                const angle_open = type_start + type_len;
-                if (angle_open >= text.len or text[angle_open] != '<') {
-                    i = type_start + 1;
-                    continue;
-                }
-
-                var depth: i32 = 0;
-                var cursor = angle_open;
-                var angle_close: ?usize = null;
-                while (cursor < text.len) : (cursor += 1) {
-                    if (text[cursor] == '<') {
-                        depth += 1;
-                        continue;
+                if (text[cursor] == '>') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        angle_close = cursor;
+                        break;
                     }
-                    if (text[cursor] == '>') {
-                        depth -= 1;
-                        if (depth == 0) {
-                            angle_close = cursor;
-                            break;
-                        }
-                        continue;
-                    }
-                    if (text[cursor] == '\n' or text[cursor] == ';' or text[cursor] == ')') break;
-                }
-                if (angle_close == null) {
-                    i = type_start + 1;
                     continue;
                 }
+                if (text[cursor] == '\n' or text[cursor] == ';' or text[cursor] == ')') break;
+            }
+            if (angle_close == null) {
+                i = type_start + 1;
+                continue;
+            }
 
-                try out.appendSlice(gpa, text[last_emit..type_start]);
-                try out.appendSlice(gpa, if (is_set) "Set<?>" else "List<?>");
-                replaced = true;
-                last_emit = angle_close.? + 1;
-                i = angle_close.? + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..type_start]);
+            try out.appendSlice(gpa, if (is_set) "Set<?>" else "List<?>");
+            replaced = true;
+            last_emit = angle_close.? + 1;
+            i = angle_close.? + 1;
         }
     }
 
@@ -3288,7 +2945,6 @@ pub fn convertInlineSObjectConstructors(gpa: std.mem.Allocator, text: []const u8
 
 /// Rewrites `a == b` to `ApexEquals.eq(a, b)` and `a != b` to `ApexEquals.ne(a, b)`
 /// when operands involve declared `Object` identifiers or method-call results.
-
 pub fn rewriteApexStringUtilityCalls(gpa: std.mem.Allocator, text: []const u8) anyerror![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);

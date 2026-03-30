@@ -3,14 +3,15 @@
 //! `==`, `!=`, `+` などの Apex 演算子を、参照等価性や型の違いを
 //! 考慮した Java のメソッド呼び出し (`equals()`, `ApexRuntime.add()` 等) に変換する。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
-const CompatibilityState = getas.CompatibilityState;
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 const rewriteSObjectGetAsLengthFallback = getas.rewriteSObjectGetAsLengthFallback;
 const containsGetAsLikeCall = helpers.containsGetAsLikeCall;
 const containsKnownObjectIdentifier = helpers.containsKnownObjectIdentifier;
@@ -34,12 +35,12 @@ const isNumericLiteral = helpers.isNumericLiteral;
 const isSignedIntegerLiteral = helpers.isSignedIntegerLiteral;
 
 const appendFmt = util.appendFmt;
-const convertApexType = line_and_expr.convertApexType;
+const convertApexType = stmt_mod.convertApexType;
 const findMatchingParen = util.findMatchingParen;
 const isIdentifierChar = util.isIdentifierChar;
 const looksLikeTypeName = util.looksLikeTypeName;
 const nextNonSpace = util.nextNonSpace;
-const splitTopLevelCommaExpressions = line_and_expr.splitTopLevelCommaExpressions;
+const splitTopLevelCommaExpressions = stmt_mod.splitTopLevelCommaExpressions;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 
@@ -248,118 +249,69 @@ pub fn rewriteBooleanEqualsComparisonArtifacts(gpa: std.mem.Allocator, text: []c
     var state: CompatibilityState = .normal;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!isBooleanEqualsCallLiteral(text[i..])) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!isBooleanEqualsCallLiteral(text[i..])) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
 
-                const open = i + "Boolean.TRUE.equals".len;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                if (inner.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
+            const open = i + "Boolean.TRUE.equals".len;
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
+            const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            if (inner.len == 0) {
+                i = close + 1;
+                continue;
+            }
 
-                var should_unwrap = false;
-                const next_idx = nextNonSpace(text, close + 1);
-                if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
-                    const rhs_start = nextNonSpace(text, next_idx + 2);
-                    if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
-                        should_unwrap = true;
-                    }
-                } else if (next_idx + 1 < text.len and text[next_idx] == '!' and text[next_idx + 1] == '=') {
-                    const rhs_start = nextNonSpace(text, next_idx + 2);
-                    if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
-                        should_unwrap = true;
-                    }
+            var should_unwrap = false;
+            const next_idx = nextNonSpace(text, close + 1);
+            if (next_idx + 1 < text.len and text[next_idx] == '=' and text[next_idx + 1] == '=') {
+                const rhs_start = nextNonSpace(text, next_idx + 2);
+                if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
+                    should_unwrap = true;
                 }
+            } else if (next_idx + 1 < text.len and text[next_idx] == '!' and text[next_idx + 1] == '=') {
+                const rhs_start = nextNonSpace(text, next_idx + 2);
+                if (!isBooleanLiteralAt(text, rhs_start) and !isBooleanEqualsCallLiteral(text[rhs_start..])) {
+                    should_unwrap = true;
+                }
+            }
 
-                if (!should_unwrap) {
-                    const prev_idx = findPreviousNonWhitespace(text, i);
-                    if (prev_idx) |prev| {
-                        if (text[prev] == '=' and prev > 0 and (text[prev - 1] == '=' or text[prev - 1] == '!')) {
-                            const lhs_end = findPreviousNonWhitespace(text, prev - 1);
-                            const lhs_start = if (lhs_end) |end_idx| blk: {
-                                var start_idx = end_idx;
-                                while (start_idx > 0 and isIdentifierChar(text[start_idx - 1])) : (start_idx -= 1) {}
-                                break :blk start_idx;
-                            } else null;
-                            if (lhs_end == null or lhs_start == null or !isBooleanLiteralAt(text, lhs_start.?)) {
-                                should_unwrap = true;
-                            }
+            if (!should_unwrap) {
+                const prev_idx = findPreviousNonWhitespace(text, i);
+                if (prev_idx) |prev| {
+                    if (text[prev] == '=' and prev > 0 and (text[prev - 1] == '=' or text[prev - 1] == '!')) {
+                        const lhs_end = findPreviousNonWhitespace(text, prev - 1);
+                        const lhs_start = if (lhs_end) |end_idx| blk: {
+                            var start_idx = end_idx;
+                            while (start_idx > 0 and isIdentifierChar(text[start_idx - 1])) : (start_idx -= 1) {}
+                            break :blk start_idx;
+                        } else null;
+                        if (lhs_end == null or lhs_start == null or !isBooleanLiteralAt(text, lhs_start.?)) {
+                            should_unwrap = true;
                         }
                     }
                 }
+            }
 
-                if (!should_unwrap) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, inner);
-                replaced = true;
-                last_emit = close + 1;
+            if (!should_unwrap) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, inner);
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -410,123 +362,74 @@ pub fn rewriteBrokenApexEqualsTernaryComparisons(gpa: std.mem.Allocator, text: [
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
+            if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                i += 1;
+                continue;
+            }
 
-                var open = i + marker.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
+            var open = i + marker.len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') {
+                i += 1;
+                continue;
+            }
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
 
-                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
-                defer args.deinit(gpa);
-                if (args.items.len != 2) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const lhs = std.mem.trim(u8, args.items[0], " \t");
-                const rhs = std.mem.trim(u8, args.items[1], " \t");
-                const ternary = findTopLevelTernary(rhs) orelse {
-                    i = close + 1;
-                    continue;
-                };
-
-                const cond = std.mem.trim(u8, rhs[0..ternary.question], " \t");
-                if (!isSignedIntegerLiteral(cond) and
-                    !std.ascii.eqlIgnoreCase(cond, "true") and
-                    !std.ascii.eqlIgnoreCase(cond, "false"))
-                {
-                    i = close + 1;
-                    continue;
-                }
-
-                const when_true = std.mem.trim(u8, rhs[(ternary.question + 1)..ternary.colon], " \t");
-                const when_false = std.mem.trim(u8, rhs[(ternary.colon + 1)..], " \t");
-                if (lhs.len == 0 or when_true.len == 0 or when_false.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const replacement = try std.fmt.allocPrint(
-                    gpa,
-                    "(ApexEquals.eq({s}, {s}) ? {s} : {s})",
-                    .{ lhs, cond, when_true, when_false },
-                );
-                defer gpa.free(replacement);
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, replacement);
-                replaced = true;
-                last_emit = close + 1;
+            var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+            defer args.deinit(gpa);
+            if (args.items.len != 2) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            const lhs = std.mem.trim(u8, args.items[0], " \t");
+            const rhs = std.mem.trim(u8, args.items[1], " \t");
+            const ternary = findTopLevelTernary(rhs) orelse {
+                i = close + 1;
+                continue;
+            };
+
+            const cond = std.mem.trim(u8, rhs[0..ternary.question], " \t");
+            if (!isSignedIntegerLiteral(cond) and
+                !std.ascii.eqlIgnoreCase(cond, "true") and
+                !std.ascii.eqlIgnoreCase(cond, "false"))
+            {
+                i = close + 1;
+                continue;
+            }
+
+            const when_true = std.mem.trim(u8, rhs[(ternary.question + 1)..ternary.colon], " \t");
+            const when_false = std.mem.trim(u8, rhs[(ternary.colon + 1)..], " \t");
+            if (lhs.len == 0 or when_true.len == 0 or when_false.len == 0) {
+                i = close + 1;
+                continue;
+            }
+
+            const replacement = try std.fmt.allocPrint(
+                gpa,
+                "(ApexEquals.eq({s}, {s}) ? {s} : {s})",
+                .{ lhs, cond, when_true, when_false },
+            );
+            defer gpa.free(replacement);
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, replacement);
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -544,91 +447,42 @@ pub fn rewriteStringCastBooleanEqualsArtifacts(gpa: std.mem.Allocator, text: []c
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], "(String)")) {
-                    i += 1;
-                    continue;
-                }
-                var cursor = i + "(String)".len;
-                while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], "(String)")) {
+                i += 1;
+                continue;
+            }
+            var cursor = i + "(String)".len;
+            while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
 
-                const true_marker = "Boolean.TRUE.equals(";
-                const false_marker = "Boolean.FALSE.equals(";
-                const marker = if (startsWithIgnoreCase(text[cursor..], true_marker))
-                    true_marker
-                else if (startsWithIgnoreCase(text[cursor..], false_marker))
-                    false_marker
-                else {
-                    i += 1;
-                    continue;
-                };
+            const true_marker = "Boolean.TRUE.equals(";
+            const false_marker = "Boolean.FALSE.equals(";
+            const marker = if (startsWithIgnoreCase(text[cursor..], true_marker))
+                true_marker
+            else if (startsWithIgnoreCase(text[cursor..], false_marker))
+                false_marker
+            else {
+                i += 1;
+                continue;
+            };
 
-                const open = cursor + marker.len - 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                if (inner.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try appendFmt(gpa, &out, "(String) {s}", .{inner});
-                replaced = true;
-                last_emit = close + 1;
+            const open = cursor + marker.len - 1;
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
+            const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            if (inner.len == 0) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try appendFmt(gpa, &out, "(String) {s}", .{inner});
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -648,93 +502,44 @@ pub fn rewriteValueOfGetNameArtifacts(gpa: std.mem.Allocator, text: []const u8) 
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
+            if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                i += 1;
+                continue;
+            }
 
-                var open = i + marker.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
+            var open = i + marker.len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') {
+                i += 1;
+                continue;
+            }
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
 
-                var after = close + 1;
-                while (after < text.len and std.ascii.isWhitespace(text[after])) : (after += 1) {}
-                if (!startsWithIgnoreCase(text[after..], suffix)) {
-                    i = close + 1;
-                    continue;
-                }
+            var after = close + 1;
+            while (after < text.len and std.ascii.isWhitespace(text[after])) : (after += 1) {}
+            if (!startsWithIgnoreCase(text[after..], suffix)) {
+                i = close + 1;
+                continue;
+            }
 
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, text[i .. close + 1]);
-                replaced = true;
-                last_emit = after + suffix.len;
-                i = last_emit;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, text[i .. close + 1]);
+            replaced = true;
+            last_emit = after + suffix.len;
+            i = last_emit;
         }
     }
 

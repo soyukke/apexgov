@@ -9,7 +9,6 @@ const model = @import("../model.zig");
 const utils = @import("utils.zig");
 
 const satMul = utils.satMul;
-const satAdd = utils.satAdd;
 
 pub const soql_limit: u64 = 100;
 pub const dml_limit: u64 = 150;

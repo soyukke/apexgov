@@ -7,25 +7,21 @@ const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");
 const compat = @import("compat.zig");
-const line_and_expr = @import("line_and_expr.zig");
-const root = @import("root.zig");
+const stmt_mod = @import("statements.zig");
 const parser = @import("parser.zig");
 const rewriteApexMocksUtilsMethodFixups = compat.rewriteApexMocksUtilsMethodFixups;
 
-const ApexFile = types.ApexFile;
+// types
 const ParsedMethod = types.ParsedMethod;
 const ParsedField = types.ParsedField;
-const InnerTypeKind = types.InnerTypeKind;
-const TopLevelKind = types.TopLevelKind;
 const ParsedClass = types.ParsedClass;
-const MethodSignature = types.MethodSignature;
 const SwitchMode = types.SwitchMode;
 const ActiveSwitchContext = types.ActiveSwitchContext;
 const UnsupportedLine = types.UnsupportedLine;
 const RenderedClass = types.RenderedClass;
 
-// Cross-module references
-const rewriteMathModCalls = line_and_expr.rewriteMathModCalls;
+// cross-module references
+const rewriteMathModCalls = stmt_mod.rewriteMathModCalls;
 const rewriteDynamicWhereClauseQueryBinds = compat.rewriteDynamicWhereClauseQueryBinds;
 const rewriteNoArgSortCalls = compat.rewriteNoArgSortCalls;
 const rewriteStringKeyedSetMethodCalls = compat.rewriteStringKeyedSetMethodCalls;
@@ -40,88 +36,32 @@ const rewriteSObjectGetAsMethodCalls = compat.rewriteSObjectGetAsMethodCalls;
 const rewriteSObjectTypeFieldSetConstants = compat.rewriteSObjectTypeFieldSetConstants;
 const rewriteTypeSObjectFieldConstants = compat.rewriteTypeSObjectFieldConstants;
 const convertSObjectFieldAccess = compat.convertSObjectFieldAccess;
-const rewriteCommonJavaMethodCase = line_and_expr.rewriteCommonJavaMethodCase;
-const inferUnsupportedReason = line_and_expr.inferUnsupportedReason;
-const convertApexExpressionToJava = line_and_expr.convertApexExpressionToJava;
-const parseSwitchSubjectExpression = line_and_expr.parseSwitchSubjectExpression;
-const transpileExecutableLineWithContext = line_and_expr.transpileExecutableLineWithContext;
-const detectSwitchMode = line_and_expr.detectSwitchMode;
+const rewriteCommonJavaMethodCase = stmt_mod.rewriteCommonJavaMethodCase;
+const inferUnsupportedReason = stmt_mod.inferUnsupportedReason;
+const convertApexExpressionToJava = stmt_mod.convertApexExpressionToJava;
+const parseSwitchSubjectExpression = stmt_mod.parseSwitchSubjectExpression;
+const transpileExecutableLineWithContext = stmt_mod.transpileExecutableLineWithContext;
+const transpileExecutableLine = stmt_mod.transpileExecutableLine;
+const detectSwitchMode = stmt_mod.detectSwitchMode;
+const parseApexClass = parser.parseApexClass;
 const stripSelfInnerImplementsFromClassSuffix = parser.stripSelfInnerImplementsFromClassSuffix;
-const shouldFlushLogicalStatement = line_and_expr.shouldFlushLogicalStatement;
+const shouldFlushLogicalStatement = stmt_mod.shouldFlushLogicalStatement;
 const rewriteClassSuffixInnerTypeRefs = parser.rewriteClassSuffixInnerTypeRefs;
-const stripApexCommentsFromLine = line_and_expr.stripApexCommentsFromLine;
+const stripApexCommentsFromLine = stmt_mod.stripApexCommentsFromLine;
 const appendImportUnlessClassNameConflicts = parser.appendImportUnlessClassNameConflicts;
-const splitCallArguments = line_and_expr.splitCallArguments;
+const splitCallArguments = stmt_mod.splitCallArguments;
 const rewriteInterfaceCompatibilityFixups = compat.rewriteInterfaceCompatibilityFixups;
 const rewriteKnownCompatibilityFixups = compat.rewriteKnownCompatibilityFixups;
 const collectInterfaceMethodDeclarations = parser.collectInterfaceMethodDeclarations;
+
+// util
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
-const endsWithIgnoreCase = util.endsWithIgnoreCase;
-const indexOfIgnoreCase = util.indexOfIgnoreCase;
-const indexOfIgnoreCasePos = util.indexOfIgnoreCasePos;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
-const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
-const containsWordIgnoreCase = util.containsWordIgnoreCase;
-const containsWord = util.containsWord;
-const indexOfWord = util.indexOfWord;
-const indexOfWordIgnoreCase = util.indexOfWordIgnoreCase;
-const isIdentifierChar = util.isIdentifierChar;
-const isSimpleIdentifier = util.isSimpleIdentifier;
-const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
-const firstIdentifier = util.firstIdentifier;
-const leadingIdentifier = util.leadingIdentifier;
 const lastIdentifier = util.lastIdentifier;
-const IdentifierSpan = util.IdentifierSpan;
-const baseIdentifierBeforeDot = util.baseIdentifierBeforeDot;
-const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
-const isLikelyQualifiedTypeChain = util.isLikelyQualifiedTypeChain;
-const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpression;
-const looksLikeTypeName = util.looksLikeTypeName;
-const isTypeIdentifierPath = util.isTypeIdentifierPath;
-const isIdentifierPathExpression = util.isIdentifierPathExpression;
-const isDeclarationModifier = util.isDeclarationModifier;
-const normalizeDeclarationModifier = util.normalizeDeclarationModifier;
-const isControlKeyword = util.isControlKeyword;
-const isLikelyNonMethodLeadKeyword = util.isLikelyNonMethodLeadKeyword;
-const isMethodModifierToken = util.isMethodModifierToken;
-const isIsTestAnnotation = util.isIsTestAnnotation;
-const isTestAnnotationSeeAllDataTrue = util.isTestAnnotationSeeAllDataTrue;
-const isTestSetupAnnotation = util.isTestSetupAnnotation;
-const isTestVisibleAnnotation = util.isTestVisibleAnnotation;
-const findMatchingParen = util.findMatchingParen;
-const findMatchingParenBackward = util.findMatchingParenBackward;
-const findMatchingAngle = util.findMatchingAngle;
 const findMatchingBrace = util.findMatchingBrace;
-const findMatchingSquareBracket = util.findMatchingSquareBracket;
-const findTopLevelMapArrow = util.findTopLevelMapArrow;
-const findTopLevelAssignmentOperator = util.findTopLevelAssignmentOperator;
-const findTopLevelSafeNavigationOperator = util.findTopLevelSafeNavigationOperator;
-const findLastTopLevelDot = util.findLastTopLevelDot;
 const braceDelta = util.braceDelta;
-const parenDelta = util.parenDelta;
-const splitWhitespace = util.splitWhitespace;
 const appendFmt = util.appendFmt;
-const appendEscapedJavaStringChar = util.appendEscapedJavaStringChar;
-const quoteJavaStringLiteral = util.quoteJavaStringLiteral;
-const indexOfSoqlBracketSelect = util.indexOfSoqlBracketSelect;
-const isInsideComment = util.isInsideComment;
-const skipApexCommentsAndWhitespace = util.skipApexCommentsAndWhitespace;
-const skipInlineWhitespace = util.skipInlineWhitespace;
-const skipAsciiWhitespace = util.skipAsciiWhitespace;
-const isControlFlowLine = util.isControlFlowLine;
 const isDoWhileTailLine = util.isDoWhileTailLine;
-const TrailingIdentifierSplit = util.TrailingIdentifierSplit;
-const splitTrailingIdentifierAtTopLevel = util.splitTrailingIdentifierAtTopLevel;
-const SObjectFieldLvalue = util.SObjectFieldLvalue;
-const IndexedLvalue = util.IndexedLvalue;
-const parseIndexedLvalue = util.parseIndexedLvalue;
-const parseSObjectFieldLvalue = util.parseSObjectFieldLvalue;
-const parseJavaKeywordMemberLvalue = util.parseJavaKeywordMemberLvalue;
-const isLikelySObjectFieldName = util.isLikelySObjectFieldName;
-const isJavaReservedWord = util.isJavaReservedWord;
-const isNewKeywordAt = util.isNewKeywordAt;
-const nextNonSpace = util.nextNonSpace;
-const prevNonSpace = util.prevNonSpace;
 
 pub fn renderJavaClass(gpa: std.mem.Allocator, parsed: ParsedClass, package_name: []const u8) !RenderedClass {
     var out: std.ArrayList(u8) = .empty;
@@ -982,4 +922,435 @@ pub fn shouldSplitInlineBlockHeader(before_open_brace: []const u8) bool {
     }
 
     return false;
+}
+// ---------------------------------------------------------------------------
+// Tests (moved from root.zig)
+// ---------------------------------------------------------------------------
+
+test "renderJavaClass emits test annotation and method comment body" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "SampleTest"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/SampleTest.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "firstMethod"),
+        .java_return_type = try gpa.dupe(u8, "void"),
+        .java_parameters = try gpa.dupe(u8, ""),
+        .is_static = true,
+        .is_constructor = false,
+        .is_test = true,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "System.assertEquals(1, 1);\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "package generated;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "@apexemu.annotations.Test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public static void firstMethod()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "import apexemu.runtime.ApexAssert;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "import apexemu.runtime.Test;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "SystemAssert.assertEquals(1, 1);") != null);
+}
+
+test "renderJavaClass emits seeAllData=true for test methods" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "SeeAllDataTest"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/SeeAllDataTest.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "testMethod"),
+        .java_return_type = try gpa.dupe(u8, "void"),
+        .java_parameters = try gpa.dupe(u8, ""),
+        .is_static = true,
+        .is_constructor = false,
+        .is_test = true,
+        .is_test_setup = false,
+        .is_test_see_all_data = true,
+        .body = try gpa.dupe(u8, "System.assert(true);\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "@apexemu.annotations.Test(seeAllData = true)") != null);
+}
+
+test "renderJavaClass emits test setup annotation" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "SampleSetup"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/SampleSetup.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "setupData"),
+        .java_return_type = try gpa.dupe(u8, "void"),
+        .java_parameters = try gpa.dupe(u8, ""),
+        .is_static = true,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = true,
+        .body = try gpa.dupe(u8, "Database.insert(ApexSObject.of(\"Account\"));\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "@apexemu.annotations.TestSetup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "@apexemu.annotations.Test\n") == null);
+}
+
+test "renderJavaClass emits Number overload for static methods with Double parameters" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "PriceApi"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/PriceApi.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "run"),
+        .java_return_type = try gpa.dupe(u8, "void"),
+        .java_parameters = try gpa.dupe(u8, "Double maxPrice, Integer page"),
+        .is_static = true,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "System.debug(maxPrice);\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public static void run(Number maxPrice, Integer page)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "run(maxPrice == null ? null : maxPrice.doubleValue(), page);") != null);
+}
+
+test "renderJavaClass emits Number overload for instance methods with Double parameters" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "Builder"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/Builder.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Double amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 1,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public Builder withAmount(Number amount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "return withAmount(amount == null ? null : amount.doubleValue());") != null);
+}
+
+test "renderJavaClass skips duplicate Number overload when already declared" {
+    const gpa = std.testing.allocator;
+    var parsed = ParsedClass{
+        .class_name = try gpa.dupe(u8, "Builder"),
+        .source_path = try gpa.dupe(u8, "force-app/main/default/classes/Builder.cls"),
+    };
+    defer parsed.deinit(gpa);
+
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Double amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 1,
+    });
+    try parsed.methods.append(gpa, .{
+        .name = try gpa.dupe(u8, "withAmount"),
+        .java_return_type = try gpa.dupe(u8, "Builder"),
+        .java_parameters = try gpa.dupe(u8, "Number amount"),
+        .is_static = false,
+        .is_constructor = false,
+        .is_test = false,
+        .is_test_setup = false,
+        .body = try gpa.dupe(u8, "return this;\n"),
+        .start_line = 2,
+    });
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output.java, "public Builder withAmount(Number amount)"));
+}
+
+test "collectLogicalStatements keeps multiline soql as one statement" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\Map<Id, Account> accountMap = new Map<Id, Account>([
+        \\  SELECT Id, Name
+        \\  FROM Account
+        \\  WHERE Id IN :new Set<Id>()
+        \\  LIMIT 10
+        \\]);
+    ;
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 1), statements.items.len);
+    const converted = try transpileExecutableLine(gpa, statements.items[0].text);
+    defer if (converted) |value| gpa.free(value);
+    try std.testing.expect(converted != null);
+    try std.testing.expectEqualStrings(
+        "Map<String, ApexSObject> accountMap = ApexCollections.mapById(Database.query(\"SELECT Id, Name FROM Account WHERE Id IN :new Set<Id>() LIMIT 10\"));",
+        converted.?,
+    );
+}
+
+test "collectLogicalStatements keeps multiline assignment with string concatenation" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\String queryString =
+        \\  'SELECT Id, Name ' +
+        \\  'FROM Account ' +
+        \\  'WHERE Name LIKE \'Acme%\'';
+    ;
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 1), statements.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, statements.items[0].text, "String queryString =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, statements.items[0].text, "'FROM Account '") != null);
+}
+
+test "collectLogicalStatements strips block and line comments" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\// leading comment
+        \\String a = 'x'; // trailing comment
+        \\/* block
+        \\ * comment
+        \\ */
+        \\String b = "http://example.invalid";
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 2), statements.items.len);
+    try std.testing.expectEqualStrings("String a = 'x';", statements.items[0].text);
+    try std.testing.expectEqualStrings("String b = \"http://example.invalid\";", statements.items[1].text);
+}
+
+test "collectLogicalStatements splits leading brace from else/catch lines" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\if (ok) {
+        \\  doWork();
+        \\} else { return; }
+        \\try {
+        \\  risky();
+        \\} catch (Exception e) { handle(e); }
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 12), statements.items.len);
+    try std.testing.expectEqualStrings("if (ok) {", statements.items[0].text);
+    try std.testing.expectEqualStrings("doWork();", statements.items[1].text);
+    try std.testing.expectEqualStrings("}", statements.items[2].text);
+    try std.testing.expectEqualStrings("else {", statements.items[3].text);
+    try std.testing.expectEqualStrings("return;", statements.items[4].text);
+    try std.testing.expectEqualStrings("}", statements.items[5].text);
+    try std.testing.expectEqualStrings("try {", statements.items[6].text);
+    try std.testing.expectEqualStrings("risky();", statements.items[7].text);
+    try std.testing.expectEqualStrings("}", statements.items[8].text);
+    try std.testing.expectEqualStrings("catch (Exception e) {", statements.items[9].text);
+    try std.testing.expectEqualStrings("handle(e);", statements.items[10].text);
+    try std.testing.expectEqualStrings("}", statements.items[11].text);
+}
+
+test "collectLogicalStatements splits compact one-line runAs try/catch blocks" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\System.runAs(u1) { Test.startTest(); try { run(); } catch (Exception e) { handle(e); } Test.stopTest(); }
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 10), statements.items.len);
+    try std.testing.expectEqualStrings("System.runAs(u1) {", statements.items[0].text);
+    try std.testing.expectEqualStrings("Test.startTest();", statements.items[1].text);
+    try std.testing.expectEqualStrings("try {", statements.items[2].text);
+    try std.testing.expectEqualStrings("run();", statements.items[3].text);
+    try std.testing.expectEqualStrings("}", statements.items[4].text);
+    try std.testing.expectEqualStrings("catch (Exception e) {", statements.items[5].text);
+    try std.testing.expectEqualStrings("handle(e);", statements.items[6].text);
+    try std.testing.expectEqualStrings("}", statements.items[7].text);
+    try std.testing.expectEqualStrings("Test.stopTest();", statements.items[8].text);
+    try std.testing.expectEqualStrings("}", statements.items[9].text);
+}
+
+test "collectLogicalStatements handles escaped apostrophe in compact string literals" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\System.assert(true, 'doesn\'t fail'); System.debug('ok');
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), statements.items.len);
+    try std.testing.expectEqualStrings(
+        "System.assert(true, 'doesn\\'t fail');",
+        statements.items[0].text,
+    );
+    try std.testing.expectEqualStrings("System.debug('ok');", statements.items[1].text);
+}
+
+test "collectLogicalStatements keeps do-while tail together" {
+    const gpa = std.testing.allocator;
+    const body =
+        \\do {
+        \\  i++;
+        \\} while (i < 3);
+    ;
+
+    var statements = try collectLogicalStatements(gpa, body);
+    defer {
+        for (statements.items) |line| gpa.free(line.text);
+        statements.deinit(gpa);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), statements.items.len);
+    try std.testing.expectEqualStrings("do {", statements.items[0].text);
+    try std.testing.expectEqualStrings("i++;", statements.items[1].text);
+    try std.testing.expectEqualStrings("} while (i < 3);", statements.items[2].text);
+}
+
+test "renderJavaClass keeps inner block closing brace" {
+    const gpa = std.testing.allocator;
+
+    const source =
+        \\public class Demo {
+        \\  public static void run() {
+        \\    if (true) {
+        \\      System.debug('x');
+        \\    }
+        \\  }
+        \\}
+    ;
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "if (true) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "    }\n  }\n") != null);
+}
+
+test "renderJavaClass emits inner enum and interface declarations" {
+    const gpa = std.testing.allocator;
+
+    const source =
+        \\public class Demo {
+        \\  public enum HttpVerb {
+        \\    GET,
+        \\    POST,
+        \\    PATCH;
+        \\  }
+        \\  public interface Worker {
+        \\    void run();
+        \\  }
+        \\  public static void use() {
+        \\    HttpVerb verb = HttpVerb.GET;
+        \\  }
+        \\}
+    ;
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public static enum HttpVerb { GET, POST, PATCH }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public static interface Worker {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public void run();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "HttpVerb verb = HttpVerb.GET;") != null);
+}
+
+test "renderJavaClass emits inner class with field-only body" {
+    const gpa = std.testing.allocator;
+
+    const source =
+        \\public class Demo {
+        \\  private class Inner {
+        \\    public Boolean enabled = true;
+        \\  }
+        \\}
+    ;
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "private static class Inner") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "public Boolean enabled = true;") != null);
+}
+
+test "renderJavaClass preserves abstract inner class modifier" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class Demo {
+        \\  private abstract class InnerBase {
+        \\    protected abstract String render();
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "Demo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var output = try renderJavaClass(gpa, parsed, "generated");
+    defer output.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.java, "private static abstract class InnerBase") != null);
 }

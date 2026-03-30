@@ -3,12 +3,15 @@
 //! `get()` / `getSObject()` / `getSObjects()` など Apex の SObject
 //! フィールドアクセスを Java のキャスト付きメソッド呼び出しに変換する。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const helpers = @import("helpers.zig");
 const query = @import("query.zig");
+
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 
 const containsGetAsLikeCall = helpers.containsGetAsLikeCall;
 const extractGetAsCallStringLiteralFieldName = helpers.extractGetAsCallStringLiteralFieldName;
@@ -37,8 +40,8 @@ const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpres
 const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
 const leadingIdentifier = util.leadingIdentifier;
 const nextNonSpace = util.nextNonSpace;
-const splitCallArguments = line_and_expr.splitCallArguments;
-const splitTopLevelCommaExpressions = line_and_expr.splitTopLevelCommaExpressions;
+const splitCallArguments = stmt_mod.splitCallArguments;
+const splitTopLevelCommaExpressions = stmt_mod.splitTopLevelCommaExpressions;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 
@@ -245,178 +248,127 @@ pub fn rewriteGetAsMutationAssignments(gpa: std.mem.Allocator, text: []const u8)
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const call = matchGetAsLikeCall(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                const current_line_start = blk: {
-                    if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |line_break| {
-                        break :blk line_break + 1;
-                    }
-                    break :blk 0;
-                };
-                const call_start = if (call.start < current_line_start) current_line_start else call.start;
-                if (call_start < last_emit) {
-                    i = @max(i + 1, call.end);
-                    continue;
-                }
-                if (call_start >= call.end) {
-                    i = call.end;
-                    continue;
-                }
-
-                const call_text = text[call_start..call.end];
-                var base_expr: []const u8 = "";
-                var field_literal: ?[]const u8 = null;
-                if (startsWithIgnoreCase(call_text, "ApexSwitch.getAs(")) {
-                    const open = std.mem.indexOfScalar(u8, call_text, '(') orelse {
-                        i = call.end;
-                        continue;
-                    };
-                    const close = findMatchingParen(call_text, open) orelse {
-                        i = call.end;
-                        continue;
-                    };
-                    const args_raw = std.mem.trim(u8, call_text[(open + 1)..close], " \t");
-                    var args = try splitCallArguments(gpa, args_raw);
-                    defer args.deinit(gpa);
-                    if (args.items.len < 2) {
-                        i = call.end;
-                        continue;
-                    }
-                    base_expr = std.mem.trim(u8, args.items[0], " \t");
-                    field_literal = parseStringLiteralContents(args.items[1]);
-                } else {
-                    const dot = std.mem.lastIndexOf(u8, call_text, ".getAs(") orelse std.mem.lastIndexOf(u8, call_text, ".get(") orelse {
-                        i = call.end;
-                        continue;
-                    };
-                    base_expr = std.mem.trim(u8, call_text[0..dot], " \t");
-                    field_literal = extractGetAsCallStringLiteralFieldName(call_text);
-                }
-                if (base_expr.len == 0 or field_literal == null) {
-                    i = call.end;
-                    continue;
-                }
-
-                const op_idx = nextNonSpace(text, call.end);
-                if (op_idx >= text.len) {
-                    i = call.end;
-                    continue;
-                }
-
-                if (op_idx + 1 < text.len and text[op_idx] == '=' and text[op_idx + 1] != '=') {
-                    const rhs_start = nextNonSpace(text, op_idx + 1);
-                    const semi = findTopLevelStatementSemicolon(text, rhs_start) orelse {
-                        i = call.end;
-                        continue;
-                    };
-                    const rhs_expr = std.mem.trim(u8, text[rhs_start..semi], " \t");
-                    if (rhs_expr.len == 0) {
-                        i = call.end;
-                        continue;
-                    }
-
-                    try out.appendSlice(gpa, text[last_emit..call_start]);
-                    try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s});", .{ base_expr, field_literal.?, rhs_expr });
-                    replaced = true;
-                    last_emit = semi + 1;
-                    i = semi + 1;
-                    continue;
-                }
-
-                if (op_idx + 1 < text.len and text[op_idx] == '+' and text[op_idx + 1] == '+') {
-                    const semi = nextNonSpace(text, op_idx + 2);
-                    if (semi >= text.len or text[semi] != ';') {
-                        i = call.end;
-                        continue;
-                    }
-                    try out.appendSlice(gpa, text[last_emit..call_start]);
-                    try appendFmt(
-                        gpa,
-                        &out,
-                        "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) + 1);",
-                        .{ base_expr, field_literal.?, call_text },
-                    );
-                    replaced = true;
-                    last_emit = semi + 1;
-                    i = semi + 1;
-                    continue;
-                }
-
-                if (op_idx + 1 < text.len and text[op_idx] == '-' and text[op_idx + 1] == '-') {
-                    const semi = nextNonSpace(text, op_idx + 2);
-                    if (semi >= text.len or text[semi] != ';') {
-                        i = call.end;
-                        continue;
-                    }
-                    try out.appendSlice(gpa, text[last_emit..call_start]);
-                    try appendFmt(
-                        gpa,
-                        &out,
-                        "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) - 1);",
-                        .{ base_expr, field_literal.?, call_text },
-                    );
-                    replaced = true;
-                    last_emit = semi + 1;
-                    i = semi + 1;
-                    continue;
-                }
-
-                i = call.end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const call = matchGetAsLikeCall(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        const current_line_start = blk: {
+            if (std.mem.lastIndexOfScalar(u8, text[0..i], '\n')) |line_break| {
+                break :blk line_break + 1;
+            }
+            break :blk 0;
+        };
+        const call_start = if (call.start < current_line_start) current_line_start else call.start;
+        if (call_start < last_emit) {
+            i = @max(i + 1, call.end);
+            continue;
         }
+        if (call_start >= call.end) {
+            i = call.end;
+            continue;
+        }
+
+        const call_text = text[call_start..call.end];
+        var base_expr: []const u8 = "";
+        var field_literal: ?[]const u8 = null;
+        if (startsWithIgnoreCase(call_text, "ApexSwitch.getAs(")) {
+            const open = std.mem.indexOfScalar(u8, call_text, '(') orelse {
+                i = call.end;
+                continue;
+            };
+            const close = findMatchingParen(call_text, open) orelse {
+                i = call.end;
+                continue;
+            };
+            const args_raw = std.mem.trim(u8, call_text[(open + 1)..close], " \t");
+            var args = try splitCallArguments(gpa, args_raw);
+            defer args.deinit(gpa);
+            if (args.items.len < 2) {
+                i = call.end;
+                continue;
+            }
+            base_expr = std.mem.trim(u8, args.items[0], " \t");
+            field_literal = parseStringLiteralContents(args.items[1]);
+        } else {
+            const dot = std.mem.lastIndexOf(u8, call_text, ".getAs(") orelse std.mem.lastIndexOf(u8, call_text, ".get(") orelse {
+                i = call.end;
+                continue;
+            };
+            base_expr = std.mem.trim(u8, call_text[0..dot], " \t");
+            field_literal = extractGetAsCallStringLiteralFieldName(call_text);
+        }
+        if (base_expr.len == 0 or field_literal == null) {
+            i = call.end;
+            continue;
+        }
+
+        const op_idx = nextNonSpace(text, call.end);
+        if (op_idx >= text.len) {
+            i = call.end;
+            continue;
+        }
+
+        if (op_idx + 1 < text.len and text[op_idx] == '=' and text[op_idx + 1] != '=') {
+            const rhs_start = nextNonSpace(text, op_idx + 1);
+            const semi = findTopLevelStatementSemicolon(text, rhs_start) orelse {
+                i = call.end;
+                continue;
+            };
+            const rhs_expr = std.mem.trim(u8, text[rhs_start..semi], " \t");
+            if (rhs_expr.len == 0) {
+                i = call.end;
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..call_start]);
+            try appendFmt(gpa, &out, "ApexSwitch.set({s}, \"{s}\", {s});", .{ base_expr, field_literal.?, rhs_expr });
+            replaced = true;
+            last_emit = semi + 1;
+            i = semi + 1;
+            continue;
+        }
+
+        if (op_idx + 1 < text.len and text[op_idx] == '+' and text[op_idx + 1] == '+') {
+            const semi = nextNonSpace(text, op_idx + 2);
+            if (semi >= text.len or text[semi] != ';') {
+                i = call.end;
+                continue;
+            }
+            try out.appendSlice(gpa, text[last_emit..call_start]);
+            try appendFmt(
+                gpa,
+                &out,
+                "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) + 1);",
+                .{ base_expr, field_literal.?, call_text },
+            );
+            replaced = true;
+            last_emit = semi + 1;
+            i = semi + 1;
+            continue;
+        }
+
+        if (op_idx + 1 < text.len and text[op_idx] == '-' and text[op_idx + 1] == '-') {
+            const semi = nextNonSpace(text, op_idx + 2);
+            if (semi >= text.len or text[semi] != ';') {
+                i = call.end;
+                continue;
+            }
+            try out.appendSlice(gpa, text[last_emit..call_start]);
+            try appendFmt(
+                gpa,
+                &out,
+                "ApexSwitch.set({s}, \"{s}\", ApexStrings.toInteger({s}) - 1);",
+                .{ base_expr, field_literal.?, call_text },
+            );
+            replaced = true;
+            last_emit = semi + 1;
+            i = semi + 1;
+            continue;
+        }
+
+        i = call.end;
     }
 
     if (!replaced) {
@@ -448,112 +400,62 @@ pub fn rewriteSObjectGetPutAmbiguousArgs(gpa: std.mem.Allocator, text: []const u
     var i: usize = 0;
     var state: CompatibilityState = .normal;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] != '.') {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const method_name = blk: {
-                    if (startsWithIgnoreCase(text[i..], ".get(")) break :blk "get";
-                    break :blk "";
-                };
-                if (method_name.len == 0) {
-                    i += 1;
-                    continue;
-                }
-
-                const open = i + method_name.len + 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const args_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                if (args_raw.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-                var args = try splitCallArguments(gpa, args_raw);
-                defer args.deinit(gpa);
-                if (args.items.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-
-                if (!argLikelyNeedsStringKeyWrap(args.items[0])) {
-                    i = close + 1;
-                    continue;
-                }
-
-                var rebuilt: std.ArrayList(u8) = .empty;
-                defer rebuilt.deinit(gpa);
-                for (args.items, 0..) |arg, idx| {
-                    if (idx != 0) try rebuilt.appendSlice(gpa, ", ");
-                    if (idx == 0) {
-                        const trimmed = std.mem.trim(u8, arg, " \t");
-                        try appendFmt(gpa, &rebuilt, "ApexStrings.valueOf({s})", .{trimmed});
-                    } else {
-                        try rebuilt.appendSlice(gpa, std.mem.trim(u8, arg, " \t"));
-                    }
-                }
-
-                try out.appendSlice(gpa, text[last_emit .. open + 1]);
-                try out.appendSlice(gpa, rebuilt.items);
-                try out.append(gpa, ')');
-                replaced = true;
-                last_emit = close + 1;
-                i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (text[i] != '.') {
+            i += 1;
+            continue;
         }
+
+        const method_name = blk: {
+            if (startsWithIgnoreCase(text[i..], ".get(")) break :blk "get";
+            break :blk "";
+        };
+        if (method_name.len == 0) {
+            i += 1;
+            continue;
+        }
+
+        const open = i + method_name.len + 1;
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+        const args_raw = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        if (args_raw.len == 0) {
+            i = close + 1;
+            continue;
+        }
+        var args = try splitCallArguments(gpa, args_raw);
+        defer args.deinit(gpa);
+        if (args.items.len == 0) {
+            i = close + 1;
+            continue;
+        }
+
+        if (!argLikelyNeedsStringKeyWrap(args.items[0])) {
+            i = close + 1;
+            continue;
+        }
+
+        var rebuilt: std.ArrayList(u8) = .empty;
+        defer rebuilt.deinit(gpa);
+        for (args.items, 0..) |arg, idx| {
+            if (idx != 0) try rebuilt.appendSlice(gpa, ", ");
+            if (idx == 0) {
+                const trimmed = std.mem.trim(u8, arg, " \t");
+                try appendFmt(gpa, &rebuilt, "ApexStrings.valueOf({s})", .{trimmed});
+            } else {
+                try rebuilt.appendSlice(gpa, std.mem.trim(u8, arg, " \t"));
+            }
+        }
+
+        try out.appendSlice(gpa, text[last_emit .. open + 1]);
+        try out.appendSlice(gpa, rebuilt.items);
+        try out.append(gpa, ')');
+        replaced = true;
+        last_emit = close + 1;
+        i = close + 1;
     }
 
     if (!replaced) {
@@ -962,87 +864,37 @@ pub fn rewriteApexStringsValueOfDateGetAs(gpa: std.mem.Allocator, text: []const 
     const marker = "ApexStrings.valueOf(";
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const open = i + marker.len - 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                const field_name = extractGetAsCallStringLiteralFieldName(inner) orelse {
-                    i = close + 1;
-                    continue;
-                };
-                if (!std.ascii.eqlIgnoreCase(field_name, "CloseDate") and !containsIgnoreCaseSubstring(field_name, "close_date")) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, inner);
-                replaced = true;
-                last_emit = close + 1;
-                i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], marker)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and isIdentifierChar(text[i - 1])) {
+            i += 1;
+            continue;
+        }
+
+        const open = i + marker.len - 1;
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+        const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        const field_name = extractGetAsCallStringLiteralFieldName(inner) orelse {
+            i = close + 1;
+            continue;
+        };
+        if (!std.ascii.eqlIgnoreCase(field_name, "CloseDate") and !containsIgnoreCaseSubstring(field_name, "close_date")) {
+            i = close + 1;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, inner);
+        replaced = true;
+        last_emit = close + 1;
+        i = close + 1;
     }
 
     if (!replaced) {
@@ -1154,14 +1006,6 @@ pub fn rewriteGetErrorsArrayAccess(gpa: std.mem.Allocator, text: []const u8) ![]
     return out.toOwnedSlice(gpa);
 }
 
-pub const CompatibilityState = enum {
-    normal,
-    line_comment,
-    block_comment,
-    string_literal,
-    char_literal,
-};
-
 pub fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -1171,123 +1015,72 @@ pub fn rewriteGetAsBooleanCompatibility(gpa: std.mem.Allocator, text: []const u8
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const call = matchGetAsLikeCall(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                if (call.start < last_emit) {
-                    i = @max(i + 1, call.end);
-                    continue;
-                }
-
-                const prev_idx = findPreviousNonWhitespace(text, call.start);
-                const next_idx = findNextNonWhitespace(text, call.end);
-                const call_text = text[call.start..call.end];
-                const field_name = extractGetAsCallStringLiteralFieldName(call_text);
-                const field_is_booleanish = if (field_name) |name| fieldNameLooksBoolean(name) else true;
-                const field_allows_boolean_context = if (field_name) |name| !fieldNameLooksNonNumeric(name) else true;
-                const return_context = isReturnKeywordContext(text, prev_idx);
-
-                var replacement: ?[]u8 = null;
-                var replace_start = call.start;
-                var replace_end = call.end;
-
-                if (field_is_booleanish) {
-                    if (prev_idx) |prev| {
-                        if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
-                            replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
-                            replace_start = prev;
-                        }
-                    }
-                }
-
-                if (replacement == null and field_is_booleanish) {
-                    if (parseBooleanLiteralComparison(text, call.end)) |comparison| {
-                        if (comparison.negated) {
-                            replacement = try std.fmt.allocPrint(
-                                gpa,
-                                "!Boolean.{s}.equals({s})",
-                                .{ if (comparison.value) "TRUE" else "FALSE", call_text },
-                            );
-                        } else {
-                            replacement = try std.fmt.allocPrint(
-                                gpa,
-                                "Boolean.{s}.equals({s})",
-                                .{ if (comparison.value) "TRUE" else "FALSE", call_text },
-                            );
-                        }
-                        replace_end = comparison.end;
-                    }
-                }
-
-                if (replacement == null and field_allows_boolean_context and (!return_context or field_is_booleanish) and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
-                    replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
-                }
-
-                if (replacement) |rewritten| {
-                    defer gpa.free(rewritten);
-                    try out.appendSlice(gpa, text[last_emit..replace_start]);
-                    try out.appendSlice(gpa, rewritten);
-                    replaced = true;
-                    last_emit = replace_end;
-                    i = replace_end;
-                    continue;
-                }
-
-                i = call.end;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const call = matchGetAsLikeCall(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        if (call.start < last_emit) {
+            i = @max(i + 1, call.end);
+            continue;
         }
+
+        const prev_idx = findPreviousNonWhitespace(text, call.start);
+        const next_idx = findNextNonWhitespace(text, call.end);
+        const call_text = text[call.start..call.end];
+        const field_name = extractGetAsCallStringLiteralFieldName(call_text);
+        const field_is_booleanish = if (field_name) |name| fieldNameLooksBoolean(name) else true;
+        const field_allows_boolean_context = if (field_name) |name| !fieldNameLooksNonNumeric(name) else true;
+        const return_context = isReturnKeywordContext(text, prev_idx);
+
+        var replacement: ?[]u8 = null;
+        var replace_start = call.start;
+        var replace_end = call.end;
+
+        if (field_is_booleanish) {
+            if (prev_idx) |prev| {
+                if (text[prev] == '!' and (prev == 0 or text[prev - 1] != '=')) {
+                    replacement = try std.fmt.allocPrint(gpa, "!Boolean.TRUE.equals({s})", .{call_text});
+                    replace_start = prev;
+                }
+            }
+        }
+
+        if (replacement == null and field_is_booleanish) {
+            if (parseBooleanLiteralComparison(text, call.end)) |comparison| {
+                if (comparison.negated) {
+                    replacement = try std.fmt.allocPrint(
+                        gpa,
+                        "!Boolean.{s}.equals({s})",
+                        .{ if (comparison.value) "TRUE" else "FALSE", call_text },
+                    );
+                } else {
+                    replacement = try std.fmt.allocPrint(
+                        gpa,
+                        "Boolean.{s}.equals({s})",
+                        .{ if (comparison.value) "TRUE" else "FALSE", call_text },
+                    );
+                }
+                replace_end = comparison.end;
+            }
+        }
+
+        if (replacement == null and field_allows_boolean_context and (!return_context or field_is_booleanish) and isBooleanOperandContext(text, call.start, call.end, prev_idx, next_idx)) {
+            replacement = try std.fmt.allocPrint(gpa, "Boolean.TRUE.equals({s})", .{call_text});
+        }
+
+        if (replacement) |rewritten| {
+            defer gpa.free(rewritten);
+            try out.appendSlice(gpa, text[last_emit..replace_start]);
+            try out.appendSlice(gpa, rewritten);
+            replaced = true;
+            last_emit = replace_end;
+            i = replace_end;
+            continue;
+        }
+
+        i = call.end;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -1342,126 +1135,75 @@ pub fn rewriteGetAsStringMethodCalls(gpa: std.mem.Allocator, text: []const u8) !
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const call = matchGetAsLikeCall(text, i) orelse {
-                    i += 1;
-                    continue;
-                };
-                if (call.start < last_emit) {
-                    i = @max(i + 1, call.end);
-                    continue;
-                }
-
-                const method_dot = findNextNonWhitespace(text, call.end) orelse {
-                    i = call.end;
-                    continue;
-                };
-                if (method_dot >= text.len or text[method_dot] != '.') {
-                    i = call.end;
-                    continue;
-                }
-
-                var matched: ?StringMethod = null;
-                for (methods) |method| {
-                    if (startsWithIgnoreCase(text[method_dot..], method.suffix)) {
-                        matched = method;
-                        break;
-                    }
-                }
-                if (matched == null) {
-                    i = call.end;
-                    continue;
-                }
-
-                const method = matched.?;
-                const method_end = method_dot + method.suffix.len;
-                if (method_end < text.len and isIdentifierChar(text[method_end])) {
-                    i = call.end;
-                    continue;
-                }
-
-                var open = method_end;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i = call.end;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i = call.end;
-                    continue;
-                };
-
-                const call_text = text[call.start..call.end];
-                const args = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                const replacement = switch (method.kind) {
-                    .wrap_valueof => if (args.len == 0)
-                        try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}()", .{ call_text, method.method_name })
-                    else
-                        try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}({s})", .{ call_text, method.method_name, args }),
-                    .apex_static => if (args.len == 0)
-                        try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s})", .{ method.method_name, call_text })
-                    else
-                        try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s}, {s})", .{ method.method_name, call_text, args }),
-                };
-                defer gpa.free(replacement);
-
-                try out.appendSlice(gpa, text[last_emit..call.start]);
-                try out.appendSlice(gpa, replacement);
-                replaced = true;
-                last_emit = close + 1;
-                i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const call = matchGetAsLikeCall(text, i) orelse {
+            i += 1;
+            continue;
+        };
+        if (call.start < last_emit) {
+            i = @max(i + 1, call.end);
+            continue;
         }
+
+        const method_dot = findNextNonWhitespace(text, call.end) orelse {
+            i = call.end;
+            continue;
+        };
+        if (method_dot >= text.len or text[method_dot] != '.') {
+            i = call.end;
+            continue;
+        }
+
+        var matched: ?StringMethod = null;
+        for (methods) |method| {
+            if (startsWithIgnoreCase(text[method_dot..], method.suffix)) {
+                matched = method;
+                break;
+            }
+        }
+        if (matched == null) {
+            i = call.end;
+            continue;
+        }
+
+        const method = matched.?;
+        const method_end = method_dot + method.suffix.len;
+        if (method_end < text.len and isIdentifierChar(text[method_end])) {
+            i = call.end;
+            continue;
+        }
+
+        var open = method_end;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') {
+            i = call.end;
+            continue;
+        }
+        const close = findMatchingParen(text, open) orelse {
+            i = call.end;
+            continue;
+        };
+
+        const call_text = text[call.start..call.end];
+        const args = std.mem.trim(u8, text[(open + 1)..close], " \t");
+        const replacement = switch (method.kind) {
+            .wrap_valueof => if (args.len == 0)
+                try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}()", .{ call_text, method.method_name })
+            else
+                try std.fmt.allocPrint(gpa, "ApexStrings.valueOf({s}).{s}({s})", .{ call_text, method.method_name, args }),
+            .apex_static => if (args.len == 0)
+                try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s})", .{ method.method_name, call_text })
+            else
+                try std.fmt.allocPrint(gpa, "ApexStrings.{s}({s}, {s})", .{ method.method_name, call_text, args }),
+        };
+        defer gpa.free(replacement);
+
+        try out.appendSlice(gpa, text[last_emit..call.start]);
+        try out.appendSlice(gpa, replacement);
+        replaced = true;
+        last_emit = close + 1;
+        i = close + 1;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -1479,116 +1221,65 @@ pub fn rewriteOverloadedStringIdCallArgs(gpa: std.mem.Allocator, text: []const u
     var i: usize = 0;
 
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                const marker = blk: {
-                    if (startsWithIgnoreCase(text[i..], ".withContact(")) break :blk ".withContact(";
-                    if (startsWithIgnoreCase(text[i..], ".withAccount(")) break :blk ".withAccount(";
-                    if (startsWithIgnoreCase(text[i..], "withContact(")) break :blk "withContact(";
-                    if (startsWithIgnoreCase(text[i..], "withAccount(")) break :blk "withAccount(";
-                    if (startsWithIgnoreCase(text[i..], ".getOppContactRoles(")) break :blk ".getOppContactRoles(";
-                    if (startsWithIgnoreCase(text[i..], "getOppContactRoles(")) break :blk "getOppContactRoles(";
-                    if (startsWithIgnoreCase(text[i..], ".getContacts(")) break :blk ".getContacts(";
-                    if (startsWithIgnoreCase(text[i..], "getContacts(")) break :blk "getContacts(";
-                    if (startsWithIgnoreCase(text[i..], ".getOCRs(")) break :blk ".getOCRs(";
-                    if (startsWithIgnoreCase(text[i..], "getOCRs(")) break :blk "getOCRs(";
-                    if (startsWithIgnoreCase(text[i..], ".retrieveSchedulesUsingApi(")) break :blk ".retrieveSchedulesUsingApi(";
-                    if (startsWithIgnoreCase(text[i..], "retrieveSchedulesUsingApi(")) break :blk "retrieveSchedulesUsingApi(";
-                    if (startsWithIgnoreCase(text[i..], "getRecurringDonationBuilder(")) break :blk "getRecurringDonationBuilder(";
-                    break :blk "";
-                };
-                if (marker.len == 0) {
-                    i += 1;
-                    continue;
-                }
-                if (marker[0] != '.' and i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
-                    i += 1;
-                    continue;
-                }
-
-                const open = i + marker.len - 1;
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-                const arg_raw = text[(open + 1)..close];
-                const arg = std.mem.trim(u8, arg_raw, " \t");
-                if (arg.len == 0 or std.mem.indexOfScalar(u8, arg, ',') != null) {
-                    i = close + 1;
-                    continue;
-                }
-                if (startsWithIgnoreCase(arg, "ApexStrings.valueOf(")) {
-                    i = close + 1;
-                    continue;
-                }
-                var looks_like_id_getter = std.mem.indexOf(u8, arg, ".getAs(\"Id\")") != null or
-                    std.mem.indexOf(u8, arg, ".getAs(\"id\")") != null;
-                if (!looks_like_id_getter) {
-                    if (extractGetAsCallStringLiteralFieldName(arg)) |field_name| {
-                        looks_like_id_getter = fieldNameLooksIdLike(field_name);
-                    }
-                }
-                if (!looks_like_id_getter) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit .. open + 1]);
-                try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
-                replaced = true;
-                last_emit = close;
-                i = close;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        const marker = blk: {
+            if (startsWithIgnoreCase(text[i..], ".withContact(")) break :blk ".withContact(";
+            if (startsWithIgnoreCase(text[i..], ".withAccount(")) break :blk ".withAccount(";
+            if (startsWithIgnoreCase(text[i..], "withContact(")) break :blk "withContact(";
+            if (startsWithIgnoreCase(text[i..], "withAccount(")) break :blk "withAccount(";
+            if (startsWithIgnoreCase(text[i..], ".getOppContactRoles(")) break :blk ".getOppContactRoles(";
+            if (startsWithIgnoreCase(text[i..], "getOppContactRoles(")) break :blk "getOppContactRoles(";
+            if (startsWithIgnoreCase(text[i..], ".getContacts(")) break :blk ".getContacts(";
+            if (startsWithIgnoreCase(text[i..], "getContacts(")) break :blk "getContacts(";
+            if (startsWithIgnoreCase(text[i..], ".getOCRs(")) break :blk ".getOCRs(";
+            if (startsWithIgnoreCase(text[i..], "getOCRs(")) break :blk "getOCRs(";
+            if (startsWithIgnoreCase(text[i..], ".retrieveSchedulesUsingApi(")) break :blk ".retrieveSchedulesUsingApi(";
+            if (startsWithIgnoreCase(text[i..], "retrieveSchedulesUsingApi(")) break :blk "retrieveSchedulesUsingApi(";
+            if (startsWithIgnoreCase(text[i..], "getRecurringDonationBuilder(")) break :blk "getRecurringDonationBuilder(";
+            break :blk "";
+        };
+        if (marker.len == 0) {
+            i += 1;
+            continue;
         }
+        if (marker[0] != '.' and i > 0 and (isIdentifierChar(text[i - 1]) or text[i - 1] == '.')) {
+            i += 1;
+            continue;
+        }
+
+        const open = i + marker.len - 1;
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+        const arg_raw = text[(open + 1)..close];
+        const arg = std.mem.trim(u8, arg_raw, " \t");
+        if (arg.len == 0 or std.mem.indexOfScalar(u8, arg, ',') != null) {
+            i = close + 1;
+            continue;
+        }
+        if (startsWithIgnoreCase(arg, "ApexStrings.valueOf(")) {
+            i = close + 1;
+            continue;
+        }
+        var looks_like_id_getter = std.mem.indexOf(u8, arg, ".getAs(\"Id\")") != null or
+            std.mem.indexOf(u8, arg, ".getAs(\"id\")") != null;
+        if (!looks_like_id_getter) {
+            if (extractGetAsCallStringLiteralFieldName(arg)) |field_name| {
+                looks_like_id_getter = fieldNameLooksIdLike(field_name);
+            }
+        }
+        if (!looks_like_id_getter) {
+            i = close + 1;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit .. open + 1]);
+        try appendFmt(gpa, &out, "ApexStrings.valueOf({s})", .{arg});
+        replaced = true;
+        last_emit = close;
+        i = close;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -1605,109 +1296,58 @@ pub fn rewriteEnhancedForGetAsIterables(gpa: std.mem.Allocator, text: []const u8
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                if (!startsWithWordIgnoreCase(text[i..], "for")) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-
-                var open = i + "for".len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-
-                const header = text[(open + 1)..close];
-                const colon = findTopLevelColon(header) orelse {
-                    i = close + 1;
-                    continue;
-                };
-                const left = std.mem.trim(u8, header[0..colon], " \t");
-                const right = std.mem.trim(u8, header[(colon + 1)..], " \t");
-                const right_is_query = startsWithIgnoreCase(right, "Database.query(") or startsWithIgnoreCase(right, "Database.queryWithBinds(");
-                if (right.len == 0 or (!containsGetAsLikeCall(right) and !right_is_query)) {
-                    i = close + 1;
-                    continue;
-                }
-                if (startsWithIgnoreCase(right, "(java.util.List<") or startsWithIgnoreCase(right, "(List<")) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const element_type = inferEnhancedForElementType(left) orelse {
-                    i = close + 1;
-                    continue;
-                };
-                const replacement = try std.fmt.allocPrint(gpa, "(java.util.List<{s}>) {s}", .{ element_type, right });
-                defer gpa.free(replacement);
-
-                try out.appendSlice(gpa, text[last_emit .. open + 1 + colon + 1]);
-                try out.append(gpa, ' ');
-                try out.appendSlice(gpa, replacement);
-                replaced = true;
-                last_emit = close;
-                i = close;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithWordIgnoreCase(text[i..], "for")) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and isIdentifierChar(text[i - 1])) {
+            i += 1;
+            continue;
+        }
+
+        var open = i + "for".len;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') {
+            i += 1;
+            continue;
+        }
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+
+        const header = text[(open + 1)..close];
+        const colon = findTopLevelColon(header) orelse {
+            i = close + 1;
+            continue;
+        };
+        const left = std.mem.trim(u8, header[0..colon], " \t");
+        const right = std.mem.trim(u8, header[(colon + 1)..], " \t");
+        const right_is_query = startsWithIgnoreCase(right, "Database.query(") or startsWithIgnoreCase(right, "Database.queryWithBinds(");
+        if (right.len == 0 or (!containsGetAsLikeCall(right) and !right_is_query)) {
+            i = close + 1;
+            continue;
+        }
+        if (startsWithIgnoreCase(right, "(java.util.List<") or startsWithIgnoreCase(right, "(List<")) {
+            i = close + 1;
+            continue;
+        }
+
+        const element_type = inferEnhancedForElementType(left) orelse {
+            i = close + 1;
+            continue;
+        };
+        const replacement = try std.fmt.allocPrint(gpa, "(java.util.List<{s}>) {s}", .{ element_type, right });
+        defer gpa.free(replacement);
+
+        try out.appendSlice(gpa, text[last_emit .. open + 1 + colon + 1]);
+        try out.append(gpa, ' ');
+        try out.appendSlice(gpa, replacement);
+        replaced = true;
+        last_emit = close;
+        i = close;
     }
 
     if (!replaced) return gpa.dupe(u8, text);
@@ -1797,100 +1437,50 @@ pub fn rewriteNestedIdApexSwitchGetAs(gpa: std.mem.Allocator, text: []const u8) 
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+        if (skipNonNormal(text, &i, &state)) continue;
 
-                var open = i + marker.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-
-                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
-                defer args.deinit(gpa);
-                if (args.items.len < 2) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const first = std.mem.trim(u8, args.items[0], " \t");
-                if (!isIdGetAsSuffix(first)) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, first);
-                replaced = true;
-                last_emit = close + 1;
-                i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+        if (!startsWithIgnoreCase(text[i..], marker)) {
+            i += 1;
+            continue;
         }
+        if (i > 0 and isIdentifierChar(text[i - 1])) {
+            i += 1;
+            continue;
+        }
+        if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+            i += 1;
+            continue;
+        }
+
+        var open = i + marker.len;
+        while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+        if (open >= text.len or text[open] != '(') {
+            i += 1;
+            continue;
+        }
+        const close = findMatchingParen(text, open) orelse {
+            i += 1;
+            continue;
+        };
+
+        var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+        defer args.deinit(gpa);
+        if (args.items.len < 2) {
+            i = close + 1;
+            continue;
+        }
+
+        const first = std.mem.trim(u8, args.items[0], " \t");
+        if (!isIdGetAsSuffix(first)) {
+            i = close + 1;
+            continue;
+        }
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.appendSlice(gpa, first);
+        replaced = true;
+        last_emit = close + 1;
+        i = close + 1;
     }
 
     if (!replaced) return gpa.dupe(u8, text);

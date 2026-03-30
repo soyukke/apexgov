@@ -101,18 +101,28 @@ fn runCheckOnTempSources(
     sources: []const SourceFile,
     cfg: config.Config,
 ) !std.ArrayList(model.Finding) {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var findings: std.ArrayList(model.Finding) = .empty;
+    errdefer model.deinitFindings(gpa, &findings);
 
-    for (sources) |file| {
-        try tmp.dir.writeFile(.{ .sub_path = file.name, .data = file.source });
+    // Build ApexFile slice directly from in-memory sources (no file I/O).
+    var files = try std.ArrayList(ApexFile).initCapacity(gpa, sources.len);
+    defer files.deinit(gpa);
+    for (sources) |src| {
+        files.appendAssumeCapacity(.{ .path = src.name, .content = src.source });
     }
 
-    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
-    defer gpa.free(path);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    const roots = [_][]const u8{path};
-    return runWithConfig(gpa, &roots, cfg);
+    var type_relations = try collectTypeRelations(arena_alloc, files.items);
+    var method_summaries = try buildMethodSummaries(arena_alloc, files.items, &type_relations);
+
+    for (files.items) |file| {
+        try scanContent(gpa, file.path, file.content, cfg, &method_summaries, &type_relations, &findings);
+    }
+
+    return findings;
 }
 
 fn findFindingByRule(findings: []const model.Finding, rule_id: []const u8) ?model.Finding {

@@ -113,6 +113,27 @@ const rewriteTokenOverloadCalls = parser.rewriteTokenOverloadCalls;
 const rewriteTypedNullSchemaFieldCollections = parser.rewriteTypedNullSchemaFieldCollections;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 
+const RewriteFn = *const fn (std.mem.Allocator, []const u8) anyerror![]u8;
+
+const RewriteStep = union(enum) {
+    rewrite: RewriteFn,
+    literal: struct { from: []const u8, to: []const u8 },
+};
+
+fn runPipeline(gpa: std.mem.Allocator, input: []u8, steps: []const RewriteStep) ![]u8 {
+    var current: []u8 = input;
+    errdefer gpa.free(current);
+    for (steps) |step| {
+        const next: []u8 = switch (step) {
+            .rewrite => |f| try @call(.auto, f, .{ gpa, current }),
+            .literal => |lit| try replaceLiteralAll(gpa, current, lit.from, lit.to),
+        };
+        gpa.free(current);
+        current = next;
+    }
+    return current;
+}
+
 pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     const patterns = [_]struct {
         from: []const u8,
@@ -156,7 +177,10 @@ pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "Batch_Data_Entry_Settings__c.getValues(UserInfo.getUserId())", .to = "UTIL_CustomSettingsFacade.getBDESettings()" },
         .{ .from = "Data_Import_Settings__c.getInstance()", .to = "UTIL_CustomSettingsFacade.getDataImportSettings()" },
         .{ .from = "getRecurringDonationBuilder(getContact().getAs(\"Id\"))", .to = "getRecurringDonationBuilder(ApexStrings.valueOf(getContact().getAs(\"Id\")))" },
-        .{ .from = "return getRecurringDonationBuilder(c.getAs(\"Id\"));", .to = "return getRecurringDonationBuilder(ApexStrings.valueOf(c.getAs(\"Id\")));", },
+        .{
+            .from = "return getRecurringDonationBuilder(c.getAs(\"Id\"));",
+            .to = "return getRecurringDonationBuilder(ApexStrings.valueOf(c.getAs(\"Id\")));",
+        },
         .{ .from = ".withAccount(rdOld.getAs(\"npe03__Organization__c\"))", .to = ".withAccount(ApexStrings.valueOf(rdOld.getAs(\"npe03__Organization__c\")))" },
         .{ .from = "RD2_Constants.FirstInstallmentOppCreateOptions.ASynchronous", .to = "RD2_Constants.FirstInstallmentOppCreateOptions.ASYNCHRONOUS" },
         .{ .from = "RD_RecurringDonations.RecurringDonationCloseOptions.Mark_Opportunities_Closed_Lost.name()", .to = "\"Mark_Opportunities_Closed_Lost\"" },
@@ -435,8 +459,8 @@ pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "(Callable) Type.forName(", .to = "(apexemu.runtime.System.Callable) Type.forName(" },
         .{ .from = "Callable callableApi = (apexemu.runtime.System.Callable)", .to = "apexemu.runtime.System.Callable callableApi = (apexemu.runtime.System.Callable)" },
         .{ .from = "Callable npspApi = (apexemu.runtime.System.Callable)", .to = "apexemu.runtime.System.Callable npspApi = (apexemu.runtime.System.Callable)" },
-        .{ .from = "this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\"));", .to = "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));"},
-        .{ .from = "return this.batch.getAs(\"Latest_Apex_Job_Id__c\");", .to = "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");"},
+        .{ .from = "this.asyncApexJob = selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\"));", .to = "this.asyncApexJob = (this.batch == null ? null : selectAsyncApexJobBy(this.batch.getAs(\"Latest_Apex_Job_Id__c\")));" },
+        .{ .from = "return this.batch.getAs(\"Latest_Apex_Job_Id__c\");", .to = "return this.batch == null ? null : this.batch.getAs(\"Latest_Apex_Job_Id__c\");" },
         .{ .from = "new ArrayList<String>(ApexCollections.listOf((Object) null))", .to = "new ArrayList<String>(ApexCollections.listOf((String) null))" },
         .{ .from = "sender.email", .to = "sender.getAs(\"email\")" },
         .{ .from = "\"bPl\", bPl", .to = "\"bPl\", bPL" },
@@ -1491,385 +1515,156 @@ pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         out.deinit(gpa);
         break :blk try gpa.dupe(u8, text);
     } else try out.toOwnedSlice(gpa);
-    errdefer gpa.free(base);
-
-    const schema_rewritten = try rewriteSchemaObjectNamespaceAccess(gpa, base);
-    defer gpa.free(schema_rewritten);
-
-    const field_rewritten = try rewriteFieldNamespacePropertyAccess(gpa, schema_rewritten);
-    defer gpa.free(field_rewritten);
-
-    const token_rewritten = try rewriteTokenOverloadCalls(gpa, field_rewritten);
-    defer gpa.free(token_rewritten);
-
-    const pseudo_namespace_rewritten = try rewritePseudoSObjectNamespaceAccess(gpa, token_rewritten);
-    defer gpa.free(pseudo_namespace_rewritten);
-
-    const typed_null_rewritten = try rewriteTypedNullSchemaFieldCollections(gpa, pseudo_namespace_rewritten);
-    defer gpa.free(typed_null_rewritten);
-
-    const array_rewritten = try rewriteApexArrayStyleListLiterals(gpa, typed_null_rewritten);
-    defer gpa.free(array_rewritten);
-
-    const local_init_rewritten = try rewriteMethodLocalDefaultInitializers(gpa, array_rewritten);
-    gpa.free(base);
-    defer gpa.free(local_init_rewritten);
-
-    const visualforce_component_fixed = try rewriteVisualforceComponentQualifiedAccess(gpa, local_init_rewritten);
-    defer gpa.free(visualforce_component_fixed);
-
-    const sobject_class_name_fixed = try rewriteConstructedSObjectTypeClassGetNameCalls(gpa, visualforce_component_fixed);
-    defer gpa.free(sobject_class_name_fixed);
-
-    const compatibility_rewritten = try rewriteResidualCompatibilityArtifacts(gpa, sobject_class_name_fixed);
-    defer gpa.free(compatibility_rewritten);
-
-    const erased_overload_compatible = try rewriteErasedOverloadCompatibility(gpa, compatibility_rewritten);
-    defer gpa.free(erased_overload_compatible);
-
-    const npsp_alias_compatible = try rewriteNpspAliasCompat(gpa, erased_overload_compatible);
-    defer gpa.free(npsp_alias_compatible);
-
-    const label_compatible = try rewriteLabelNamespaceAccess(gpa, npsp_alias_compatible);
-    defer gpa.free(label_compatible);
-
-    const database_compatible = try rewriteLowercaseDatabaseNamespaceAccess(gpa, label_compatible);
-    defer gpa.free(database_compatible);
-
-    const custom_sobject_compatible = try rewriteCustomSchemaSObjectTypeAccess(gpa, database_compatible);
-    defer gpa.free(custom_sobject_compatible);
-
-    const bare_custom_sobject_compatible = try rewriteBareCustomSObjectTypeAccess(gpa, custom_sobject_compatible);
-    defer gpa.free(bare_custom_sobject_compatible);
-
-    const bare_standard_sobject_compatible = try rewriteBareStandardSObjectTypeAccess(gpa, bare_custom_sobject_compatible);
-    defer gpa.free(bare_standard_sobject_compatible);
-
-    const custom_settings_singleton_compatible = try rewriteBareCustomSettingsSingletonAccess(gpa, bare_standard_sobject_compatible);
-    defer gpa.free(custom_settings_singleton_compatible);
-
-    const type_path_get_as_compatible = try rewriteTypePathGetAsAccess(gpa, custom_settings_singleton_compatible);
-    defer gpa.free(type_path_get_as_compatible);
-
-    const apexpages_nested_type_compatible = try rewriteApexPagesNestedTypeAliases(gpa, type_path_get_as_compatible);
-    defer gpa.free(apexpages_nested_type_compatible);
-
-    const sobjecttype_var_get_as_compatible = try rewriteSObjectTypeVariableGetAsAccess(gpa, apexpages_nested_type_compatible);
-    defer gpa.free(sobjecttype_var_get_as_compatible);
-
-    const bare_custom_sobjecttype_arg_compatible = try rewriteBareCustomSObjectTypeArgCalls(gpa, sobjecttype_var_get_as_compatible);
-    defer gpa.free(bare_custom_sobjecttype_arg_compatible);
-
-    const fieldset_get_as_compatible = try replaceLiteralAll(gpa, bare_custom_sobjecttype_arg_compatible, ".fieldSets.getAs(", ".fieldSets.get(");
-    defer gpa.free(fieldset_get_as_compatible);
-
-    const collection_view_compatible = try rewriteCollectionViewPropertyAccess(gpa, fieldset_get_as_compatible);
-    defer gpa.free(collection_view_compatible);
-
-    const values_field_compatible = try rewriteValuesFieldPseudoCalls(gpa, collection_view_compatible);
-    defer gpa.free(values_field_compatible);
-
-    const valueof_remove_compatible = try rewriteValueOfRemoveCalls(gpa, values_field_compatible);
-    defer gpa.free(valueof_remove_compatible);
-
-    const string_instance_compatible = try rewriteApexStringInstanceMethods(gpa, valueof_remove_compatible);
-    defer gpa.free(string_instance_compatible);
-
-    const legacy_tokens_compatible = try rewriteLegacyLiteralTokens(gpa, string_instance_compatible);
-    defer gpa.free(legacy_tokens_compatible);
-
-    const schema_enum_constant_compatible = try rewriteBareSchemaEnumConstantAccess(gpa, legacy_tokens_compatible);
-    defer gpa.free(schema_enum_constant_compatible);
-
-    const broken_zero_length_list_compatible = try rewriteBrokenZeroLengthListInitializers(gpa, schema_enum_constant_compatible);
-    defer gpa.free(broken_zero_length_list_compatible);
-
-    const first_or_null_list_compatible = try rewriteQuerySingletonCallsAssignedToLists(gpa, broken_zero_length_list_compatible);
-    defer gpa.free(first_or_null_list_compatible);
-
-    const first_or_null_declared_list_var_compatible = try rewriteQuerySingletonAssignmentsToDeclaredListVars(gpa, first_or_null_list_compatible);
-    defer gpa.free(first_or_null_declared_list_var_compatible);
-
-    const declared_sobject_query_compatible = try rewriteDeclaredSObjectQueryAssignments(gpa, first_or_null_declared_list_var_compatible);
-    defer gpa.free(declared_sobject_query_compatible);
-
-    const querywithbinds_list_chain_compatible = try rewriteQueryWithBindsListChaining(gpa, declared_sobject_query_compatible);
-    defer gpa.free(querywithbinds_list_chain_compatible);
-
-    const dynamic_field_name_get_compatible = try rewriteDynamicFieldNameGetCalls(gpa, querywithbinds_list_chain_compatible);
-    defer gpa.free(dynamic_field_name_get_compatible);
-
-    const get_as_mutation_compatible = try rewriteGetAsMutationAssignments(gpa, dynamic_field_name_get_compatible);
-    defer gpa.free(get_as_mutation_compatible);
-
-    const custom_sobject_member_compatible = try rewriteCustomSObjectMemberAccess(gpa, get_as_mutation_compatible);
-    defer gpa.free(custom_sobject_member_compatible);
-
-    const sobject_get_put_compatible = try rewriteSObjectGetPutAmbiguousArgs(gpa, custom_sobject_member_compatible);
-    defer gpa.free(sobject_get_put_compatible);
-
-    const sobject_boolean_property_compatible = try rewriteKnownSObjectBooleanPropertyAccess(gpa, sobject_get_put_compatible);
-    defer gpa.free(sobject_boolean_property_compatible);
-
-    const boolean_get_operands_compatible = try rewriteBooleanGetOperands(gpa, sobject_boolean_property_compatible);
-    defer gpa.free(boolean_get_operands_compatible);
-
-    const boolean_equals_comparison_compatible = try rewriteBooleanEqualsComparisonArtifacts(gpa, boolean_get_operands_compatible);
-    defer gpa.free(boolean_equals_comparison_compatible);
-
-    const test_inner_visibility_compatible = try rewritePrivateStaticNestedTestClasses(gpa, boolean_equals_comparison_compatible);
-    defer gpa.free(test_inner_visibility_compatible);
-
-    const long_assignment_compatible = try rewriteLongAssignmentsFromIntegerIdentifiers(gpa, test_inner_visibility_compatible);
-    defer gpa.free(long_assignment_compatible);
-
-    const boxed_numeric_literal_compatible = try rewriteBoxedNumericLiteralCompatibility(gpa, long_assignment_compatible);
-    defer gpa.free(boxed_numeric_literal_compatible);
-
-    const deepclone_compatible = try rewriteInstanceListDeepCloneCalls(gpa, boxed_numeric_literal_compatible);
-    defer gpa.free(deepclone_compatible);
-
-    const field_displaytype_compatible = try rewriteFieldDisplayTypeCalls(gpa, deepclone_compatible);
-    defer gpa.free(field_displaytype_compatible);
-
-    const numeric_get_as_compatible = try rewriteGetAsNumericCompatibility(gpa, field_displaytype_compatible);
-    defer gpa.free(numeric_get_as_compatible);
-
-    const string_concat_get_as_compatible = try rewriteGetAsStringConcatenationCompatibility(gpa, numeric_get_as_compatible);
-    defer gpa.free(string_concat_get_as_compatible);
-
-    const date_get_as_compatible = try rewriteGetAsDateMethodCalls(gpa, string_concat_get_as_compatible);
-    defer gpa.free(date_get_as_compatible);
-
-    const date_valueof_getas_compatible = try rewriteApexStringsValueOfDateGetAs(gpa, date_get_as_compatible);
-    defer gpa.free(date_valueof_getas_compatible);
-
-    const setscale_compatible = try rewriteDecimalSetScaleCalls(gpa, date_valueof_getas_compatible);
-    defer gpa.free(setscale_compatible);
-
-    const double_datetime_delta_compatible = try rewriteDoubleDateTimeDeltaAssignments(gpa, setscale_compatible);
-    defer gpa.free(double_datetime_delta_compatible);
-
-    const page_compatible = try rewritePageNamespaceAccess(gpa, double_datetime_delta_compatible);
-    defer gpa.free(page_compatible);
-
-    const bare_sobjecttype_compatible = try rewriteBareSObjectTypeAccess(gpa, page_compatible);
-    defer gpa.free(bare_sobjecttype_compatible);
-
-    const sobject_name_token_compatible = try rewriteSObjectFieldNameObjectNameUses(gpa, bare_sobjecttype_compatible);
-    defer gpa.free(sobject_name_token_compatible);
-
-    const record_type_info_compatible = try rewriteRecordTypeInfoMapDeclarations(gpa, sobject_name_token_compatible);
-    defer gpa.free(record_type_info_compatible);
-
-    const record_type_info_usage_compatible = try rewriteRecordTypeInfoUsages(gpa, record_type_info_compatible);
-    defer gpa.free(record_type_info_usage_compatible);
-
-    const foreach_compare_compatible = try rewriteEnhancedForCompareArtifacts(gpa, record_type_info_usage_compatible);
-    defer gpa.free(foreach_compare_compatible);
-
-    const foreach_compatible = try rewriteEnhancedForGetAsIterables(gpa, foreach_compare_compatible);
-    defer gpa.free(foreach_compatible);
-
-    const boolean_compatible = try rewriteGetAsBooleanCompatibility(gpa, foreach_compatible);
-    defer gpa.free(boolean_compatible);
-
-    const boolean_wrapper_compatible = try replaceLiteralAll(gpa, boolean_compatible, "Boolean.false", "Boolean.FALSE");
-    defer gpa.free(boolean_wrapper_compatible);
-
-    const boolean_wrapper_compatible2 = try replaceLiteralAll(gpa, boolean_wrapper_compatible, "Boolean.true", "Boolean.TRUE");
-    defer gpa.free(boolean_wrapper_compatible2);
-
-    const field_namespace_compatible = try rewriteSchemaFieldNamespaceGetAsMethodCalls(gpa, boolean_wrapper_compatible2);
-    defer gpa.free(field_namespace_compatible);
-
-    const describe_get_as_compatible = try rewriteDescribeGetAsAliases(gpa, field_namespace_compatible);
-    defer gpa.free(describe_get_as_compatible);
-
-    const unary_plus_string_compatible = try rewriteUnaryPlusStringLiterals(gpa, describe_get_as_compatible);
-    defer gpa.free(unary_plus_string_compatible);
-
-    const enum_name_compatible = try rewriteGetAsEnumNameCalls(gpa, unary_plus_string_compatible);
-    defer gpa.free(enum_name_compatible);
-
-    const boolean_isempty_compatible = try rewriteBooleanEqualsIsEmptyArtifacts(gpa, enum_name_compatible);
-    defer gpa.free(boolean_isempty_compatible);
-
-    const boolean_equals_invocation_compatible = try rewriteBooleanEqualsTrailingInvocationArtifacts(gpa, boolean_isempty_compatible);
-    defer gpa.free(boolean_equals_invocation_compatible);
-
-    const object_equality_compatible = try rewriteObjectEqualityWithDeclaredObjects(gpa, boolean_equals_invocation_compatible);
-    defer gpa.free(object_equality_compatible);
-
-    const numeric_valueof_object_compatible = try rewriteNumericValueOfObjectIdentifiers(gpa, object_equality_compatible);
-    defer gpa.free(numeric_valueof_object_compatible);
-
-    const map_values_compatible = try rewriteValuesMethodCollectionViews(gpa, numeric_valueof_object_compatible);
-    defer gpa.free(map_values_compatible);
-
-    const get_as_collection_compatible = try rewriteGetAsCollectionAccessors(gpa, map_values_compatible);
-    defer gpa.free(get_as_collection_compatible);
-
-    const negated_size_compatible = try rewriteNegatedSizeEqualityArtifacts(gpa, get_as_collection_compatible);
-    defer gpa.free(negated_size_compatible);
-
-    const get_as_string_method_compatible = try rewriteGetAsStringMethodCalls(gpa, negated_size_compatible);
-    defer gpa.free(get_as_string_method_compatible);
-
-    const sobject_get_put_late_compatible = try rewriteSObjectGetPutAmbiguousArgs(gpa, get_as_string_method_compatible);
-    defer gpa.free(sobject_get_put_late_compatible);
-
-    const overloaded_string_id_compatible = try rewriteOverloadedStringIdCallArgs(gpa, sobject_get_put_late_compatible);
-    defer gpa.free(overloaded_string_id_compatible);
-
-    const get_errors_array_compatible = try rewriteGetErrorsArrayAccess(gpa, overloaded_string_id_compatible);
-    defer gpa.free(get_errors_array_compatible);
-
-    const get_as_field_add_error_compatible = try rewriteGetAsFieldAddErrorCalls(gpa, get_errors_array_compatible);
-    defer gpa.free(get_as_field_add_error_compatible);
-
-    const substring_compatible = try replaceLiteralAll(gpa, get_as_field_add_error_compatible, ".subString(", ".substring(");
-    defer gpa.free(substring_compatible);
-
-    const broken_inline_set_compatible = try rewriteBrokenInlineMethodAssignmentsInSObjectSet(gpa, substring_compatible);
-    defer gpa.free(broken_inline_set_compatible);
-
-    const compareto_return_compatible = try rewriteIntegerCompareToDoubleReturns(gpa, broken_inline_set_compatible);
-    defer gpa.free(compareto_return_compatible);
-
-    const local_wait_compatible = try rewriteLocalStaticWaitCalls(gpa, compareto_return_compatible);
-    defer gpa.free(local_wait_compatible);
-
-    const final_remove_chain_compatible = try replaceLiteralAll(
-        gpa,
-        local_wait_compatible,
-        "ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()).remove(\"\\\"\")",
-        "ApexStrings.remove(ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()), \"\\\"\")",
-    );
-    defer gpa.free(final_remove_chain_compatible);
-
-    const list_return_compatible = try rewriteListMethodQuerySingletonReturns(gpa, final_remove_chain_compatible);
-    defer gpa.free(list_return_compatible);
-
-    const first_or_null_scalar_compatible = try rewriteFirstOrNullScalarWrappers(gpa, list_return_compatible);
-    defer gpa.free(first_or_null_scalar_compatible);
-
-    const nested_id_get_as_compatible = try rewriteNestedIdApexSwitchGetAs(gpa, first_or_null_scalar_compatible);
-    defer gpa.free(nested_id_get_as_compatible);
-
-    const final_family_cleanup = try rewriteFinalCompatibilityCleanup(gpa, nested_id_get_as_compatible);
-    defer gpa.free(final_family_cleanup);
-
-    const string_collection_listof_compatible = try rewriteStringCollectionListOfArguments(gpa, final_family_cleanup);
-    defer gpa.free(string_collection_listof_compatible);
-
-    const valueof_collection_unwrapped = try rewriteApexStringsValueOfCollectionWrappers(gpa, string_collection_listof_compatible);
-    defer gpa.free(valueof_collection_unwrapped);
-
-    const numeric_cast_compatible = try rewriteNumericObjectCasts(gpa, valueof_collection_unwrapped);
-    defer gpa.free(numeric_cast_compatible);
-
-    const final_indexed_collection_compatible = try convertBracketIndexAccess(gpa, numeric_cast_compatible);
-    defer gpa.free(final_indexed_collection_compatible);
-
-    const delete_query_cast_compatible = try rewriteDatabaseDeleteQueryCalls(gpa, final_indexed_collection_compatible);
-    defer gpa.free(delete_query_cast_compatible);
-
-    const integer_cast_cleanup = try rewriteApexStringsToIntegerIntCast(gpa, delete_query_cast_compatible);
-    defer gpa.free(integer_cast_cleanup);
-
-    const trailing_query_paren_compatible = try rewriteTrailingDatabaseQueryAssignmentParens(gpa, integer_cast_cleanup);
-    defer gpa.free(trailing_query_paren_compatible);
-
-    const primary_contact_compatible = try replaceLiteralAll(
-        gpa,
-        trailing_query_paren_compatible,
-        "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {",
-        "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && opp.getAs(\"Primary_Contact__c\") != null) {",
-    );
-    defer gpa.free(primary_contact_compatible);
-
-    const schema_new_token_compatible = try replaceLiteralAll(
-        gpa,
-        primary_contact_compatible,
-        "Schema.new Schema.SObjectType(",
-        "new Schema.SObjectType(",
-    );
-    defer gpa.free(schema_new_token_compatible);
-
-    const trigger_handler_invocation_compatible = try replaceLiteralAll(
-        gpa,
-        schema_new_token_compatible,
-        ".getTriggerHandler()(",
-        ".getTriggerHandler(",
-    );
-    defer gpa.free(trigger_handler_invocation_compatible);
-
-    const isclosed_getas_invocation_compatible = try replaceLiteralAll(
-        gpa,
-        trigger_handler_invocation_compatible,
-        ".getAs(\"isClosed\")()",
-        ".getAs(\"isClosed\")",
-    );
-    defer gpa.free(isclosed_getas_invocation_compatible);
-
-    const ternary_mod_eq_compatible = try replaceLiteralAll(
-        gpa,
-        isclosed_getas_invocation_compatible,
-        "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 1: false)",
-        "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 1) : false)",
-    );
-    defer gpa.free(ternary_mod_eq_compatible);
-
-    const ternary_mod_eq_zero_compatible = try replaceLiteralAll(
-        gpa,
-        ternary_mod_eq_compatible,
-        "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 0: false)",
-        "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 0) : false)",
-    );
-    defer gpa.free(ternary_mod_eq_zero_compatible);
-
-    const fieldset_ternary_eq_compatible = try replaceLiteralAll(
-        gpa,
-        ternary_mod_eq_zero_compatible,
-        "ApexEquals.eq((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields()) : false)",
-        "((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? ApexEquals.eq(toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields())) : false)",
-    );
-    defer gpa.free(fieldset_ternary_eq_compatible);
-
-    const duplicate_record_item_values_compatible = try replaceLiteralAll(
-        gpa,
-        fieldset_ternary_eq_compatible,
-        "new LinkedHashMap<String, DuplicateRecordItem>new ArrayList<>((dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
-        "new ArrayList<DuplicateRecordItem>(new LinkedHashMap<String, DuplicateRecordItem>(dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
-    );
-    defer gpa.free(duplicate_record_item_values_compatible);
-
-    const apex_equals_ternary_compatible = try rewriteBrokenApexEqualsTernaryComparisons(gpa, duplicate_record_item_values_compatible);
-    defer gpa.free(apex_equals_ternary_compatible);
-
-    const string_cast_boolean_compatible = try rewriteStringCastBooleanEqualsArtifacts(gpa, apex_equals_ternary_compatible);
-    defer gpa.free(string_cast_boolean_compatible);
-
-    const valueof_getname_compatible = try rewriteValueOfGetNameArtifacts(gpa, string_cast_boolean_compatible);
-    defer gpa.free(valueof_getname_compatible);
-
-    const system_type_class_compatible = try rewriteSystemTypeClassLiteralAssignments(gpa, valueof_getname_compatible);
-    defer gpa.free(system_type_class_compatible);
-
-    const generic_instanceof_compatible = try rewriteCollectionGenericInstanceof(gpa, system_type_class_compatible);
-    defer gpa.free(generic_instanceof_compatible);
-
-    const dml_results_signature_compatible = try replaceLiteralAll(gpa, generic_instanceof_compatible, "List<Object> dmlResults", "List<?> dmlResults");
-    defer gpa.free(dml_results_signature_compatible);
-
-    const case_insensitive_identifiers_compatible = try rewriteCaseInsensitiveIdentifierVariants(gpa, dml_results_signature_compatible);
-    defer gpa.free(case_insensitive_identifiers_compatible);
-
-    const query_index_compatible = try rewriteDatabaseQueryIndexCompatibility(gpa, case_insensitive_identifiers_compatible);
-    defer gpa.free(query_index_compatible);
-
-    return rewriteLateCompatibilityFixups(gpa, query_index_compatible);
+    // base ownership is transferred to runPipeline (which frees intermediates).
+
+    const pipeline_steps = [_]RewriteStep{
+        // --- parser rewrites ---
+        .{ .rewrite = rewriteSchemaObjectNamespaceAccess },
+        .{ .rewrite = rewriteFieldNamespacePropertyAccess },
+        .{ .rewrite = rewriteTokenOverloadCalls },
+        // --- sobject namespace rewrites ---
+        .{ .rewrite = rewritePseudoSObjectNamespaceAccess },
+        .{ .rewrite = rewriteTypedNullSchemaFieldCollections },
+        .{ .rewrite = rewriteApexArrayStyleListLiterals },
+        .{ .rewrite = rewriteMethodLocalDefaultInitializers },
+        .{ .rewrite = rewriteVisualforceComponentQualifiedAccess },
+        .{ .rewrite = rewriteConstructedSObjectTypeClassGetNameCalls },
+        // --- residual / erased / npsp ---
+        .{ .rewrite = rewriteResidualCompatibilityArtifacts },
+        .{ .rewrite = rewriteErasedOverloadCompatibility },
+        .{ .rewrite = rewriteNpspAliasCompat },
+        // --- label / database / sobject type ---
+        .{ .rewrite = rewriteLabelNamespaceAccess },
+        .{ .rewrite = rewriteLowercaseDatabaseNamespaceAccess },
+        .{ .rewrite = rewriteCustomSchemaSObjectTypeAccess },
+        .{ .rewrite = rewriteBareCustomSObjectTypeAccess },
+        .{ .rewrite = rewriteBareStandardSObjectTypeAccess },
+        .{ .rewrite = rewriteBareCustomSettingsSingletonAccess },
+        .{ .rewrite = rewriteTypePathGetAsAccess },
+        .{ .rewrite = rewriteApexPagesNestedTypeAliases },
+        .{ .rewrite = rewriteSObjectTypeVariableGetAsAccess },
+        .{ .rewrite = rewriteBareCustomSObjectTypeArgCalls },
+        .{ .literal = .{ .from = ".fieldSets.getAs(", .to = ".fieldSets.get(" } },
+        // --- collection / string / legacy ---
+        .{ .rewrite = rewriteCollectionViewPropertyAccess },
+        .{ .rewrite = rewriteValuesFieldPseudoCalls },
+        .{ .rewrite = rewriteValueOfRemoveCalls },
+        .{ .rewrite = rewriteApexStringInstanceMethods },
+        .{ .rewrite = rewriteLegacyLiteralTokens },
+        .{ .rewrite = rewriteBareSchemaEnumConstantAccess },
+        // --- query / zero-length / field access ---
+        .{ .rewrite = rewriteBrokenZeroLengthListInitializers },
+        .{ .rewrite = rewriteQuerySingletonCallsAssignedToLists },
+        .{ .rewrite = rewriteQuerySingletonAssignmentsToDeclaredListVars },
+        .{ .rewrite = rewriteDeclaredSObjectQueryAssignments },
+        .{ .rewrite = rewriteQueryWithBindsListChaining },
+        .{ .rewrite = rewriteDynamicFieldNameGetCalls },
+        .{ .rewrite = rewriteGetAsMutationAssignments },
+        .{ .rewrite = rewriteCustomSObjectMemberAccess },
+        .{ .rewrite = rewriteSObjectGetPutAmbiguousArgs },
+        // --- boolean / operator / numeric ---
+        .{ .rewrite = rewriteKnownSObjectBooleanPropertyAccess },
+        .{ .rewrite = rewriteBooleanGetOperands },
+        .{ .rewrite = rewriteBooleanEqualsComparisonArtifacts },
+        .{ .rewrite = rewritePrivateStaticNestedTestClasses },
+        .{ .rewrite = rewriteLongAssignmentsFromIntegerIdentifiers },
+        .{ .rewrite = rewriteBoxedNumericLiteralCompatibility },
+        .{ .rewrite = rewriteInstanceListDeepCloneCalls },
+        .{ .rewrite = rewriteFieldDisplayTypeCalls },
+        .{ .rewrite = rewriteGetAsNumericCompatibility },
+        .{ .rewrite = rewriteGetAsStringConcatenationCompatibility },
+        .{ .rewrite = rewriteGetAsDateMethodCalls },
+        .{ .rewrite = rewriteApexStringsValueOfDateGetAs },
+        .{ .rewrite = rewriteDecimalSetScaleCalls },
+        .{ .rewrite = rewriteDoubleDateTimeDeltaAssignments },
+        // --- page / sobject type / record type ---
+        .{ .rewrite = rewritePageNamespaceAccess },
+        .{ .rewrite = rewriteBareSObjectTypeAccess },
+        .{ .rewrite = rewriteSObjectFieldNameObjectNameUses },
+        .{ .rewrite = rewriteRecordTypeInfoMapDeclarations },
+        .{ .rewrite = rewriteRecordTypeInfoUsages },
+        // --- enhanced for / boolean ---
+        .{ .rewrite = rewriteEnhancedForCompareArtifacts },
+        .{ .rewrite = rewriteEnhancedForGetAsIterables },
+        .{ .rewrite = rewriteGetAsBooleanCompatibility },
+        .{ .literal = .{ .from = "Boolean.false", .to = "Boolean.FALSE" } },
+        .{ .literal = .{ .from = "Boolean.true", .to = "Boolean.TRUE" } },
+        // --- schema field / describe / operators ---
+        .{ .rewrite = rewriteSchemaFieldNamespaceGetAsMethodCalls },
+        .{ .rewrite = rewriteDescribeGetAsAliases },
+        .{ .rewrite = rewriteUnaryPlusStringLiterals },
+        .{ .rewrite = rewriteGetAsEnumNameCalls },
+        .{ .rewrite = rewriteBooleanEqualsIsEmptyArtifacts },
+        .{ .rewrite = rewriteBooleanEqualsTrailingInvocationArtifacts },
+        .{ .rewrite = rewriteObjectEqualityWithDeclaredObjects },
+        .{ .rewrite = rewriteNumericValueOfObjectIdentifiers },
+        .{ .rewrite = rewriteValuesMethodCollectionViews },
+        .{ .rewrite = rewriteGetAsCollectionAccessors },
+        .{ .rewrite = rewriteNegatedSizeEqualityArtifacts },
+        .{ .rewrite = rewriteGetAsStringMethodCalls },
+        .{ .rewrite = rewriteSObjectGetPutAmbiguousArgs }, // 2nd pass (late)
+        .{ .rewrite = rewriteOverloadedStringIdCallArgs },
+        .{ .rewrite = rewriteGetErrorsArrayAccess },
+        .{ .rewrite = rewriteGetAsFieldAddErrorCalls },
+        .{ .literal = .{ .from = ".subString(", .to = ".substring(" } },
+        // --- inline method / compareTo / wait ---
+        .{ .rewrite = rewriteBrokenInlineMethodAssignmentsInSObjectSet },
+        .{ .rewrite = rewriteIntegerCompareToDoubleReturns },
+        .{ .rewrite = rewriteLocalStaticWaitCalls },
+        .{ .literal = .{
+            .from = "ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()).remove(\"\\\"\")",
+            .to = "ApexStrings.remove(ApexStrings.valueOf(new Schema.SObjectField(\"npe01__Contacts_And_Orgs_Settings__c\", \"Advancement_Namespace__c\").getDescribe().getDefaultValueFormula()), \"\\\"\")",
+        } },
+        // --- list / scalar / nested ---
+        .{ .rewrite = rewriteListMethodQuerySingletonReturns },
+        .{ .rewrite = rewriteFirstOrNullScalarWrappers },
+        .{ .rewrite = rewriteNestedIdApexSwitchGetAs },
+        .{ .rewrite = rewriteFinalCompatibilityCleanup },
+        .{ .rewrite = rewriteStringCollectionListOfArguments },
+        .{ .rewrite = rewriteApexStringsValueOfCollectionWrappers },
+        .{ .rewrite = rewriteNumericObjectCasts },
+        .{ .rewrite = convertBracketIndexAccess },
+        .{ .rewrite = rewriteDatabaseDeleteQueryCalls },
+        .{ .rewrite = rewriteApexStringsToIntegerIntCast },
+        .{ .rewrite = rewriteTrailingDatabaseQueryAssignmentParens },
+        // --- late literal fixups ---
+        .{ .literal = .{
+            .from = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {",
+            .to = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && opp.getAs(\"Primary_Contact__c\") != null) {",
+        } },
+        .{ .literal = .{ .from = "Schema.new Schema.SObjectType(", .to = "new Schema.SObjectType(" } },
+        .{ .literal = .{ .from = ".getTriggerHandler()(", .to = ".getTriggerHandler(" } },
+        .{ .literal = .{ .from = ".getAs(\"isClosed\")()", .to = ".getAs(\"isClosed\")" } },
+        .{ .literal = .{
+            .from = "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 1: false)",
+            .to = "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 1) : false)",
+        } },
+        .{ .literal = .{
+            .from = "ApexEquals.eq(arg instanceof Integer ? ApexMath.mod((Integer)arg, 2), 0: false)",
+            .to = "(arg instanceof Integer ? ApexEquals.eq(ApexMath.mod((Integer)arg, 2), 0) : false)",
+        } },
+        .{ .literal = .{
+            .from = "ApexEquals.eq((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields()) : false)",
+            .to = "((toMatch != null && arg != null && arg instanceof Schema.FieldSet) ? ApexEquals.eq(toMatch, new LinkedHashSet<Schema.FieldSetMember>(((Schema.FieldSet)arg).getFields())) : false)",
+        } },
+        .{ .literal = .{
+            .from = "new LinkedHashMap<String, DuplicateRecordItem>new ArrayList<>((dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
+            .to = "new ArrayList<DuplicateRecordItem>(new LinkedHashMap<String, DuplicateRecordItem>(dupRecSet.getAs(\"DuplicateRecordItems\")).values())",
+        } },
+        // --- broken ternary / cast / instanceof ---
+        .{ .rewrite = rewriteBrokenApexEqualsTernaryComparisons },
+        .{ .rewrite = rewriteStringCastBooleanEqualsArtifacts },
+        .{ .rewrite = rewriteValueOfGetNameArtifacts },
+        .{ .rewrite = rewriteSystemTypeClassLiteralAssignments },
+        .{ .rewrite = rewriteCollectionGenericInstanceof },
+        .{ .literal = .{ .from = "List<Object> dmlResults", .to = "List<?> dmlResults" } },
+        // --- case insensitive / query index / late fixups ---
+        .{ .rewrite = rewriteCaseInsensitiveIdentifierVariants },
+        .{ .rewrite = rewriteDatabaseQueryIndexCompatibility },
+        .{ .rewrite = rewriteLateCompatibilityFixups },
+    };
+
+    return runPipeline(gpa, base, &pipeline_steps);
 }
 
 pub fn rewriteResidualCompatibilityArtifacts(gpa: std.mem.Allocator, text: []const u8) ![]u8 {

@@ -112,7 +112,7 @@ fn runCheck(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var findings = try apexgov.check.runWithConfig(gpa, opts.paths.items, cfg);
     defer apexgov.model.deinitFindings(gpa, &findings);
 
-    try emitCheckOutput(opts.out_path, opts.format, findings.items);
+    try emitOutput(opts.out_path, apexgov.report.writeCheck, .{ opts.format, findings.items });
 
     if (opts.threshold) |threshold| {
         const fail_count = countFindingsAtOrAbove(findings.items, threshold);
@@ -139,7 +139,7 @@ fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     );
     defer apexgov.profile.deinitRegressions(gpa, &regressions);
 
-    try emitProfileOutput(opts.out_path, opts.format, profiles.items);
+    try emitOutput(opts.out_path, apexgov.report.writeProfile, .{ opts.format, profiles.items });
 
     var has_violation = false;
     for (profiles.items) |profile| {
@@ -173,43 +173,26 @@ fn runEmulateCalibration(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     const script_path = try resolveToolScript(gpa, "tools/java-calibration/run.sh", error.JavaCalibrationScriptNotFound);
     defer gpa.free(script_path);
 
-    var env_map = try std.process.getEnvMap(gpa);
-    defer env_map.deinit();
+    const EnvEntry = struct { []const u8, u64 };
+    var env_entries: [4]EnvEntry = undefined;
+    var env_count: usize = 0;
 
-    if (opts.use_nix) {
-        try ensureNixCacheEnv(gpa, &env_map);
-    }
-
-    if (opts.iterations) |value| try setUnsignedEnv(gpa, &env_map, "ITERATIONS", value);
-    if (opts.anchor_soql_ms) |value| try setUnsignedEnv(gpa, &env_map, "ANCHOR_SOQL_MS", value);
-    if (opts.base_ms) |value| try setUnsignedEnv(gpa, &env_map, "BASE_MS", value);
-    if (opts.max_weight_ms) |value| try setUnsignedEnv(gpa, &env_map, "MAX_WEIGHT_MS", value);
-
-    var child_args: std.ArrayList([]const u8) = .empty;
-    defer child_args.deinit(gpa);
-
-    if (opts.use_nix) {
-        try child_args.append(gpa, "nix");
-        try child_args.append(gpa, "develop");
-        try child_args.append(gpa, "-c");
-    }
-    try child_args.append(gpa, "/bin/bash");
-    try child_args.append(gpa, script_path);
-    if (opts.out_dir) |out_dir| {
-        try child_args.append(gpa, out_dir);
-    }
-
-    var child = std.process.Child.init(child_args.items, gpa);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    child.env_map = &env_map;
-
-    const term = try child.spawnAndWait();
-    return switch (term) {
-        .Exited => |code| code,
-        else => 1,
+    const optional_envs: []const struct { []const u8, ?u64 } = &.{
+        .{ "ITERATIONS", opts.iterations },
+        .{ "ANCHOR_SOQL_MS", opts.anchor_soql_ms },
+        .{ "BASE_MS", opts.base_ms },
+        .{ "MAX_WEIGHT_MS", opts.max_weight_ms },
     };
+    for (optional_envs) |entry| {
+        if (entry[1]) |value| {
+            env_entries[env_count] = .{ entry[0], value };
+            env_count += 1;
+        }
+    }
+
+    const script_args: []const []const u8 = if (opts.out_dir) |d| &.{d} else &.{};
+
+    return spawnScript(gpa, script_path, opts.use_nix, script_args, env_entries[0..env_count], &.{});
 }
 
 fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
@@ -217,51 +200,45 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     const script_path = try resolveToolScript(gpa, "tools/java-emulation/run-tests.sh", error.JavaEmulationScriptNotFound);
     defer gpa.free(script_path);
 
-    var env_map = try std.process.getEnvMap(gpa);
-    defer env_map.deinit();
+    const EnvEntry = struct { []const u8, u64 };
+    var env_entries: [2]EnvEntry = undefined;
+    var env_count: usize = 0;
 
-    if (opts.use_nix) {
-        try ensureNixCacheEnv(gpa, &env_map);
+    if (opts.cpu_limit_ms) |v| {
+        env_entries[env_count] = .{ "CPU_LIMIT_MS", v };
+        env_count += 1;
     }
-    if (opts.cpu_limit_ms) |value| try setUnsignedEnv(gpa, &env_map, "CPU_LIMIT_MS", value);
-    if (opts.heap_limit_bytes) |value| try setUnsignedEnv(gpa, &env_map, "HEAP_LIMIT_BYTES", value);
+    if (opts.heap_limit_bytes) |v| {
+        env_entries[env_count] = .{ "HEAP_LIMIT_BYTES", v };
+        env_count += 1;
+    }
 
-    var child_args: std.ArrayList([]const u8) = .empty;
-    defer child_args.deinit(gpa);
+    var extra_args_buf: [6][]const u8 = undefined;
+    var extra_count: usize = 0;
 
-    if (opts.use_nix) {
-        try child_args.append(gpa, "nix");
-        try child_args.append(gpa, "develop");
-        try child_args.append(gpa, "-c");
+    if (opts.tests_dir) |d| {
+        extra_args_buf[extra_count] = "--tests-dir";
+        extra_count += 1;
+        extra_args_buf[extra_count] = d;
+        extra_count += 1;
     }
-    try child_args.append(gpa, "/bin/bash");
-    try child_args.append(gpa, script_path);
-    if (opts.tests_dir) |tests_dir| {
-        try child_args.append(gpa, "--tests-dir");
-        try child_args.append(gpa, tests_dir);
-    }
-    if (opts.out_dir) |out_dir| {
-        try child_args.append(gpa, "--out-dir");
-        try child_args.append(gpa, out_dir);
+    if (opts.out_dir) |d| {
+        extra_args_buf[extra_count] = "--out-dir";
+        extra_count += 1;
+        extra_args_buf[extra_count] = d;
+        extra_count += 1;
     }
     if (opts.best_effort) {
-        try child_args.append(gpa, "--best-effort");
-    }
-    if (opts.register_standard_schema) {
-        try env_map.put("REGISTER_STANDARD_SCHEMA", "true");
+        extra_args_buf[extra_count] = "--best-effort";
+        extra_count += 1;
     }
 
-    var child = std.process.Child.init(child_args.items, gpa);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    child.env_map = &env_map;
+    const str_env: []const struct { []const u8, []const u8 } = if (opts.register_standard_schema)
+        &.{.{ "REGISTER_STANDARD_SCHEMA", "true" }}
+    else
+        &.{};
 
-    const term = try child.spawnAndWait();
-    return switch (term) {
-        .Exited => |code| code,
-        else => 1,
-    };
+    return spawnScript(gpa, script_path, opts.use_nix, extra_args_buf[0..extra_count], env_entries[0..env_count], str_env);
 }
 
 fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
@@ -317,63 +294,29 @@ fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOpt
 
     var i: usize = 0;
     while (i < args.len) {
-        const arg = args[i];
-
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (isHelpFlag(args[i])) {
             printCheckHelp();
             return error.HelpRequested;
         }
-        if (std.mem.eql(u8, arg, "--config")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.config_path = args[i];
-            i += 1;
+        if (try consumeOption(args, &i, "--config")) |v| {
+            opts.config_path = v;
             continue;
         }
-        if (optionValue(arg, "--config")) |value| {
-            opts.config_path = value;
-            i += 1;
+        if (try consumeOption(args, &i, "--format")) |v| {
+            opts.format = apexgov.model.OutputFormat.fromString(v) orelse return error.InvalidFormat;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--format")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.format = apexgov.model.OutputFormat.fromString(args[i]) orelse return error.InvalidFormat;
-            i += 1;
+        if (try consumeOption(args, &i, "--out")) |v| {
+            opts.out_path = v;
             continue;
         }
-        if (optionValue(arg, "--format")) |value| {
-            opts.format = apexgov.model.OutputFormat.fromString(value) orelse return error.InvalidFormat;
-            i += 1;
+        if (try consumeOption(args, &i, "--severity-threshold")) |v| {
+            opts.threshold = try parseThreshold(v);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.out_path = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--out")) |value| {
-            opts.out_path = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--severity-threshold")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.threshold = try parseThreshold(args[i]);
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--severity-threshold")) |value| {
-            opts.threshold = try parseThreshold(value);
-            i += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
 
-        try opts.paths.append(gpa, arg);
+        try opts.paths.append(gpa, args[i]);
         i += 1;
     }
 
@@ -390,63 +333,29 @@ fn parseProfileOptions(gpa: std.mem.Allocator, args: []const []const u8) !Profil
 
     var i: usize = 0;
     while (i < args.len) {
-        const arg = args[i];
-
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (isHelpFlag(args[i])) {
             printProfileHelp();
             return error.HelpRequested;
         }
-        if (std.mem.eql(u8, arg, "--config")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.config_path = args[i];
-            i += 1;
+        if (try consumeOption(args, &i, "--config")) |v| {
+            opts.config_path = v;
             continue;
         }
-        if (optionValue(arg, "--config")) |value| {
-            opts.config_path = value;
-            i += 1;
+        if (try consumeOption(args, &i, "--format")) |v| {
+            opts.format = apexgov.model.OutputFormat.fromString(v) orelse return error.InvalidFormat;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--format")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.format = apexgov.model.OutputFormat.fromString(args[i]) orelse return error.InvalidFormat;
-            i += 1;
+        if (try consumeOption(args, &i, "--out")) |v| {
+            opts.out_path = v;
             continue;
         }
-        if (optionValue(arg, "--format")) |value| {
-            opts.format = apexgov.model.OutputFormat.fromString(value) orelse return error.InvalidFormat;
-            i += 1;
+        if (try consumeOption(args, &i, "--baseline")) |v| {
+            opts.baseline_path = v;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.out_path = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--out")) |value| {
-            opts.out_path = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--baseline")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.baseline_path = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--baseline")) |value| {
-            opts.baseline_path = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
 
-        try opts.paths.append(gpa, arg);
+        try opts.paths.append(gpa, args[i]);
         i += 1;
     }
 
@@ -463,87 +372,44 @@ fn parseEmulateOptions(args: []const []const u8) !EmulateOptions {
 
     var i: usize = 0;
     while (i < args.len) {
-        const arg = args[i];
-
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (isHelpFlag(args[i])) {
             printEmulateHelp();
             return error.HelpRequested;
         }
-        if (std.mem.eql(u8, arg, "--nix")) {
+        if (consumeFlag(args, &i, "--nix")) {
             opts.use_nix = true;
-            i += 1;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.out_dir = args[i];
-            i += 1;
+        if (try consumeOption(args, &i, "--out")) |v| {
+            opts.out_dir = v;
             continue;
         }
-        if (optionValue(arg, "--out")) |value| {
-            opts.out_dir = value;
-            i += 1;
+        if (try consumeOption(args, &i, "--iterations")) |v| {
+            opts.iterations = try parseUnsignedOption(v);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--iterations")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.iterations = try parseUnsignedOption(args[i]);
-            i += 1;
+        if (try consumeOption(args, &i, "--anchor-soql-ms")) |v| {
+            opts.anchor_soql_ms = try parseUnsignedOption(v);
             continue;
         }
-        if (optionValue(arg, "--iterations")) |value| {
-            opts.iterations = try parseUnsignedOption(value);
-            i += 1;
+        if (try consumeOption(args, &i, "--base-ms")) |v| {
+            opts.base_ms = try parseUnsignedOption(v);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--anchor-soql-ms")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.anchor_soql_ms = try parseUnsignedOption(args[i]);
-            i += 1;
+        if (try consumeOption(args, &i, "--max-weight-ms")) |v| {
+            opts.max_weight_ms = try parseUnsignedOption(v);
             continue;
         }
-        if (optionValue(arg, "--anchor-soql-ms")) |value| {
-            opts.anchor_soql_ms = try parseUnsignedOption(value);
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--base-ms")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.base_ms = try parseUnsignedOption(args[i]);
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--base-ms")) |value| {
-            opts.base_ms = try parseUnsignedOption(value);
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--max-weight-ms")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.max_weight_ms = try parseUnsignedOption(args[i]);
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--max-weight-ms")) |value| {
-            opts.max_weight_ms = try parseUnsignedOption(value);
-            i += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
 
-        if (!seen_runtime and std.mem.eql(u8, arg, "java")) {
+        if (!seen_runtime and std.mem.eql(u8, args[i], "java")) {
             seen_runtime = true;
             i += 1;
             continue;
         }
         if (opts.out_dir != null) return error.TooManyInputPaths;
 
-        opts.out_dir = arg;
+        opts.out_dir = args[i];
         i += 1;
     }
 
@@ -555,79 +421,42 @@ fn parseEmulateTestOptions(args: []const []const u8) !EmulateTestOptions {
 
     var i: usize = 0;
     while (i < args.len) {
-        const arg = args[i];
-
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (isHelpFlag(args[i])) {
             printEmulateHelp();
             return error.HelpRequested;
         }
-        if (std.mem.eql(u8, arg, "--nix")) {
+        if (consumeFlag(args, &i, "--nix")) {
             opts.use_nix = true;
-            i += 1;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--best-effort")) {
+        if (consumeFlag(args, &i, "--best-effort")) {
             opts.best_effort = true;
-            i += 1;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--register-standard-schema")) {
+        if (consumeFlag(args, &i, "--register-standard-schema")) {
             opts.register_standard_schema = true;
-            i += 1;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.out_dir = args[i];
-            i += 1;
+        if (try consumeOption(args, &i, "--out")) |v| {
+            opts.out_dir = v;
             continue;
         }
-        if (optionValue(arg, "--out")) |value| {
-            opts.out_dir = value;
-            i += 1;
+        if (try consumeOption(args, &i, "--cpu-limit-ms")) |v| {
+            opts.cpu_limit_ms = try parseUnsignedOption(v);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--cpu-limit-ms")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.cpu_limit_ms = try parseUnsignedOption(args[i]);
-            i += 1;
+        if (try consumeOption(args, &i, "--heap-limit-bytes")) |v| {
+            opts.heap_limit_bytes = try parseUnsignedOption(v);
             continue;
         }
-        if (optionValue(arg, "--cpu-limit-ms")) |value| {
-            opts.cpu_limit_ms = try parseUnsignedOption(value);
-            i += 1;
+        if (try consumeOption(args, &i, "--tests-dir")) |v| {
+            opts.tests_dir = v;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--heap-limit-bytes")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.heap_limit_bytes = try parseUnsignedOption(args[i]);
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--heap-limit-bytes")) |value| {
-            opts.heap_limit_bytes = try parseUnsignedOption(value);
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--tests-dir")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.tests_dir = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--tests-dir")) |value| {
-            opts.tests_dir = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
 
         if (opts.tests_dir != null) return error.TooManyInputPaths;
-        opts.tests_dir = arg;
+        opts.tests_dir = args[i];
         i += 1;
     }
 
@@ -640,49 +469,29 @@ fn parseEmulateTranspileOptions(gpa: std.mem.Allocator, args: []const []const u8
 
     var i: usize = 0;
     while (i < args.len) {
-        const arg = args[i];
-
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (isHelpFlag(args[i])) {
             printEmulateHelp();
             return error.HelpRequested;
         }
-        if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.out_dir = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--out")) |value| {
-            opts.out_dir = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--package")) {
-            i += 1;
-            if (i >= args.len) return error.MissingOptionValue;
-            opts.package_name = args[i];
-            i += 1;
-            continue;
-        }
-        if (optionValue(arg, "--package")) |value| {
-            opts.package_name = value;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--overwrite")) {
+        if (consumeFlag(args, &i, "--overwrite")) {
             opts.overwrite = true;
-            i += 1;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--strict")) {
+        if (consumeFlag(args, &i, "--strict")) {
             opts.strict = true;
-            i += 1;
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (try consumeOption(args, &i, "--out")) |v| {
+            opts.out_dir = v;
+            continue;
+        }
+        if (try consumeOption(args, &i, "--package")) |v| {
+            opts.package_name = v;
+            continue;
+        }
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
 
-        try opts.input_paths.append(gpa, arg);
+        try opts.input_paths.append(gpa, args[i]);
         i += 1;
     }
 
@@ -702,11 +511,42 @@ fn defaultTranspileInputPath() []const u8 {
     return preferred;
 }
 
-fn optionValue(arg: []const u8, name: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, arg, name)) return null;
-    if (arg.len <= name.len) return null;
-    if (arg[name.len] != '=') return null;
-    return arg[(name.len + 1)..];
+// ---------------------------------------------------------------------------
+// 引数パース共通ヘルパー
+// ---------------------------------------------------------------------------
+
+/// `--key value` または `--key=value` 形式のオプションを消費して値を返す。
+/// マッチしなければ null を返し、インデックスは変更しない。
+/// `--key` がマッチしたが値がない場合は `error.MissingOptionValue` を返す。
+fn consumeOption(args: []const []const u8, i: *usize, name: []const u8) !?[]const u8 {
+    const arg = args[i.*];
+    // --key=value 形式
+    if (std.mem.startsWith(u8, arg, name) and arg.len > name.len and arg[name.len] == '=') {
+        i.* += 1;
+        return arg[(name.len + 1)..];
+    }
+    // --key value 形式
+    if (std.mem.eql(u8, arg, name)) {
+        const next_i = i.* + 1;
+        if (next_i >= args.len) return error.MissingOptionValue;
+        i.* = next_i + 1;
+        return args[next_i];
+    }
+    return null;
+}
+
+/// `--flag` 形式のブールフラグを消費する。マッチすればインデックスを進めて true を返す。
+fn consumeFlag(args: []const []const u8, i: *usize, name: []const u8) bool {
+    if (std.mem.eql(u8, args[i.*], name)) {
+        i.* += 1;
+        return true;
+    }
+    return false;
+}
+
+/// `--help` / `-h` フラグを検出する。
+fn isHelpFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
 fn parseThreshold(value: []const u8) !?apexgov.model.Severity {
@@ -733,6 +573,56 @@ fn ensureNixCacheEnv(gpa: std.mem.Allocator, env_map: *std.process.EnvMap) !void
     const absolute_cache = try std.fs.cwd().realpathAlloc(gpa, cache_dir);
     defer gpa.free(absolute_cache);
     try env_map.put("XDG_CACHE_HOME", absolute_cache);
+}
+
+/// シェルスクリプトを子プロセスとして実行する共通ヘルパー。
+/// nix 対応、環境変数(u64)・環境変数(文字列)・スクリプト引数を受け取り、
+/// 終了コードを返す。
+fn spawnScript(
+    gpa: std.mem.Allocator,
+    script_path: []const u8,
+    use_nix: bool,
+    extra_args: []const []const u8,
+    uint_env: []const struct { []const u8, u64 },
+    str_env: []const struct { []const u8, []const u8 },
+) !u8 {
+    var env_map = try std.process.getEnvMap(gpa);
+    defer env_map.deinit();
+
+    if (use_nix) {
+        try ensureNixCacheEnv(gpa, &env_map);
+    }
+
+    for (uint_env) |entry| {
+        try setUnsignedEnv(gpa, &env_map, entry[0], entry[1]);
+    }
+    for (str_env) |entry| {
+        try env_map.put(entry[0], entry[1]);
+    }
+
+    var child_args: std.ArrayList([]const u8) = .empty;
+    defer child_args.deinit(gpa);
+
+    if (use_nix) {
+        try child_args.append(gpa, "nix");
+        try child_args.append(gpa, "develop");
+        try child_args.append(gpa, "-c");
+    }
+    try child_args.append(gpa, "/bin/bash");
+    try child_args.append(gpa, script_path);
+    try child_args.appendSlice(gpa, extra_args);
+
+    var child = std.process.Child.init(child_args.items, gpa);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    child.env_map = &env_map;
+
+    const term = try child.spawnAndWait();
+    return switch (term) {
+        .Exited => |code| code,
+        else => 1,
+    };
 }
 
 fn resolveToolScript(gpa: std.mem.Allocator, relative_path: []const u8, not_found_error: anyerror) ![]u8 {
@@ -763,7 +653,7 @@ fn countFindingsAtOrAbove(findings: []const apexgov.model.Finding, threshold: ap
     return count;
 }
 
-fn emitCheckOutput(out_path: ?[]const u8, format: apexgov.model.OutputFormat, findings: []const apexgov.model.Finding) !void {
+fn emitOutput(out_path: ?[]const u8, write_fn: anytype, args: anytype) !void {
     if (out_path) |path| {
         var file = try createOutputFile(path);
         defer file.close();
@@ -771,7 +661,7 @@ fn emitCheckOutput(out_path: ?[]const u8, format: apexgov.model.OutputFormat, fi
         var write_buffer: [8192]u8 = undefined;
         var file_writer = file.writer(&write_buffer);
         const writer = &file_writer.interface;
-        try apexgov.report.writeCheck(writer, format, findings);
+        try @call(.auto, write_fn, .{writer} ++ args);
         try writer.writeAll("\n");
         try writer.flush();
         return;
@@ -780,29 +670,7 @@ fn emitCheckOutput(out_path: ?[]const u8, format: apexgov.model.OutputFormat, fi
     var write_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&write_buffer);
     const writer = &stdout_writer.interface;
-    try apexgov.report.writeCheck(writer, format, findings);
-    try writer.writeAll("\n");
-    try writer.flush();
-}
-
-fn emitProfileOutput(out_path: ?[]const u8, format: apexgov.model.OutputFormat, profiles: []const apexgov.model.ProfileResult) !void {
-    if (out_path) |path| {
-        var file = try createOutputFile(path);
-        defer file.close();
-
-        var write_buffer: [8192]u8 = undefined;
-        var file_writer = file.writer(&write_buffer);
-        const writer = &file_writer.interface;
-        try apexgov.report.writeProfile(writer, format, profiles);
-        try writer.writeAll("\n");
-        try writer.flush();
-        return;
-    }
-
-    var write_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&write_buffer);
-    const writer = &stdout_writer.interface;
-    try apexgov.report.writeProfile(writer, format, profiles);
+    try @call(.auto, write_fn, .{writer} ++ args);
     try writer.writeAll("\n");
     try writer.flush();
 }

@@ -7,64 +7,49 @@ const std = @import("std");
 const types = @import("types.zig");
 const util = @import("util.zig");
 const compat = @import("compat.zig");
-const line_and_expr = @import("line_and_expr.zig");
-const root = @import("root.zig");
+const stmt_mod = @import("statements.zig");
 const renderer = @import("renderer.zig");
 
-const ApexFile = types.ApexFile;
-const ParsedMethod = types.ParsedMethod;
+// types
 const ParsedField = types.ParsedField;
 const InnerTypeKind = types.InnerTypeKind;
 const TopLevelKind = types.TopLevelKind;
 const ParsedClass = types.ParsedClass;
 const MethodSignature = types.MethodSignature;
 const SwitchMode = types.SwitchMode;
-const ActiveSwitchContext = types.ActiveSwitchContext;
-const UnsupportedLine = types.UnsupportedLine;
-const RenderedClass = types.RenderedClass;
 
-// Util aliases
-const maybeWrapSingleQueryAssignment = line_and_expr.maybeWrapSingleQueryAssignment;
-const maybeUnwrapCollectionQueryResult = line_and_expr.maybeUnwrapCollectionQueryResult;
-const hasTopLevelComma = line_and_expr.hasTopLevelComma;
-const parseTypedVariableDeclaration = line_and_expr.parseTypedVariableDeclaration;
+// cross-module references
+const maybeWrapSingleQueryAssignment = stmt_mod.maybeWrapSingleQueryAssignment;
+const maybeUnwrapCollectionQueryResult = stmt_mod.maybeUnwrapCollectionQueryResult;
+const hasTopLevelComma = stmt_mod.hasTopLevelComma;
+const parseTypedVariableDeclaration = stmt_mod.parseTypedVariableDeclaration;
 const NestingState = renderer.NestingState;
-const transpileExecutableLine = line_and_expr.transpileExecutableLine;
-const convertApexExpressionToJava = line_and_expr.convertApexExpressionToJava;
-const transpileGenericStatementLine = line_and_expr.transpileGenericStatementLine;
+const transpileExecutableLine = stmt_mod.transpileExecutableLine;
+const convertApexExpressionToJava = stmt_mod.convertApexExpressionToJava;
+const transpileGenericStatementLine = stmt_mod.transpileGenericStatementLine;
 const collectLogicalStatements = renderer.collectLogicalStatements;
 const isSelfQualifiedTypeReference = compat.isSelfQualifiedTypeReference;
 const renderJavaClass = renderer.renderJavaClass;
 const isLikelySObjectTypeForInstanceof = compat.isLikelySObjectTypeForInstanceof;
-const splitCallArguments = line_and_expr.splitCallArguments;
-const isKnownSchemaHelperTypeName = line_and_expr.isKnownSchemaHelperTypeName;
-const splitTypeArguments = line_and_expr.splitTypeArguments;
-const convertApexType = line_and_expr.convertApexType;
-const stripApexCommentsFromLine = line_and_expr.stripApexCommentsFromLine;
+const splitCallArguments = stmt_mod.splitCallArguments;
+const isKnownSchemaHelperTypeName = stmt_mod.isKnownSchemaHelperTypeName;
+const splitTypeArguments = stmt_mod.splitTypeArguments;
+const convertApexType = stmt_mod.convertApexType;
+const stripApexCommentsFromLine = stmt_mod.stripApexCommentsFromLine;
+
+// util
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const endsWithIgnoreCase = util.endsWithIgnoreCase;
-const indexOfIgnoreCase = util.indexOfIgnoreCase;
-const indexOfIgnoreCasePos = util.indexOfIgnoreCasePos;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
-const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
 const containsWordIgnoreCase = util.containsWordIgnoreCase;
 const containsWord = util.containsWord;
-const indexOfWord = util.indexOfWord;
 const indexOfWordIgnoreCase = util.indexOfWordIgnoreCase;
 const isIdentifierChar = util.isIdentifierChar;
 const isSimpleIdentifier = util.isSimpleIdentifier;
-const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
 const firstIdentifier = util.firstIdentifier;
 const leadingIdentifier = util.leadingIdentifier;
 const lastIdentifier = util.lastIdentifier;
-const IdentifierSpan = util.IdentifierSpan;
-const baseIdentifierBeforeDot = util.baseIdentifierBeforeDot;
-const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
-const isLikelyQualifiedTypeChain = util.isLikelyQualifiedTypeChain;
-const isLikelyTypeReferencePathExpression = util.isLikelyTypeReferencePathExpression;
 const looksLikeTypeName = util.looksLikeTypeName;
-const isTypeIdentifierPath = util.isTypeIdentifierPath;
-const isIdentifierPathExpression = util.isIdentifierPathExpression;
 const isDeclarationModifier = util.isDeclarationModifier;
 const normalizeDeclarationModifier = util.normalizeDeclarationModifier;
 const isControlKeyword = util.isControlKeyword;
@@ -75,39 +60,15 @@ const isTestAnnotationSeeAllDataTrue = util.isTestAnnotationSeeAllDataTrue;
 const isTestSetupAnnotation = util.isTestSetupAnnotation;
 const isTestVisibleAnnotation = util.isTestVisibleAnnotation;
 const findMatchingParen = util.findMatchingParen;
-const findMatchingParenBackward = util.findMatchingParenBackward;
-const findMatchingAngle = util.findMatchingAngle;
 const findMatchingBrace = util.findMatchingBrace;
-const findMatchingSquareBracket = util.findMatchingSquareBracket;
-const findTopLevelMapArrow = util.findTopLevelMapArrow;
 const findTopLevelAssignmentOperator = util.findTopLevelAssignmentOperator;
-const findTopLevelSafeNavigationOperator = util.findTopLevelSafeNavigationOperator;
-const findLastTopLevelDot = util.findLastTopLevelDot;
 const braceDelta = util.braceDelta;
 const parenDelta = util.parenDelta;
 const splitWhitespace = util.splitWhitespace;
 const appendFmt = util.appendFmt;
-const appendEscapedJavaStringChar = util.appendEscapedJavaStringChar;
-const quoteJavaStringLiteral = util.quoteJavaStringLiteral;
-const indexOfSoqlBracketSelect = util.indexOfSoqlBracketSelect;
-const isInsideComment = util.isInsideComment;
-const skipApexCommentsAndWhitespace = util.skipApexCommentsAndWhitespace;
 const skipInlineWhitespace = util.skipInlineWhitespace;
 const skipAsciiWhitespace = util.skipAsciiWhitespace;
-const isControlFlowLine = util.isControlFlowLine;
-const isDoWhileTailLine = util.isDoWhileTailLine;
-const TrailingIdentifierSplit = util.TrailingIdentifierSplit;
-const splitTrailingIdentifierAtTopLevel = util.splitTrailingIdentifierAtTopLevel;
-const SObjectFieldLvalue = util.SObjectFieldLvalue;
-const IndexedLvalue = util.IndexedLvalue;
-const parseIndexedLvalue = util.parseIndexedLvalue;
-const parseSObjectFieldLvalue = util.parseSObjectFieldLvalue;
-const parseJavaKeywordMemberLvalue = util.parseJavaKeywordMemberLvalue;
-const isLikelySObjectFieldName = util.isLikelySObjectFieldName;
-const isJavaReservedWord = util.isJavaReservedWord;
 const isNewKeywordAt = util.isNewKeywordAt;
-const nextNonSpace = util.nextNonSpace;
-const prevNonSpace = util.prevNonSpace;
 
 pub const AnnotationPrefix = struct {
     annotations: [8][]const u8 = [_][]const u8{""} ** 8,
@@ -146,7 +107,6 @@ pub fn consumeLeadingInlineAnnotations(text: []const u8) AnnotationPrefix {
     result.consumed_len = cursor;
     return result;
 }
-
 
 pub fn parseApexClass(gpa: std.mem.Allocator, source_path: []const u8, content: []const u8) anyerror!ParsedClass {
     const class_name = try parseClassName(gpa, source_path, content);
@@ -3311,7 +3271,6 @@ pub fn isSafeInlinePropertyInitializer(rhs: []const u8, property_name: []const u
     return tail.len == 0;
 }
 
-
 pub fn defaultInitializedApexPropertyDeclaration(
     gpa: std.mem.Allocator,
     declaration: []const u8,
@@ -3584,4 +3543,664 @@ pub fn appendImportUnlessClassNameConflicts(
 ) !void {
     if (std.ascii.eqlIgnoreCase(class_name, imported_simple_name)) return;
     try out.appendSlice(gpa, import_line);
+}
+// ---------------------------------------------------------------------------
+// Tests (moved from root.zig)
+// ---------------------------------------------------------------------------
+
+test "parseMethodSignature preserves return type params and static" {
+    const gpa = std.testing.allocator;
+    const sig = (try parseMethodSignature(gpa, "public static List<Id> run(List<Account> records, Integer n) {", "Demo")).?;
+    defer {
+        gpa.free(sig.name);
+        gpa.free(sig.java_return_type);
+        gpa.free(sig.java_parameters);
+    }
+
+    try std.testing.expectEqualStrings("run", sig.name);
+    try std.testing.expectEqualStrings("List<String>", sig.java_return_type);
+    try std.testing.expectEqualStrings("List<ApexSObject> records, Integer n", sig.java_parameters);
+    try std.testing.expect(sig.is_static);
+
+    const sig_map = (try parseMethodSignature(gpa, "public static Map<Id, Account> build(List<Account> records) {", "Demo")).?;
+    defer {
+        gpa.free(sig_map.name);
+        gpa.free(sig_map.java_return_type);
+        gpa.free(sig_map.java_parameters);
+    }
+    try std.testing.expectEqualStrings("build", sig_map.name);
+    try std.testing.expectEqualStrings("Map<String, ApexSObject>", sig_map.java_return_type);
+    try std.testing.expectEqualStrings("List<ApexSObject> records", sig_map.java_parameters);
+    try std.testing.expect(sig_map.is_static);
+
+    const sig_http = (try parseMethodSignature(gpa, "public HTTPResponse respond(HTTPRequest req) {", "Demo")).?;
+    defer {
+        gpa.free(sig_http.name);
+        gpa.free(sig_http.java_return_type);
+        gpa.free(sig_http.java_parameters);
+    }
+    try std.testing.expectEqualStrings("respond", sig_http.name);
+    try std.testing.expectEqualStrings("HttpResponse", sig_http.java_return_type);
+    try std.testing.expectEqualStrings("HttpRequest req", sig_http.java_parameters);
+
+    try std.testing.expect((try parseMethodSignature(gpa, "for (Integer i = 0; i < 10; i++) {", "Demo")) == null);
+    try std.testing.expect((try parseMethodSignature(gpa, "if (records == null) {", "Demo")) == null);
+    try std.testing.expect((try parseMethodSignature(gpa, "public Demo() {", "Demo")) == null);
+}
+
+test "parseApexClass captures multiline method and constructor signatures" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class MultiLineSignatureDemo {
+        \\  @IsTest
+        \\  public static void run(
+        \\      List<Account> records,
+        \\      Integer limit
+        \\  )
+        \\  {
+        \\    System.debug(records);
+        \\  }
+        \\
+        \\  public MultiLineSignatureDemo(
+        \\      Integer n
+        \\  )
+        \\  {
+        \\    System.debug(n);
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "MultiLineSignatureDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("run", parsed.methods.items[0].name);
+    try std.testing.expect(parsed.methods.items[0].is_test);
+    try std.testing.expectEqualStrings("List<ApexSObject> records, Integer limit", parsed.methods.items[0].java_parameters);
+    try std.testing.expect(parsed.methods.items[0].start_line > 0);
+
+    try std.testing.expect(parsed.methods.items[1].is_constructor);
+    try std.testing.expectEqualStrings("MultiLineSignatureDemo", parsed.methods.items[1].name);
+    try std.testing.expectEqualStrings("Integer n", parsed.methods.items[1].java_parameters);
+
+    var rendered = try renderJavaClass(gpa, parsed, "generated");
+    defer rendered.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "public static void run(List<ApexSObject> records, Integer limit)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "public MultiLineSignatureDemo(Integer n)") != null);
+}
+
+test "parseApexClass captures @testSetup methods separately from @isTest methods" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\@isTest
+        \\public class SetupDemo {
+        \\  @testSetup
+        \\  static void setupData() {
+        \\    insert new Account(Name='A');
+        \\  }
+        \\
+        \\  @isTest
+        \\  static void testRun() {
+        \\    System.assert(true);
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "SetupDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("setupData", parsed.methods.items[0].name);
+    try std.testing.expect(parsed.methods.items[0].is_test_setup);
+    try std.testing.expect(!parsed.methods.items[0].is_test);
+    try std.testing.expectEqualStrings("testRun", parsed.methods.items[1].name);
+    try std.testing.expect(parsed.methods.items[1].is_test);
+}
+
+test "parseApexClass does not mark helper methods as tests from class-level @isTest" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\@isTest
+        \\private class HelperDemo {
+        \\  private static void setData(String v) {
+        \\    System.debug(v);
+        \\  }
+        \\
+        \\  static void testHappyPath() {
+        \\    setData('ok');
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "HelperDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("setData", parsed.methods.items[0].name);
+    try std.testing.expect(!parsed.methods.items[0].is_test);
+    try std.testing.expectEqualStrings("testHappyPath", parsed.methods.items[1].name);
+    try std.testing.expect(parsed.methods.items[1].is_test);
+}
+
+test "parseApexClass captures seeAllData on class and method @isTest annotations" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\@isTest(SeeAllData=true)
+        \\public class SeeAllDataDemo {
+        \\  static void testImplicitFromClass() {
+        \\    System.assert(true);
+        \\  }
+        \\
+        \\  @isTest
+        \\  static void testExplicitFromClass() {
+        \\    System.assert(true);
+        \\  }
+        \\
+        \\  @isTest(seeAllData = true)
+        \\  static void testMethodLevel() {
+        \\    System.assert(true);
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "SeeAllDataDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.methods.items.len);
+    try std.testing.expect(parsed.methods.items[0].is_test);
+    try std.testing.expect(parsed.methods.items[0].is_test_see_all_data);
+    try std.testing.expect(parsed.methods.items[1].is_test);
+    try std.testing.expect(parsed.methods.items[1].is_test_see_all_data);
+    try std.testing.expect(parsed.methods.items[2].is_test);
+    try std.testing.expect(parsed.methods.items[2].is_test_see_all_data);
+}
+
+test "parseApexClass ignores comment lines that look like signatures before enum" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class RestClient {
+        \\  /**
+        \\   * Keyword (DML) note should not be parsed as method signature.
+        \\   */
+        \\  public enum HttpVerb {
+        \\    GET,
+        \\    POST,
+        \\    DEL
+        \\  }
+        \\
+        \\  public static void ping() {
+        \\    System.debug('ok');
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "RestClient.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("ping", parsed.methods.items[0].name);
+}
+
+test "parseApexClass captures nested classes without flattening their members" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class OuterService {
+        \\  public static void run() {
+        \\    System.debug('ok');
+        \\  }
+        \\
+        \\  public class GeocodingAddress {
+        \\    public String street;
+        \\  }
+        \\
+        \\  public class OpenStreetMapHttpCalloutMockImpl implements HttpCalloutMock {
+        \\    public HTTPResponse respond(HTTPRequest req) {
+        \\      HttpResponse res = new HttpResponse();
+        \\      return res;
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "OuterService.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("run", parsed.methods.items[0].name);
+
+    var found_address = false;
+    var found_mock = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.indexOf(u8, field.declaration, "static class GeocodingAddress") != null) {
+            found_address = true;
+        }
+        if (std.mem.indexOf(u8, field.declaration, "static class OpenStreetMapHttpCalloutMockImpl implements HttpCalloutMock") != null) {
+            found_mock = true;
+            try std.testing.expect(std.mem.indexOf(u8, field.declaration, "public HttpResponse respond(HttpRequest req)") != null);
+        }
+    }
+    try std.testing.expect(found_address);
+    try std.testing.expect(found_mock);
+}
+
+test "parseApexClass ignores string literals with class keywords for inner type detection" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class FinalizerHandler {
+        \\  private static final String INVALID_TYPE_ERROR_FINALIZER = 'Please check metadata. The {0} class does not implement the TriggerAction.DmlFinalizer interface.';
+        \\  public static void run() {
+        \\    System.debug(INVALID_TYPE_ERROR_FINALIZER);
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "FinalizerHandler.cls", source);
+    defer parsed.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.methods.items.len);
+    try std.testing.expectEqualStrings("run", parsed.methods.items[0].name);
+
+    for (parsed.fields.items) |field| {
+        try std.testing.expect(std.mem.indexOf(u8, field.declaration, "static class does") == null);
+    }
+}
+
+test "parseApexClass captures inner class declarations without explicit visibility modifier" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class OuterService {
+        \\  class BaseTest {
+        \\    public void run() {
+        \\      System.debug('ok');
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "OuterService.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_inner = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.indexOf(u8, field.declaration, "static class BaseTest") != null) {
+            found_inner = true;
+            try std.testing.expect(std.mem.indexOf(u8, field.declaration, "public void run()") != null);
+        }
+    }
+    try std.testing.expect(found_inner);
+}
+
+test "parseApexClass captures multiline class-literal field declarations" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class ClassLiteralMember {
+        \\  private static final String MY_CLASS = ClassLiteralMember.class
+        \\    .getName();
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "ClassLiteralMember.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_field = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.indexOf(u8, field.declaration, "MY_CLASS") != null) {
+            found_field = true;
+            try std.testing.expect(std.mem.indexOf(u8, field.declaration, ".class") != null);
+            try std.testing.expect(std.mem.indexOf(u8, field.declaration, ".getName()") != null);
+        }
+    }
+    try std.testing.expect(found_field);
+}
+
+test "parseApexClass omits self-qualified nested interface implements to avoid Java cyclic inheritance" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class fflib_MyList implements IList {
+        \\  public interface IList {
+        \\    void add(String value);
+        \\  }
+        \\  public void add(String value) {}
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "fflib_MyList.cls", source);
+    defer parsed.deinit(gpa);
+
+    var rendered = try renderJavaClass(gpa, parsed, "generated");
+    defer rendered.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "public class fflib_MyList {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "implements IList") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.java, "implements fflib_MyList.IList") == null);
+}
+
+test "parseApexClass captures multiline property with brace on next line" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public class PropertyDemo {
+        \\  private fflib_Helper helper;
+        \\  public Boolean Enabled
+        \\  {
+        \\    get
+        \\    {
+        \\      return true;
+        \\    }
+        \\    private set;
+        \\  }
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "PropertyDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_helper = false;
+    var found_property = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.eql(u8, field.declaration, "private fflib_Helper helper;")) found_helper = true;
+        if (std.mem.eql(u8, field.declaration, "public Boolean Enabled = false; // Apex property { get; set; }")) found_property = true;
+    }
+
+    try std.testing.expect(found_helper);
+    try std.testing.expect(found_property);
+}
+
+test "parseApexClass handles multiline class declaration continuation line" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public without sharing class BatchDemo
+        \\    implements Database.Batchable<SObject>, Schedulable {
+        \\  public BatchDemo() {}
+        \\  public void execute(SchedulableContext context) {}
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "BatchDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_ctor = false;
+    var found_execute = false;
+    for (parsed.methods.items) |method| {
+        if (method.is_constructor and std.mem.eql(u8, method.name, "BatchDemo")) found_ctor = true;
+        if (!method.is_constructor and std.mem.eql(u8, method.name, "execute")) found_execute = true;
+    }
+
+    try std.testing.expect(found_ctor);
+    try std.testing.expect(found_execute);
+}
+
+test "parseApexClass handles wrapped implements list declaration lines" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\public without sharing class WrappedBatchDemo implements Database.Batchable<SObject>, Database.Stateful,
+        \\Schedulable {
+        \\  public static Boolean isBatchButton = false;
+        \\  public WrappedBatchDemo() {}
+        \\}
+    ;
+
+    var parsed = try parseApexClass(gpa, "WrappedBatchDemo.cls", source);
+    defer parsed.deinit(gpa);
+
+    var found_field = false;
+    var found_ctor = false;
+    for (parsed.fields.items) |field| {
+        if (std.mem.indexOf(u8, field.declaration, "isBatchButton") != null) {
+            found_field = true;
+        }
+    }
+    for (parsed.methods.items) |method| {
+        if (method.is_constructor and std.mem.eql(u8, method.name, "WrappedBatchDemo")) {
+            found_ctor = true;
+        }
+    }
+
+    try std.testing.expect(found_field);
+    try std.testing.expect(found_ctor);
+}
+
+test "shouldStartMethodSignatureBuffer ignores annotations and soql fragments" {
+    try std.testing.expect(!shouldStartMethodSignatureBuffer("@AuraEnabled(cacheable=true scope='global')", "Demo"));
+    try std.testing.expect(!shouldStartMethodSignatureBuffer("SELECT COUNT()", "Demo"));
+    try std.testing.expect(shouldStartMethodSignatureBuffer("public static void run(", "Demo"));
+}
+
+test "detectClassIsTest catches annotation immediately before class" {
+    const source =
+        \\@IsTest
+        \\private class DemoTest {
+        \\  static void testOne() {}
+        \\}
+    ;
+    try std.testing.expect(detectClassIsTest(source));
+}
+
+test "parseConstructorSignature captures constructor params" {
+    const gpa = std.testing.allocator;
+    const sig = (try parseConstructorSignature(gpa, "public Demo(String name, List<Account> records) {", "Demo")).?;
+    defer {
+        gpa.free(sig.name);
+        gpa.free(sig.java_return_type);
+        gpa.free(sig.java_parameters);
+    }
+
+    try std.testing.expectEqualStrings("Demo", sig.name);
+    try std.testing.expectEqualStrings("", sig.java_return_type);
+    try std.testing.expectEqualStrings("String name, List<ApexSObject> records", sig.java_parameters);
+    try std.testing.expect(!sig.is_static);
+    try std.testing.expect(sig.is_constructor);
+}
+
+test "transpileAbstractMethodDeclarationLine converts abstract signatures" {
+    const gpa = std.testing.allocator;
+    const converted =
+        (try transpileAbstractMethodDeclarationLine(gpa, "protected abstract void verify(fflib_QualifiedMethod qm, fflib_MethodArgValues methodArg);", "Demo")).?;
+    defer gpa.free(converted);
+    try std.testing.expectEqualStrings(
+        "protected abstract void verify(fflib_QualifiedMethod qm, fflib_MethodArgValues methodArg);",
+        converted,
+    );
+}
+
+test "transpileClassMemberLine converts fields and properties" {
+    const gpa = std.testing.allocator;
+
+    const field_line = try transpileClassMemberLine(gpa, "private static final List<Account> cache = new List<Account>();", false);
+    defer if (field_line) |value| gpa.free(value);
+    try std.testing.expect(field_line != null);
+    try std.testing.expectEqualStrings(
+        "private static final List<ApexSObject> cache = new ArrayList<ApexSObject>();",
+        field_line.?,
+    );
+
+    const lowercase_type_field = try transpileClassMemberLine(gpa, "private final fflib_MethodCountRecorder methodCountRecorder;", false);
+    defer if (lowercase_type_field) |value| gpa.free(value);
+    try std.testing.expect(lowercase_type_field != null);
+    try std.testing.expectEqualStrings(
+        "private final fflib_MethodCountRecorder methodCountRecorder;",
+        lowercase_type_field.?,
+    );
+
+    const property_line = try transpileClassMemberLine(gpa, "public String Name { get; set; }", false);
+    defer if (property_line) |value| gpa.free(value);
+    try std.testing.expect(property_line != null);
+    try std.testing.expectEqualStrings(
+        "public String Name; // Apex property { get; set; }",
+        property_line.?,
+    );
+
+    const array_property = try transpileClassMemberLine(gpa, "public Property__c[] records { get; set; }", false);
+    defer if (array_property) |value| gpa.free(value);
+    try std.testing.expect(array_property != null);
+    try std.testing.expectEqualStrings(
+        "public List<ApexSObject> records = new ArrayList<>(); // Apex property { get; set; }",
+        array_property.?,
+    );
+
+    const lazy_property = try transpileClassMemberLine(
+        gpa,
+        \\private RD2_Settings rdSettings {
+        \\  get {
+        \\    if (rdSettings == null) {
+        \\      rdSettings = new RD2_Settings();
+        \\    }
+        \\    return rdSettings;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property) |value| gpa.free(value);
+    try std.testing.expect(lazy_property != null);
+    try std.testing.expectEqualStrings(
+        "private RD2_Settings rdSettings = new RD2_Settings(); // Apex property { get; set; }",
+        lazy_property.?,
+    );
+
+    const complex_lazy_property = try transpileClassMemberLine(
+        gpa,
+        \\private HH_INaming householdNamingImpl {
+        \\  get {
+        \\    if (householdNamingImpl == null) {
+        \\      Object classInstance = null;
+        \\      householdNamingImpl = (HH_INaming) classInstance;
+        \\    }
+        \\    return householdNamingImpl;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (complex_lazy_property) |value| gpa.free(value);
+    try std.testing.expect(complex_lazy_property != null);
+    try std.testing.expectEqualStrings(
+        "private HH_INaming householdNamingImpl; // Apex property { get; set; }",
+        complex_lazy_property.?,
+    );
+
+    const lazy_property_with_args = try transpileClassMemberLine(
+        gpa,
+        \\private RD2_OpportunityService oppService {
+        \\  get {
+        \\    if (oppService == null) {
+        \\      oppService = new RD2_OpportunityService(currentDate, dbService, customFieldMapper);
+        \\    }
+        \\    return oppService;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_with_args) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_with_args != null);
+    try std.testing.expectEqualStrings(
+        "private RD2_OpportunityService oppService; // Apex property { get; set; }",
+        lazy_property_with_args.?,
+    );
+
+    const lazy_property_case_distinct_type = try transpileClassMemberLine(
+        gpa,
+        \\public NameFormatter nameFormatter {
+        \\  get {
+        \\    if (nameFormatter == null) {
+        \\      nameFormatter = new NameFormatter();
+        \\    }
+        \\    return nameFormatter;
+        \\  } private set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_case_distinct_type) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_case_distinct_type != null);
+    try std.testing.expectEqualStrings(
+        "public NameFormatter nameFormatter = new NameFormatter(); // Apex property { get; set; }",
+        lazy_property_case_distinct_type.?,
+    );
+
+    const lazy_property_self_reference_arg = try transpileClassMemberLine(
+        gpa,
+        \\private NameFormatter nameFormatter {
+        \\  get {
+        \\    if (nameFormatter == null) {
+        \\      nameFormatter = new NameFormatter(nameFormatter);
+        \\    }
+        \\    return nameFormatter;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        false,
+    );
+    defer if (lazy_property_self_reference_arg) |value| gpa.free(value);
+    try std.testing.expect(lazy_property_self_reference_arg != null);
+    try std.testing.expectEqualStrings(
+        "private NameFormatter nameFormatter; // Apex property { get; set; }",
+        lazy_property_self_reference_arg.?,
+    );
+
+    const lazy_test_visible_static_property = try transpileClassMemberLine(
+        gpa,
+        \\private static OrgConfig orgConfig {
+        \\  get {
+        \\    if (orgConfig == null) {
+        \\      orgConfig = new OrgConfig();
+        \\    }
+        \\    return orgConfig;
+        \\  }
+        \\  set;
+        \\}
+    ,
+        true,
+    );
+    defer if (lazy_test_visible_static_property) |value| gpa.free(value);
+    try std.testing.expect(lazy_test_visible_static_property != null);
+    try std.testing.expectEqualStrings(
+        "public static OrgConfig orgConfig = new OrgConfig(); // Apex property { get; set; }",
+        lazy_test_visible_static_property.?,
+    );
+
+    const static_block = try transpileClassMemberLine(
+        gpa,
+        "static { loopCountMap = new Map<String, LoopCount>(); bypassedHandlers = new Set<String>(); }",
+        false,
+    );
+    defer if (static_block) |value| gpa.free(value);
+    try std.testing.expect(static_block != null);
+    try std.testing.expectEqualStrings(
+        "static {\n    loopCountMap = new LinkedHashMap<String, LoopCount>();\n    bypassedHandlers = new LinkedHashSet<String>();\n  }",
+        static_block.?,
+    );
+
+    const object_array_property = try transpileClassMemberLine(gpa, "public Object[] rows { get; set; }", false);
+    defer if (object_array_property) |value| gpa.free(value);
+    try std.testing.expect(object_array_property != null);
+    try std.testing.expectEqualStrings(
+        "public List<ApexSObject> rows = new ArrayList<>(); // Apex property { get; set; }",
+        object_array_property.?,
+    );
+
+    const test_visible_field = try transpileClassMemberLine(
+        gpa,
+        "@TestVisible private static final String invalid = 'The {0} class is invalid.';",
+        false,
+    );
+    defer if (test_visible_field) |value| gpa.free(value);
+    try std.testing.expect(test_visible_field != null);
+    try std.testing.expectEqualStrings(
+        "public static final String invalid = \"The {0} class is invalid.\";",
+        test_visible_field.?,
+    );
+
+    const exception_inner =
+        try transpileClassMemberLine(gpa, "public class AccountUpdateException extends Exception {", false);
+    defer if (exception_inner) |value| gpa.free(value);
+    try std.testing.expect(exception_inner != null);
+    try std.testing.expectEqualStrings(
+        "public static class AccountUpdateException extends apexemu.runtime.System.Exception { public AccountUpdateException() { super(); } public AccountUpdateException(String message) { super(message); } }",
+        exception_inner.?,
+    );
 }

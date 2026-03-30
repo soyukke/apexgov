@@ -2,13 +2,83 @@
 //!
 //! 他の compat サブモジュールから共通利用されるユーティリティ関数。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
-const getas = @import("getas.zig");
+pub const CompatibilityState = enum {
+    normal,
+    line_comment,
+    block_comment,
+    string_literal,
+    char_literal,
+};
 
-const CompatibilityState = getas.CompatibilityState;
+/// コメント・文字列リテラル内の文字をスキップする共通ヘルパー。
+///
+/// 現在の `state` と `text[i.*]` を確認し、非 `.normal` 状態のハンドリング、
+/// および `.normal` 状態でのコメント/文字列開始文字のスキップを行う。
+/// 処理した場合は `i` と `state` を更新して `true` を返す（呼び出し側は `continue`）。
+/// `.normal` 状態で関数固有のロジックを実行すべき場合は `false` を返す。
+pub fn skipNonNormal(text: []const u8, i: *usize, state: *CompatibilityState) bool {
+    switch (state.*) {
+        .normal => {
+            if (text[i.*] == '/' and i.* + 1 < text.len and text[i.* + 1] == '/') {
+                state.* = .line_comment;
+                i.* += 2;
+                return true;
+            }
+            if (text[i.*] == '/' and i.* + 1 < text.len and text[i.* + 1] == '*') {
+                state.* = .block_comment;
+                i.* += 2;
+                return true;
+            }
+            if (text[i.*] == '"') {
+                state.* = .string_literal;
+                i.* += 1;
+                return true;
+            }
+            if (text[i.*] == '\'') {
+                state.* = .char_literal;
+                i.* += 1;
+                return true;
+            }
+            return false;
+        },
+        .line_comment => {
+            if (text[i.*] == '\n') state.* = .normal;
+            i.* += 1;
+            return true;
+        },
+        .block_comment => {
+            if (text[i.*] == '*' and i.* + 1 < text.len and text[i.* + 1] == '/') {
+                state.* = .normal;
+                i.* += 2;
+                return true;
+            }
+            i.* += 1;
+            return true;
+        },
+        .string_literal => {
+            if (text[i.*] == '\\' and i.* + 1 < text.len) {
+                i.* += 2;
+                return true;
+            }
+            if (text[i.*] == '"') state.* = .normal;
+            i.* += 1;
+            return true;
+        },
+        .char_literal => {
+            if (text[i.*] == '\\' and i.* + 1 < text.len) {
+                i.* += 2;
+                return true;
+            }
+            if (text[i.*] == '\'') state.* = .normal;
+            i.* += 1;
+            return true;
+        },
+    }
+}
 
 const containsIgnoreCaseSubstring = util.containsIgnoreCaseSubstring;
 const containsWordIgnoreCase = util.containsWordIgnoreCase;
@@ -21,9 +91,9 @@ const findMatchingParenBackward = util.findMatchingParenBackward;
 const indexOfWordIgnoreCase = util.indexOfWordIgnoreCase;
 const isIdentifierChar = util.isIdentifierChar;
 const isLikelyTypeReferenceIdentifier = util.isLikelyTypeReferenceIdentifier;
-const isSimpleBindReference = line_and_expr.isSimpleBindReference;
+const isSimpleBindReference = stmt_mod.isSimpleBindReference;
 const isSimpleIdentifierOrPath = util.isSimpleIdentifierOrPath;
-const isSoqlBindNameChar = line_and_expr.isSoqlBindNameChar;
+const isSoqlBindNameChar = stmt_mod.isSoqlBindNameChar;
 const lastIdentifier = util.lastIdentifier;
 const leadingIdentifier = util.leadingIdentifier;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
@@ -906,7 +976,6 @@ pub fn isLikelyDateishComparisonOperand(expr: []const u8) bool {
 /// Wraps comparisons involving safe-navigation ternary results with ApexCompare
 /// to avoid NPE from Java auto-unboxing of null.
 /// e.g. `((x) == null ? null : (x).length()) > 2` → `ApexCompare.gt(((x) == null ? null : (x).length()), 2)`
-
 pub fn findTopLevelLogicalOperator(text: []const u8) ?struct { start: usize } {
     var in_single = false;
     var in_double = false;

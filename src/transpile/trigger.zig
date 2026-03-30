@@ -197,3 +197,28 @@ fn readTriggerToken(text: []const u8, start: usize) ?usize {
     }
     return if (cursor > start) cursor else null;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "parseTriggerRegistration extracts fflib trigger manifest entry" {
+    const gpa = std.testing.allocator;
+    const source =
+        \\trigger Opportunities on Opportunity (
+        \\  after delete, after insert, after update, before delete, before insert, before update
+        \\) {
+        \\  fflib_SObjectDomain.triggerHandler(OpportunitiesTriggerHandler.class);
+        \\}
+    ;
+
+    var registration = (try parseTriggerRegistration(gpa, "Opportunities.trigger", source)).?;
+    defer registration.deinit(gpa);
+
+    try std.testing.expectEqualStrings("Opportunities.trigger", registration.source_path);
+    try std.testing.expectEqualStrings("Opportunity", registration.sobject_type);
+    try std.testing.expectEqualStrings("OpportunitiesTriggerHandler", registration.handler_class);
+    try std.testing.expectEqual(@as(usize, 6), registration.events.items.len);
+    try std.testing.expectEqual(TriggerEvent.after_delete, registration.events.items[0]);
+    try std.testing.expectEqual(TriggerEvent.before_update, registration.events.items[5]);
+}

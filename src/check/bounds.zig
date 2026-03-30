@@ -11,7 +11,6 @@ const utils = @import("utils.zig");
 const preprocessor = @import("preprocessor.zig");
 
 const Bound = types.Bound;
-const BoundOrigin = types.BoundOrigin;
 const BoundUpdate = types.BoundUpdate;
 const LoopScope = types.LoopScope;
 const LoopInfo = types.LoopInfo;
@@ -23,7 +22,6 @@ const indexOfCaseInsensitive = utils.indexOfCaseInsensitive;
 const isIdentChar = utils.isIdentChar;
 const containsExitStatement = utils.containsExitStatement;
 const satAdd = utils.satAdd;
-const startsWithIgnoreCase = utils.startsWithIgnoreCase;
 const isLoopStart = preprocessor.isLoopStart;
 const isDoLoopStart = preprocessor.isDoLoopStart;
 

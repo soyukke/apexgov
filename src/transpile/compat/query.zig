@@ -3,14 +3,15 @@
 //! `[SELECT ...]` インライン SOQL や SOSL を Java の
 //! `Database.query()` / `Database.getQueryLocator()` 呼び出しに変換する。
 
-const line_and_expr = @import("../line_and_expr.zig");
+const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
 const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
-const CompatibilityState = getas.CompatibilityState;
+const CompatibilityState = helpers.CompatibilityState;
+const skipNonNormal = helpers.skipNonNormal;
 const appendUniqueOwnedName = helpers.appendUniqueOwnedName;
 const collectSoqlBindNamesFromJavaLiteral = helpers.collectSoqlBindNamesFromJavaLiteral;
 const containsIgnoreCaseNameSlice = helpers.containsIgnoreCaseNameSlice;
@@ -22,19 +23,19 @@ const isMethodLikeSignatureLine = helpers.isMethodLikeSignatureLine;
 const looksLikePublicMethodSignatureLine = helpers.looksLikePublicMethodSignatureLine;
 
 const appendFmt = util.appendFmt;
-const buildDatabaseQueryCall = line_and_expr.buildDatabaseQueryCall;
+const buildDatabaseQueryCall = stmt_mod.buildDatabaseQueryCall;
 const containsWordIgnoreCase = util.containsWordIgnoreCase;
-const convertBindReferenceToJava = line_and_expr.convertBindReferenceToJava;
+const convertBindReferenceToJava = stmt_mod.convertBindReferenceToJava;
 const findMatchingBrace = util.findMatchingBrace;
 const findMatchingParen = util.findMatchingParen;
 const findMatchingSquareBracket = util.findMatchingSquareBracket;
 const isIdentifierChar = util.isIdentifierChar;
 const lastIdentifier = util.lastIdentifier;
-const normalizeSoqlQueryForEmulation = line_and_expr.normalizeSoqlQueryForEmulation;
+const normalizeSoqlQueryForEmulation = stmt_mod.normalizeSoqlQueryForEmulation;
 const quoteJavaStringLiteral = util.quoteJavaStringLiteral;
-const splitCallArguments = line_and_expr.splitCallArguments;
-const splitTopLevelCommaExpressions = line_and_expr.splitTopLevelCommaExpressions;
-const splitTypeArguments = line_and_expr.splitTypeArguments;
+const splitCallArguments = stmt_mod.splitCallArguments;
+const splitTopLevelCommaExpressions = stmt_mod.splitTopLevelCommaExpressions;
+const splitTypeArguments = stmt_mod.splitTypeArguments;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 const startsWithWordIgnoreCase = util.startsWithWordIgnoreCase;
 
@@ -487,119 +488,69 @@ pub fn rewriteDatabaseDeleteQueryCalls(gpa: std.mem.Allocator, text: []const u8)
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            const marker = "Database.delete";
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
+            if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                i += 1;
+                continue;
+            }
 
-                const marker = "Database.delete";
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+            var open = i + marker.len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') {
+                i += 1;
+                continue;
+            }
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
 
-                var open = i + marker.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
-
-                var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
-                defer args.deinit(gpa);
-                if (args.items.len == 0) {
-                    i = close + 1;
-                    continue;
-                }
-
-                const first_arg = std.mem.trim(u8, args.items[0], " \t");
-                const first_is_query = startsWithIgnoreCase(first_arg, "Database.query(") or
-                    startsWithIgnoreCase(first_arg, "Database.queryWithBinds(");
-                if (!first_is_query) {
-                    i = close + 1;
-                    continue;
-                }
-                if (startsWithIgnoreCase(first_arg, "(java.util.List<ApexSObject>)") or
-                    startsWithIgnoreCase(first_arg, "((java.util.List<ApexSObject>)"))
-                {
-                    i = close + 1;
-                    continue;
-                }
-
-                var rewritten_args: std.ArrayList(u8) = .empty;
-                defer rewritten_args.deinit(gpa);
-                try appendFmt(gpa, &rewritten_args, "((java.util.List<ApexSObject>) {s})", .{first_arg});
-                if (args.items.len > 1) {
-                    for (args.items[1..]) |arg| {
-                        try appendFmt(gpa, &rewritten_args, ", {s}", .{std.mem.trim(u8, arg, " \t")});
-                    }
-                }
-
-                try out.appendSlice(gpa, text[last_emit .. open + 1]);
-                try out.appendSlice(gpa, rewritten_args.items);
-                try out.append(gpa, ')');
-                replaced = true;
-                last_emit = close + 1;
+            var args = try splitTopLevelCommaExpressions(gpa, text[(open + 1)..close]);
+            defer args.deinit(gpa);
+            if (args.items.len == 0) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
+                continue;
+            }
+
+            const first_arg = std.mem.trim(u8, args.items[0], " \t");
+            const first_is_query = startsWithIgnoreCase(first_arg, "Database.query(") or
+                startsWithIgnoreCase(first_arg, "Database.queryWithBinds(");
+            if (!first_is_query) {
+                i = close + 1;
+                continue;
+            }
+            if (startsWithIgnoreCase(first_arg, "(java.util.List<ApexSObject>)") or
+                startsWithIgnoreCase(first_arg, "((java.util.List<ApexSObject>)"))
+            {
+                i = close + 1;
+                continue;
+            }
+
+            var rewritten_args: std.ArrayList(u8) = .empty;
+            defer rewritten_args.deinit(gpa);
+            try appendFmt(gpa, &rewritten_args, "((java.util.List<ApexSObject>) {s})", .{first_arg});
+            if (args.items.len > 1) {
+                for (args.items[1..]) |arg| {
+                    try appendFmt(gpa, &rewritten_args, ", {s}", .{std.mem.trim(u8, arg, " \t")});
                 }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+            }
+
+            try out.appendSlice(gpa, text[last_emit .. open + 1]);
+            try out.appendSlice(gpa, rewritten_args.items);
+            try out.append(gpa, ')');
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -618,94 +569,45 @@ pub fn rewriteFirstOrNullScalarWrappers(gpa: std.mem.Allocator, text: []const u8
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
-                if (!startsWithIgnoreCase(text[i..], marker)) {
-                    i += 1;
-                    continue;
-                }
-                if (i > 0 and isIdentifierChar(text[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            if (!startsWithIgnoreCase(text[i..], marker)) {
+                i += 1;
+                continue;
+            }
+            if (i > 0 and isIdentifierChar(text[i - 1])) {
+                i += 1;
+                continue;
+            }
+            if (i + marker.len < text.len and isIdentifierChar(text[i + marker.len])) {
+                i += 1;
+                continue;
+            }
 
-                var open = i + marker.len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
+            var open = i + marker.len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') {
+                i += 1;
+                continue;
+            }
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
 
-                const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
-                const should_unwrap = std.mem.indexOf(u8, inner, ".getAs(") != null or
-                    std.mem.indexOf(u8, inner, "ApexSwitch.getAs(") != null;
-                if (!should_unwrap) {
-                    i = close + 1;
-                    continue;
-                }
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, inner);
-                replaced = true;
-                last_emit = close + 1;
+            const inner = std.mem.trim(u8, text[(open + 1)..close], " \t");
+            const should_unwrap = std.mem.indexOf(u8, inner, ".getAs(") != null or
+                std.mem.indexOf(u8, inner, "ApexSwitch.getAs(") != null;
+            if (!should_unwrap) {
                 i = close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, inner);
+            replaced = true;
+            last_emit = close + 1;
+            i = close + 1;
         }
     }
 
@@ -723,130 +625,80 @@ pub fn rewriteDatabaseQueryIndexCompatibility(gpa: std.mem.Allocator, text: []co
     var last_emit: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        switch (state) {
-            .normal => {
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .line_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*') {
-                    state = .block_comment;
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') {
-                    state = .string_literal;
-                    i += 1;
-                    continue;
-                }
-                if (text[i] == '\'') {
-                    state = .char_literal;
-                    i += 1;
-                    continue;
-                }
+        if (helpers.skipNonNormal(text, &i, &state)) continue;
+        {
+            const query_method_len: usize = if (startsWithIgnoreCase(text[i..], "Database.queryWithBinds"))
+                "Database.queryWithBinds".len
+            else if (startsWithIgnoreCase(text[i..], "Database.query"))
+                "Database.query".len
+            else
+                0;
+            if (query_method_len == 0 or (i > 0 and isIdentifierChar(text[i - 1]))) {
+                i += 1;
+                continue;
+            }
+            if (i + query_method_len < text.len and isIdentifierChar(text[i + query_method_len])) {
+                i += 1;
+                continue;
+            }
 
-                const query_method_len: usize = if (startsWithIgnoreCase(text[i..], "Database.queryWithBinds"))
-                    "Database.queryWithBinds".len
-                else if (startsWithIgnoreCase(text[i..], "Database.query"))
-                    "Database.query".len
-                else
-                    0;
-                if (query_method_len == 0 or (i > 0 and isIdentifierChar(text[i - 1]))) {
-                    i += 1;
-                    continue;
-                }
-                if (i + query_method_len < text.len and isIdentifierChar(text[i + query_method_len])) {
-                    i += 1;
-                    continue;
-                }
+            var open = i + query_method_len;
+            while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
+            if (open >= text.len or text[open] != '(') {
+                i += 1;
+                continue;
+            }
+            const close = findMatchingParen(text, open) orelse {
+                i += 1;
+                continue;
+            };
 
-                var open = i + query_method_len;
-                while (open < text.len and std.ascii.isWhitespace(text[open])) : (open += 1) {}
-                if (open >= text.len or text[open] != '(') {
-                    i += 1;
-                    continue;
-                }
-                const close = findMatchingParen(text, open) orelse {
-                    i += 1;
-                    continue;
-                };
+            var dot_pos = close + 1;
+            while (dot_pos < text.len and std.ascii.isWhitespace(text[dot_pos])) : (dot_pos += 1) {}
+            if (dot_pos >= text.len or text[dot_pos] != '.') {
+                i = close + 1;
+                continue;
+            }
+            var method_pos = dot_pos + 1;
+            while (method_pos < text.len and std.ascii.isWhitespace(text[method_pos])) : (method_pos += 1) {}
+            if (!startsWithIgnoreCase(text[method_pos..], "get")) {
+                i = close + 1;
+                continue;
+            }
+            const get_end = method_pos + "get".len;
+            if (get_end < text.len and isIdentifierChar(text[get_end])) {
+                i = close + 1;
+                continue;
+            }
+            var get_open = get_end;
+            while (get_open < text.len and std.ascii.isWhitespace(text[get_open])) : (get_open += 1) {}
+            if (get_open >= text.len or text[get_open] != '(') {
+                i = close + 1;
+                continue;
+            }
+            const get_close = findMatchingParen(text, get_open) orelse {
+                i = close + 1;
+                continue;
+            };
 
-                var dot_pos = close + 1;
-                while (dot_pos < text.len and std.ascii.isWhitespace(text[dot_pos])) : (dot_pos += 1) {}
-                if (dot_pos >= text.len or text[dot_pos] != '.') {
-                    i = close + 1;
-                    continue;
-                }
-                var method_pos = dot_pos + 1;
-                while (method_pos < text.len and std.ascii.isWhitespace(text[method_pos])) : (method_pos += 1) {}
-                if (!startsWithIgnoreCase(text[method_pos..], "get")) {
-                    i = close + 1;
-                    continue;
-                }
-                const get_end = method_pos + "get".len;
-                if (get_end < text.len and isIdentifierChar(text[get_end])) {
-                    i = close + 1;
-                    continue;
-                }
-                var get_open = get_end;
-                while (get_open < text.len and std.ascii.isWhitespace(text[get_open])) : (get_open += 1) {}
-                if (get_open >= text.len or text[get_open] != '(') {
-                    i = close + 1;
-                    continue;
-                }
-                const get_close = findMatchingParen(text, get_open) orelse {
-                    i = close + 1;
-                    continue;
-                };
-
-                const index_arg = std.mem.trim(u8, text[(get_open + 1)..get_close], " \t");
-                if (index_arg.len == 0) {
-                    i = get_close + 1;
-                    continue;
-                }
-
-                const query_call = text[i .. close + 1];
-                const replacement = if (std.mem.eql(u8, index_arg, "0"))
-                    try std.fmt.allocPrint(gpa, "ApexCollections.firstOrThrow({s})", .{query_call})
-                else
-                    try std.fmt.allocPrint(gpa, "((java.util.List<ApexSObject>) {s}).get({s})", .{ query_call, index_arg });
-                defer gpa.free(replacement);
-
-                try out.appendSlice(gpa, text[last_emit..i]);
-                try out.appendSlice(gpa, replacement);
-                replaced = true;
-                last_emit = get_close + 1;
+            const index_arg = std.mem.trim(u8, text[(get_open + 1)..get_close], " \t");
+            if (index_arg.len == 0) {
                 i = get_close + 1;
-            },
-            .line_comment => {
-                if (text[i] == '\n') state = .normal;
-                i += 1;
-            },
-            .block_comment => {
-                if (text[i] == '*' and i + 1 < text.len and text[i + 1] == '/') {
-                    state = .normal;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            },
-            .string_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '"') state = .normal;
-                i += 1;
-            },
-            .char_literal => {
-                if (text[i] == '\\' and i + 1 < text.len) {
-                    i += 2;
-                    continue;
-                }
-                if (text[i] == '\'') state = .normal;
-                i += 1;
-            },
+                continue;
+            }
+
+            const query_call = text[i .. close + 1];
+            const replacement = if (std.mem.eql(u8, index_arg, "0"))
+                try std.fmt.allocPrint(gpa, "ApexCollections.firstOrThrow({s})", .{query_call})
+            else
+                try std.fmt.allocPrint(gpa, "((java.util.List<ApexSObject>) {s}).get({s})", .{ query_call, index_arg });
+            defer gpa.free(replacement);
+
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, replacement);
+            replaced = true;
+            last_emit = get_close + 1;
+            i = get_close + 1;
         }
     }
 

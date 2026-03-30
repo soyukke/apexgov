@@ -160,3 +160,23 @@ pub fn writeOutputFile(path: []const u8, content: []const u8) !void {
     defer file.close();
     try file.writeAll(content);
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "normalizeApexTemplateTokens strips namespace placeholders" {
+    const gpa = std.testing.allocator;
+
+    const templated = try gpa.dupe(u8, "%%%NAMESPACE%%%Foo value = \"%%%NAMESPACED_RT%%%\"; ___NAMESPACE___Bar other;");
+    const rewritten = try normalizeApexTemplateTokens(gpa, templated);
+    defer gpa.free(rewritten);
+
+    try std.testing.expectEqualStrings("Foo value = \"\"; Bar other;", rewritten);
+
+    const plain_input = try gpa.dupe(u8, "public class Sample {}");
+    const plain = try normalizeApexTemplateTokens(gpa, plain_input);
+    defer gpa.free(plain);
+
+    try std.testing.expect(plain.ptr == plain_input.ptr);
+}
