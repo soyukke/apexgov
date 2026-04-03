@@ -35,9 +35,11 @@ const rewriteOverloadedStringIdCallArgs = getas.rewriteOverloadedStringIdCallArg
 const rewriteSObjectGetPutAmbiguousArgs = getas.rewriteSObjectGetPutAmbiguousArgs;
 const rewriteSObjectTypeVariableGetAsAccess = getas.rewriteSObjectTypeVariableGetAsAccess;
 const rewriteTypePathGetAsAccess = getas.rewriteTypePathGetAsAccess;
+const CompatibilityState = helpers.CompatibilityState;
 const replaceLiteralAll = helpers.replaceLiteralAll;
 const replaceMethodBodyBySignature = helpers.replaceMethodBodyBySignature;
 const replaceSectionBetweenMarkers = helpers.replaceSectionBetweenMarkers;
+const skipNonNormal = helpers.skipNonNormal;
 const convertBracketIndexAccess = misc.convertBracketIndexAccess;
 const rewriteApexStringInstanceMethods = misc.rewriteApexStringInstanceMethods;
 const rewriteApexStringsValueOfCollectionWrappers = misc.rewriteApexStringsValueOfCollectionWrappers;
@@ -111,6 +113,7 @@ const rewriteMethodLocalDefaultInitializers = parser.rewriteMethodLocalDefaultIn
 const rewriteSchemaObjectNamespaceAccess = parser.rewriteSchemaObjectNamespaceAccess;
 const rewriteTokenOverloadCalls = parser.rewriteTokenOverloadCalls;
 const rewriteTypedNullSchemaFieldCollections = parser.rewriteTypedNullSchemaFieldCollections;
+const isIdentifierChar = util.isIdentifierChar;
 const startsWithIgnoreCase = util.startsWithIgnoreCase;
 
 const RewriteFn = *const fn (std.mem.Allocator, []const u8) anyerror![]u8;
@@ -132,6 +135,103 @@ fn runPipeline(gpa: std.mem.Allocator, input: []u8, steps: []const RewriteStep) 
         current = next;
     }
     return current;
+}
+
+fn rewriteErrHandlerContextConstants(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const marker = "ERR_Handler_API.Context.";
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        if (skipNonNormal(text, &i, &state)) continue;
+        if (!startsWithIgnoreCase(text[i..], marker)) {
+            i += 1;
+            continue;
+        }
+
+        const name_start = i + marker.len;
+        if (name_start >= text.len or !isIdentifierChar(text[name_start])) {
+            i += 1;
+            continue;
+        }
+
+        var name_end = name_start + 1;
+        while (name_end < text.len and isIdentifierChar(text[name_end])) : (name_end += 1) {}
+
+        try out.appendSlice(gpa, text[last_emit..i]);
+        try out.append(gpa, '"');
+        try out.appendSlice(gpa, text[name_start..name_end]);
+        try out.append(gpa, '"');
+        replaced = true;
+
+        i = name_end;
+        if (startsWithIgnoreCase(text[i..], ".name()")) {
+            i += ".name()".len;
+        }
+        last_emit = i;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
+}
+
+fn rewriteRd2EnablementStaticReferences(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        from: []const u8,
+        to: []const u8,
+    }{
+        .{ .from = "RD2_EnablementService.isRecurringDonations2Enabled", .to = "false" },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var replaced = false;
+    var last_emit: usize = 0;
+    var i: usize = 0;
+    var state: CompatibilityState = .normal;
+    while (i < text.len) {
+        if (skipNonNormal(text, &i, &state)) continue;
+
+        var matched: ?usize = null;
+        for (replacements, 0..) |replacement, idx| {
+            if (i + replacement.from.len > text.len) continue;
+            if (!std.mem.eql(u8, text[i .. i + replacement.from.len], replacement.from)) continue;
+            if (i > 0 and isIdentifierChar(text[i - 1])) continue;
+            const boundary = i + replacement.from.len;
+            if (boundary < text.len and isIdentifierChar(text[boundary])) continue;
+            matched = idx;
+            break;
+        }
+
+        if (matched) |idx| {
+            const replacement = replacements[idx];
+            try out.appendSlice(gpa, text[last_emit..i]);
+            try out.appendSlice(gpa, replacement.to);
+            replaced = true;
+            i += replacement.from.len;
+            last_emit = i;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    if (!replaced) {
+        out.deinit(gpa);
+        return gpa.dupe(u8, text);
+    }
+    try out.appendSlice(gpa, text[last_emit..]);
+    return out.toOwnedSlice(gpa);
 }
 
 pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -221,9 +321,6 @@ pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .from = "GE_GiftEntryController.encryptGatewayId(gatewayId)", .to = "gatewayId" },
         // Break AccountAdapter → RD2_SustainerEvaluationService cascade
         .{ .from = "RD2_SustainerEvaluationService.isSustainerUpdateEnabled", .to = "false" },
-        // Break RD2_EnablementService cascades (blocks 65+ files)
-        .{ .from = "RD2_EnablementService.isRecurringDonations2Enabled", .to = "false" },
-        .{ .from = "RD2_EnablementService.isMetadataDeployed", .to = "false" },
         // Break Contacts → LegacyHouseholds cascade (inline simple checks)
         .{ .from = "LegacyHouseholds.isWithoutAccount(contactRecord)", .to = "(contactRecord.get(\"AccountId\") == null)" },
         .{ .from = "LegacyHouseholds.isOrganizationContact(contactRecord, accountFor(contactRecord))", .to = "false" },
@@ -1627,6 +1724,8 @@ pub fn rewriteKnownCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8)
         .{ .rewrite = rewriteDatabaseDeleteQueryCalls },
         .{ .rewrite = rewriteApexStringsToIntegerIntCast },
         .{ .rewrite = rewriteTrailingDatabaseQueryAssignmentParens },
+        .{ .rewrite = rewriteErrHandlerContextConstants },
+        .{ .rewrite = rewriteRd2EnablementStaticReferences },
         // --- late literal fixups ---
         .{ .literal = .{
             .from = "if (Boolean.TRUE.equals(ApexSwitch.getAs(opp.getAs(\"Account\"), \"npe01__SYSTEMIsIndividual__c\")) && Boolean.TRUE.equals(opp.getAs(\"Primary_Contact__c\")) != null) {",
@@ -4039,6 +4138,9 @@ pub fn rewriteLateCompatibilityFixups(gpa: std.mem.Allocator, text: []const u8) 
         .{ .from = "PMT_RefundController.RefundService", .to = "PMT_RefundController.refundService" },
         .{ .from = "DomainCreator.getLightningHostname()", .to = "URL.getOrgDomainUrl().getHost()" },
         .{ .from = "DomainCreator.getVisualforceHostname(namespace)", .to = "URL.getOrgDomainUrl().getHost()" },
+        .{ .from = "@ApexGlobal", .to = "@apexemu.annotations.ApexGlobal" },
+        .{ .from = "this.context = context.name();", .to = "this.context = context;" },
+        .{ .from = "state.isMetaConfirmed = false;", .to = "state.set(\"isMetaConfirmed\", false);" },
         .{ .from = "if(paymentCurrencyField != null && oppCurrencyField != null) {", .to = "if(PaymentCurrencyField != null && OppCurrencyField != null) {" },
         .{ .from = "op.put(paymentCurrencyField, thisOpp.get(oppCurrencyField));", .to = "op.put(PaymentCurrencyField, thisOpp.get(OppCurrencyField));" },
         .{ .from = "constructOppPayment(thisOpp, paymentCurrencyField, oppCurrencyField)", .to = "constructOppPayment(thisOpp, PaymentCurrencyField, OppCurrencyField)" },

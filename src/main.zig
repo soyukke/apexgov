@@ -245,11 +245,22 @@ fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var opts = try parseEmulateTranspileOptions(gpa, args);
     defer opts.deinit(gpa);
 
+    const effective_out_dir = if (opts.strict)
+        try std.fmt.allocPrint(gpa, "{s}.strict-staging", .{opts.out_dir})
+    else
+        try gpa.dupe(u8, opts.out_dir);
+    defer gpa.free(effective_out_dir);
+
+    if (opts.strict) {
+        if (!opts.overwrite and pathExists(opts.out_dir)) return error.OutputAlreadyExists;
+        try deleteTreeIfExists(effective_out_dir);
+    }
+
     var summary = try apexgov.transpile.run(gpa, .{
         .input_paths = opts.input_paths.items,
-        .out_dir = opts.out_dir,
+        .out_dir = effective_out_dir,
         .package_name = opts.package_name,
-        .overwrite = opts.overwrite,
+        .overwrite = if (opts.strict) true else opts.overwrite,
         .strict = false,
     });
     defer summary.deinit(gpa);
@@ -282,8 +293,16 @@ fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 
     if (opts.strict and summary.unsupported_statements > 0) {
+        try deleteTreeIfExists(effective_out_dir);
         std.debug.print("transpile: strict mode failed due to unsupported statements.\n", .{});
         return 1;
+    }
+
+    if (opts.strict) {
+        if (opts.overwrite) {
+            try deleteTreeIfExists(opts.out_dir);
+        }
+        try std.fs.cwd().rename(effective_out_dir, opts.out_dir);
     }
     return 0;
 }
@@ -645,6 +664,11 @@ fn pathExists(path: []const u8) bool {
     return true;
 }
 
+fn deleteTreeIfExists(path: []const u8) !void {
+    if (!pathExists(path)) return;
+    try std.fs.cwd().deleteTree(path);
+}
+
 fn countFindingsAtOrAbove(findings: []const apexgov.model.Finding, threshold: apexgov.model.Severity) usize {
     var count: usize = 0;
     for (findings) |finding| {
@@ -843,4 +867,40 @@ test "parseEmulateTranspileOptions injects default input path" {
     try std.testing.expectEqual(false, opts.strict);
     try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
     try std.testing.expectEqualStrings(defaultTranspileInputPath(), opts.input_paths.items[0]);
+}
+
+test "run emulate transpile forwards strict mode to transpiler" {
+    const gpa = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        \\public class UnsupportedStrictDemo {
+        \\  public static void run() {
+        \\    when Account acc {
+        \\      System.debug('x');
+        \\    }
+        \\  }
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "UnsupportedStrictDemo.cls", .data = source });
+
+    const root = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(root);
+    const out_dir = try std.fs.path.join(gpa, &.{ root, "strict-out" });
+    defer gpa.free(out_dir);
+
+    const argv = [_][]const u8{
+        "apexgov",
+        "emulate",
+        "transpile",
+        root,
+        "--out",
+        out_dir,
+        "--strict",
+        "--overwrite",
+    };
+    try std.testing.expectEqual(@as(u8, 1), try run(gpa, argv[0..]));
+    try std.testing.expect(!pathExists(out_dir));
 }

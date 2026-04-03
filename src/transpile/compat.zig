@@ -1607,6 +1607,27 @@ test "rewriteLateCompatibilityFixups initializes OrgConfig and helper service pr
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "public AddressService addressService = new AddressService(); // Apex property { get; set; }") != null);
 }
 
+test "rewriteLateCompatibilityFixups rewrites ApexGlobal and NPSP state artifacts" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\@ApexGlobal
+        \\public class Sample {
+        \\  private final String context;
+        \\  public Sample(String context, ApexSObject state) {
+        \\    this.context = context.name();
+        \\    state.isMetaConfirmed = false;
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteLateCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "@apexemu.annotations.ApexGlobal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "this.context = context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "state.set(\"isMetaConfirmed\", false);") != null);
+}
+
 test "rewriteKnownCompatibilityFixups makes Addresses contact selector static when initialized" {
     const gpa = std.testing.allocator;
     const input =
@@ -1822,6 +1843,29 @@ test "rewriteKnownCompatibilityFixups rewrites RD2 query binds and map mutation 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "((Map<String, Object>) initialView.getAs(\"InstallmentPeriodPermissions\")).get(\"Createable\")") != null);
 }
 
+test "rewriteKnownCompatibilityFixups rewrites ERR_Handler contexts and preserves RD2 override members" {
+    const gpa = std.testing.allocator;
+    const input =
+        \\public class Sample {
+        \\  public void run(apexemu.runtime.System.Exception e, Boolean dryRunMode) {
+        \\    if (!RD2_EnablementService.isRecurringDonations2Enabled && dryRunMode) {
+        \\      RD2_EnablementService.isRecurringDonations2EnabledOverride = true;
+        \\      ERR_Handler.processError(e, ERR_Handler_API.Context.STTG);
+        \\      ERR_LogService.Logger logger = new ERR_LogService.Logger(ERR_Handler_API.Context.Elevate, new Schema.SObjectType("Contact"));
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const rewritten = try rewriteKnownCompatibilityFixups(gpa, input);
+    defer gpa.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (!false && dryRunMode)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "RD2_EnablementService.isRecurringDonations2EnabledOverride = true;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "ERR_Handler.processError(e, \"STTG\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new ERR_LogService.Logger(\"Elevate\", new Schema.SObjectType(\"Contact\"))") != null);
+}
+
 test "rewriteBareCustomSettingsSingletonAccess rewrites custom getAll calls" {
     const gpa = std.testing.allocator;
     const input =
@@ -1962,4 +2006,3 @@ test "rewriteSObjectFieldNameObjectNameUses rewrites object name contexts only" 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "UTIL_Describe.getFieldDescribe(new Schema.SObjectType(\"DataImport__c\").getName(), fieldName)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new ArrayList<Schema.SObjectField>(ApexCollections.listOf(new Schema.SObjectField(\"Account\", \"Name\")))") != null);
 }
-

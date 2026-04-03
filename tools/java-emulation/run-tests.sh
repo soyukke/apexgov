@@ -42,6 +42,7 @@ USAGE
 
 best_effort=false
 class_name_pattern=""
+best_effort_restore_limit="${APEXGOV_BEST_EFFORT_RESTORE_LIMIT:-128}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,10 +103,12 @@ sources_file="$out_dir/sources.zlist"
 runtime_sources_file="$out_dir/runtime-sources.zlist"
 test_sources_file="$out_dir/test-sources.zlist"
 find "$repo_root/tools/java-emulation/src" -type f -name '*.java' -print0 | sort -z > "$runtime_sources_file"
-# When the transpiled sources directory is used as tests_dir, out_dir is often nested
-# under tests_dir. Exclude out_dir to avoid re-ingesting previous run artifacts.
+# When the transpiled sources directory is reused as tests_dir, stale run-tests.sh
+# outputs may already exist under it. Exclude the active out_dir and any nested
+# best-effort source mirrors so reruns do not re-ingest their own generated inputs.
 find "$tests_dir" \
   \( -path "$out_dir" -o -path "$out_dir/*" \) -prune -o \
+  -type d -name 'best-effort-sources' -prune -o \
   -type f -name '*.java' -print0 | sort -z > "$test_sources_file"
 cat "$runtime_sources_file" "$test_sources_file" > "$sources_file"
 
@@ -137,22 +140,15 @@ echo "phase:runtime $(_timer_elapsed $_t)" >&2
 if [[ "$best_effort" == "true" ]]; then
   _t=$(_timer_start)
   best_effort_sources_dir="$out_dir/best-effort-sources"
+  best_effort_sourcepath_dir="$out_dir/best-effort-sourcepath"
   best_effort_sources_file="$out_dir/best-effort-sources.zlist"
   compile_failures="$out_dir/compile-failures.txt"
   compile_fallbacks="$out_dir/compile-fallbacks.txt"
   rm -rf "$best_effort_sources_dir"
+  rm -rf "$best_effort_sourcepath_dir"
   mkdir -p "$best_effort_sources_dir"
+  mkdir -p "$best_effort_sourcepath_dir"
   : > "$compile_fallbacks"
-
-  # Copy test sources preserving directory structure
-  : > "$best_effort_sources_file"
-  while IFS= read -r -d '' src; do
-    rel="${src#"$tests_dir"/}"
-    dst="$best_effort_sources_dir/$rel"
-    mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"
-    printf '%s\0' "$dst" >> "$best_effort_sources_file"
-  done < "$test_sources_file"
 
   sanitize_java_identifier() {
     local raw="$1"
@@ -214,6 +210,37 @@ if [[ "$best_effort" == "true" ]]; then
     } > "$src"
   }
 
+  package_sourcepath_dir() {
+    local src="$1"
+    local package_name
+    package_name="$(sed -n 's/^[[:space:]]*package[[:space:]]\+\([[:alnum:]_.]\+\)[[:space:]]*;[[:space:]]*$/\1/p' "$src" | head -n 1)"
+    if [[ -z "$package_name" ]]; then
+      printf '%s' "$best_effort_sourcepath_dir"
+      return
+    fi
+    printf '%s/%s' "$best_effort_sourcepath_dir" "${package_name//./\/}"
+  }
+
+  link_sourcepath_entry() {
+    local src="$1"
+    local dst_dir
+    dst_dir="$(package_sourcepath_dir "$src")"
+    mkdir -p "$dst_dir"
+    ln -sfn "$src" "$dst_dir/$(basename "$src")"
+  }
+
+  # Copy test sources preserving directory structure and expose them through a
+  # package-aware sourcepath mirror so javac can resolve flat transpile outputs.
+  : > "$best_effort_sources_file"
+  while IFS= read -r -d '' src; do
+    rel="${src#"$tests_dir"/}"
+    dst="$best_effort_sources_dir/$rel"
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    link_sourcepath_entry "$dst"
+    printf '%s\0' "$dst" >> "$best_effort_sources_file"
+  done < "$test_sources_file"
+
   declare -a pending=()
   while IFS= read -r -d '' src; do
     pending+=("$src")
@@ -231,11 +258,13 @@ if [[ "$best_effort" == "true" ]]; then
     fallback_count=$((fallback_count + 1))
   }
 
-  # Best-effort javac flags: add -sourcepath to resolve deps from source
-  BE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
+  # Keep the initial batch compile cheap; use the package-aware sourcepath mirror
+  # only when salvaging individual files and restoring placeholders.
+  BATCH_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
+  RESOLVE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$best_effort_sourcepath_dir")
 
   # --- Phase 1: Try compiling all files at once ---
-  if javac "${BE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
+  if javac "${BATCH_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
     pending=()
   fi
 
@@ -245,7 +274,7 @@ if [[ "$best_effort" == "true" ]]; then
 
     # Try batch compile to identify error sources
     class_count_before="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
-    if javac "${BE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+    if javac "${BATCH_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
       progress=true
       pending=()
       rm -f "$out_dir/.javac.err"
@@ -295,13 +324,13 @@ if [[ "$best_effort" == "true" ]]; then
       next_pending=()
       for src in "${pending[@]}"; do
         # Try compiling original source individually first
-        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
+        if javac "${RESOLVE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
           salvage_progress=true
           progress=true
         else
           # Original failed — make it a placeholder
           render_placeholder_source "$src"
-          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1 || true
+          javac "${RESOLVE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1 || true
           record_fallback "$src"
           next_pending+=("$src")
         fi
@@ -331,7 +360,7 @@ if [[ "$best_effort" == "true" ]]; then
   if [[ ${#pending[@]} -gt 0 ]]; then
     : > "$compile_failures"
     for src in "${pending[@]}"; do
-      if ! javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>"$out_dir/.javac.err"; then
+      if ! javac "${RESOLVE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>"$out_dir/.javac.err"; then
         first_line="$(head -n 1 "$out_dir/.javac.err")"
         printf '%s\t%s\n' "$src" "$first_line" >> "$compile_failures"
       fi
@@ -356,33 +385,43 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
     [ -f "$orig" ] && cp "$orig" "$fb_src"
   done < "$compile_fallbacks"
   # Compile with -sourcepath so javac resolves deps from source, not placeholder .class
+  p3_restored=0
   p3_files=()
   while IFS= read -r fb_src; do p3_files+=("$fb_src"); done < "$compile_fallbacks"
   if [[ ${#p3_files[@]} -gt 0 ]]; then
-    javac "${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir" \
+    if javac "${RESOLVE_JAVAC_FLAGS[@]}" \
       -cp "$out_dir/build" -d "$out_dir/build" \
-      "${p3_files[@]}" >/dev/null 2>/dev/null || true
-  fi
-  # Re-check which files still fail individually and revert those to placeholders
-  p3_restored=0
-  next_fallbacks="$out_dir/.p3-fallbacks.txt"
-  : > "$next_fallbacks"
-  while IFS= read -r fb_src; do
-    class_name="$(basename "$fb_src" .java)"
-    if [ -f "$out_dir/build/generated/${class_name}.class" ]; then
-      # Check if .class was updated (not just the placeholder)
-      class_size=$(wc -c < "$out_dir/build/generated/${class_name}.class" 2>/dev/null | tr -d ' ')
-      if [ "$class_size" -gt 500 ] 2>/dev/null; then
-        p3_restored=$((p3_restored + 1))
-      else
-        printf '%s\n' "$fb_src" >> "$next_fallbacks"
-      fi
+      "${p3_files[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+      p3_restored=${#p3_files[@]}
+      : > "$compile_fallbacks"
+      rm -f "$out_dir/.javac.err"
     else
-      printf '%s\n' "$fb_src" >> "$next_fallbacks"
+      p3_error_files=()
+      while IFS= read -r err_src; do
+        p3_error_files+=("$err_src")
+      done < <(
+        awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" \
+          | grep "^$best_effort_sources_dir/" \
+          | sort -u
+      )
+      rm -f "$out_dir/.javac.err"
+
+      if [[ ${#p3_error_files[@]} -gt 0 ]]; then
+        next_fallbacks="$out_dir/.p3-fallbacks.txt"
+        : > "$next_fallbacks"
+        for err_src in "${p3_error_files[@]}"; do
+          printf '%s\n' "$err_src" >> "$next_fallbacks"
+        done
+        p3_restored=$(( ${#p3_files[@]} - ${#p3_error_files[@]} ))
+        cp "$next_fallbacks" "$compile_fallbacks"
+        rm -f "$next_fallbacks"
+      else
+        # If javac fails without attributing errors to specific sources, keep the
+        # full fallback set for the slower restore passes rather than guessing.
+        p3_restored=0
+      fi
     fi
-  done < "$compile_fallbacks"
-  cp "$next_fallbacks" "$compile_fallbacks"
-  rm -f "$next_fallbacks"
+  fi
   if [ "$p3_restored" -gt 0 ]; then
     remaining=$(wc -l < "$compile_fallbacks" | tr -d ' ')
     echo "best-effort: sourcepath recompile restored $p3_restored source(s), $remaining remaining" >&2
@@ -390,10 +429,19 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
   echo "phase:recompile-sourcepath $(_timer_elapsed $_t_p3)" >&2
 fi
 
-# Final pass: iteratively restore placeholder sources until no more progress
+skip_expensive_restore=false
 if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
+  remaining_fallbacks="$(wc -l < "$compile_fallbacks" | tr -d ' ')"
+  if [[ "$remaining_fallbacks" =~ ^[0-9]+$ ]] && (( remaining_fallbacks > best_effort_restore_limit )); then
+    skip_expensive_restore=true
+    echo "best-effort: skipping expensive restore for $remaining_fallbacks remaining source(s) (limit=$best_effort_restore_limit)" >&2
+  fi
+fi
+
+# Final pass: iteratively restore placeholder sources until no more progress
+if [[ "$best_effort" == "true" && -s "$compile_fallbacks" && "$skip_expensive_restore" != "true" ]]; then
   # Compile all placeholders so their types are available
-  RESTORE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
+  RESTORE_JAVAC_FLAGS=("${RESOLVE_JAVAC_FLAGS[@]}")
   while IFS= read -r fb_src; do
     javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
   done < "$compile_fallbacks"
@@ -544,7 +592,7 @@ fi
 # Full recompilation pass: recompile ALL sources against the final build state.
 # This catches files that couldn't compile during initial best-effort but can now
 # because their dependencies were restored in later rounds.
-if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
+if [[ "$best_effort" == "true" && -s "$compile_fallbacks" && "$skip_expensive_restore" != "true" ]]; then
   _t_recomp=$(_timer_start)
   # Iterative individual recompilation: restore original source and compile
   # individually. Placeholder .class is kept (provides type stubs for dependents)
@@ -559,11 +607,11 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" ]]; then
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
-        if javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
+        if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
           rr_progress=$((rr_progress + 1))
         else
           render_placeholder_source "$fb_src"
-          javac "${JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
           printf '%s\n' "$fb_src" >> "$next_fallbacks"
         fi
       else
@@ -606,7 +654,9 @@ runner_cmd=(
 if [[ -n "$class_name_pattern" ]]; then
   runner_cmd+=(--class-name-pattern "$class_name_pattern")
 fi
-"${runner_cmd[@]}"
+runner_log="$out_dir/runner.log"
+rm -f "$runner_log"
+"${runner_cmd[@]}" 2>&1 | tee "$runner_log"
 runner_exit=$?
 set -e
 echo "phase:test-runner $(_timer_elapsed $_t)" >&2
