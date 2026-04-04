@@ -536,14 +536,34 @@ public final class Schema {
     if (parentType.equalsIgnoreCase("Case")) {
       addChildRelationship(out, "CaseComment", "ParentId");
     }
+    if (parentType.equalsIgnoreCase("Campaign")) {
+      addChildRelationship(out, "CampaignMember", "CampaignId");
+      addChildRelationship(out, "CampaignMemberStatus", "CampaignId");
+    }
+    // NPSP CMDT child relationships
+    if (parentType.equalsIgnoreCase("GetStartedChecklistSection__mdt")) {
+      addChildRelationship(out, "GetStartedChecklistItem__mdt", "GS_Checklist_Section__c", "GetStartedChecklistItems__r");
+    }
+    if (parentType.equalsIgnoreCase("Data_Import_Object_Mapping_Set__mdt")) {
+      addChildRelationship(out, "Data_Import_Object_Mapping__mdt", "Data_Import_Object_Mapping_Set__c");
+    }
+    if (parentType.equalsIgnoreCase("Data_Import_Field_Mapping_Set__mdt")) {
+      addChildRelationship(out, "Data_Import_Field_Mapping__mdt", "Data_Import_Field_Mapping_Set__c");
+    }
   }
 
   private static void addChildRelationship(
       List<ChildRelationship> out, String childType, String parentLinkField) {
+    addChildRelationship(out, childType, parentLinkField, null);
+  }
+
+  private static void addChildRelationship(
+      List<ChildRelationship> out, String childType, String parentLinkField, String relationshipName) {
     if (out == null || childType == null || childType.isBlank() || parentLinkField == null || parentLinkField.isBlank()) {
       return;
     }
-    ChildRelationship candidate = new ChildRelationship(childType.trim(), parentLinkField.trim());
+    ChildRelationship candidate = new ChildRelationship(childType.trim(), parentLinkField.trim(),
+        relationshipName == null ? null : relationshipName.trim());
     for (ChildRelationship existing : out) {
       if (sameRelationship(existing, candidate)) {
         return;
@@ -2364,10 +2384,18 @@ public final class Schema {
   public static final class ChildRelationship {
     final String childType;
     final String parentLinkField;
+    final String customRelationshipName;
 
     ChildRelationship(String childType, String parentLinkField) {
       this.childType = childType;
       this.parentLinkField = parentLinkField;
+      this.customRelationshipName = null;
+    }
+
+    ChildRelationship(String childType, String parentLinkField, String relationshipName) {
+      this.childType = childType;
+      this.parentLinkField = parentLinkField;
+      this.customRelationshipName = relationshipName;
     }
 
     public SObjectType getChildSObject() {
@@ -2379,6 +2407,9 @@ public final class Schema {
     }
 
     public String getRelationshipName() {
+      if (customRelationshipName != null && !customRelationshipName.isBlank()) {
+        return customRelationshipName;
+      }
       if (childType == null || childType.isBlank()) {
         return "";
       }
@@ -2422,6 +2453,8 @@ public final class Schema {
         .reference("OwnerId", "User")
         .optional("CreatedById", FieldType.ID)
         .reference("CreatedById", "User")
+        .optional("Batch__c", FieldType.ID)
+        .reference("Batch__c", "Batch__c")
         .register();
     object("Contact")
         .required("LastName", FieldType.STRING)
@@ -2440,6 +2473,8 @@ public final class Schema {
         .reference("LastModifiedById", "User")
         .optional("Birthdate", FieldType.DATE)
         .optional("Description", FieldType.STRING)
+        .optional("Batch__c", FieldType.ID)
+        .reference("Batch__c", "Batch__c")
         .register();
     object("Opportunity")
         .required("Name", FieldType.STRING)
@@ -2456,6 +2491,8 @@ public final class Schema {
         .optional("Probability", FieldType.DECIMAL)
         .optional("DiscountType__c", FieldType.STRING)
         .optional("InvoicedStatus__c", FieldType.STRING)
+        .optional("Batch__c", FieldType.ID)
+        .reference("Batch__c", "Batch__c")
         .register();
     object("OpportunityLineItem")
         .optional("Description", FieldType.STRING)

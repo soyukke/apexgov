@@ -98,7 +98,7 @@ final class ApexStore {
               + FIELD_PATH_TEXT
               + ")?\\s*\\)$");
   private static final Pattern SOSL_PATTERN =
-      Pattern.compile("(?is)^find\\s+(.+?)\\s+in\\s+(all|name)\\s+fields\\s+returning\\s+(.+)$");
+      Pattern.compile("(?is)^find\\s+(.+?)(?:\\s+in\\s+(all|name)\\s+fields)?\\s+returning\\s+(.+)$");
   private static final Pattern RELATIVE_N_DAYS_LITERAL_PATTERN =
       Pattern.compile("(?i)^(last_n_days|next_n_days|n_days_ago):(\\d+)$");
   private static final Clock SOQL_CLOCK = Clock.systemUTC();
@@ -580,6 +580,144 @@ final class ApexStore {
             .set("Picklist_Bucket__mdtId", picklistBucket.id());
     state.active.computeIfAbsent("Bucketed_Picklist_values__c", ignored -> new LinkedHashMap<>())
         .put(picklistValueRelation.id(), picklistValueRelation);
+
+    // --- NPSP Data Import CMDT seed data ---
+    // Data_Import_Field_Mapping_Set__mdt
+    ApexSObject defaultFieldMappingSet =
+        ApexSObject.of("Data_Import_Field_Mapping_Set__mdt")
+            .withId("mFS000000000001")
+            .set("DeveloperName", "Default_Field_Mapping_Set")
+            .set("MasterLabel", "Default Field Mapping Set")
+            .set("Label", "Default Field Mapping Set");
+    state.active
+        .computeIfAbsent("Data_Import_Field_Mapping_Set__mdt", ignored -> new LinkedHashMap<>())
+        .put(defaultFieldMappingSet.id(), defaultFieldMappingSet);
+
+    ApexSObject migratedFieldMappingSet =
+        ApexSObject.of("Data_Import_Field_Mapping_Set__mdt")
+            .withId("mFS000000000002")
+            .set("DeveloperName", "Migrated_Custom_Field_Mapping_Set")
+            .set("MasterLabel", "Migrated Custom Field Mapping Set")
+            .set("Label", "Migrated Custom Field Mapping Set");
+    state.active
+        .computeIfAbsent("Data_Import_Field_Mapping_Set__mdt", ignored -> new LinkedHashMap<>())
+        .put(migratedFieldMappingSet.id(), migratedFieldMappingSet);
+
+    // Data_Import_Object_Mapping_Set__mdt
+    ApexSObject defaultObjMappingSet =
+        ApexSObject.of("Data_Import_Object_Mapping_Set__mdt")
+            .withId("mOS000000000001")
+            .set("DeveloperName", "Default_Object_Mapping_Set")
+            .set("MasterLabel", "Default Object Mapping Set")
+            .set("Label", "Default Object Mapping Set");
+    state.active
+        .computeIfAbsent("Data_Import_Object_Mapping_Set__mdt", ignored -> new LinkedHashMap<>())
+        .put(defaultObjMappingSet.id(), defaultObjMappingSet);
+
+    // Data_Import_Object_Mapping__mdt records linked to default set
+    ApexSObject objMappingAccount1 =
+        ApexSObject.of("Data_Import_Object_Mapping__mdt")
+            .withId("mOM000000000001")
+            .set("DeveloperName", "Account1")
+            .set("MasterLabel", "Account 1")
+            .set("Label", "Account 1")
+            .set("Object_API_Name__c", "Account")
+            .set("Imported_Record_Field_Name__c", "npsp__Account1Imported__c")
+            .set("Imported_Record_Status_Field_Name__c", "npsp__Account1ImportStatus__c")
+            .set("Legacy_Data_Import_Object_Name__c", "Account1")
+            .set("Data_Import_Object_Mapping_Set__c", defaultObjMappingSet.id())
+            .set("Is_Deleted__c", false);
+    state.active
+        .computeIfAbsent("Data_Import_Object_Mapping__mdt", ignored -> new LinkedHashMap<>())
+        .put(objMappingAccount1.id(), objMappingAccount1);
+
+    ApexSObject objMappingAccount2 =
+        ApexSObject.of("Data_Import_Object_Mapping__mdt")
+            .withId("mOM000000000002")
+            .set("DeveloperName", "Account2")
+            .set("MasterLabel", "Account 2")
+            .set("Label", "Account 2")
+            .set("Object_API_Name__c", "Account")
+            .set("Imported_Record_Field_Name__c", "npsp__Account2Imported__c")
+            .set("Imported_Record_Status_Field_Name__c", "npsp__Account2ImportStatus__c")
+            .set("Legacy_Data_Import_Object_Name__c", "Account2")
+            .set("Data_Import_Object_Mapping_Set__c", defaultObjMappingSet.id())
+            .set("Is_Deleted__c", false);
+    state.active
+        .computeIfAbsent("Data_Import_Object_Mapping__mdt", ignored -> new LinkedHashMap<>())
+        .put(objMappingAccount2.id(), objMappingAccount2);
+
+    // Data_Import_Field_Mapping__mdt records linked to default field mapping set
+    ApexSObject fieldMappingCity =
+        ApexSObject.of("Data_Import_Field_Mapping__mdt")
+            .withId("mFM000000000001")
+            .set("DeveloperName", "Account_1_City")
+            .set("MasterLabel", "Account 1 City")
+            .set("Label", "Account 1 City")
+            .set("Source_Field_API_Name__c", "npsp__HomeCity__c")
+            .set("Target_Field_API_Name__c", "BillingCity")
+            .set("Target_Object_Mapping__c", objMappingAccount1.id())
+            .set("Target_Object_Mapping__r", objMappingAccount1.copy())
+            .set("Data_Import_Field_Mapping_Set__c", defaultFieldMappingSet.id())
+            .set("Data_Import_Field_Mapping_Set__r", defaultFieldMappingSet.copy())
+            .set("Is_Deleted__c", false);
+    state.active
+        .computeIfAbsent("Data_Import_Field_Mapping__mdt", ignored -> new LinkedHashMap<>())
+        .put(fieldMappingCity.id(), fieldMappingCity);
+
+    ApexSObject fieldMappingCountry =
+        ApexSObject.of("Data_Import_Field_Mapping__mdt")
+            .withId("mFM000000000002")
+            .set("DeveloperName", "Account_1_Country")
+            .set("MasterLabel", "Account 1 Country")
+            .set("Label", "Account 1 Country")
+            .set("Source_Field_API_Name__c", "npsp__HomeCountry__c")
+            .set("Target_Field_API_Name__c", "BillingCountry")
+            .set("Target_Object_Mapping__c", objMappingAccount1.id())
+            .set("Target_Object_Mapping__r", objMappingAccount1.copy())
+            .set("Data_Import_Field_Mapping_Set__c", defaultFieldMappingSet.id())
+            .set("Data_Import_Field_Mapping_Set__r", defaultFieldMappingSet.copy())
+            .set("Is_Deleted__c", false);
+    state.active
+        .computeIfAbsent("Data_Import_Field_Mapping__mdt", ignored -> new LinkedHashMap<>())
+        .put(fieldMappingCountry.id(), fieldMappingCountry);
+
+    // --- NPSP GetStarted Checklist CMDT seed data ---
+    ApexSObject checklistSection1 =
+        ApexSObject.of("GetStartedChecklistSection__mdt")
+            .withId("mGS000000000001")
+            .set("DeveloperName", "Getting_Started")
+            .set("MasterLabel", "Getting Started")
+            .set("Label", "Getting Started")
+            .set("Page_Type__c", "Admin")
+            .set("Position__c", 1);
+    state.active
+        .computeIfAbsent("GetStartedChecklistSection__mdt", ignored -> new LinkedHashMap<>())
+        .put(checklistSection1.id(), checklistSection1);
+
+    ApexSObject checklistItem1 =
+        ApexSObject.of("GetStartedChecklistItem__mdt")
+            .withId("mGI000000000001")
+            .set("DeveloperName", "Welcome")
+            .set("MasterLabel", "Welcome")
+            .set("Label", "Welcome")
+            .set("GS_Checklist_Section__c", checklistSection1.id())
+            .set("Position__c", 1);
+    state.active
+        .computeIfAbsent("GetStartedChecklistItem__mdt", ignored -> new LinkedHashMap<>())
+        .put(checklistItem1.id(), checklistItem1);
+
+    ApexSObject checklistItem2 =
+        ApexSObject.of("GetStartedChecklistItem__mdt")
+            .withId("mGI000000000002")
+            .set("DeveloperName", "Setup_Contacts")
+            .set("MasterLabel", "Setup Contacts")
+            .set("Label", "Setup Contacts")
+            .set("GS_Checklist_Section__c", checklistSection1.id())
+            .set("Position__c", 2);
+    state.active
+        .computeIfAbsent("GetStartedChecklistItem__mdt", ignored -> new LinkedHashMap<>())
+        .put(checklistItem2.id(), checklistItem2);
   }
 
   private static void seedStaticResource(State state, String id, String name, Object body) {
@@ -1263,11 +1401,13 @@ final class ApexStore {
     if (isType(stored.type(), "EmailMessage")) {
       ensureEmailMessageToRelations(state, stored, record, id);
     }
-    // NPSP Household Account model: auto-create Household Account for Contacts without AccountId
-    // Only when npe01__Contacts_and_Orgs_Settings__c Account_Processor is "Household Account"
-    if (isType(stored.type(), "Contact") && isBlankValue(stored.get("AccountId"))
-        && isHouseholdAccountModel(state)) {
-      autoCreateHouseholdAccount(state, stored, record);
+    // NPSP Account models: auto-create Account for Contacts without AccountId
+    if (isType(stored.type(), "Contact") && isBlankValue(stored.get("AccountId"))) {
+      if (isHouseholdAccountModel(state)) {
+        autoCreateHouseholdAccount(state, stored, record);
+      } else if (isOneToOneAccountModel(state)) {
+        autoCreateOneToOneAccount(state, stored, record);
+      }
     }
     return id;
   }
@@ -1304,6 +1444,37 @@ final class ApexStore {
     state.active.computeIfAbsent("Account", ignored -> new LinkedHashMap<>()).put(hhId, hhAccount);
     stored.set("AccountId", hhId);
     record.set("AccountId", hhId);
+  }
+
+  private static boolean isOneToOneAccountModel(State state) {
+    Map<String, ApexSObject> settingsBucket = findBucketByType(state.active, "npe01__Contacts_and_Orgs_Settings__c");
+    if (settingsBucket == null || settingsBucket.isEmpty()) {
+      return false;
+    }
+    for (ApexSObject settings : settingsBucket.values()) {
+      Object processor = settings.get("npe01__Account_Processor__c");
+      if (processor != null) {
+        return String.valueOf(processor).trim().equalsIgnoreCase("One-to-One");
+      }
+    }
+    return false;
+  }
+
+  private static void autoCreateOneToOneAccount(State state, ApexSObject stored, ApexSObject record) {
+    String firstName = stored.get("FirstName") != null ? String.valueOf(stored.get("FirstName")) : "";
+    String lastName = stored.get("LastName") != null ? String.valueOf(stored.get("LastName")) : "";
+    String fullName = (firstName.isBlank() ? "" : firstName + " ") + lastName;
+    ApexSObject account = ApexSObject.of("Account")
+        .set("Name", fullName.trim())
+        .set("npe01__SYSTEMIsIndividual__c", true)
+        .set("npe01__SYSTEM_AccountType__c", "One-to-One Individual")
+        .set("IsDeleted", Boolean.FALSE);
+    String acctId = nextId(state, "Account");
+    account.withId(acctId);
+    applySystemTimestampsOnInsert(account, null);
+    state.active.computeIfAbsent("Account", ignored -> new LinkedHashMap<>()).put(acctId, account);
+    stored.set("AccountId", acctId);
+    record.set("AccountId", acctId);
   }
 
   private static String updateOne(State state, ApexSObject raw) {
@@ -3631,8 +3802,36 @@ final class ApexStore {
           continue;
         }
         int bindExpressionEnd = bindEnd;
+        // Handle complex bind: :list[0].Field — index into list and access field
+        String indexedField = null;
+        int indexValue = -1;
+        if (bindEnd < soql.length() && soql.charAt(bindEnd) == '[') {
+          int bracketClose = soql.indexOf(']', bindEnd);
+          if (bracketClose > bindEnd) {
+            try {
+              indexValue = Integer.parseInt(soql.substring(bindEnd + 1, bracketClose));
+            } catch (NumberFormatException ignored) { /* not an index */ }
+            if (indexValue >= 0) {
+              int afterBracket = bracketClose + 1;
+              if (afterBracket < soql.length() && soql.charAt(afterBracket) == '.') {
+                int fieldStart = afterBracket + 1;
+                int fieldEnd = fieldStart;
+                while (fieldEnd < soql.length() && isBindNameChar(soql.charAt(fieldEnd))) {
+                  fieldEnd++;
+                }
+                if (fieldEnd > fieldStart) {
+                  indexedField = soql.substring(fieldStart, fieldEnd);
+                  bindExpressionEnd = fieldEnd;
+                }
+              }
+              if (indexedField == null) {
+                bindExpressionEnd = bracketClose + 1;
+              }
+            }
+          }
+        }
         // Skip trailing () method invocation (e.g. :UserInfo.getOrganizationId())
-        if (bindEnd + 1 < soql.length() && soql.charAt(bindEnd) == '(' && soql.charAt(bindEnd + 1) == ')') {
+        if (bindExpressionEnd == bindEnd && bindEnd + 1 < soql.length() && soql.charAt(bindEnd) == '(' && soql.charAt(bindEnd + 1) == ')') {
           bindExpressionEnd = bindEnd + 2;
         }
         Object bindValue;
@@ -3640,6 +3839,29 @@ final class ApexStore {
           bindValue = resolveTrimmedBindValue(binds, bindName, soql);
         } else {
           bindValue = resolveBindValue(binds, bindName, soql);
+        }
+        // Resolve Supplier values (e.g. ApexPages.currentPage is a Supplier<PageReference>)
+        if (bindValue instanceof java.util.function.Supplier<?> supplier) {
+          bindValue = supplier.get();
+        }
+        // Handle method chain after bind expression: .getMethod() or .getMethod('arg')
+        {
+          Object[] holder = { bindValue };
+          bindExpressionEnd = resolveBindMethodChain(soql, bindExpressionEnd, holder);
+          bindValue = holder[0];
+        }
+        // Resolve indexed field access: :list[0].Field
+        if (indexValue >= 0 && bindValue instanceof java.util.List<?> listVal) {
+          if (indexValue < listVal.size()) {
+            Object element = listVal.get(indexValue);
+            if (indexedField != null && element instanceof ApexSObject sobj) {
+              bindValue = sobj.get(indexedField);
+            } else {
+              bindValue = element;
+            }
+          } else {
+            bindValue = null;
+          }
         }
         boolean wrappedByParentheses = isWrappedByParentheses(soql, i, bindEnd);
         out.append(formatBindLiteral(bindValue, wrappedByParentheses, bindName));
@@ -3712,6 +3934,127 @@ final class ApexStore {
       }
     }
     return false;
+  }
+
+  /**
+   * Evaluate a method chain suffix after a resolved bind variable.
+   * Handles patterns like .getParameters().get('id') by reflectively invoking
+   * methods on the resolved value. Returns the new position in the SOQL string.
+   */
+  private static int resolveBindMethodChain(String soql, int pos, Object[] holder) {
+    int cursor = pos;
+    while (cursor < soql.length()) {
+      // Check for .methodName( pattern
+      if (soql.charAt(cursor) != '.') {
+        break;
+      }
+      int methodStart = cursor + 1;
+      int methodEnd = methodStart;
+      while (methodEnd < soql.length() && isBindNameChar(soql.charAt(methodEnd))) {
+        methodEnd++;
+      }
+      if (methodEnd == methodStart || methodEnd >= soql.length() || soql.charAt(methodEnd) != '(') {
+        break;
+      }
+      String methodName = soql.substring(methodStart, methodEnd);
+      // Find matching close parenthesis, handling quoted strings inside
+      int parenStart = methodEnd;
+      int parenEnd = findBindMethodParenClose(soql, parenStart);
+      if (parenEnd < 0) {
+        break;
+      }
+      String argText = soql.substring(parenStart + 1, parenEnd).trim();
+
+      // Invoke the method on the current holder value
+      Object target = holder[0];
+      if (target == null) {
+        holder[0] = null;
+        cursor = parenEnd + 1;
+        continue;
+      }
+      try {
+        if (argText.isEmpty()) {
+          // No-arg method call
+          java.lang.reflect.Method method = findMethodByName(target.getClass(), methodName, 0);
+          if (method != null) {
+            method.setAccessible(true);
+            holder[0] = method.invoke(target);
+          } else {
+            break;
+          }
+        } else {
+          // Single string argument (handle 'value' quoting)
+          String argValue = argText;
+          if ((argValue.startsWith("'") && argValue.endsWith("'"))
+              || (argValue.startsWith("\"") && argValue.endsWith("\""))) {
+            argValue = argValue.substring(1, argValue.length() - 1);
+          }
+          java.lang.reflect.Method method = findMethodByName(target.getClass(), methodName, 1);
+          if (method != null) {
+            method.setAccessible(true);
+            holder[0] = method.invoke(target, argValue);
+          } else {
+            break;
+          }
+        }
+      } catch (Exception e) {
+        break;
+      }
+      cursor = parenEnd + 1;
+    }
+    return cursor;
+  }
+
+  private static int findBindMethodParenClose(String soql, int openPos) {
+    if (openPos >= soql.length() || soql.charAt(openPos) != '(') {
+      return -1;
+    }
+    int depth = 1;
+    boolean inQuote = false;
+    char quoteChar = 0;
+    for (int k = openPos + 1; k < soql.length(); k++) {
+      char ch = soql.charAt(k);
+      if (inQuote) {
+        if (ch == quoteChar) {
+          inQuote = false;
+        }
+        continue;
+      }
+      if (ch == '\'' || ch == '"') {
+        inQuote = true;
+        quoteChar = ch;
+        continue;
+      }
+      if (ch == '(') {
+        depth++;
+      } else if (ch == ')') {
+        depth--;
+        if (depth == 0) {
+          return k;
+        }
+      }
+    }
+    return -1;
+  }
+
+  private static java.lang.reflect.Method findMethodByName(Class<?> clazz, String name, int paramCount) {
+    Class<?> current = clazz;
+    while (current != null) {
+      for (java.lang.reflect.Method m : current.getDeclaredMethods()) {
+        if (m.getName().equals(name) && m.getParameterCount() == paramCount) {
+          return m;
+        }
+      }
+      for (Class<?> iface : current.getInterfaces()) {
+        for (java.lang.reflect.Method m : iface.getDeclaredMethods()) {
+          if (m.getName().equals(name) && m.getParameterCount() == paramCount) {
+            return m;
+          }
+        }
+      }
+      current = current.getSuperclass();
+    }
+    return null;
   }
 
   private static boolean isWrappedByParentheses(String source, int placeholderStart, int placeholderEnd) {
@@ -4214,7 +4557,20 @@ final class ApexStore {
 
     Matcher whereMatcher = WHERE_PATTERN.matcher(normalized);
     if (whereMatcher.matches()) {
-      return new WhereClause(whereMatcher.group(1), whereMatcher.group(2), parseLiteral(whereMatcher.group(3).trim()));
+      String matchedField = whereMatcher.group(1);
+      String matchedOp = whereMatcher.group(2);
+      String matchedValue = whereMatcher.group(3).trim();
+      // Treat `= (val1, val2, ...)` as `IN (val1, val2, ...)` — Apex semantics
+      // when a bind variable expands to a collection with `=` operator.
+      if ("=".equals(matchedOp) && matchedValue.startsWith("(") && matchedValue.endsWith(")")) {
+        List<Object> inValues = parseInLiteralList(matchedValue.substring(1, matchedValue.length() - 1).trim(), rawSoql);
+        return new WhereClause(matchedField, "in", inValues);
+      }
+      if ("!=".equals(matchedOp) && matchedValue.startsWith("(") && matchedValue.endsWith(")")) {
+        List<Object> inValues = parseInLiteralList(matchedValue.substring(1, matchedValue.length() - 1).trim(), rawSoql);
+        return new WhereClause(matchedField, "not in", inValues);
+      }
+      return new WhereClause(matchedField, matchedOp, parseLiteral(matchedValue));
     }
 
     // Retry with 'equals' replaced by '=' (Apex alias)
@@ -5086,6 +5442,16 @@ final class ApexStore {
             "FIELD_CUSTOM_VALIDATION_EXCEPTION",
             "Script-thrown exception",
             new String[] {"Name"});
+      }
+    }
+    if (isInsert && isType(record.type(), "Opportunity")) {
+      List<String> missing = new ArrayList<>();
+      if (isBlankValue(record.get("Name"))) missing.add("Name");
+      if (isBlankValue(record.get("StageName"))) missing.add("StageName");
+      if (isBlankValue(record.get("CloseDate"))) missing.add("CloseDate");
+      if (!missing.isEmpty()) {
+        throw new DmlFailure(
+            "REQUIRED_FIELD_MISSING", "Required fields are missing: " + missing, missing.toArray(new String[0]));
       }
     }
   }

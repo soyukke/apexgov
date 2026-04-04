@@ -17,6 +17,16 @@ public final class ApexEquals {
     if (a == null && b instanceof String s && s.isEmpty()) return true;
     if (b == null && a instanceof String s && s.isEmpty()) return true;
     if (a == null || b == null) return false;
+    // Apex == on Strings is case-insensitive
+    if (a instanceof String sa && b instanceof String sb) {
+      return sa.equalsIgnoreCase(sb);
+    }
+    // Apex == on enums is case-insensitive (e.g. Succeeded == SUCCEEDED)
+    if (a instanceof Enum<?> ea && b instanceof Enum<?> eb) {
+      if (ea.getDeclaringClass() == eb.getDeclaringClass()) {
+        return ea == eb || ea.name().equalsIgnoreCase(eb.name());
+      }
+    }
     // Handle numeric cross-type comparison (Integer == Long, etc.)
     if (a instanceof Number && b instanceof Number) {
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();

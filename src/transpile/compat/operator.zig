@@ -1428,9 +1428,9 @@ pub fn rewriteEqualityOperators(gpa: std.mem.Allocator, condition: []const u8, o
             continue;
         }
 
-        // Skip deeply nested parens (depth > 1) to avoid breaking method call arguments.
-        // Allow depth 0 (top-level) and depth 1 (inside one level of parens, e.g. assertTrue(a == b)).
-        if (paren_depth > 1) continue;
+        // Skip deeply nested parens (depth > 2) to avoid breaking method call arguments.
+        // Allow depth 0-2 to handle double-parenthesized conditions like ((a == b || c == d)).
+        if (paren_depth > 2) continue;
 
         // Check for == or != that is not === or !==
         const is_eq = i + 1 < condition.len and ch == '=' and condition[i + 1] == '=' and

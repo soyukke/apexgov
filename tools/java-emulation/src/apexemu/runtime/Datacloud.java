@@ -10,7 +10,13 @@ public final class Datacloud {
     private FindDuplicates() {}
 
     public static List<FindDuplicatesResult> findDuplicates(List<ApexSObject> records) {
-      return new ArrayList<>();
+      List<FindDuplicatesResult> results = new ArrayList<>();
+      if (records != null) {
+        for (int i = 0; i < records.size(); i++) {
+          results.add(new FindDuplicatesResult());
+        }
+      }
+      return results;
     }
   }
 

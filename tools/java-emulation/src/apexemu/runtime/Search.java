@@ -4,7 +4,7 @@ public final class Search {
   private Search() {}
 
   public static java.util.List<java.util.List<ApexSObject>> query(String sosl) {
-    return new java.util.ArrayList<>(java.util.List.of(new java.util.ArrayList<>()));
+    return ApexStore.search(sosl);
   }
 
   public static class SearchBuilder {
