@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 public final class Schema {
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
@@ -343,6 +344,47 @@ public final class Schema {
       return null;
     }
     return STATE.get().definitions.get(normalize(type));
+  }
+
+  /**
+   * Like {@link #find(String)} but lazily builds a separate set of standard
+   * definitions for field enumeration ({@code FieldNamespace.getMap()}).
+   * These definitions are NOT used for DML validation, so enabling this
+   * does not cause required-field or reference-integrity failures.
+   */
+  static ObjectDefinition findForFieldEnumeration(String type) {
+    if (type == null || type.isBlank()) {
+      return null;
+    }
+    String key = normalize(type);
+    State state = STATE.get();
+    // First check explicitly registered definitions (used for both validation and enumeration).
+    ObjectDefinition existing = state.definitions.get(key);
+    if (existing != null) {
+      return existing;
+    }
+    // Lazy-build the enumeration-only defaults on first access.
+    if (state.enumerationDefaults == null) {
+      state.enumerationDefaults = buildEnumerationDefaults();
+    }
+    return state.enumerationDefaults.get(key);
+  }
+
+  /**
+   * Build the standard defaults into a separate map that is only used for field
+   * enumeration, not for DML validation.
+   */
+  private static Map<String, ObjectDefinition> buildEnumerationDefaults() {
+    // Temporarily swap in a fresh definitions map, run registerStandardDefaults,
+    // then swap back the original definitions.
+    State state = STATE.get();
+    Map<String, ObjectDefinition> original = new LinkedHashMap<>(state.definitions);
+    state.definitions.clear();
+    registerStandardDefaults();
+    Map<String, ObjectDefinition> defaults = new LinkedHashMap<>(state.definitions);
+    state.definitions.clear();
+    state.definitions.putAll(original);
+    return defaults;
   }
 
   static ChildRelationship resolveChildRelationship(String parentType, String relationshipName) {
@@ -772,7 +814,23 @@ public final class Schema {
         return out;
       }
       String normalizedParent = normalize(typeName);
-      for (ObjectDefinition definition : STATE.get().definitions.values()) {
+      appendChildRelationshipsFromDefinitions(STATE.get().definitions.values(), normalizedParent, out);
+      // Also check lazy-loaded enumeration defaults for field-level child relationships.
+      State state = STATE.get();
+      if (state.enumerationDefaults == null) {
+        findForFieldEnumeration("__trigger_init__");
+      }
+      if (state.enumerationDefaults != null) {
+        appendChildRelationshipsFromDefinitions(state.enumerationDefaults.values(), normalizedParent, out);
+      }
+      appendKnownChildRelationships(typeName, out);
+      return out;
+    }
+
+    private static void appendChildRelationshipsFromDefinitions(
+        java.util.Collection<ObjectDefinition> definitions, String normalizedParent,
+        List<ChildRelationship> out) {
+      for (ObjectDefinition definition : definitions) {
         if (definition == null || definition.fields == null || definition.fields.isEmpty()) {
           continue;
         }
@@ -786,8 +844,6 @@ public final class Schema {
           addChildRelationship(out, definition.type, field.name);
         }
       }
-      appendKnownChildRelationships(typeName, out);
-      return out;
     }
 
     @SuppressWarnings("unchecked")
@@ -1361,7 +1417,7 @@ public final class Schema {
       if (ownerType == null || ownerType.isBlank() || fieldName == null || fieldName.isBlank()) {
         return null;
       }
-      ObjectDefinition objDef = Schema.find(ownerType);
+      ObjectDefinition objDef = Schema.findForFieldEnumeration(ownerType);
       if (objDef == null) {
         return null;
       }
@@ -1562,7 +1618,7 @@ public final class Schema {
       if (out == null || typeName == null || typeName.isBlank()) {
         return;
       }
-      ObjectDefinition definition = Schema.find(typeName);
+      ObjectDefinition definition = Schema.findForFieldEnumeration(typeName);
       if (definition == null || definition.fields == null || definition.fields.isEmpty()) {
         return;
       }
@@ -2049,6 +2105,7 @@ public final class Schema {
       if (fieldSetName == null || fieldSetName.isBlank()) {
         return new FieldSet(typeName, "", new ArrayList<>());
       }
+      ensureFieldSetsLoaded();
       Map<String, FieldSet> registry = STATE.get().fieldSets.get(normalize(typeName));
       if (registry == null || registry.isEmpty()) {
         return new FieldSet(typeName, fieldSetName, new ArrayList<>());
@@ -2066,11 +2123,23 @@ public final class Schema {
     }
 
     public Map<String, FieldSet> getMap() {
+      ensureFieldSetsLoaded();
       Map<String, FieldSet> registry = STATE.get().fieldSets.get(normalize(typeName));
       if (registry == null || registry.isEmpty()) {
-        return new LinkedHashMap<>();
+        return new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
       }
-      return new LinkedHashMap<>(registry);
+      TreeMap<String, FieldSet> out = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+      out.putAll(registry);
+      return out;
+    }
+
+    private void ensureFieldSetsLoaded() {
+      State state = STATE.get();
+      if (state.enumerationDefaults == null) {
+        // Trigger lazy initialization of enumeration defaults, which also
+        // registers all standard field sets.
+        findForFieldEnumeration("__trigger_init__");
+      }
     }
 
     @Override
@@ -2616,11 +2685,25 @@ public final class Schema {
         .register();
     object("WorkOrder__c").register();
     registerFieldSet("Product2", "OpportunityDiscount", "SubscriberField__c");
+
+    // NPSP Batch Data Entry (BDE) field sets — used by BDE_BatchDataEntry and related tests.
+    registerFieldSet("Opportunity", "BDE_Entry_FS", "Name", "StageName", "Amount", "CloseDate");
+    registerFieldSet("Opportunity", "BDE_List_FS", "Name", "StageName", "Amount", "CloseDate");
+    registerFieldSet("Account", "BDE_Entry_FS", "Name");
+    registerFieldSet("Account", "BDE_List_FS", "Name");
+    registerFieldSet("Account", "Manage_Household_Custom", "Name");
+    registerFieldSet("Contact", "BDE_Entry_FS", "LastName", "FirstName", "Email");
+    registerFieldSet("Contact", "BDE_List_FS", "LastName", "FirstName", "Email");
+    registerFieldSet("Lead", "BDE_Entry_FS", "LastName", "FirstName", "Company");
+    registerFieldSet("Lead", "BDE_List_FS", "LastName", "FirstName", "Company");
+    registerFieldSet("Batch__c", "BatchDetailView", "Name");
   }
 
   private static final class State {
     final Map<String, ObjectDefinition> definitions = new LinkedHashMap<>();
     final Map<String, Map<String, FieldSet>> fieldSets = new LinkedHashMap<>();
+    /** Definitions registered only for field enumeration (not DML validation). */
+    Map<String, ObjectDefinition> enumerationDefaults = null;
   }
 
   // ---------------------------------------------------------------------------

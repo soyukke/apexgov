@@ -5521,10 +5521,15 @@ final class ApexStore {
       return;
     }
     // Skip validation for polymorphic lookup fields (WhatId, WhoId, etc.)
+    // and system-managed audit fields (OwnerId, CreatedById, LastModifiedById)
+    // whose targets may not exist in the in-memory store.
     if (field.name != null && (field.name.equalsIgnoreCase("WhatId")
         || field.name.equalsIgnoreCase("WhoId")
         || field.name.equalsIgnoreCase("RelatedToId")
-        || field.name.equalsIgnoreCase("ParentId"))) {
+        || field.name.equalsIgnoreCase("ParentId")
+        || field.name.equalsIgnoreCase("OwnerId")
+        || field.name.equalsIgnoreCase("CreatedById")
+        || field.name.equalsIgnoreCase("LastModifiedById"))) {
       return;
     }
     ApexSObject related = findActiveRowByIdAndType(referenceId, field.referenceType);
