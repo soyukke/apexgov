@@ -60,6 +60,8 @@ public final class CompileDaemon {
                 options.add("-sourcepath");
                 options.add(sourcepath);
             }
+            options.add("-Xmaxerrs");
+            options.add("9999");
 
             DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
 
