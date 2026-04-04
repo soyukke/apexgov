@@ -120,6 +120,66 @@ fi
 # Fast JVM startup flags for javac
 JAVAC_FLAGS=(-J-XX:+TieredCompilation -J-XX:TieredStopAtLevel=1)
 
+# --- Compile daemon for in-process javac (avoids JVM startup per invocation) ---
+_daemon_pid=""
+_daemon_in=""
+_daemon_out=""
+start_compile_daemon() {
+  if [[ -n "$_daemon_pid" ]]; then return; fi
+  local daemon_class="apexemu.compiler.CompileDaemon"
+  _daemon_fifo_in="$out_dir/.daemon-in.fifo"
+  _daemon_fifo_out="$out_dir/.daemon-out.fifo"
+  rm -f "$_daemon_fifo_in" "$_daemon_fifo_out"
+  mkfifo "$_daemon_fifo_in" "$_daemon_fifo_out"
+  java -cp "$out_dir/build" "$daemon_class" < "$_daemon_fifo_in" > "$_daemon_fifo_out" &
+  _daemon_pid=$!
+  exec 7>"$_daemon_fifo_in"
+  exec 8<"$_daemon_fifo_out"
+  _daemon_in=7
+  _daemon_out=8
+}
+stop_compile_daemon() {
+  if [[ -z "$_daemon_pid" ]]; then return; fi
+  echo '{"quit":true}' >&${_daemon_in} 2>/dev/null || true
+  exec 7>&- 2>/dev/null || true
+  exec 8<&- 2>/dev/null || true
+  wait "$_daemon_pid" 2>/dev/null || true
+  rm -f "$_daemon_fifo_in" "$_daemon_fifo_out"
+  _daemon_pid=""
+}
+# daemon_compile: compile files via daemon, returns 0 on success.
+# Sets _daemon_error_files (array) with files that had errors.
+# Usage: daemon_compile <classpath> <outputDir> <sourcepath> file1 file2 ...
+daemon_compile() {
+  local cp="$1" outd="$2" sp="$3"
+  shift 3
+  local files_json=""
+  for f in "$@"; do
+    if [[ -n "$files_json" ]]; then files_json="$files_json,"; fi
+    files_json="$files_json\"$f\""
+  done
+  local req="{\"files\":[$files_json],\"classpath\":\"$cp\",\"outputDir\":\"$outd\",\"sourcepath\":\"$sp\"}"
+  echo "$req" >&${_daemon_in}
+  local resp
+  IFS= read -r resp <&${_daemon_out}
+  _daemon_error_files=()
+  # Parse success field
+  if [[ "$resp" == *'"success":true'* ]]; then
+    return 0
+  fi
+  # Extract error files from response
+  local ef_section="${resp#*\"errorFiles\":[}"
+  ef_section="${ef_section%%]*}"
+  while [[ "$ef_section" == *'"'* ]]; do
+    local val="${ef_section#*\"}"
+    val="${val%%\"*}"
+    _daemon_error_files+=("$val")
+    ef_section="${ef_section#*\"*\"}"
+  done
+  return 1
+}
+trap 'stop_compile_daemon' EXIT
+
 # Compile runtime — skip if no source is newer than the oldest .class
 _t=$(_timer_start)
 runtime_needs_rebuild=false
@@ -263,8 +323,11 @@ if [[ "$best_effort" == "true" ]]; then
   BATCH_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$tests_dir")
   RESOLVE_JAVAC_FLAGS=("${JAVAC_FLAGS[@]}" -sourcepath "$best_effort_sourcepath_dir")
 
+  # --- Start compile daemon for fast in-process javac ---
+  start_compile_daemon
+
   # --- Phase 1: Try compiling all files at once ---
-  if javac "${BATCH_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>/dev/null; then
+  if daemon_compile "$out_dir/build" "$out_dir/build" "$tests_dir" "${pending[@]}"; then
     pending=()
   fi
 
@@ -274,30 +337,19 @@ if [[ "$best_effort" == "true" ]]; then
 
     # Try batch compile to identify error sources
     class_count_before="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
-    if javac "${BATCH_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${pending[@]}" >/dev/null 2>"$out_dir/.javac.err"; then
+    if daemon_compile "$out_dir/build" "$out_dir/build" "$tests_dir" "${pending[@]}"; then
       progress=true
       pending=()
-      rm -f "$out_dir/.javac.err"
     else
       class_count_after="$(find "$out_dir/build" -type f -name '*.class' | wc -l | tr -d ' ')"
       if (( class_count_after > class_count_before )); then
         progress=true
       fi
 
-      # Extract error sources from javac output
-      batch_error_sources=()
-      while IFS= read -r batch_src; do
-        batch_error_sources+=("$batch_src")
-      done < <(
-        awk -F: 'NF >= 2 { print $1 }' "$out_dir/.javac.err" \
-          | grep "^$best_effort_sources_dir/" \
-          | sort -u
-      )
-      rm -f "$out_dir/.javac.err"
-
-      if [[ ${#batch_error_sources[@]} -gt 0 ]]; then
+      # Use error files from daemon response
+      if [[ ${#_daemon_error_files[@]} -gt 0 ]]; then
         # Replace error sources with placeholders
-        for src in "${batch_error_sources[@]}"; do
+        for src in "${_daemon_error_files[@]}"; do
           render_placeholder_source "$src"
           record_fallback "$src"
         done
@@ -318,19 +370,17 @@ if [[ "$best_effort" == "true" ]]; then
       fi
     fi
 
-    # If no progress from batch, fall back to individual salvage
+    # If no progress from batch, fall back to individual salvage via daemon
     if [[ ${#pending[@]} -gt 0 && "$progress" == "false" ]]; then
       salvage_progress=false
       next_pending=()
       for src in "${pending[@]}"; do
-        # Try compiling original source individually first
-        if javac "${RESOLVE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1; then
+        if daemon_compile "$out_dir/build" "$out_dir/build" "$best_effort_sourcepath_dir" "$src"; then
           salvage_progress=true
           progress=true
         else
-          # Original failed — make it a placeholder
           render_placeholder_source "$src"
-          javac "${RESOLVE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$src" >/dev/null 2>&1 || true
+          daemon_compile "$out_dir/build" "$out_dir/build" "$best_effort_sourcepath_dir" "$src" || true
           record_fallback "$src"
           next_pending+=("$src")
         fi
@@ -558,27 +608,55 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" && "$skip_expensive_re
   # Final individual-compile passes: iteratively try each remaining fallback
   # Multiple rounds needed because restoring one file may unblock others
   total_individual=0
+  _parallel_jobs="${APEXGOV_JAVAC_PARALLEL:-$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
   for _iround in 1 2 3 4 5 6 7 8 9 10; do
     if [[ ! -s "$compile_fallbacks" ]]; then break; fi
     round_restored=0
     next_fallbacks="$out_dir/.final-fallbacks.txt"
     : > "$next_fallbacks"
+    # Restore all original sources first
+    restore_list=()
+    no_orig_list=()
     while IFS= read -r fb_src; do
       rel="${fb_src#"$best_effort_sources_dir"/}"
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
-        if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-          round_restored=$((round_restored + 1))
-        else
+        restore_list+=("$fb_src")
+      else
+        no_orig_list+=("$fb_src")
+      fi
+    done < "$compile_fallbacks"
+    for fb_src in "${no_orig_list[@]}"; do
+      printf '%s\n' "$fb_src" >> "$next_fallbacks"
+    done
+    # Try batch compile all restored sources first
+    if [[ ${#restore_list[@]} -gt 0 ]]; then
+      if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${restore_list[@]}" >/dev/null 2>/dev/null; then
+        round_restored=${#restore_list[@]}
+      else
+        # Batch failed — parallel individual compile
+        _final_ok="$out_dir/.final-ok.txt"
+        _final_fail="$out_dir/.final-fail.txt"
+        : > "$_final_ok"
+        : > "$_final_fail"
+        printf '%s\0' "${restore_list[@]}" | xargs -0 -P "$_parallel_jobs" -I{} bash -c '
+          src="$1"
+          if javac '"$(printf '%q ' "${RESTORE_JAVAC_FLAGS[@]}")"' -cp '"$(printf '%q' "$out_dir/build")"' -d '"$(printf '%q' "$out_dir/build")"' "$src" >/dev/null 2>&1; then
+            printf "%s\n" "$src" >> '"$(printf '%q' "$_final_ok")"'
+          else
+            printf "%s\n" "$src" >> '"$(printf '%q' "$_final_fail")"'
+          fi
+        ' _ {}
+        round_restored=$(wc -l < "$_final_ok" | tr -d ' ')
+        while IFS= read -r fb_src; do
           render_placeholder_source "$fb_src"
           javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
           printf '%s\n' "$fb_src" >> "$next_fallbacks"
-        fi
-      else
-        printf '%s\n' "$fb_src" >> "$next_fallbacks"
+        done < "$_final_fail"
+        rm -f "$_final_ok" "$_final_fail"
       fi
-    done < "$compile_fallbacks"
+    fi
     cp "$next_fallbacks" "$compile_fallbacks"
     rm -f "$next_fallbacks"
     total_individual=$((total_individual + round_restored))
@@ -598,26 +676,50 @@ if [[ "$best_effort" == "true" && -s "$compile_fallbacks" && "$skip_expensive_re
   # individually. Placeholder .class is kept (provides type stubs for dependents)
   # and overwritten on success. Each round may unblock dependents.
   recomp_restored=0
+  _parallel_jobs="${APEXGOV_JAVAC_PARALLEL:-$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
   for _rr in 1 2 3 4 5 6 7 8; do
     rr_progress=0
     next_fallbacks="$out_dir/.recomp-fallbacks.txt"
     : > "$next_fallbacks"
+    # Restore all original sources first
+    recomp_list=()
     while IFS= read -r fb_src; do
       rel="${fb_src#"$best_effort_sources_dir"/}"
       orig="$tests_dir/$rel"
       if [[ -f "$orig" ]]; then
         cp "$orig" "$fb_src"
-        if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1; then
-          rr_progress=$((rr_progress + 1))
-        else
-          render_placeholder_source "$fb_src"
-          javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
-          printf '%s\n' "$fb_src" >> "$next_fallbacks"
-        fi
+        recomp_list+=("$fb_src")
       else
         printf '%s\n' "$fb_src" >> "$next_fallbacks"
       fi
     done < "$compile_fallbacks"
+    # Try batch compile first
+    if [[ ${#recomp_list[@]} -gt 0 ]]; then
+      if javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "${recomp_list[@]}" >/dev/null 2>/dev/null; then
+        rr_progress=${#recomp_list[@]}
+      else
+        # Batch failed — parallel individual
+        _recomp_ok="$out_dir/.recomp-ok.txt"
+        _recomp_fail="$out_dir/.recomp-fail.txt"
+        : > "$_recomp_ok"
+        : > "$_recomp_fail"
+        printf '%s\0' "${recomp_list[@]}" | xargs -0 -P "$_parallel_jobs" -I{} bash -c '
+          src="$1"
+          if javac '"$(printf '%q ' "${RESTORE_JAVAC_FLAGS[@]}")"' -cp '"$(printf '%q' "$out_dir/build")"' -d '"$(printf '%q' "$out_dir/build")"' "$src" >/dev/null 2>&1; then
+            printf "%s\n" "$src" >> '"$(printf '%q' "$_recomp_ok")"'
+          else
+            printf "%s\n" "$src" >> '"$(printf '%q' "$_recomp_fail")"'
+          fi
+        ' _ {}
+        rr_progress=$(wc -l < "$_recomp_ok" | tr -d ' ')
+        while IFS= read -r fb_src; do
+          render_placeholder_source "$fb_src"
+          javac "${RESTORE_JAVAC_FLAGS[@]}" -cp "$out_dir/build" -d "$out_dir/build" "$fb_src" >/dev/null 2>&1 || true
+          printf '%s\n' "$fb_src" >> "$next_fallbacks"
+        done < "$_recomp_fail"
+        rm -f "$_recomp_ok" "$_recomp_fail"
+      fi
+    fi
     cp "$next_fallbacks" "$compile_fallbacks"
     rm -f "$next_fallbacks"
     recomp_restored=$((recomp_restored + rr_progress))
