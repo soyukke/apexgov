@@ -79,10 +79,97 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .set => |s2| try std.fmt.allocPrint(arena, "Set[{d}]", .{s2.entries.count()}),
         .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
         .object => |obj| blk: {
+            // Schema.SObjectType → return the "name" field (e.g. "Account")
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+            }
+            // SObjectField → return the "name" field
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+            {
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+            }
+            // Blob → return the stored value
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Blob")) {
+                if (obj.fields.get("value")) |bv| {
+                    if (bv == .string) break :blk bv.string;
+                }
+            }
             // Use simple name (after last dot) like Apex does
             const cn = obj.class_name;
             const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
             break :blk try std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
+        },
+    };
+}
+
+/// Value を JSON 文字列に変換する。
+pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
+    return switch (v) {
+        .null_val => "null",
+        .boolean => |b| if (b) "true" else "false",
+        .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
+        .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
+        .string => |s| try std.fmt.allocPrint(arena, "\"{s}\"", .{s}),
+        .void_val => "null",
+        .list => |l| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '[');
+            for (l.items.items, 0..) |item, idx| {
+                if (idx > 0) try buf.append(arena, ',');
+                const item_json = try toJson(item, arena);
+                try buf.appendSlice(arena, item_json);
+            }
+            try buf.append(arena, ']');
+            break :blk try buf.toOwnedSlice(arena);
+        },
+        .map => |m| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '{');
+            for (m.entries.keys(), m.entries.values(), 0..) |k, val, idx| {
+                if (idx > 0) try buf.append(arena, ',');
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try toJson(val, arena));
+            }
+            try buf.append(arena, '}');
+            break :blk try buf.toOwnedSlice(arena);
+        },
+        .set => "[]",
+        .sobject => |sob| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '{');
+            // Always output attributes with type
+            try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"attributes\":{{\"type\":\"{s}\"}}", .{sob.type_name}));
+            // Output Id if present
+            if (sob.id) |id| {
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"Id\":\"{s}\"", .{id}));
+            }
+            for (sob.fields.keys(), sob.fields.values()) |k, val| {
+                // Skip internal attributes field and Id (already output)
+                if (std.ascii.eqlIgnoreCase(k, "Id")) continue;
+                try buf.append(arena, ',');
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try toJson(val, arena));
+            }
+            try buf.append(arena, '}');
+            break :blk try buf.toOwnedSlice(arena);
+        },
+        .object => |obj| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '{');
+            var first = true;
+            for (obj.fields.keys(), obj.fields.values()) |k, val| {
+                if (!first) try buf.append(arena, ',');
+                first = false;
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try toJson(val, arena));
+            }
+            try buf.append(arena, '}');
+            break :blk try buf.toOwnedSlice(arena);
         },
     };
 }

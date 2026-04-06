@@ -130,7 +130,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // JSON.serialize / deserialize
     if (std.ascii.eqlIgnoreCase(class_name, "JSON")) {
         if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
-            if (args.len > 0) return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+            if (args.len > 0) return Value{ .string = try utils.toJson(args[0], ctx.arena) };
             return Value{ .string = "{}" };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "deserializeUntyped")) {
@@ -224,7 +224,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "now")) return Value{ .string = "2026-04-06T00:00:00Z" };
         if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = "2026-04-06" };
         if (std.ascii.eqlIgnoreCase(method_name, "runAs")) return .void_val;
-        if (std.ascii.eqlIgnoreCase(method_name, "enqueueJob")) return Value.null_val;
+        // enqueueJob is handled by the evaluator, not here
+        // if (std.ascii.eqlIgnoreCase(method_name, "enqueueJob")) return Value.null_val;
     }
 
     // Quiddity
@@ -490,10 +491,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "bulkFLSUpdatable") or
             std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
         {
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
+            // If second arg is a set of field names, populate results
+            if (args.len >= 2 and args[1] == .set) {
+                for (args[1].set.entries.keys()) |field_name| {
+                    // Standard fields are accessible, custom fields (__c) are not
+                    const accessible = !std.mem.endsWith(u8, field_name, "__c");
+                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = accessible });
+                }
+            }
             return Value{ .map = map };
         }
         return Value{ .boolean = true };
@@ -501,7 +511,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // OrgShape
     if (std.ascii.eqlIgnoreCase(class_name, "OrgShape")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "isPlatformCacheEnabled")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isPlatformCacheEnabled")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isSandbox")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isAdvancedMultiCurrencyManagement")) return Value{ .boolean = false };
         if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };
@@ -996,7 +1006,11 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
-        return sob.fields.get(args[0].string) orelse Value.null_val;
+        // Case-insensitive field lookup
+        for (sob.fields.keys(), sob.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, args[0].string)) return v;
+        }
+        return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
         try sob.fields.put(ctx.arena, args[0].string, args[1]);

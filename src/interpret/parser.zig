@@ -1031,14 +1031,21 @@ const Parser = struct {
 
             // Handle Type<T>.class → type literal (common in JSON.deserialize calls)
             if (self.check(.lt) and self.looksLikeTypeDotClass()) {
-                // Skip <T, ...> .class and return an ObjectInstance-like value with the type name
+                // Build full type name including generics: e.g. "List<Contact>"
+                var full_name_buf: std.ArrayListUnmanaged(u8) = .empty;
+                try full_name_buf.appendSlice(self.arena, name);
                 var depth: u32 = 0;
-                const type_end: usize = self.pos;
                 while (!self.atEnd()) {
-                    if (self.check(.lt)) depth += 1;
-                    if (self.check(.gt)) {
+                    const lex = self.current().lexeme;
+                    if (self.check(.lt)) {
+                        depth += 1;
+                        try full_name_buf.append(self.arena, '<');
+                    } else if (self.check(.gt)) {
                         depth -= 1;
+                        try full_name_buf.append(self.arena, '>');
                         if (depth == 0) { self.pos += 1; break; }
+                    } else {
+                        try full_name_buf.appendSlice(self.arena, lex);
                     }
                     self.pos += 1;
                 }
@@ -1048,10 +1055,10 @@ const Parser = struct {
                         _ = self.matchKind(.identifier);
                     }
                 }
-                _ = type_end;
-                // Return the type name as a string literal for type reference
+                const full_type_name = try full_name_buf.toOwnedSlice(self.arena);
+                // Return the type name as a new_expr for type reference
                 const type_obj = try self.arena.create(ast.NewExpr);
-                type_obj.* = .{ .type_name = .{ .name = name }, .args = &.{}, .loc = loc };
+                type_obj.* = .{ .type_name = .{ .name = full_type_name }, .args = &.{}, .loc = loc };
                 const result = try self.arena.create(ast.Expr);
                 result.* = .{ .new_expr = type_obj };
                 return result;
