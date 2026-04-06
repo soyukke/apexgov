@@ -122,8 +122,89 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (std.ascii.eqlIgnoreCase(class_name, "FeatureManagement")) return .void_val;
 
     // Limits
-    if (std.ascii.eqlIgnoreCase(class_name, "Limits")) {
-        return Value{ .integer = 0 };
+    if (std.ascii.eqlIgnoreCase(class_name, "Limits")) return Value{ .integer = 0 };
+
+    // Type.forName → return a type object stub
+    if (std.ascii.eqlIgnoreCase(class_name, "Type") and std.ascii.eqlIgnoreCase(method_name, "forName")) {
+        if (args.len > 0 and args[0] == .string) {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Type" };
+            try obj.fields.put(ctx.arena, "name", args[0]);
+            return Value{ .object = obj };
+        }
+        return Value.null_val;
+    }
+
+    // Request.getCurrent
+    if (std.ascii.eqlIgnoreCase(class_name, "Request")) {
+        const obj = try ctx.arena.create(types.ObjectInstance);
+        obj.* = .{ .class_name = "Request" };
+        return Value{ .object = obj };
+    }
+
+    // Crypto
+    if (std.ascii.eqlIgnoreCase(class_name, "Crypto")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "generateDigest") or
+            std.ascii.eqlIgnoreCase(method_name, "generateMac") or
+            std.ascii.eqlIgnoreCase(method_name, "sign") or
+            std.ascii.eqlIgnoreCase(method_name, "generateAesKey"))
+        {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Blob" };
+            return Value{ .object = obj };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
+            std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV") or
+            std.ascii.eqlIgnoreCase(method_name, "encrypt") or
+            std.ascii.eqlIgnoreCase(method_name, "decrypt"))
+        {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Blob" };
+            return Value{ .object = obj };
+        }
+        return Value.null_val;
+    }
+
+    // Blob
+    if (std.ascii.eqlIgnoreCase(class_name, "Blob")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) return Value{ .string = "blob" };
+        return Value.null_val;
+    }
+
+    // EncodingUtil
+    if (std.ascii.eqlIgnoreCase(class_name, "EncodingUtil")) {
+        return Value{ .string = "encoded" };
+    }
+
+    // EventBus
+    if (std.ascii.eqlIgnoreCase(class_name, "EventBus")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "publish")) {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Database.SaveResult" };
+            try obj.fields.put(ctx.arena, "isSuccess", Value{ .boolean = true });
+            return Value{ .object = obj };
+        }
+        return .void_val;
+    }
+
+    // Test.setMock, Test.isRunningTest, etc.
+    if (std.ascii.eqlIgnoreCase(class_name, "Test")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
+        return .void_val;
+    }
+
+    // Cache.Org / Cache.Session
+    if (std.ascii.eqlIgnoreCase(class_name, "Cache")) return .void_val;
+
+    // Http
+    if (std.ascii.eqlIgnoreCase(class_name, "Http")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "send")) {
+            const resp = try ctx.arena.create(types.ObjectInstance);
+            resp.* = .{ .class_name = "HttpResponse" };
+            try resp.fields.put(ctx.arena, "statusCode", Value{ .integer = 200 });
+            try resp.fields.put(ctx.arena, "body", Value{ .string = "{\"id\":\"001000000000001\"}" });
+            return Value{ .object = resp };
+        }
     }
 
     return null;
@@ -277,8 +358,40 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     }
 
     // Date methods (stored as string)
-    if (std.ascii.eqlIgnoreCase(method_name, "addDays")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "addDays") or std.ascii.eqlIgnoreCase(method_name, "addMonths")) {
         return obj.fields.get("value") orelse Value{ .string = "2026-04-20" };
+    }
+
+    // Type methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Type")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+            const inst = try ctx.arena.create(types.ObjectInstance);
+            inst.* = .{ .class_name = if (obj.fields.get("name")) |n| n.string else "Object" };
+            return Value{ .object = inst };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+            return obj.fields.get("name") orelse Value{ .string = "Object" };
+        }
+    }
+
+    // Request.getQuiddity
+    if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity")) {
+        return Value{ .string = "RUNTEST" };
+    }
+
+    // Generic getter pattern
+    if (std.mem.startsWith(u8, method_name, "get") and method_name.len > 3) {
+        const field = method_name[3..];
+        return obj.fields.get(field) orelse Value.null_val;
+    }
+    if (std.mem.startsWith(u8, method_name, "is") and method_name.len > 2) {
+        const field = method_name;
+        return obj.fields.get(field) orelse Value{ .boolean = false };
+    }
+    if (std.mem.startsWith(u8, method_name, "set") and method_name.len > 3 and args.len > 0) {
+        const field = method_name[3..];
+        try obj.fields.put(ctx.arena, field, args[0]);
+        return .void_val;
     }
 
     return null;

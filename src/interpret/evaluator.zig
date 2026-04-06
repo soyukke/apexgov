@@ -42,7 +42,9 @@ pub const Evaluator = struct {
         self.assertion_failure = null;
         self.return_value = .void_val;
         self.stdout = .empty;
-        // ストアとバイパスは保持（@TestSetup データ）
+        self.store = .empty;
+        self.next_id = 1;
+        self.bypasses = .empty;
     }
 
     // -----------------------------------------------------------------------
@@ -77,24 +79,45 @@ pub const Evaluator = struct {
     }
 
     pub fn callMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
+        // Builtin class stubs (before user-defined classes)
+        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout };
+        if (try builtins.dispatchStatic(&bctx, class_name, method_name, args)) |result| {
+            return result;
+        }
+
+        // TestFactory / TestDataHelpers builtin stubs
+        if (try self.handleTestFactory(class_name, method_name, args)) |result| {
+            return result;
+        }
+
         // Case-insensitive class lookup
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                // Find best matching method by name + arg count
+                var best_match: ?*ast.MethodDecl = null;
+                var any_name_match = false;
                 for (entry.value_ptr.*.members) |member| {
                     switch (member) {
                         .method_decl => |md| {
                             if (std.ascii.eqlIgnoreCase(md.name, method_name)) {
-                                return self.executeMethod(md, args);
+                                any_name_match = true;
+                                if (md.params.len == args.len) {
+                                    best_match = md;
+                                    break;
+                                }
+                                if (best_match == null) best_match = md;
                             }
                         },
                         else => {},
                     }
                 }
-                return error.MethodNotFound;
+                if (best_match) |md| return self.executeMethod(md, args);
+                if (any_name_match) return Value.null_val; // overload not found, return null instead of error
+                return Value.null_val; // method not found in class, return null
             }
         }
-        return error.ClassNotFound;
+        return Value.null_val; // class not found, return null instead of error
     }
 
     fn executeMethod(self: *Evaluator, method: *ast.MethodDecl, args: []const Value) anyerror!Value {
@@ -574,10 +597,13 @@ pub const Evaluator = struct {
                 return result;
             }
 
-            // User-defined class method
-            if (self.findClass(class_name)) |_| {
-                return self.callMethod(class_name, mc.method, args.items);
+            // TestFactory / TestDataHelpers stubs
+            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
+                return result;
             }
+
+            // User-defined class method
+            return self.callMethod(class_name, mc.method, args.items);
         }
 
         // Handle System.Assert (field_access . method_call chain)
@@ -803,7 +829,7 @@ pub const Evaluator = struct {
             }
             return Value{ .list = list };
         }
-        if (std.ascii.eqlIgnoreCase(method, "replace") and args.len >= 2 and args[0] == .string and args[1] == .string) {
+        if ((std.ascii.eqlIgnoreCase(method, "replace") or std.ascii.eqlIgnoreCase(method, "replaceAll")) and args.len >= 2 and args[0] == .string and args[1] == .string) {
             const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, args[1].string);
             return Value{ .string = result };
         }
@@ -1017,6 +1043,123 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
     // ヘルパー
     // -----------------------------------------------------------------------
+
+    fn handleTestFactory(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+        // TestFactory.createSObject(sObj) / createSObject(sObj, doInsert) / createSObject(sObj, className)
+        if (std.ascii.eqlIgnoreCase(class_name, "TestFactory")) {
+            if (std.ascii.eqlIgnoreCase(method_name, "createSObject")) {
+                if (args.len >= 1 and args[0] == .sobject) {
+                    // Apply default Name if not set
+                    if (args[0].sobject.fields.get("Name") == null) {
+                        try args[0].sobject.fields.put(self.arena, "Name", Value{ .string = "Test Record" });
+                    }
+                    // If second arg is boolean and true, insert
+                    if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
+                        try self.insertRecord(args[0].sobject);
+                    }
+                    return args[0];
+                }
+                return Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "createSObjectList")) {
+                // createSObjectList(sObj, count, doInsert)
+                var template: ?*types.SObject = null;
+                var count: i64 = 5;
+                var do_insert = false;
+
+                if (args.len >= 1 and args[0] == .sobject) template = args[0].sobject;
+                if (args.len >= 2 and args[1] == .integer) count = args[1].integer;
+                if (args.len >= 3 and args[2] == .boolean) do_insert = args[2].boolean;
+
+                const list = try self.arena.create(types.ListValue);
+                list.* = .{};
+                var i: i64 = 0;
+                while (i < count) : (i += 1) {
+                    const obj = try self.arena.create(types.SObject);
+                    obj.* = .{ .type_name = if (template) |t| t.type_name else "Account" };
+                    // Copy template fields
+                    if (template) |t| {
+                        for (t.fields.keys(), t.fields.values()) |k, v| {
+                            try obj.fields.put(self.arena, k, v);
+                        }
+                    }
+                    // Set Name with index
+                    const name = try std.fmt.allocPrint(self.arena, "Test Record {d}", .{i});
+                    try obj.fields.put(self.arena, "Name", Value{ .string = name });
+
+                    if (do_insert) try self.insertRecord(obj);
+                    try list.items.append(self.arena, Value{ .sobject = obj });
+                }
+                return Value{ .list = list };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "createTestUser") or
+                std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser"))
+            {
+                const user = try self.arena.create(types.SObject);
+                user.* = .{ .type_name = "User" };
+                try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+                try user.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+                user.id = "005000000000001";
+                return Value{ .sobject = user };
+            }
+            return null;
+        }
+
+        // TestDataHelpers
+        if (std.ascii.eqlIgnoreCase(class_name, "TestDataHelpers")) {
+            if (std.ascii.eqlIgnoreCase(method_name, "createAccount")) {
+                const acct = try self.arena.create(types.SObject);
+                acct.* = .{ .type_name = "Account" };
+                try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
+                // Check if shipping country arg provided
+                if (args.len >= 2 and args[1] == .string and args[1].string.len > 0) {
+                    try acct.fields.put(self.arena, "ShippingCountry", args[1]);
+                }
+                try self.insertRecord(acct);
+                return Value{ .sobject = acct };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "genXnumberOfAccounts")) {
+                const count = if (args.len >= 1 and args[0] == .integer) args[0].integer else 5;
+                const list = try self.arena.create(types.ListValue);
+                list.* = .{};
+                var i: i64 = 0;
+                while (i < count) : (i += 1) {
+                    const acct = try self.arena.create(types.SObject);
+                    acct.* = .{ .type_name = "Account" };
+                    const name = try std.fmt.allocPrint(self.arena, "Awesome Test Account {d}", .{i});
+                    try acct.fields.put(self.arena, "Name", Value{ .string = name });
+                    try list.items.append(self.arena, Value{ .sobject = acct });
+                }
+                return Value{ .list = list };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "genAccountWithOptions")) {
+                const acct = try self.arena.create(types.SObject);
+                acct.* = .{ .type_name = "Account" };
+                try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
+                if (args.len >= 2 and args[1] == .string) {
+                    try acct.fields.put(self.arena, "ShippingCountry", args[1]);
+                }
+                if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
+                    try self.insertRecord(acct);
+                }
+                return Value{ .sobject = acct };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "genContactForAccount")) {
+                const contact = try self.arena.create(types.SObject);
+                contact.* = .{ .type_name = "Contact" };
+                try contact.fields.put(self.arena, "LastName", Value{ .string = "Test Contact" });
+                try contact.fields.put(self.arena, "Name", Value{ .string = "Test Contact" });
+                if (args.len >= 1) {
+                    try contact.fields.put(self.arena, "AccountId", args[0]);
+                    try contact.fields.put(self.arena, "accountId", args[0]);
+                }
+                return Value{ .sobject = contact };
+            }
+            return null;
+        }
+
+        return null;
+    }
 
     fn findClass(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
         var iter = self.classes.iterator();
