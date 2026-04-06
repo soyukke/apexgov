@@ -2634,6 +2634,17 @@ pub const Evaluator = struct {
                     return self.handleSystemMethod(inner, mc.method, args.items, current_env);
                 }
 
+                // ConnectApi → throw UnsupportedOperationException (data-siloed test)
+                // Note: in real Apex with @isTest(SeeAllData=true), ConnectApi works.
+                // We always throw since we can't distinguish annotations here.
+                if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "UnsupportedOperationException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
+
                 // Cache.Session.getPartition / Cache.Org.getPartition
                 if (std.ascii.eqlIgnoreCase(outer_class, "Cache") and
                     (std.ascii.eqlIgnoreCase(inner, "Session") or std.ascii.eqlIgnoreCase(inner, "Org")))
