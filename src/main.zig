@@ -99,6 +99,9 @@ fn run(gpa: std.mem.Allocator, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "emulate")) {
         return runEmulate(gpa, argv[2..]);
     }
+    if (std.mem.eql(u8, cmd, "interpret")) {
+        return runInterpret(gpa, argv[2..]);
+    }
 
     return error.UnknownCommand;
 }
@@ -239,6 +242,51 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         &.{};
 
     return spawnScript(gpa, script_path, opts.use_nix, extra_args_buf[0..extra_count], env_entries[0..env_count], str_env);
+}
+
+fn runInterpret(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+    if (args.len > 0 and std.mem.eql(u8, args[0], "test")) {
+        return runInterpretTest(gpa, args[1..]);
+    }
+    // Default: interpret test
+    return runInterpretTest(gpa, args);
+}
+
+fn runInterpretTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < args.len) {
+        if (isHelpFlag(args[i])) {
+            std.debug.print(
+                \\apexgov interpret test
+                \\  Run Apex test classes using the Zig native interpreter.
+                \\  Usage: apexgov interpret test <paths...>
+                \\
+            , .{});
+            return 0;
+        }
+        if (std.mem.startsWith(u8, args[i], "--")) {
+            i += 1;
+            continue;
+        }
+        try paths.append(gpa, args[i]);
+        i += 1;
+    }
+
+    if (paths.items.len == 0) {
+        try paths.append(gpa, "force-app");
+    }
+
+    var write_buffer: [8192]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&write_buffer);
+    const writer = &stderr_writer.interface;
+
+    const suite = try apexgov.interpret.runTestSuite(gpa, paths.items, writer);
+    try writer.flush();
+
+    return if (suite.total > 0 and suite.passed == suite.total) 0 else 1;
 }
 
 fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
