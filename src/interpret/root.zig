@@ -124,6 +124,22 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
         const class_name = entry.key_ptr.*;
         const class_decl = entry.value_ptr.*;
 
+        // Find @TestSetup method if any
+        var test_setup_method: ?*ast.MethodDecl = null;
+        for (class_decl.members) |m| {
+            switch (m) {
+                .method_decl => |md2| {
+                    for (md2.annotations) |ann| {
+                        if (std.ascii.eqlIgnoreCase(ann, "@TestSetup")) {
+                            test_setup_method = md2;
+                            break;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
         for (class_decl.members) |member| {
             switch (member) {
                 .method_decl => |md| {
@@ -133,6 +149,11 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 
                     // Reset store and assertions before each test
                     eval.resetForTest();
+
+                    // Run @TestSetup if exists
+                    if (test_setup_method) |setup| {
+                        _ = eval.callMethod(class_name, setup.name, &.{}) catch {};
+                    }
 
                     const result = eval.callMethod(class_name, md.name, &.{});
                     if (result) |_| {

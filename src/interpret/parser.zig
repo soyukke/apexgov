@@ -351,6 +351,18 @@ const Parser = struct {
 
         // Expression statement
         const expr = try self.expression();
+
+        // Handle System.runAs(user) { block } — treat as block execution
+        if (self.check(.lbrace) and expr.* == .method_call) {
+            const mc = expr.method_call;
+            if (std.ascii.eqlIgnoreCase(mc.method, "runAs")) {
+                self.pos += 1; // skip {
+                const block_stmts = try self.parseBlock();
+                try self.expect(.rbrace);
+                return .{ .block = block_stmts };
+            }
+        }
+
         _ = self.matchKind(.semicolon);
         return .{ .expr_stmt = expr };
     }
@@ -576,6 +588,15 @@ const Parser = struct {
             else => unreachable,
         };
         self.pos += 1;
+        // Handle "insert as system/user expr" syntax
+        if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "as")) {
+            self.pos += 1; // skip 'as'
+            if (self.check(.identifier) and (std.ascii.eqlIgnoreCase(self.current().lexeme, "system") or
+                std.ascii.eqlIgnoreCase(self.current().lexeme, "user")))
+            {
+                self.pos += 1; // skip 'system'/'user'
+            }
+        }
         const target = try self.expression();
         _ = self.matchKind(.semicolon);
 
@@ -787,6 +808,27 @@ const Parser = struct {
             result.* = .{ .unary = node };
             return result;
         }
+        // Prefix ++ and -- → rewrite as x += 1 / x -= 1
+        if (self.matchKind(.plus_plus)) {
+            const operand = try self.parsePostfix();
+            const one = try self.arena.create(ast.Expr);
+            one.* = .{ .integer_literal = 1 };
+            const node = try self.arena.create(ast.Assignment);
+            node.* = .{ .target = operand, .op = .plus_assign, .value = one };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .assignment = node };
+            return result;
+        }
+        if (self.matchKind(.minus_minus)) {
+            const operand = try self.parsePostfix();
+            const one = try self.arena.create(ast.Expr);
+            one.* = .{ .integer_literal = 1 };
+            const node = try self.arena.create(ast.Assignment);
+            node.* = .{ .target = operand, .op = .minus_assign, .value = one };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .assignment = node };
+            return result;
+        }
 
         // Cast: (Type)expr — only if inside parens and looks like a type
         if (self.check(.lparen) and self.looksLikeCast()) {
@@ -808,7 +850,7 @@ const Parser = struct {
         var expr = try self.parsePrimary();
 
         while (true) {
-            if (self.matchKind(.dot)) {
+            if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
                 const field_name = try self.expectIdentifier();
 
                 // method call: obj.method(args)
@@ -836,6 +878,27 @@ const Parser = struct {
                 node.* = .{ .object = expr, .index = index };
                 const result = try self.arena.create(ast.Expr);
                 result.* = .{ .index_access = node };
+                expr = result;
+                continue;
+            }
+            // Postfix ++ and -- → rewrite as x += 1 / x -= 1
+            if (self.matchKind(.plus_plus)) {
+                const one = try self.arena.create(ast.Expr);
+                one.* = .{ .integer_literal = 1 };
+                const node = try self.arena.create(ast.Assignment);
+                node.* = .{ .target = expr, .op = .plus_assign, .value = one };
+                const result = try self.arena.create(ast.Expr);
+                result.* = .{ .assignment = node };
+                expr = result;
+                continue;
+            }
+            if (self.matchKind(.minus_minus)) {
+                const one = try self.arena.create(ast.Expr);
+                one.* = .{ .integer_literal = 1 };
+                const node = try self.arena.create(ast.Assignment);
+                node.* = .{ .target = expr, .op = .minus_assign, .value = one };
+                const result = try self.arena.create(ast.Expr);
+                result.* = .{ .assignment = node };
                 expr = result;
                 continue;
             }
@@ -980,6 +1043,44 @@ const Parser = struct {
         if (self.matchKind(.lparen)) {
             args = try self.parseArgList();
             try self.expect(.rparen);
+        }
+
+        // Brace initializer: new List<T>{ item1, item2 } or new Map<K,V>{ key => value, ... }
+        if (self.matchKind(.lbrace)) {
+            var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
+            if (!self.check(.rbrace)) {
+                const first_expr = try self.expression();
+                // Check if this is a map initializer with =>
+                if (self.matchKind(.arrow)) {
+                    // Map literal: key => value pairs
+                    const first_val = try self.expression();
+                    // Store as assignment: key = value
+                    const asgn = try self.arena.create(ast.Assignment);
+                    asgn.* = .{ .target = first_expr, .op = .assign, .value = first_val };
+                    const pair = try self.arena.create(ast.Expr);
+                    pair.* = .{ .assignment = asgn };
+                    try brace_args.append(self.arena, pair.*);
+                    while (self.matchKind(.comma)) {
+                        if (self.check(.rbrace)) break;
+                        const k = try self.expression();
+                        _ = self.matchKind(.arrow);
+                        const v = try self.expression();
+                        const a2 = try self.arena.create(ast.Assignment);
+                        a2.* = .{ .target = k, .op = .assign, .value = v };
+                        const p2 = try self.arena.create(ast.Expr);
+                        p2.* = .{ .assignment = a2 };
+                        try brace_args.append(self.arena, p2.*);
+                    }
+                } else {
+                    try brace_args.append(self.arena, first_expr.*);
+                    while (self.matchKind(.comma)) {
+                        if (self.check(.rbrace)) break;
+                        try brace_args.append(self.arena, (try self.expression()).*);
+                    }
+                }
+            }
+            try self.expect(.rbrace);
+            args = try brace_args.toOwnedSlice(self.arena);
         }
 
         const node = try self.arena.create(ast.NewExpr);

@@ -26,7 +26,12 @@ pub const Env = struct {
     }
 
     pub fn get(self: *const Env, name: []const u8) ?Value {
+        // Exact match first (fast path)
         if (self.bindings.get(name)) |v| return v;
+        // Case-insensitive fallback (Apex identifiers are case-insensitive)
+        for (self.bindings.keys(), self.bindings.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, name)) return v;
+        }
         if (self.parent) |p| return p.get(name);
         return null;
     }
@@ -35,6 +40,13 @@ pub const Env = struct {
         if (self.bindings.getIndex(name)) |idx| {
             self.bindings.values()[idx] = value;
             return;
+        }
+        // Case-insensitive fallback
+        for (self.bindings.keys(), 0..) |k, idx| {
+            if (std.ascii.eqlIgnoreCase(k, name)) {
+                self.bindings.values()[idx] = value;
+                return;
+            }
         }
         if (self.parent) |p| return p.set(name, value);
         return error.UndefinedVariable;

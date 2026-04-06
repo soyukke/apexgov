@@ -34,7 +34,23 @@ pub fn valueEql(a: Value, b: Value) bool {
         .string => |av| std.ascii.eqlIgnoreCase(av, b.string),
         .void_val => true,
         .null_val => true,
-        else => false, // reference types — for now, no deep equality
+        .sobject => |av| {
+            // Compare by Id if both have one
+            if (av.id != null and b.sobject.id != null) return std.ascii.eqlIgnoreCase(av.id.?, b.sobject.id.?);
+            return av == b.sobject; // pointer equality
+        },
+        .list => |av| {
+            if (av == b.list) return true;
+            // Deep equality: compare items
+            if (av.items.items.len != b.list.items.items.len) return false;
+            for (av.items.items, b.list.items.items) |a_item, b_item| {
+                if (!valueEql(a_item, b_item)) return false;
+            }
+            return true;
+        },
+        .map => |av| return av == b.map,
+        .set => |av| return av == b.set,
+        .object => |av| return av == b.object,
     };
 }
 
@@ -47,7 +63,11 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
         .string => |s| s,
         .void_val => "void",
-        else => "<object>",
+        .list => |l| try std.fmt.allocPrint(arena, "List[{d}]", .{l.items.items.len}),
+        .map => |m| try std.fmt.allocPrint(arena, "Map[{d}]", .{m.entries.count()}),
+        .set => |s2| try std.fmt.allocPrint(arena, "Set[{d}]", .{s2.entries.count()}),
+        .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
+        .object => |obj| try std.fmt.allocPrint(arena, "{s}{{}}", .{obj.class_name}),
     };
 }
 

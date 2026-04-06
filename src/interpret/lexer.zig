@@ -120,9 +120,9 @@ const Lexer = struct {
     }
 
     fn peekSoql(self: *Lexer) bool {
-        // Check if [ is followed by SELECT (case-insensitive)
+        // Check if [ is followed by SELECT (case-insensitive), skipping whitespace including newlines
         var i = self.pos + 1;
-        while (i < self.source.len and self.source[i] == ' ') : (i += 1) {}
+        while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t' or self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1) {}
         if (i + 6 > self.source.len) return false;
         const word = self.source[i .. i + 6];
         return std.ascii.eqlIgnoreCase(word, "select") or std.ascii.eqlIgnoreCase(word, "find  ");
@@ -163,6 +163,10 @@ const Lexer = struct {
 
         switch (c) {
             '+' => {
+                if (next_char == '+') {
+                    self.advance();
+                    return self.makeTokenAt(.plus_plus, self.source[start..self.pos], start_loc);
+                }
                 if (next_char == '=') {
                     self.advance();
                     return self.makeTokenAt(.plus_assign, self.source[start..self.pos], start_loc);
@@ -170,6 +174,10 @@ const Lexer = struct {
                 return self.makeTokenAt(.plus, self.source[start..self.pos], start_loc);
             },
             '-' => {
+                if (next_char == '-') {
+                    self.advance();
+                    return self.makeTokenAt(.minus_minus, self.source[start..self.pos], start_loc);
+                }
                 if (next_char == '=') {
                     self.advance();
                     return self.makeTokenAt(.minus_assign, self.source[start..self.pos], start_loc);
@@ -199,6 +207,10 @@ const Lexer = struct {
                         return self.makeTokenAt(.strict_eq, self.source[start..self.pos], start_loc);
                     }
                     return self.makeTokenAt(.eq, self.source[start..self.pos], start_loc);
+                }
+                if (next_char == '>') {
+                    self.advance();
+                    return self.makeTokenAt(.arrow, self.source[start..self.pos], start_loc);
                 }
                 return self.makeTokenAt(.assign, self.source[start..self.pos], start_loc);
             },
