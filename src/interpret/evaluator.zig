@@ -43,6 +43,9 @@ pub const Evaluator = struct {
     last_json_value: ?Value = null,
     // SOSL fixed search results (set by Test.setFixedSearchResults)
     fixed_search_results: ?Value = null,
+    // Call depth counter (stack overflow guard)
+    call_depth: u32 = 0,
+    max_call_depth: u32 = 200,
 
     pub fn init(arena: std.mem.Allocator) !Evaluator {
         const global = try arena.create(Env);
@@ -62,6 +65,7 @@ pub const Evaluator = struct {
         self.fixed_search_results = null;
         self.trash = .empty;
         self.last_json_value = null;
+        self.call_depth = 0;
 
         // Clear cache partitions
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
@@ -225,6 +229,11 @@ pub const Evaluator = struct {
     }
 
     pub fn callMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
+        self.call_depth +|= 1;
+        defer self.call_depth -|= 1;
+        if (self.call_depth > self.max_call_depth) {
+            return error.StackOverflow;
+        }
         // EventBus.publish → store events in the store so they can be queried
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             if (args.len > 0) {
@@ -820,10 +829,21 @@ pub const Evaluator = struct {
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
-            // Update the store snapshot with current field values
+            // Update the store snapshot with current field values.
+            // If stored == obj (same pointer, e.g. from an uncopied SOQL result),
+            // we must snapshot keys/values first to avoid iterator invalidation
+            // when put() triggers a grow.
             if (found_rec) |stored| {
-                for (obj.fields.keys(), obj.fields.values()) |k, v| {
-                    stored.fields.put(self.arena, k, v) catch {};
+                if (stored == obj) {
+                    const keys = self.arena.dupe([]const u8, obj.fields.keys()) catch return;
+                    const vals = self.arena.dupe(Value, obj.fields.values()) catch return;
+                    for (keys, vals) |k, v| {
+                        stored.fields.put(self.arena, k, v) catch {};
+                    }
+                } else {
+                    for (obj.fields.keys(), obj.fields.values()) |k, v| {
+                        stored.fields.put(self.arena, k, v) catch {};
+                    }
                 }
             }
         }
@@ -1056,12 +1076,20 @@ pub const Evaluator = struct {
         var records: std.ArrayListUnmanaged(Value) = .empty;
 
         // Find matching records (case-insensitive type name)
+        // Return copies to avoid aliasing store objects (prevents iterator
+        // invalidation when the queried record is later DML-updated).
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
                 for (entry.value_ptr.items) |record| {
-                    if (self.matchesWhere(record, soql, current_env))
-                        try records.append(self.arena, record);
+                    if (self.matchesWhere(record, soql, current_env)) {
+                        if (record == .sobject) {
+                            const copy = try self.cloneSObject(record.sobject);
+                            try records.append(self.arena, Value{ .sobject = copy });
+                        } else {
+                            try records.append(self.arena, record);
+                        }
+                    }
                 }
                 break;
             }
@@ -1733,6 +1761,16 @@ pub const Evaluator = struct {
         return null;
     }
 
+    /// Create a shallow clone of an SObject (copies the fields map).
+    fn cloneSObject(self: *Evaluator, src: *types.SObject) !*types.SObject {
+        const copy = try self.arena.create(types.SObject);
+        copy.* = .{ .type_name = src.type_name, .id = src.id };
+        for (src.fields.keys(), src.fields.values()) |k, v| {
+            try copy.fields.put(self.arena, k, v);
+        }
+        return copy;
+    }
+
     /// Find the type name of a record by its Id, searching all types in store.
     fn findRecordTypeById(self: *Evaluator, id: []const u8) ?[]const u8 {
         var store_iter = self.store.iterator();
@@ -1753,6 +1791,11 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn evalExpr(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) anyerror!Value {
+        self.call_depth +|= 1;
+        defer self.call_depth -|= 1;
+        if (self.call_depth > self.max_call_depth) {
+            return error.StackOverflow;
+        }
         switch (expr.*) {
             .integer_literal => |v| return .{ .integer = v },
             .double_literal => |v| return .{ .double = v },
@@ -4012,6 +4055,11 @@ pub const Evaluator = struct {
     }
 
     fn callInstanceMethod(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+        self.call_depth +|= 1;
+        defer self.call_depth -|= 1;
+        if (self.call_depth > self.max_call_depth) {
+            return error.StackOverflow;
+        }
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes
         const actual_class = self.findClass(instance.class_name);

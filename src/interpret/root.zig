@@ -120,6 +120,31 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
     // Run static initializer blocks after all classes are registered
     eval.runStaticInits();
 
+    // Pre-compute which classes need static field reinit and which have static init blocks
+    var classes_with_statics: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+    var classes_with_static_inits: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+    {
+        var pre_iter = eval.classes.iterator();
+        while (pre_iter.next()) |entry| {
+            const cd = entry.value_ptr.*;
+            var has_static_fields = false;
+            var has_static_init = false;
+            for (cd.members) |member| {
+                switch (member) {
+                    .field_decl => |fd| {
+                        if (fd.modifiers.is_static) has_static_fields = true;
+                    },
+                    .static_init => {
+                        has_static_init = true;
+                    },
+                    else => {},
+                }
+            }
+            if (has_static_fields) try classes_with_statics.append(alloc, cd);
+            if (has_static_init) try classes_with_static_inits.append(alloc, cd);
+        }
+    }
+
     // 3. @isTest メソッドを発見・実行
     var suite = TestSuiteResult{};
     var class_iter = eval.classes.iterator();
@@ -152,15 +177,13 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 
                     // Reset store and assertions before each test
                     eval.resetForTest();
-                    // Re-init static fields for ALL classes (not just the test class)
-                    var all_class_iter = eval.classes.iterator();
-                    while (all_class_iter.next()) |cls_entry| {
-                        eval.reInitClassStaticFields(cls_entry.value_ptr.*);
+                    // Re-init static fields for classes that have them
+                    for (classes_with_statics.items) |cd| {
+                        eval.reInitClassStaticFields(cd);
                     }
-                    // Run static init blocks for all classes
-                    var init_iter = eval.classes.iterator();
-                    while (init_iter.next()) |cls_entry| {
-                        eval.runClassStaticInits(cls_entry.value_ptr.*);
+                    // Run static init blocks for classes that have them
+                    for (classes_with_static_inits.items) |cd| {
+                        eval.runClassStaticInits(cd);
                     }
 
                     // Run @TestSetup if exists
@@ -191,7 +214,19 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
                         }
                     } else |err| {
                         suite.errors += 1;
-                        const err_msg = try std.fmt.allocPrint(alloc, "{s}", .{@errorName(err)});
+                        // Include pending exception message if available
+                        const exc_detail = if (eval.pending_exception) |pe| blk: {
+                            if (pe == .object) {
+                                if (pe.object.fields.get("message")) |msg| {
+                                    if (msg == .string) break :blk msg.string;
+                                }
+                            }
+                            break :blk "";
+                        } else "";
+                        const err_msg = if (exc_detail.len > 0)
+                            try std.fmt.allocPrint(alloc, "{s}: {s}", .{ @errorName(err), exc_detail })
+                        else
+                            try std.fmt.allocPrint(alloc, "{s}", .{@errorName(err)});
                         try suite.results.append(alloc, .{
                             .class_name = class_name,
                             .method_name = md.name,
