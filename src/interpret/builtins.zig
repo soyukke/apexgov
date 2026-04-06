@@ -834,7 +834,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
 
     // Request.getQuiddity
     if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity")) {
-        return Value{ .string = "RUNTEST" };
+        return Value{ .string = "RUNTEST_SYNC" };
     }
 
     // DescribeSObjectResult methods

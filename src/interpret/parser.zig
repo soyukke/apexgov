@@ -1029,6 +1029,34 @@ const Parser = struct {
                 return result;
             }
 
+            // Handle Type<T>.class → type literal (common in JSON.deserialize calls)
+            if (self.check(.lt) and self.looksLikeTypeDotClass()) {
+                // Skip <T, ...> .class and return an ObjectInstance-like value with the type name
+                var depth: u32 = 0;
+                const type_end: usize = self.pos;
+                while (!self.atEnd()) {
+                    if (self.check(.lt)) depth += 1;
+                    if (self.check(.gt)) {
+                        depth -= 1;
+                        if (depth == 0) { self.pos += 1; break; }
+                    }
+                    self.pos += 1;
+                }
+                // Skip .class
+                if (self.matchKind(.dot)) {
+                    if (!self.matchKind(.class_kw)) {
+                        _ = self.matchKind(.identifier);
+                    }
+                }
+                _ = type_end;
+                // Return the type name as a string literal for type reference
+                const type_obj = try self.arena.create(ast.NewExpr);
+                type_obj.* = .{ .type_name = .{ .name = name }, .args = &.{}, .loc = loc };
+                const result = try self.arena.create(ast.Expr);
+                result.* = .{ .new_expr = type_obj };
+                return result;
+            }
+
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .identifier = .{ .name = name, .loc = loc } };
             return result;
@@ -1218,8 +1246,39 @@ const Parser = struct {
         return false;
     }
 
+    /// Check if we're looking at Ident<...>.class pattern (type literal expression)
+    fn looksLikeTypeDotClass(self: *Parser) bool {
+        const saved = self.pos;
+        defer self.pos = saved;
+
+        if (!self.check(.lt)) return false;
+        var depth: u32 = 0;
+        while (!self.atEnd()) {
+            if (self.check(.lt)) depth += 1;
+            if (self.check(.gt)) {
+                depth -= 1;
+                if (depth == 0) {
+                    self.pos += 1;
+                    // Check for .class
+                    if (self.check(.dot)) {
+                        self.pos += 1;
+                        if (self.check(.class_kw) or
+                            (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "class")))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }
+            if (self.check(.semicolon) or self.check(.rparen) or self.check(.comma)) return false;
+            self.pos += 1;
+        }
+        return false;
+    }
+
     fn looksLikeCast(self: *Parser) bool {
-        // (Type)expr — check if after ( there's an identifier followed by )
+        // (Type)expr — check if after ( there's a type reference followed by )
         const saved = self.pos;
         defer self.pos = saved;
 
@@ -1229,9 +1288,27 @@ const Parser = struct {
         if (!self.check(.identifier)) return false;
         self.pos += 1;
 
-        // skip dotted
+        // skip dotted name
         if (self.matchKind(.dot)) {
             if (self.check(.identifier)) self.pos += 1;
+        }
+
+        // skip generic params: <T, U, ...>
+        if (self.check(.lt)) {
+            var depth: u32 = 0;
+            while (!self.atEnd()) {
+                if (self.check(.lt)) depth += 1;
+                if (self.check(.gt)) {
+                    depth -= 1;
+                    if (depth == 0) { self.pos += 1; break; }
+                }
+                self.pos += 1;
+            }
+        }
+
+        // skip []
+        if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
+            self.pos += 2;
         }
 
         return self.check(.rparen);

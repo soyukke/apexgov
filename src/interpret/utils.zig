@@ -50,7 +50,18 @@ pub fn valueEql(a: Value, b: Value) bool {
         },
         .map => |av| return av == b.map,
         .set => |av| return av == b.set,
-        .object => |av| return av == b.object,
+        .object => |av| {
+            if (av == b.object) return true;
+            // Compare Schema.SObjectType by name field
+            if (std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType") and
+                std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectType"))
+            {
+                const a_name = av.fields.get("name") orelse return false;
+                const b_name = b.object.fields.get("name") orelse return false;
+                if (a_name == .string and b_name == .string) return std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+            }
+            return false;
+        },
     };
 }
 
