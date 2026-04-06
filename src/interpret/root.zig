@@ -152,6 +152,9 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 
                     // Reset store and assertions before each test
                     eval.resetForTest();
+                    // Re-init static fields for the test class only
+                    eval.reInitClassStaticFields(class_decl);
+                    eval.runClassStaticInits(class_decl);
 
                     // Run @TestSetup if exists
                     if (test_setup_method) |setup| {

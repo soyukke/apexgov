@@ -59,9 +59,71 @@ pub const Evaluator = struct {
         self.callout_mock = null;
         self.trash = .empty;
         self.last_json_value = null;
+
         // Clear cache partitions
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
         _ = self.global_env.bindings.orderedRemove("Cache.Org.partition");
+    }
+
+    /// Re-initialize static fields for a single class (test class reset)
+    pub fn reInitClassStaticFields(self: *Evaluator, cd: *ast.ClassDecl) void {
+        for (cd.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (fd.modifiers.is_static) {
+                        const val = if (fd.initializer) |init_expr|
+                            self.evalExpr(init_expr, self.global_env) catch Value.null_val
+                        else
+                            defaultValue(fd.type_ref);
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        self.global_env.set(key, val) catch {
+                            self.global_env.define(key, val) catch {};
+                        };
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Run static init blocks for a single class
+    pub fn runClassStaticInits(self: *Evaluator, cd: *ast.ClassDecl) void {
+        for (cd.members) |member| {
+            switch (member) {
+                .static_init => |body| {
+                    const init_env = self.global_env.child() catch continue;
+                    for (cd.members) |m2| {
+                        switch (m2) {
+                            .field_decl => |fd| {
+                                if (fd.modifiers.is_static) {
+                                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                    const cur = self.global_env.get(key) orelse Value.null_val;
+                                    init_env.define(fd.name, cur) catch {};
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    _ = self.execBlock(body, init_env) catch {};
+                    for (cd.members) |m2| {
+                        switch (m2) {
+                            .field_decl => |fd| {
+                                if (fd.modifiers.is_static) {
+                                    if (init_env.get(fd.name)) |v| {
+                                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                        self.global_env.set(key, v) catch {
+                                            self.global_env.define(key, v) catch {};
+                                        };
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1138,6 +1200,21 @@ pub const Evaluator = struct {
                 for (call.args) |*arg| {
                     try args.append(self.arena, try self.evalExpr(arg, current_env));
                 }
+                // super(args) → call parent class constructor
+                if (std.mem.eql(u8, call.callee, "super")) {
+                    if (current_env.get("this")) |this_val| {
+                        if (this_val == .object) {
+                            if (self.findClass(this_val.object.class_name)) |cd| {
+                                if (cd.super_class) |sc| {
+                                    if (self.findClass(sc.name)) |parent_decl| {
+                                        self.runConstructor(parent_decl, this_val.object, args.items) catch {};
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value.void_val;
+                }
                 // Try as instance method on `this` first
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
@@ -1373,11 +1450,6 @@ pub const Evaluator = struct {
                 return self.handleTest(mc.method, args.items);
             }
 
-            // TriggerHandler
-            if (std.ascii.eqlIgnoreCase(class_name, "TriggerHandler")) {
-                return self.handleTriggerHandler(mc.method, args.items);
-            }
-
             // Database methods that need store access
             if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
                 return self.handleDatabaseMethod(mc.method, args.items);
@@ -1421,13 +1493,27 @@ pub const Evaluator = struct {
 
             // Check if identifier is a local variable (instance method call)
             // This comes after builtin checks so System.debug etc. still work
-            if (current_env.get(class_name)) |var_val| {
-                switch (var_val) {
-                    .list, .map, .set, .sobject, .object, .string => {
-                        return self.evalInstanceMethod(var_val, mc.method, args.items, current_env);
-                    },
-                    else => {},
+            const resolved_var = blk: {
+                if (current_env.get(class_name)) |v| break :blk v;
+                // Also check current_class static fields (e.g., handler stored as ClassName.handler)
+                if (self.current_class) |cc| {
+                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch break :blk Value.null_val;
+                    if (self.global_env.get(key)) |v| break :blk v;
                 }
+                // Check "this" class static fields
+                if (current_env.get("this")) |this_val| {
+                    if (this_val == .object) {
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_val.object.class_name, class_name }) catch break :blk Value.null_val;
+                        if (self.global_env.get(key)) |v| break :blk v;
+                    }
+                }
+                break :blk Value.null_val;
+            };
+            switch (resolved_var) {
+                .list, .map, .set, .sobject, .object, .string => {
+                    return self.evalInstanceMethod(resolved_var, mc.method, args.items, current_env);
+                },
+                else => {},
             }
 
             // User-defined class method
@@ -1884,6 +1970,14 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "valueOf")) {
             return Value{ .string = s };
         }
+        // name() - for enum values, returns the string itself
+        if (std.ascii.eqlIgnoreCase(method, "name") or std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = s };
+        }
+        // ordinal() - for enum values, return 0 as stub
+        if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
+            return Value{ .integer = 0 };
+        }
         return Value.null_val;
     }
 
@@ -2038,6 +2132,19 @@ pub const Evaluator = struct {
             // Execute own constructor
             self.runConstructor(class_decl, instance, eval_args.items) catch {};
 
+            return Value{ .object = instance };
+        }
+
+        // Any type ending with "Exception" that wasn't found as a user class
+        // should still be an ObjectInstance (not SObject)
+        if (std.mem.endsWith(u8, type_name, "Exception")) {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = type_name };
+            if (ne.args.len > 0) {
+                var arg_copy = ne.args[0];
+                const msg_val = try self.evalExpr(&arg_copy, current_env);
+                try instance.fields.put(self.arena, "message", msg_val);
+            }
             return Value{ .object = instance };
         }
 

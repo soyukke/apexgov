@@ -845,6 +845,17 @@ const Parser = struct {
     fn parsePostfix(self: *Parser) !*ast.Expr {
         var expr = try self.parsePrimary();
 
+        // super(args) → call to parent constructor
+        if (expr.* == .super_expr and self.matchKind(.lparen)) {
+            const args = try self.parseArgList();
+            try self.expect(.rparen);
+            const node = try self.arena.create(ast.CallExpr);
+            node.* = .{ .callee = "super", .args = args };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .call = node };
+            expr = result;
+        }
+
         while (true) {
             if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
                 const field_name = try self.expectIdentifier();

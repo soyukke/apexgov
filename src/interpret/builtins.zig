@@ -354,6 +354,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         {
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Blob" };
+            // Store first arg's value for round-trip (decrypt returns original)
+            const val = if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
+                args[0].object.fields.get("value").?
+            else
+                Value{ .string = "crypto-output" };
+            try obj.fields.put(ctx.arena, "value", val);
             return Value{ .object = obj };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
@@ -363,7 +369,24 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         {
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Blob" };
+            // For decrypt, return the original data (first blob arg's value)
+            const val = if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
+                args[0].object.fields.get("value").?
+            else
+                Value{ .string = "encrypted-data" };
+            try obj.fields.put(ctx.arena, "value", val);
             return Value{ .object = obj };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "verify") or
+            std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or
+            std.ascii.eqlIgnoreCase(method_name, "verifyMac"))
+        {
+            return Value{ .boolean = true }; // HMAC verification passes
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
+            std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
+        {
+            return Value{ .integer = 42 };
         }
         return Value.null_val;
     }
@@ -388,7 +411,24 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // EncodingUtil
     if (std.ascii.eqlIgnoreCase(class_name, "EncodingUtil")) {
-        return Value{ .string = "encoded" };
+        if (std.ascii.eqlIgnoreCase(method_name, "urlEncode") and args.len > 0 and args[0] == .string) {
+            return args[0]; // return the input string (simplified)
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "base64Encode") and args.len > 0) {
+            // For Blob input, get the value field
+            if (args[0] == .object) {
+                return args[0].object.fields.get("value") orelse Value{ .string = "" };
+            }
+            return Value{ .string = "base64encoded" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and args.len > 0 and args[0] == .string) {
+            const blob = try ctx.arena.create(types.ObjectInstance);
+            blob.* = .{ .class_name = "Blob" };
+            try blob.fields.put(ctx.arena, "value", args[0]);
+            return Value{ .object = blob };
+        }
+        if (args.len > 0 and args[0] == .string) return args[0];
+        return Value{ .string = "" };
     }
 
     // Messaging
