@@ -10,6 +10,17 @@ const Value = types.Value;
 pub const BuiltinContext = struct {
     arena: std.mem.Allocator,
     stdout: *std.ArrayListUnmanaged(u8),
+    pending_exception: ?*?Value = null,
+
+    fn throwException(self: *BuiltinContext, class_name: []const u8, message: []const u8) anyerror!?Value {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = class_name };
+        try exc.fields.put(self.arena, "message", Value{ .string = message });
+        if (self.pending_exception) |pe| {
+            pe.* = Value{ .object = exc };
+        }
+        return error.ApexException;
+    }
 };
 
 /// 静的メソッド呼び出しを試行する。
@@ -71,8 +82,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (std.ascii.eqlIgnoreCase(class_name, "Integer") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
             return switch (args[0]) {
-                .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 },
+                .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch {
+                    return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}));
+                } },
                 .integer => args[0],
+                .double => |d| Value{ .integer = @intFromFloat(d) },
+                .null_val => Value{ .integer = 0 },
                 else => Value.null_val,
             };
         }
@@ -453,6 +468,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Database.SaveResult" };
             try obj.fields.put(ctx.arena, "isSuccess", Value{ .boolean = true });
+            // Store the published event(s) for later query (stub __events__ field)
+            try obj.fields.put(ctx.arena, "__event__", if (args.len > 0) args[0] else Value.null_val);
             return Value{ .object = obj };
         }
         return .void_val;
@@ -879,6 +896,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
             return obj.fields.get("name") orelse Value{ .string = "" };
         }

@@ -212,6 +212,39 @@ test "valueEql: null != non-null" {
     try std.testing.expect(!valueEql(Value{ .string = "" }, Value.null_val));
 }
 
+// ---------------------------------------------------------------------------
+// SObject フィールドのケースインセンシティブアクセス
+// ---------------------------------------------------------------------------
+
+/// SObject フィールドをケースインセンシティブに取得する。
+pub fn sobjectGet(fields: *const std.StringArrayHashMapUnmanaged(Value), name: []const u8) ?Value {
+    // First try exact match (fast path)
+    if (fields.get(name)) |v| return v;
+    // Fallback: case-insensitive search
+    for (fields.keys(), fields.values()) |k, v| {
+        if (std.ascii.eqlIgnoreCase(k, name)) return v;
+    }
+    return null;
+}
+
+/// SObject フィールドをケースインセンシティブに設定する。
+/// 既存のキーがある場合はそのキー名を維持し、値だけ更新する。
+pub fn sobjectPut(fields: *std.StringArrayHashMapUnmanaged(Value), arena: std.mem.Allocator, name: []const u8, value: Value) !void {
+    // Check if there's an existing key with different case
+    var existing_key: ?[]const u8 = null;
+    for (fields.keys()) |k| {
+        if (std.ascii.eqlIgnoreCase(k, name)) {
+            existing_key = k;
+            break;
+        }
+    }
+    if (existing_key) |ek| {
+        try fields.put(arena, ek, value);
+    } else {
+        try fields.put(arena, name, value);
+    }
+}
+
 test "coerceToString" {
     try std.testing.expectEqualStrings("null", try coerceToString(Value.null_val, std.testing.allocator));
     try std.testing.expectEqualStrings("true", try coerceToString(Value{ .boolean = true }, std.testing.allocator));
