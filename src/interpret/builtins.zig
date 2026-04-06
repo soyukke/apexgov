@@ -134,6 +134,61 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             return Value{ .string = "{}" };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "deserializeUntyped")) {
+            // Return a Map from simple JSON string
+            if (args.len > 0 and args[0] == .string) {
+                const json_str = args[0].string;
+                const map = try ctx.arena.create(types.MapValue);
+                map.* = .{};
+                // Very simple JSON key-value extraction
+                var pos: usize = 0;
+                while (pos < json_str.len) {
+                    // Find next quoted key
+                    const key_start_opt = std.mem.indexOfPos(u8, json_str, pos, "\"");
+                    if (key_start_opt) |key_start| {
+                        const key_end_opt = std.mem.indexOfPos(u8, json_str, key_start + 1, "\"");
+                        if (key_end_opt) |key_end| {
+                            const key = json_str[key_start + 1 .. key_end];
+                            // Find colon after key
+                            const colon_opt = std.mem.indexOfPos(u8, json_str, key_end + 1, ":");
+                            if (colon_opt) |colon_pos| {
+                                var val_start = colon_pos + 1;
+                                while (val_start < json_str.len and (json_str[val_start] == ' ' or json_str[val_start] == '\t' or json_str[val_start] == '\n' or json_str[val_start] == '\r')) val_start += 1;
+                                if (val_start < json_str.len) {
+                                    if (json_str[val_start] == '"') {
+                                        // String value
+                                        if (std.mem.indexOfPos(u8, json_str, val_start + 1, "\"")) |val_end| {
+                                            try map.entries.put(ctx.arena, key, Value{ .string = json_str[val_start + 1 .. val_end] });
+                                            pos = val_end + 1;
+                                            continue;
+                                        }
+                                    } else if (json_str[val_start] == '[') {
+                                        // Array value - store as list
+                                        const list = try ctx.arena.create(types.ListValue);
+                                        list.* = .{};
+                                        try map.entries.put(ctx.arena, key, Value{ .list = list });
+                                        pos = val_start + 1;
+                                        continue;
+                                    } else {
+                                        // Number or other value
+                                        var val_end = val_start;
+                                        while (val_end < json_str.len and json_str[val_end] != ',' and json_str[val_end] != '}' and json_str[val_end] != '\n') val_end += 1;
+                                        const val_str = std.mem.trim(u8, json_str[val_start..val_end], " \t\r\n");
+                                        if (std.fmt.parseInt(i64, val_str, 10)) |num| {
+                                            try map.entries.put(ctx.arena, key, Value{ .integer = num });
+                                        } else |_| {
+                                            try map.entries.put(ctx.arena, key, Value{ .string = val_str });
+                                        }
+                                        pos = val_end;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pos += 1;
+                }
+                return Value{ .map = map };
+            }
             return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method_name, "deserialize")) {
@@ -315,7 +370,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // Blob
     if (std.ascii.eqlIgnoreCase(class_name, "Blob")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) return Value{ .string = "blob" };
+        if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+            // Return a Blob object that stores the string and supports toString()
+            if (args.len > 0 and args[0] == .string) {
+                const blob = try ctx.arena.create(types.ObjectInstance);
+                blob.* = .{ .class_name = "Blob" };
+                try blob.fields.put(ctx.arena, "value", args[0]);
+                return Value{ .object = blob };
+            }
+            const blob = try ctx.arena.create(types.ObjectInstance);
+            blob.* = .{ .class_name = "Blob" };
+            try blob.fields.put(ctx.arena, "value", Value{ .string = "" });
+            return Value{ .object = blob };
+        }
         return Value.null_val;
     }
 
@@ -582,6 +649,10 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {
         return Value{ .string = obj.class_name };
     }
+    // toString() - return the value field if it's a Blob, otherwise class name
+    if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
+        return obj.fields.get("value") orelse Value{ .string = try utils.coerceToString(Value{ .object = obj }, ctx.arena) };
+    }
 
     // SaveResult / UpsertResult methods
     if (std.ascii.eqlIgnoreCase(method_name, "isSuccess") or std.ascii.eqlIgnoreCase(method_name, "isCreated")) {
@@ -612,11 +683,25 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             try obj.fields.put(ctx.arena, "body", args[0]);
             return .void_val;
         }
+        if (std.ascii.eqlIgnoreCase(method_name, "setStatus") and args.len > 0) {
+            try obj.fields.put(ctx.arena, "status", args[0]);
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getStatus")) {
+            return obj.fields.get("status") orelse Value{ .string = "OK" };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or
             std.ascii.eqlIgnoreCase(method_name, "setEndpoint") or
             std.ascii.eqlIgnoreCase(method_name, "setHeader") or
             std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
         {
+            // Store method and endpoint for later use
+            if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0) {
+                try obj.fields.put(ctx.arena, "endpoint", args[0]);
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0) {
+                try obj.fields.put(ctx.arena, "method", args[0]);
+            }
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method_name, "send")) {
@@ -636,12 +721,74 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     // Type methods
     if (std.ascii.eqlIgnoreCase(obj.class_name, "Type")) {
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+            const type_name = if (obj.fields.get("name")) |n| n.string else "Object";
+            // If the type name starts with Map, return a Map
+            if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
+                const map = try ctx.arena.create(types.MapValue);
+                map.* = .{};
+                return Value{ .map = map };
+            }
+            // If the type name starts with List, return a List
+            if (std.ascii.startsWithIgnoreCase(type_name, "List")) {
+                const list = try ctx.arena.create(types.ListValue);
+                list.* = .{};
+                return Value{ .list = list };
+            }
+            // If the type name starts with Set, return a Set
+            if (std.ascii.startsWithIgnoreCase(type_name, "Set")) {
+                const set = try ctx.arena.create(types.SetValue);
+                set.* = .{};
+                return Value{ .set = set };
+            }
             const inst = try ctx.arena.create(types.ObjectInstance);
-            inst.* = .{ .class_name = if (obj.fields.get("name")) |n| n.string else "Object" };
+            inst.* = .{ .class_name = type_name };
             return Value{ .object = inst };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
             return obj.fields.get("name") orelse Value{ .string = "Object" };
+        }
+    }
+
+    // Cache.Partition methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Cache.Partition")) {
+        const cache_map = if (obj.fields.get("_cache")) |cm| if (cm == .map) cm.map else null else null;
+        if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2) {
+            if (cache_map) |cm| {
+                const key = try utils.coerceToString(args[0], ctx.arena);
+                try cm.entries.put(ctx.arena, key, args[1]);
+            }
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len >= 1) {
+            if (cache_map) |cm| {
+                const key = try utils.coerceToString(args[0], ctx.arena);
+                return cm.entries.get(key) orelse Value.null_val;
+            }
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "contains") and args.len >= 1) {
+            if (cache_map) |cm| {
+                const key = try utils.coerceToString(args[0], ctx.arena);
+                return Value{ .boolean = cm.entries.contains(key) };
+            }
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
+            if (cache_map) |cm| {
+                const key = try utils.coerceToString(args[0], ctx.arena);
+                _ = cm.entries.orderedRemove(key);
+            }
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getKeys")) {
+            const set = try ctx.arena.create(types.SetValue);
+            set.* = .{};
+            if (cache_map) |cm| {
+                for (cm.entries.keys()) |key| {
+                    try set.entries.put(ctx.arena, key, {});
+                }
+            }
+            return Value{ .set = set };
         }
     }
 
@@ -737,14 +884,23 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
     }
 
-    // Generic getter pattern
+    // Generic getter pattern (case-insensitive field lookup)
     if (std.mem.startsWith(u8, method_name, "get") and method_name.len > 3) {
         const field = method_name[3..];
-        return obj.fields.get(field) orelse Value.null_val;
+        // Try exact match first, then case-insensitive
+        if (obj.fields.get(field)) |v| return v;
+        for (obj.fields.keys(), obj.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, field)) return v;
+        }
+        return Value.null_val;
     }
     if (std.mem.startsWith(u8, method_name, "is") and method_name.len > 2) {
         const field = method_name;
-        return obj.fields.get(field) orelse Value{ .boolean = false };
+        if (obj.fields.get(field)) |v| return v;
+        for (obj.fields.keys(), obj.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, field)) return v;
+        }
+        return Value{ .boolean = false };
     }
     if (std.mem.startsWith(u8, method_name, "set") and method_name.len > 3 and args.len > 0) {
         const field = method_name[3..];

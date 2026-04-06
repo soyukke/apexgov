@@ -117,6 +117,9 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 
     try writer.print("interpret: registered {d} class(es), {d} parse error(s)\n", .{ eval.classes.count(), parse_errors });
 
+    // Run static initializer blocks after all classes are registered
+    eval.runStaticInits();
+
     // 3. @isTest メソッドを発見・実行
     var suite = TestSuiteResult{};
     var class_iter = eval.classes.iterator();

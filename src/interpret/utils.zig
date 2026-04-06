@@ -67,7 +67,12 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .map => |m| try std.fmt.allocPrint(arena, "Map[{d}]", .{m.entries.count()}),
         .set => |s2| try std.fmt.allocPrint(arena, "Set[{d}]", .{s2.entries.count()}),
         .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
-        .object => |obj| try std.fmt.allocPrint(arena, "{s}{{}}", .{obj.class_name}),
+        .object => |obj| blk: {
+            // Use simple name (after last dot) like Apex does
+            const cn = obj.class_name;
+            const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
+            break :blk try std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
+        },
     };
 }
 

@@ -276,6 +276,7 @@ pub const Decl = union(enum) {
     method_decl: *MethodDecl,
     field_decl: *FieldDecl,
     constructor_decl: *ConstructorDecl,
+    static_init: []Stmt,
 };
 
 pub const Modifiers = struct {

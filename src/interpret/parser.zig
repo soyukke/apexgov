@@ -192,15 +192,11 @@ const Parser = struct {
             } else if (self.check(.enum_kw)) {
                 try members.append(self.arena, .{ .enum_decl = try self.parseEnumDecl(mods) });
             } else if (self.check(.lbrace)) {
-                // static initializer block — skip
+                // static initializer block — parse body
                 self.pos += 1;
-                var depth: u32 = 1;
-                while (!self.atEnd() and depth > 0) {
-                    if (self.check(.lbrace)) depth += 1;
-                    if (self.check(.rbrace)) depth -= 1;
-                    if (depth > 0) self.pos += 1;
-                }
-                if (self.check(.rbrace)) self.pos += 1;
+                const body = try self.parseBlock();
+                try self.expect(.rbrace);
+                try members.append(self.arena, .{ .static_init = body });
             } else {
                 // method or field: Type name ( ... ) { ... } or Type name ;/=
                 const member = try self.parseMethodOrField(mods, try annotations.toOwnedSlice(self.arena));
