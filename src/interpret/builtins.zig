@@ -370,6 +370,55 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
     }
 
+    // CanTheUser — security permission checks (always return true in tests)
+    if (std.ascii.eqlIgnoreCase(class_name, "CanTheUser")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "create") or
+            std.ascii.eqlIgnoreCase(method_name, "read") or
+            std.ascii.eqlIgnoreCase(method_name, "edit") or
+            std.ascii.eqlIgnoreCase(method_name, "destroy") or
+            std.ascii.eqlIgnoreCase(method_name, "crud") or
+            std.ascii.eqlIgnoreCase(method_name, "flsAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "flsUpdatable"))
+        {
+            return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
+        {
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            return Value{ .map = map };
+        }
+        return Value{ .boolean = true };
+    }
+
+    // OrgShape
+    if (std.ascii.eqlIgnoreCase(class_name, "OrgShape")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "isPlatformCacheEnabled")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isSandbox")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(method_name, "isAdvancedMultiCurrencyManagement")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isSeeAllDataTrue")) return Value{ .boolean = false };
+        return Value{ .boolean = false };
+    }
+
+    // Url.getOrgDomainUrl / Url.getSalesforceBaseUrl
+    if (std.ascii.eqlIgnoreCase(class_name, "Url") or std.ascii.eqlIgnoreCase(class_name, "URL")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl")) {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Url" };
+            try obj.fields.put(ctx.arena, "Host", Value{ .string = "test.salesforce.com" });
+            try obj.fields.put(ctx.arena, "Protocol", Value{ .string = "https" });
+            return Value{ .object = obj };
+        }
+        return Value.null_val;
+    }
+
+    // AccessType enum
+    if (std.ascii.eqlIgnoreCase(class_name, "AccessType")) {
+        return Value{ .string = method_name };
+    }
+
     return null;
 }
 
