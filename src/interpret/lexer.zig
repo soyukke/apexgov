@@ -125,7 +125,17 @@ const Lexer = struct {
         while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t' or self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1) {}
         if (i + 6 > self.source.len) return false;
         const word = self.source[i .. i + 6];
-        return std.ascii.eqlIgnoreCase(word, "select") or std.ascii.eqlIgnoreCase(word, "find  ");
+        if (std.ascii.eqlIgnoreCase(word, "select")) return true;
+        // Check for FIND (4 chars followed by space or quote)
+        if (i + 4 <= self.source.len) {
+            const find_word = self.source[i .. i + 4];
+            if (std.ascii.eqlIgnoreCase(find_word, "find") and
+                (i + 4 >= self.source.len or self.source[i + 4] == ' ' or self.source[i + 4] == '\t' or self.source[i + 4] == '\n' or self.source[i + 4] == ':'))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn scanSoql(self: *Lexer, start: u32, start_loc: SourceLoc) Token {

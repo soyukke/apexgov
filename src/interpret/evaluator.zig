@@ -41,6 +41,8 @@ pub const Evaluator = struct {
     current_class: ?[]const u8 = null,
     // JSON round-trip: store last serialized value for deserialize
     last_json_value: ?Value = null,
+    // SOSL fixed search results (set by Test.setFixedSearchResults)
+    fixed_search_results: ?Value = null,
 
     pub fn init(arena: std.mem.Allocator) !Evaluator {
         const global = try arena.create(Env);
@@ -57,6 +59,7 @@ pub const Evaluator = struct {
         self.bypasses = .empty;
         self.pending_exception = null;
         self.callout_mock = null;
+        self.fixed_search_results = null;
         self.trash = .empty;
         self.last_json_value = null;
 
@@ -258,7 +261,11 @@ pub const Evaluator = struct {
                 const prev_class = self.current_class;
                 self.current_class = entry.key_ptr.*;
                 defer self.current_class = prev_class;
-                // Try type-aware resolution first
+                // Try type-aware resolution first (prefer static methods for callMethod)
+                if (self.findBestMethodInClassFiltered(entry.value_ptr.*, method_name, args, true)) |md| {
+                    return self.executeMethod(md, args);
+                }
+                // Fallback to any method (not just static)
                 if (self.findBestMethodInClass(entry.value_ptr.*, method_name, args)) |md| {
                     return self.executeMethod(md, args);
                 }
@@ -384,15 +391,42 @@ pub const Evaluator = struct {
             .for_each_stmt => |fes| {
                 const iterable = try self.evalExpr(fes.iterable, current_env);
                 if (iterable == .list) {
-                    const loop_env = try current_env.child();
-                    for (iterable.list.items.items) |item| {
-                        try loop_env.define(fes.elem_name, item);
-                        const result = try self.execBlock(fes.body, loop_env);
-                        switch (result) {
-                            .break_signal => break,
-                            .continue_signal => {},
-                            .return_val => return result,
-                            .normal => {},
+                    // Check if elem_type is List<...> for chunked SOQL for loop
+                    const is_list_type = std.ascii.eqlIgnoreCase(fes.elem_type.name, "List") and fes.elem_type.params.len > 0;
+                    if (is_list_type) {
+                        // Chunked iteration: iterate in chunks of 200
+                        const chunk_size: usize = 200;
+                        const items = iterable.list.items.items;
+                        var offset: usize = 0;
+                        const loop_env = try current_env.child();
+                        while (offset < items.len) {
+                            const end = @min(offset + chunk_size, items.len);
+                            const chunk_list = try self.arena.create(types.ListValue);
+                            chunk_list.* = .{};
+                            for (items[offset..end]) |item| {
+                                try chunk_list.items.append(self.arena, item);
+                            }
+                            try loop_env.define(fes.elem_name, Value{ .list = chunk_list });
+                            const result = try self.execBlock(fes.body, loop_env);
+                            switch (result) {
+                                .break_signal => break,
+                                .continue_signal => {},
+                                .return_val => return result,
+                                .normal => {},
+                            }
+                            offset = end;
+                        }
+                    } else {
+                        const loop_env = try current_env.child();
+                        for (iterable.list.items.items) |item| {
+                            try loop_env.define(fes.elem_name, item);
+                            const result = try self.execBlock(fes.body, loop_env);
+                            switch (result) {
+                                .break_signal => break,
+                                .continue_signal => {},
+                                .return_val => return result,
+                                .normal => {},
+                            }
                         }
                     }
                 } else if (iterable == .set) {
@@ -676,6 +710,12 @@ pub const Evaluator = struct {
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
 
+        // Auto-generate Name if not set (simulates auto-number for custom objects)
+        if (utils.sobjectGet(&obj.fields, "Name") == null) {
+            const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
+            try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+        }
+
         // Add a snapshot copy to store (so later mutations to the live object don't affect stored records)
         const snapshot = try self.arena.create(types.SObject);
         snapshot.* = .{ .type_name = obj.type_name, .id = id };
@@ -917,6 +957,17 @@ pub const Evaluator = struct {
         var soql = raw;
         if (soql.len > 2 and soql[0] == '[') soql = soql[1 .. soql.len - 1];
         soql = std.mem.trim(u8, soql, " \t\n\r");
+        // SOSL: FIND ... RETURNING Type(fields) → use fixed search results
+        if (soql.len > 4 and std.ascii.eqlIgnoreCase(soql[0..4], "FIND")) {
+            return self.executeSosl(soql);
+        }
+
+        // Strip ALL ROWS keyword (include deleted records - in our interpreter, no-op)
+        if (soql.len > 8) {
+            if (std.ascii.eqlIgnoreCase(soql[soql.len - 8 ..], "ALL ROWS")) {
+                soql = std.mem.trim(u8, soql[0 .. soql.len - 8], " \t\n\r");
+            }
+        }
 
         // COUNT() query
         if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
@@ -1016,6 +1067,47 @@ pub const Evaluator = struct {
             }
         }
 
+        // Apply sub-queries: (SELECT ... FROM ChildRelationship)
+        if (extractSubQuery(soql)) |sub_info| {
+            const rel_name = sub_info.relationship;
+            const child_type = self.resolveChildType(from_type, rel_name);
+            // For each parent record, find child records
+            for (records.items) |*rec| {
+                if (rec.* == .sobject) {
+                    const parent_id = rec.sobject.id;
+                    if (parent_id) |pid| {
+                        var child_records: std.ArrayListUnmanaged(Value) = .empty;
+                        // Look up the child type in the store
+                        if (child_type) |ct| {
+                            var child_iter = self.store.iterator();
+                            while (child_iter.next()) |child_entry| {
+                                if (std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, ct)) {
+                                    // Find the FK field name: for Contacts on Account, it's AccountId
+                                    const fk_field = self.resolveForeignKey(ct, from_type);
+                                    for (child_entry.value_ptr.items) |child_rec| {
+                                        if (child_rec == .sobject) {
+                                            if (utils.sobjectGet(&child_rec.sobject.fields, fk_field)) |fk_val| {
+                                                if (fk_val == .string and std.ascii.eqlIgnoreCase(fk_val.string, pid)) {
+                                                    try child_records.append(self.arena, child_rec);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        const child_list = try self.arena.create(types.ListValue);
+                        child_list.* = .{ .items = child_records };
+                        try rec.sobject.fields.put(self.arena, rel_name, Value{ .list = child_list });
+                    }
+                }
+            }
+        }
+
+        // Apply parent field lookups: Account.Name, parent__r.Name
+        try self.applyParentFieldLookups(soql, from_type, &records);
+
         // Apply ORDER BY
         if (extractOrderByField(soql)) |order_info| {
             const field_name = order_info.field;
@@ -1070,6 +1162,72 @@ pub const Evaluator = struct {
         const list = try self.arena.create(types.ListValue);
         list.* = .{ .items = records };
         return Value{ .list = list };
+    }
+
+    /// Execute a SOSL query using fixed search results.
+    /// Returns List<List<SObject>> - one list per RETURNING type.
+    fn executeSosl(self: *Evaluator, sosl: []const u8) !Value {
+        // Parse RETURNING clause to find type names
+        // e.g., FIND 'search' IN ALL FIELDS RETURNING Account(Name), Contact(LastName)
+        var type_names: [8][]const u8 = undefined;
+        var type_count: usize = 0;
+        if (std.ascii.indexOfIgnoreCase(sosl, "RETURNING")) |ret_pos| {
+            const returning = sosl[ret_pos + 9 ..];
+            var iter = std.mem.splitScalar(u8, returning, ',');
+            while (iter.next()) |part| {
+                const trimmed = std.mem.trim(u8, part, " \t\n\r");
+                if (trimmed.len == 0) continue;
+                // Extract type name (before parenthesis)
+                var end: usize = 0;
+                while (end < trimmed.len and trimmed[end] != '(' and trimmed[end] != ' ') end += 1;
+                if (end > 0 and type_count < type_names.len) {
+                    type_names[type_count] = trimmed[0..end];
+                    type_count += 1;
+                }
+            }
+        }
+
+        // Build result: List<List<SObject>>
+        const outer = try self.arena.create(types.ListValue);
+        outer.* = .{};
+
+        // Get fixed search result Ids
+        var search_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (self.fixed_search_results) |fsr| {
+            if (fsr == .list) {
+                for (fsr.list.items.items) |item| {
+                    if (item == .string) {
+                        try search_ids.append(self.arena, item.string);
+                    }
+                }
+            }
+        }
+
+        // For each RETURNING type, find matching records from store
+        for (type_names[0..type_count]) |type_name| {
+            const inner = try self.arena.create(types.ListValue);
+            inner.* = .{};
+            var store_iter = self.store.iterator();
+            while (store_iter.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, type_name)) {
+                    for (entry.value_ptr.items) |record| {
+                        if (record == .sobject and record.sobject.id != null) {
+                            // Check if Id is in fixed search results
+                            for (search_ids.items) |sid| {
+                                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, sid)) {
+                                    try inner.items.append(self.arena, record);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            try outer.items.append(self.arena, Value{ .list = inner });
+        }
+
+        return Value{ .list = outer };
     }
 
     fn matchesWhere(self: *Evaluator, record: Value, soql: []const u8, current_env: *Env) bool {
@@ -1197,14 +1355,47 @@ pub const Evaluator = struct {
         const field_name = std.mem.trim(u8, cond[0..op_start], " \t\n\r");
         const value_str = std.mem.trim(u8, cond[op_start + op_len ..], " \t\n\r");
 
-        // Get field value from record (case-insensitive)
+        // Get field value from record (case-insensitive), supporting dotted parent refs
         var field_val: Value = Value.null_val;
         var field_found = false;
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, field_name)) {
-                field_val = v;
-                field_found = true;
-                break;
+        if (std.mem.indexOf(u8, field_name, ".")) |dot_pos| {
+            // Dotted field: Account.Name → follow parent reference
+            const parent_ref = field_name[0..dot_pos];
+            const child_field = field_name[dot_pos + 1 ..];
+            // First check if we have the parent as a nested SObject
+            if (utils.sobjectGet(&sob.fields, parent_ref)) |parent_val| {
+                if (parent_val == .sobject) {
+                    if (utils.sobjectGet(&parent_val.sobject.fields, child_field)) |v| {
+                        field_val = v;
+                        field_found = true;
+                    }
+                }
+            }
+            // If not found, try looking up via FK (Account.Name → AccountId → lookup)
+            if (!field_found) {
+                const fk_field = self.parentRefToFk(parent_ref);
+                if (utils.sobjectGet(&sob.fields, fk_field)) |fk_val| {
+                    if (fk_val == .string) {
+                        if (self.parentRefToType(parent_ref)) |parent_type| {
+                            if (self.findRecordById(parent_type, fk_val.string)) |parent_rec| {
+                                if (parent_rec == .sobject) {
+                                    if (utils.sobjectGet(&parent_rec.sobject.fields, child_field)) |v| {
+                                        field_val = v;
+                                        field_found = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for (sob.fields.keys(), sob.fields.values()) |k, v| {
+                if (std.ascii.eqlIgnoreCase(k, field_name)) {
+                    field_val = v;
+                    field_found = true;
+                    break;
+                }
             }
         }
         if (!field_found) return if (is_neq) true else false;
@@ -1230,6 +1421,23 @@ pub const Evaluator = struct {
                     if (bind_val == .list) {
                         for (bind_val.list.items.items) |item| {
                             if (utils.valueEql(field_val, item)) return true;
+                            // When comparing Id field against a list of SObjects,
+                            // extract the SObject's Id for comparison
+                            if (field_val == .string and item == .sobject) {
+                                if (item.sobject.id) |item_id| {
+                                    if (std.ascii.eqlIgnoreCase(field_val.string, item_id)) return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                    // Handle Map<Id, SObject> for IN clause (e.g. WHERE Id IN :mapVar)
+                    if (bind_val == .map) {
+                        if (field_val == .string) {
+                            // Check if the field value is a key in the map (case-insensitive)
+                            for (bind_val.map.entries.keys()) |key| {
+                                if (std.ascii.eqlIgnoreCase(field_val.string, key)) return true;
+                            }
                         }
                         return false;
                     }
@@ -1332,6 +1540,212 @@ pub const Evaluator = struct {
         const list = try self.arena.create(types.ListValue);
         list.* = .{};
         return Value{ .list = list };
+    }
+
+    /// Resolve the child SObject type from a relationship name.
+    /// e.g., "Contacts" on Account → "Contact"
+    fn resolveChildType(self: *Evaluator, parent_type: []const u8, relationship: []const u8) ?[]const u8 {
+        _ = self;
+        _ = parent_type;
+        // Common Salesforce relationship mappings
+        const mappings = .{
+            .{ "Contacts", "Contact" },
+            .{ "Opportunities", "Opportunity" },
+            .{ "Cases", "Case" },
+            .{ "Tasks", "Task" },
+            .{ "Events", "Event" },
+            .{ "Notes", "Note" },
+            .{ "Attachments", "Attachment" },
+            .{ "ContentDocumentLinks", "ContentDocumentLink" },
+            .{ "Leads", "Lead" },
+            .{ "AccountContactRoles", "AccountContactRole" },
+            .{ "OpportunityContactRoles", "OpportunityContactRole" },
+        };
+        inline for (mappings) |m| {
+            if (std.ascii.eqlIgnoreCase(relationship, m[0])) return m[1];
+        }
+        // Generic: strip trailing 's' if present, try '__r' → '__c'
+        if (std.mem.endsWith(u8, relationship, "__r")) {
+            // Custom relationship: MyObject__r → MyObject__c
+            // Return with __c suffix
+            return null; // TODO: handle custom relationships
+        }
+        // Try removing trailing 's' for standard plural
+        if (relationship.len > 1 and relationship[relationship.len - 1] == 's') {
+            return relationship[0 .. relationship.len - 1];
+        }
+        return null;
+    }
+
+    /// Resolve the foreign key field name from child to parent.
+    /// e.g., Contact to Account → "AccountId"
+    fn resolveForeignKey(_: *Evaluator, _: []const u8, parent_type: []const u8) []const u8 {
+        // Standard convention: ParentType + "Id"
+        const common_fks = .{
+            .{ "Account", "AccountId" },
+            .{ "Contact", "ContactId" },
+            .{ "Opportunity", "OpportunityId" },
+            .{ "Case", "CaseId" },
+            .{ "Lead", "LeadId" },
+            .{ "User", "OwnerId" },
+        };
+        inline for (common_fks) |m| {
+            if (std.ascii.eqlIgnoreCase(parent_type, m[0])) return m[1];
+        }
+        return "ParentId";
+    }
+
+    /// Apply parent field lookups like Account.Name, parent__r.Name to query results.
+    fn applyParentFieldLookups(self: *Evaluator, soql: []const u8, from_type: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
+        const select_clause = extractParentFields(soql) orelse return;
+        _ = from_type;
+
+        // Find fields like Account.Name, Account.ShippingState, parent__r.Name
+        var iter = std.mem.splitScalar(u8, select_clause, ',');
+        while (iter.next()) |field_part| {
+            const trimmed = std.mem.trim(u8, field_part, " \t\n\r");
+            // Skip sub-queries (start with '(')
+            if (trimmed.len > 0 and trimmed[0] == '(') continue;
+            // Look for dotted fields like Account.Name
+            if (std.mem.indexOf(u8, trimmed, ".")) |dot_pos| {
+                const parent_ref = trimmed[0..dot_pos];
+                const child_field = trimmed[dot_pos + 1 ..];
+                // Determine the FK field: Account → AccountId, parent__r → parent__c
+                const fk_field = self.parentRefToFk(parent_ref);
+                const parent_type = self.parentRefToType(parent_ref);
+
+                // For each record, look up the parent and set the nested field
+                for (records.items) |*rec| {
+                    if (rec.* == .sobject) {
+                        // Get the FK value
+                        if (utils.sobjectGet(&rec.sobject.fields, fk_field)) |fk_val| {
+                            if (fk_val == .string) {
+                                // Look up parent record in store
+                                if (parent_type) |pt| {
+                                    if (self.findRecordById(pt, fk_val.string)) |parent_rec| {
+                                        // Create or get the parent sobject on this record
+                                        var parent_sob: *types.SObject = undefined;
+                                        if (utils.sobjectGet(&rec.sobject.fields, parent_ref)) |existing| {
+                                            if (existing == .sobject) {
+                                                parent_sob = existing.sobject;
+                                            } else {
+                                                parent_sob = try self.arena.create(types.SObject);
+                                                parent_sob.* = .{ .type_name = pt };
+                                                try rec.sobject.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
+                                            }
+                                        } else {
+                                            parent_sob = try self.arena.create(types.SObject);
+                                            parent_sob.* = .{ .type_name = pt };
+                                            try rec.sobject.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
+                                        }
+                                        // Copy the requested field from the parent
+                                        if (parent_rec == .sobject) {
+                                            if (utils.sobjectGet(&parent_rec.sobject.fields, child_field)) |field_val| {
+                                                try parent_sob.fields.put(self.arena, child_field, field_val);
+                                            }
+                                            // Also copy Id
+                                            if (parent_rec.sobject.id) |pid| {
+                                                parent_sob.id = pid;
+                                                try parent_sob.fields.put(self.arena, "Id", Value{ .string = pid });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert a parent reference to FK field name.
+    /// Account → AccountId, parent__r → parent__c
+    fn parentRefToFk(self: *Evaluator, ref: []const u8) []const u8 {
+        // Custom relationship: ends with __r → change to __c
+        if (ref.len > 3 and std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) {
+            // Replace __r with __c
+            const fk = std.fmt.allocPrint(self.arena, "{s}__c", .{ref[0 .. ref.len - 3]}) catch return ref;
+            return fk;
+        }
+        // Standard: Account → AccountId
+        const common = .{
+            .{ "Account", "AccountId" },
+            .{ "Contact", "ContactId" },
+            .{ "Opportunity", "OpportunityId" },
+            .{ "Case", "CaseId" },
+            .{ "Lead", "LeadId" },
+            .{ "Owner", "OwnerId" },
+            .{ "CreatedBy", "CreatedById" },
+            .{ "LastModifiedBy", "LastModifiedById" },
+            .{ "Parent", "ParentId" },
+        };
+        inline for (common) |m| {
+            if (std.ascii.eqlIgnoreCase(ref, m[0])) return m[1];
+        }
+        return ref;
+    }
+
+    /// Convert a parent reference to SObject type name.
+    /// Account → Account, parent__r → look up FK value's type in store
+    fn parentRefToType(self: *Evaluator, ref: []const u8) ?[]const u8 {
+        // Custom relationship: parent1__r → parent1__c is the FK field
+        // We need to find what type the FK points to
+        if (ref.len > 3 and std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) {
+            const fk_field = self.parentRefToFk(ref);
+            // Search for the FK value in any record and look up the target type
+            var store_iter = self.store.iterator();
+            while (store_iter.next()) |entry| {
+                for (entry.value_ptr.items) |record| {
+                    if (record == .sobject) {
+                        if (utils.sobjectGet(&record.sobject.fields, fk_field)) |fk_val| {
+                            if (fk_val == .string) {
+                                // Find which type has a record with this Id
+                                if (self.findRecordTypeById(fk_val.string)) |found_type| {
+                                    return found_type;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+        // Standard: Account → Account, Contact → Contact
+        return ref;
+    }
+
+    /// Find a record by Id in the store.
+    fn findRecordById(self: *Evaluator, type_name: []const u8, id: []const u8) ?Value {
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, type_name)) {
+                for (entry.value_ptr.items) |record| {
+                    if (record == .sobject) {
+                        if (record.sobject.id) |rec_id| {
+                            if (std.ascii.eqlIgnoreCase(rec_id, id)) return record;
+                        }
+                    }
+                }
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /// Find the type name of a record by its Id, searching all types in store.
+    fn findRecordTypeById(self: *Evaluator, id: []const u8) ?[]const u8 {
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            for (entry.value_ptr.items) |record| {
+                if (record == .sobject) {
+                    if (record.sobject.id) |rec_id| {
+                        if (std.ascii.eqlIgnoreCase(rec_id, id)) return entry.key_ptr.*;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     // -----------------------------------------------------------------------
@@ -1876,14 +2290,6 @@ pub const Evaluator = struct {
                 else => {},
             }
 
-            // SObjectType.getSObjectType() → return Schema.SObjectType
-            if (std.ascii.eqlIgnoreCase(mc.method, "getSObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
-                return Value{ .object = sot };
-            }
-
             // Builtin static dispatch (only reached when no local variable matched)
             var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception };
             if (try builtins.dispatchStatic(&bctx, class_name, mc.method, args.items)) |result| {
@@ -1895,7 +2301,19 @@ pub const Evaluator = struct {
                 return result;
             }
 
-            // User-defined class method
+            // User-defined class method (check before getSObjectType fallback)
+            if (self.findClass(class_name) != null) {
+                return self.callMethod(class_name, mc.method, args.items);
+            }
+
+            // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
+            if (std.ascii.eqlIgnoreCase(mc.method, "getSObjectType")) {
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
+                return Value{ .object = sot };
+            }
+
             return self.callMethod(class_name, mc.method, args.items);
         }
 
@@ -2663,6 +3081,27 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "List")) {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
+            // Single arg that is a Set → convert to list
+            if (ne.args.len == 1) {
+                var arg_copy = ne.args[0];
+                const arg_val = try self.evalExpr(&arg_copy, current_env);
+                if (arg_val == .set) {
+                    for (arg_val.set.entries.keys()) |key| {
+                        try list.items.append(self.arena, Value{ .string = key });
+                    }
+                    return Value{ .list = list };
+                }
+                if (arg_val == .list) {
+                    // Copy list
+                    for (arg_val.list.items.items) |item| {
+                        try list.items.append(self.arena, item);
+                    }
+                    return Value{ .list = list };
+                }
+                // Single non-collection arg → add to list
+                try list.items.append(self.arena, arg_val);
+                return Value{ .list = list };
+            }
             for (ne.args) |*arg| {
                 try list.items.append(self.arena, try self.evalExpr(arg, current_env));
             }
@@ -3098,6 +3537,11 @@ pub const Evaluator = struct {
     fn handleTest(self: *Evaluator, method: []const u8, args: []const Value) !Value {
         // Test.startTest() / Test.stopTest() — no-op stubs
         if (std.ascii.eqlIgnoreCase(method, "startTest") or std.ascii.eqlIgnoreCase(method, "stopTest")) {
+            return .void_val;
+        }
+        // Test.setFixedSearchResults(List<Id>)
+        if (std.ascii.eqlIgnoreCase(method, "setFixedSearchResults") and args.len >= 1) {
+            self.fixed_search_results = args[0];
             return .void_val;
         }
         // Test.setMock(Type, mockInstance)
@@ -3696,6 +4140,34 @@ pub const Evaluator = struct {
         return best_match;
     }
 
+    /// Type-aware method resolution filtered by static/instance.
+    fn findBestMethodInClassFiltered(_: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
+        var candidates: [8]*ast.MethodDecl = undefined;
+        var count: usize = 0;
+        var best_any: ?*ast.MethodDecl = null;
+
+        for (class_decl.members) |member| {
+            switch (member) {
+                .method_decl => |md| {
+                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and md.modifiers.is_static == static_only) {
+                        if (md.params.len == args.len) {
+                            if (count < candidates.len) {
+                                candidates[count] = md;
+                                count += 1;
+                            }
+                        }
+                        if (best_any == null) best_any = md;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (count == 0) return if (best_any != null) best_any else null;
+        if (count == 1) return candidates[0];
+        return candidates[0]; // Simple: return first match
+    }
+
     /// Type-aware method resolution for overloaded methods.
     /// When multiple methods match by name and arg count, picks the one
     /// whose parameter types best match the actual argument types.
@@ -4255,10 +4727,14 @@ fn defaultValue(type_ref: types.TypeRef) Value {
 }
 
 fn extractFromType(soql: []const u8) ?[]const u8 {
-    // Find "FROM <type>" case-insensitive
+    // Find "FROM <type>" case-insensitive, skipping sub-queries in parens
     const lower = soql;
     var i: usize = 0;
+    var depth: u32 = 0;
     while (i + 5 < lower.len) : (i += 1) {
+        if (lower[i] == '(') { depth += 1; continue; }
+        if (lower[i] == ')') { if (depth > 0) depth -= 1; continue; }
+        if (depth > 0) continue; // Skip content inside parentheses
         if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and (lower[i + 4] == ' ' or lower[i + 4] == '\n')) {
             var start = i + 5;
             while (start < lower.len and lower[start] == ' ') start += 1;
@@ -4272,8 +4748,13 @@ fn extractFromType(soql: []const u8) ?[]const u8 {
 
 fn extractWhereClause(soql: []const u8) ?[]const u8 {
     // Find WHERE ... (ends before ORDER BY, GROUP BY, LIMIT, OFFSET, WITH, FOR)
+    // Skip content inside parentheses (sub-queries)
     var i: usize = 0;
+    var paren_depth: u32 = 0;
     while (i + 5 < soql.len) : (i += 1) {
+        if (soql[i] == '(') { paren_depth += 1; continue; }
+        if (soql[i] == ')') { if (paren_depth > 0) paren_depth -= 1; continue; }
+        if (paren_depth > 0) continue;
         if (std.ascii.eqlIgnoreCase(soql[i .. i + 5], "where") and
             (i == 0 or soql[i - 1] == ' ' or soql[i - 1] == '\n') and
             (soql[i + 5] == ' ' or soql[i + 5] == '\n'))
@@ -4426,6 +4907,60 @@ fn extractLimit(soql: []const u8) ?usize {
         }
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// SOQL sub-query and parent field helpers
+// ---------------------------------------------------------------------------
+
+const SubQueryInfo = struct {
+    relationship: []const u8,
+};
+
+fn extractSubQuery(soql: []const u8) ?SubQueryInfo {
+    // Find pattern: (SELECT ... FROM RelationshipName)
+    // We only need the relationship name from the inner FROM
+    var i: usize = 0;
+    while (i < soql.len) : (i += 1) {
+        if (soql[i] == '(' and i + 8 < soql.len) {
+            const after_paren = std.mem.trim(u8, soql[i + 1 ..], " \t\n\r");
+            if (after_paren.len > 6 and std.ascii.eqlIgnoreCase(after_paren[0..6], "SELECT")) {
+                // Find the FROM in this sub-query
+                if (std.ascii.indexOfIgnoreCase(after_paren, "FROM")) |from_pos| {
+                    var start = from_pos + 4;
+                    while (start < after_paren.len and (after_paren[start] == ' ' or after_paren[start] == '\t' or after_paren[start] == '\n')) start += 1;
+                    var end = start;
+                    while (end < after_paren.len and after_paren[end] != ' ' and after_paren[end] != ')' and after_paren[end] != '\n' and after_paren[end] != '\t') end += 1;
+                    if (end > start) {
+                        return SubQueryInfo{ .relationship = after_paren[start..end] };
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn extractParentFields(soql: []const u8) ?[]const u8 {
+    // Extract SELECT clause
+    const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else return null;
+    // Find outer FROM (not inside parens)
+    var from_end: usize = soql.len;
+    var depth: u32 = 0;
+    var idx: usize = select_start;
+    while (idx + 4 < soql.len) : (idx += 1) {
+        if (soql[idx] == '(') depth += 1;
+        if (soql[idx] == ')') {
+            if (depth > 0) depth -= 1;
+        }
+        if (depth == 0 and std.ascii.eqlIgnoreCase(soql[idx .. idx + 4], "FROM") and
+            (idx == 0 or soql[idx - 1] == ' ' or soql[idx - 1] == '\n' or soql[idx - 1] == '\t'))
+        {
+            from_end = idx;
+            break;
+        }
+    }
+    return soql[select_start..from_end];
 }
 
 // ---------------------------------------------------------------------------

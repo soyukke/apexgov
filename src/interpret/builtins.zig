@@ -903,24 +903,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };
     }
 
-    // SObjectField.getDescribe()
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
-        if (std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or
-            std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult"))
-        {
-            return Value{ .object = obj };
-        }
-        // For any object, return a DescribeSObjectResult stub
-        const desc = try ctx.arena.create(types.ObjectInstance);
-        desc.* = .{ .class_name = "DescribeSObjectResult" };
-        try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
-        try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = true });
-        try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = true });
-        try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = true });
-        return Value{ .object = desc };
-    }
-
-    // Schema.SObjectType methods
+    // Schema.SObjectType methods (must be before generic getDescribe handler)
     if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
         if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
             const name = if (obj.fields.get("name")) |n| n.string else "Object";
@@ -932,6 +915,23 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             new_sob.* = .{ .type_name = name };
             return Value{ .sobject = new_sob };
         }
+    }
+
+    // SObjectField.getDescribe() and generic fallback
+    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult"))
+        {
+            return Value{ .object = obj };
+        }
+        // For any other object, return a DescribeSObjectResult stub
+        const desc = try ctx.arena.create(types.ObjectInstance);
+        desc.* = .{ .class_name = "DescribeSObjectResult" };
+        try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
+        try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = true });
+        try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = true });
+        try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = true });
+        return Value{ .object = desc };
     }
 
     // SObjectAccessDecision methods
