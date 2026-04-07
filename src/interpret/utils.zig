@@ -48,8 +48,25 @@ pub fn valueEql(a: Value, b: Value) bool {
             }
             return true;
         },
-        .map => |av| return av == b.map,
-        .set => |av| return av == b.set,
+        .map => |av| {
+            if (av == b.map) return true;
+            // Deep equality: compare entries
+            if (av.entries.count() != b.map.entries.count()) return false;
+            for (av.entries.keys(), av.entries.values()) |k, v| {
+                const bv = b.map.entries.get(k) orelse return false;
+                if (!valueEql(v, bv)) return false;
+            }
+            return true;
+        },
+        .set => |av| {
+            if (av == b.set) return true;
+            // Deep equality: compare entries
+            if (av.entries.count() != b.set.entries.count()) return false;
+            for (av.entries.keys()) |k| {
+                if (!b.set.entries.contains(k)) return false;
+            }
+            return true;
+        },
         .object => |av| {
             if (av == b.object) return true;
             // Compare Schema.SObjectType and Type objects by name field

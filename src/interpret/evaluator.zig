@@ -60,6 +60,11 @@ pub const Evaluator = struct {
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
     trigger_context: ?TriggerContext = null,
+    // Pending event callback for Test.getEventBus().fail() support
+    pending_event_callback: ?struct {
+        callback: *types.ObjectInstance,
+        event: Value,
+    } = null,
 
     const TriggerContext = struct {
         is_executing: bool = false,
@@ -99,6 +104,7 @@ pub const Evaluator = struct {
         self.scheduled_jobs = .empty;
         self.is_restricted_user = false;
         self.is_min_access_user = false;
+        self.pending_event_callback = null;
 
         // Clear cache partitions
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
@@ -282,7 +288,22 @@ pub const Evaluator = struct {
         }
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
-            if (args.len > 0) {
+            // Check for platform event validation: if event type ends with __e,
+            // check that it has at least one reference Id field set (non-null)
+            var publish_success = true;
+            if (args.len > 0 and args[0] == .sobject) {
+                const tn = args[0].sobject.type_name;
+                if (std.mem.endsWith(u8, tn, "__e")) {
+                    var has_ref_field = false;
+                    for (args[0].sobject.fields.keys(), args[0].sobject.fields.values()) |k, v| {
+                        if (std.mem.endsWith(u8, k, "Id__c") or std.mem.endsWith(u8, k, "id__c")) {
+                            if (v != .null_val) has_ref_field = true;
+                        }
+                    }
+                    if (!has_ref_field) publish_success = false;
+                }
+            }
+            if (publish_success and args.len > 0) {
                 if (args[0] == .sobject) {
                     try self.insertRecord(args[0].sobject);
                 } else if (args[0] == .list) {
@@ -302,12 +323,17 @@ pub const Evaluator = struct {
             }
             const result = try self.arena.create(types.ObjectInstance);
             result.* = .{ .class_name = "Database.SaveResult" };
-            try result.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
-            try result.fields.put(self.arena, "success", Value{ .boolean = true });
-            try result.fields.put(self.arena, "Id", if (args.len > 0 and args[0] == .sobject and args[0].sobject.id != null) Value{ .string = args[0].sobject.id.? } else Value.null_val);
-            // If a callback is provided (second arg), invoke it after publish
+            try result.fields.put(self.arena, "isSuccess", Value{ .boolean = publish_success });
+            try result.fields.put(self.arena, "success", Value{ .boolean = publish_success });
+            try result.fields.put(self.arena, "Id", if (publish_success and args.len > 0 and args[0] == .sobject and args[0].sobject.id != null) Value{ .string = args[0].sobject.id.? } else Value.null_val);
+            // If a callback is provided (second arg), store it for later processing by Test.getEventBus()
             if (args.len >= 2 and args[1] == .object) {
                 const callback = args[1].object;
+                // Store callback info for Test.getEventBus().fail() support
+                self.pending_event_callback = .{
+                    .callback = callback,
+                    .event = if (args[0] == .sobject) args[0] else .null_val,
+                };
                 if (self.findClass(callback.class_name)) |cb_class| {
                     // Build EventBus.PublishResult with EventUuids
                     const pub_result = try self.arena.create(types.ObjectInstance);
@@ -321,7 +347,7 @@ pub const Evaluator = struct {
                         }
                     }
                     try pub_result.fields.put(self.arena, "eventUuids", Value{ .list = uuid_list });
-                    // Call onSuccess(result) on the callback
+                    // Call onSuccess(result) on the callback (will be overridden by fail() if called)
                     _ = self.callInstanceMethod(cb_class, callback, "onSuccess", &.{Value{ .object = pub_result }}) catch {};
                 }
             }
@@ -1113,6 +1139,54 @@ pub const Evaluator = struct {
         if (utils.sobjectGet(&obj.fields, "Name") == null) {
             const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
             try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+        }
+
+        // Resolve relationship fields → set foreign key Ids
+        // e.g., Contact.Account = accountRef → Contact.AccountId = accountRef.Id
+        {
+            var rel_keys_buf: [16][]const u8 = undefined;
+            var rel_vals_buf: [16]Value = undefined;
+            var rel_count: usize = 0;
+            for (obj.fields.keys(), obj.fields.values()) |k, v| {
+                if (v == .sobject and rel_count < rel_keys_buf.len) {
+                    const fk_name = try std.fmt.allocPrint(self.arena, "{s}Id", .{k});
+                    if (utils.sobjectGet(&obj.fields, fk_name) == null) {
+                        if (v.sobject.id != null) {
+                            // Direct reference with Id
+                            rel_keys_buf[rel_count] = fk_name;
+                            rel_vals_buf[rel_count] = Value{ .string = v.sobject.id.? };
+                            rel_count += 1;
+                        } else {
+                            // External ID-based reference: find matching record in store
+                            const ref_type = v.sobject.type_name;
+                            // Look for external ID fields on the reference
+                            for (v.sobject.fields.keys(), v.sobject.fields.values()) |rk, rv| {
+                                if ((std.mem.endsWith(u8, rk, "__c") or std.mem.endsWith(u8, rk, "Id__c")) and rv == .string) {
+                                    // Search store for a record of this type with matching external ID
+                                    if (self.store.get(ref_type)) |records| {
+                                        for (records.items) |rec| {
+                                            if (rec == .sobject and rec.sobject.id != null) {
+                                                if (utils.sobjectGet(&rec.sobject.fields, rk)) |stored_val| {
+                                                    if (stored_val == .string and std.mem.eql(u8, stored_val.string, rv.string)) {
+                                                        rel_keys_buf[rel_count] = fk_name;
+                                                        rel_vals_buf[rel_count] = Value{ .string = rec.sobject.id.? };
+                                                        rel_count += 1;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    break; // Only check first external ID field
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for (rel_keys_buf[0..rel_count], rel_vals_buf[0..rel_count]) |rk, rv| {
+                try obj.fields.put(self.arena, rk, rv);
+            }
         }
 
         // Add a snapshot copy to store (so later mutations to the live object don't affect stored records)
@@ -5246,6 +5320,9 @@ pub const Evaluator = struct {
         return self.callInstanceMethod(class_decl, instance, method_name, args);
     }
 
+    pub fn callInstanceMethodPublic(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+        return self.callInstanceMethod(class_decl, instance, method_name, args);
+    }
     fn callInstanceMethod(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
@@ -5590,6 +5667,9 @@ pub const Evaluator = struct {
         return false;
     }
 
+    pub fn findClassPublic(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
+        return self.findClass(name);
+    }
     fn findClass(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
@@ -5764,7 +5844,7 @@ pub const Evaluator = struct {
                 // Expect colon - if not found, JSON is malformed
                 if (i >= trimmed.len or trimmed[i] != ':') return null;
                 i += 1; // skip colon
-                while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) : (i += 1) {}
+                while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t' or trimmed[i] == '\n' or trimmed[i] == '\r')) : (i += 1) {}
                 if (i >= trimmed.len) break;
                 // Parse value
                 const val_start = i;
