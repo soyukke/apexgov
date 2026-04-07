@@ -4977,9 +4977,12 @@ pub const Evaluator = struct {
 
                     try list.items.append(self.arena, Value{ .sobject = obj });
                 }
-                // Insert all records with trigger support (uses executeDml for trigger firing)
+                // Insert all records with trigger support
                 if (do_insert) {
-                    try self.executeDml(.insert, Value{ .list = list });
+                    self.executeDml(.insert, Value{ .list = list }) catch |err| {
+                        // If triggers fail (e.g., addError), propagate the exception
+                        if (err == error.ApexException) return err;
+                    };
                 }
                 return Value{ .list = list };
             }
