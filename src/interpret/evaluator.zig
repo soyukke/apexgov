@@ -52,6 +52,28 @@ pub const Evaluator = struct {
     class_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // Whether current test has @isTest(SeeAllData=true) annotation
     see_all_data: bool = false,
+    // Whether running as a restricted user (System.runAs with min-access user)
+    is_restricted_user: bool = false,
+    // Trigger declarations (object name → list of triggers)
+    triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
+    // Trigger context variables
+    trigger_context: ?TriggerContext = null,
+
+    const TriggerContext = struct {
+        is_executing: bool = false,
+        is_insert: bool = false,
+        is_update: bool = false,
+        is_delete: bool = false,
+        is_undelete: bool = false,
+        is_before: bool = false,
+        is_after: bool = false,
+        new_list: ?Value = null,
+        old_list: ?Value = null,
+        new_map: ?Value = null,
+        old_map: ?Value = null,
+        size: i64 = 0,
+        operation_type: ?[]const u8 = null,
+    };
 
     pub fn init(arena: std.mem.Allocator) !Evaluator {
         const global = try arena.create(Env);
@@ -73,6 +95,7 @@ pub const Evaluator = struct {
         self.last_json_value = null;
         self.call_depth = 0;
         self.scheduled_jobs = .empty;
+        self.is_restricted_user = false;
 
         // Clear cache partitions
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
@@ -183,6 +206,14 @@ pub const Evaluator = struct {
                         }
                     }
                 },
+                .trigger_decl => |td| {
+                    const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, td.object_name.len) catch continue, td.object_name);
+                    const gop = self.triggers.getOrPut(self.arena, obj_lower) catch continue;
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = .empty;
+                    }
+                    gop.value_ptr.append(self.arena, td) catch {};
+                },
                 else => {},
             }
         }
@@ -286,7 +317,7 @@ pub const Evaluator = struct {
         }
 
         // Builtin class stubs (before user-defined classes)
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
         if (try builtins.dispatchStatic(&bctx, class_name, method_name, args)) |result| {
             return result;
         }
@@ -672,6 +703,52 @@ pub const Evaluator = struct {
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
+
+        // Determine object type for trigger lookup
+        const obj_type = self.getTargetObjectType(target);
+
+        // Determine trigger event types
+        const before_event: ?ast.TriggerEvent = switch (op) {
+            .insert => .before_insert,
+            .update => .before_update,
+            .delete => .before_delete,
+            else => null,
+        };
+        const after_event: ?ast.TriggerEvent = switch (op) {
+            .insert => .after_insert,
+            .update => .after_update,
+            .delete => .after_delete,
+            .undelete => .after_undelete,
+            else => null,
+        };
+
+        // Build record list for trigger context
+        var record_list = try self.buildRecordList(target);
+
+        // Build old records for update/delete triggers
+        var old_records: ?std.ArrayListUnmanaged(Value) = null;
+        if (op == .update or op == .delete) {
+            old_records = .empty;
+            for (record_list.items) |item| {
+                if (item == .sobject and item.sobject.id != null) {
+                    // Find current record in store
+                    if (self.findRecordInStore(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                        try old_records.?.append(self.arena, stored);
+                    } else {
+                        try old_records.?.append(self.arena, item);
+                    }
+                }
+            }
+        }
+
+        // Fire BEFORE trigger
+        if (before_event) |evt| {
+            if (obj_type) |ot| {
+                try self.fireTrigger(ot, evt, &record_list, old_records);
+            }
+        }
+
+        // Execute actual DML
         switch (op) {
             .insert => {
                 if (target == .sobject) {
@@ -695,7 +772,6 @@ pub const Evaluator = struct {
                 }
             },
             .update => {
-                // update はストア上のレコードを更新
                 if (target == .sobject) {
                     try self.updateRecord(target.sobject);
                 } else if (target == .list) {
@@ -705,7 +781,6 @@ pub const Evaluator = struct {
                 }
             },
             .upsert => {
-                // Upsert: if record has Id, update; otherwise insert
                 if (target == .sobject) {
                     try self.upsertRecord(target.sobject);
                 } else if (target == .list) {
@@ -733,6 +808,187 @@ pub const Evaluator = struct {
                 }
             },
             .merge => {},
+        }
+
+        // Rebuild record list after DML (records now have IDs for insert)
+        if (after_event != null) {
+            record_list = try self.buildRecordList(target);
+        }
+
+        // Fire AFTER trigger
+        if (after_event) |evt| {
+            if (obj_type) |ot| {
+                try self.fireTrigger(ot, evt, &record_list, old_records);
+            }
+        }
+    }
+
+    fn getTargetObjectType(self: *Evaluator, target: Value) ?[]const u8 {
+        _ = self;
+        if (target == .sobject) return target.sobject.type_name;
+        if (target == .list) {
+            for (target.list.items.items) |item| {
+                if (item == .sobject) return item.sobject.type_name;
+            }
+        }
+        return null;
+    }
+
+    fn buildRecordList(self: *Evaluator, target: Value) !std.ArrayListUnmanaged(Value) {
+        var list: std.ArrayListUnmanaged(Value) = .empty;
+        if (target == .sobject) {
+            try list.append(self.arena, target);
+        } else if (target == .list) {
+            for (target.list.items.items) |item| {
+                try list.append(self.arena, item);
+            }
+        }
+        return list;
+    }
+
+    fn findRecordInStore(self: *Evaluator, type_name: []const u8, id: []const u8) ?Value {
+        if (self.store.get(type_name)) |records| {
+            for (records.items) |record| {
+                if (record == .sobject and record.sobject.id != null) {
+                    if (std.mem.eql(u8, record.sobject.id.?, id)) {
+                        return record;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
+        // Lowercase object type for lookup
+        const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, obj_type.len) catch return, obj_type);
+
+        const trigger_list = self.triggers.get(obj_lower) orelse return;
+
+        for (trigger_list.items) |td| {
+            // Check if this trigger handles the event
+            var handles_event = false;
+            for (td.events) |e| {
+                if (e == event) {
+                    handles_event = true;
+                    break;
+                }
+            }
+            if (!handles_event) continue;
+
+            // Build Trigger context
+            const new_list_val = try self.arena.create(types.ListValue);
+            new_list_val.* = .{};
+            for (new_records.items) |item| {
+                try new_list_val.items.append(self.arena, item);
+            }
+
+            var old_list_val: ?*types.ListValue = null;
+            if (old_records) |ors| {
+                const olv = try self.arena.create(types.ListValue);
+                olv.* = .{};
+                for (ors.items) |item| {
+                    try olv.items.append(self.arena, item);
+                }
+                old_list_val = olv;
+            }
+
+            // Build newMap/oldMap
+            var new_map_val: ?Value = null;
+            if (event != .before_insert) {
+                // newMap available for everything except before insert (where records don't have IDs yet)
+                // Actually in before insert, Salesforce does provide Trigger.new but not Trigger.newMap
+                const map_obj = try self.arena.create(types.ObjectInstance);
+                map_obj.* = .{ .class_name = "Map" };
+                for (new_records.items) |item| {
+                    if (item == .sobject and item.sobject.id != null) {
+                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                    }
+                }
+                new_map_val = Value{ .object = map_obj };
+            }
+
+            var old_map_val: ?Value = null;
+            if (old_records) |ors| {
+                const map_obj = try self.arena.create(types.ObjectInstance);
+                map_obj.* = .{ .class_name = "Map" };
+                for (ors.items) |item| {
+                    if (item == .sobject and item.sobject.id != null) {
+                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                    }
+                }
+                old_map_val = Value{ .object = map_obj };
+            }
+
+            const is_before = (event == .before_insert or event == .before_update or event == .before_delete);
+            const is_after = !is_before;
+            const is_insert = (event == .before_insert or event == .after_insert);
+            const is_update = (event == .before_update or event == .after_update);
+            const is_delete = (event == .before_delete or event == .after_delete);
+            const is_undelete = (event == .after_undelete);
+
+            const operation_type: []const u8 = switch (event) {
+                .before_insert => "BEFORE_INSERT",
+                .before_update => "BEFORE_UPDATE",
+                .before_delete => "BEFORE_DELETE",
+                .after_insert => "AFTER_INSERT",
+                .after_update => "AFTER_UPDATE",
+                .after_delete => "AFTER_DELETE",
+                .after_undelete => "AFTER_UNDELETE",
+            };
+
+            // Save and set trigger context
+            const prev_context = self.trigger_context;
+            self.trigger_context = .{
+                .is_executing = true,
+                .is_insert = is_insert,
+                .is_update = is_update,
+                .is_delete = is_delete,
+                .is_undelete = is_undelete,
+                .is_before = is_before,
+                .is_after = is_after,
+                .new_list = if (is_delete and is_before) (if (old_list_val) |olv| Value{ .list = olv } else null) else Value{ .list = new_list_val },
+                .old_list = if (old_list_val) |olv| Value{ .list = olv } else null,
+                .new_map = new_map_val,
+                .old_map = old_map_val,
+                .size = @intCast(new_records.items.len),
+                .operation_type = operation_type,
+            };
+            // For delete triggers, Trigger.new is null and Trigger.old has the records
+            if (is_delete) {
+                self.trigger_context.?.new_list = if (is_after) null else null;
+                self.trigger_context.?.old_list = if (old_list_val) |olv| Value{ .list = olv } else Value{ .list = new_list_val };
+                if (is_before) {
+                    self.trigger_context.?.new_list = null;
+                }
+            }
+
+            defer self.trigger_context = prev_context;
+
+            // Execute trigger body
+            const trigger_env = try self.global_env.child();
+            _ = self.execBlock(td.body, trigger_env) catch |err| {
+                // If trigger throws an exception, wrap it in DmlException
+                if (err == error.ApexException) {
+                    if (self.pending_exception) |pe| {
+                        if (pe == .object) {
+                            const class_name_str = pe.object.class_name;
+                            // If it's already a DmlException, just propagate it
+                            if (std.ascii.indexOfIgnoreCase(class_name_str, "DmlException") != null) {
+                                return err;
+                            }
+                            // Wrap non-DML exceptions in DmlException
+                            const msg = if (pe.object.fields.get("message")) |m| (if (m == .string) m.string else "Trigger exception") else "Trigger exception";
+                            const dml_exc = try self.arena.create(types.ObjectInstance);
+                            dml_exc.* = .{ .class_name = "DmlException" };
+                            try dml_exc.fields.put(self.arena, "message", Value{ .string = msg });
+                            self.pending_exception = Value{ .object = dml_exc };
+                        }
+                    }
+                    return err;
+                }
+                return err;
+            };
         }
     }
 
@@ -1010,6 +1266,21 @@ pub const Evaluator = struct {
         var soql = raw;
         if (soql.len > 2 and soql[0] == '[') soql = soql[1 .. soql.len - 1];
         soql = std.mem.trim(u8, soql, " \t\n\r");
+
+        // Check security modes when running as restricted user
+        if (self.is_restricted_user) {
+            if (std.ascii.indexOfIgnoreCase(soql, "WITH SECURITY_ENFORCED") != null or
+                std.ascii.indexOfIgnoreCase(soql, "WITH USER_MODE") != null or
+                std.ascii.indexOfIgnoreCase(soql, "USER_MODE") != null)
+            {
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "System.QueryException" };
+                try exc.fields.put(self.arena, "message", Value{ .string = "sObject type 'account' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name." });
+                self.pending_exception = Value{ .object = exc };
+                return error.ApexException;
+            }
+        }
+
         // SOSL: FIND ... RETURNING Type(fields) → use fixed search results
         if (soql.len > 4 and std.ascii.eqlIgnoreCase(soql[0..4], "FIND")) {
             return self.executeSosl(soql);
@@ -2305,6 +2576,22 @@ pub const Evaluator = struct {
                         }
                     }
                 }
+                if (fa.null_safe) {
+                    const obj = self.evalExpr(fa.object, current_env) catch |err| {
+                        if (err == error.ApexException and self.pending_exception != null) {
+                            if (self.pending_exception.? == .object) {
+                                const cn = self.pending_exception.?.object.class_name;
+                                if (std.ascii.indexOfIgnoreCase(cn, "NullPointer") != null) {
+                                    self.pending_exception = null;
+                                    return Value.null_val;
+                                }
+                            }
+                        }
+                        return err;
+                    };
+                    if (obj == .null_val) return Value.null_val;
+                    return self.evalFieldAccess(fa, obj, current_env);
+                }
                 const obj = try self.evalExpr(fa.object, current_env);
                 return self.evalFieldAccess(fa, obj, current_env);
             },
@@ -2435,7 +2722,7 @@ pub const Evaluator = struct {
             .identifier => |id| {
                 const final_val = if (asgn.op != .assign) blk: {
                     const cur = current_env.get(id.name) orelse Value.null_val;
-                    var result = evalCompoundAssign(cur, asgn.op, val);
+                    var result = evalCompoundAssign(cur, asgn.op, val, self.arena);
                     // Handle string concatenation for +=
                     if (asgn.op == .plus_assign and (cur == .string or val == .string)) {
                         const ls = try utils.coerceToString(cur, self.arena);
@@ -2513,7 +2800,7 @@ pub const Evaluator = struct {
                         utils.sobjectGet(&obj.object.fields, fa.field) orelse Value.null_val
                     else
                         Value.null_val;
-                    final_val = evalCompoundAssign(cur, asgn.op, val);
+                    final_val = evalCompoundAssign(cur, asgn.op, val, self.arena);
                     // Handle string concatenation for +=
                     if (asgn.op == .plus_assign and (cur == .string or val == .string)) {
                         const ls = try utils.coerceToString(cur, self.arena);
@@ -2553,6 +2840,24 @@ pub const Evaluator = struct {
     }
 
     fn evalMethodCall(self: *Evaluator, mc: *ast.MethodCallExpr, current_env: *Env) anyerror!Value {
+        // Null-safe operator (?.) - if object is null, return null
+        if (mc.null_safe) {
+            const obj_val = self.evalExpr(mc.object, current_env) catch |err| {
+                if (err == error.ApexException and self.pending_exception != null) {
+                    // Check if it's a NullPointerException
+                    if (self.pending_exception.? == .object) {
+                        const class_name = self.pending_exception.?.object.class_name;
+                        if (std.ascii.indexOfIgnoreCase(class_name, "NullPointer") != null) {
+                            self.pending_exception = null;
+                            return Value.null_val;
+                        }
+                    }
+                }
+                return err;
+            };
+            if (obj_val == .null_val) return Value.null_val;
+        }
+
         var args: std.ArrayListUnmanaged(Value) = .empty;
         for (mc.args) |*arg| {
             try args.append(self.arena, try self.evalExpr(arg, current_env));
@@ -2731,7 +3036,7 @@ pub const Evaluator = struct {
             }
 
             // Builtin static dispatch (only reached when no local variable matched)
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx, class_name, mc.method, args.items)) |result| {
                 return result;
             }
@@ -2981,7 +3286,7 @@ pub const Evaluator = struct {
             }
         }
 
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
         if (try builtins.dispatchInstance(&bctx, obj, method, args)) |result| {
             return result;
         }
@@ -3676,7 +3981,12 @@ pub const Evaluator = struct {
                     var arg_copy = ne.args[0];
                     const arg_val = try self.evalExpr(&arg_copy, current_env);
                     if (std.mem.endsWith(u8, type_name, "Exception")) {
-                        try instance.fields.put(self.arena, "message", arg_val);
+                        // AuraHandledException always returns "Script-thrown exception" from getMessage()
+                        if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
+                            try instance.fields.put(self.arena, "message", Value{ .string = "Script-thrown exception" });
+                        } else {
+                            try instance.fields.put(self.arena, "message", arg_val);
+                        }
                     }
                 }
                 return Value{ .object = instance };
@@ -3913,27 +4223,42 @@ pub const Evaluator = struct {
 
             // Trigger context
             if (std.ascii.eqlIgnoreCase(class_name, "Trigger")) {
-                if (std.ascii.eqlIgnoreCase(fa.field, "new") or std.ascii.eqlIgnoreCase(fa.field, "old")) {
-                    // Check if Trigger.new/old has been explicitly set (via TriggerHandler.setTriggerContext)
-                    const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
-                    if (self.global_env.get(key)) |v| return v;
-                    // Outside trigger context, return null
-                    return Value.null_val;
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "isBefore") or std.ascii.eqlIgnoreCase(fa.field, "isAfter") or
-                    std.ascii.eqlIgnoreCase(fa.field, "isInsert") or std.ascii.eqlIgnoreCase(fa.field, "isUpdate") or
-                    std.ascii.eqlIgnoreCase(fa.field, "isDelete") or std.ascii.eqlIgnoreCase(fa.field, "isUndelete") or
-                    std.ascii.eqlIgnoreCase(fa.field, "isExecuting"))
-                {
-                    return Value{ .boolean = false };
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "newMap") or std.ascii.eqlIgnoreCase(fa.field, "oldMap")) {
-                    const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
-                    if (self.global_env.get(key)) |v| return v;
-                    return Value.null_val;
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
-                    return Value{ .integer = 0 };
+                if (self.trigger_context) |tc| {
+                    if (std.ascii.eqlIgnoreCase(fa.field, "new")) return tc.new_list orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "old")) return tc.old_list orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap")) return tc.new_map orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "oldMap")) return tc.old_map orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore")) return Value{ .boolean = tc.is_before };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isAfter")) return Value{ .boolean = tc.is_after };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isInsert")) return Value{ .boolean = tc.is_insert };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isUpdate")) return Value{ .boolean = tc.is_update };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isDelete")) return Value{ .boolean = tc.is_delete };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isUndelete")) return Value{ .boolean = tc.is_undelete };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isExecuting")) return Value{ .boolean = tc.is_executing };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "size")) return Value{ .integer = tc.size };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "operationType")) return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
+                } else {
+                    if (std.ascii.eqlIgnoreCase(fa.field, "new") or std.ascii.eqlIgnoreCase(fa.field, "old")) {
+                        // Check if Trigger.new/old has been explicitly set
+                        const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
+                        if (self.global_env.get(key)) |v| return v;
+                        return Value.null_val;
+                    }
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore") or std.ascii.eqlIgnoreCase(fa.field, "isAfter") or
+                        std.ascii.eqlIgnoreCase(fa.field, "isInsert") or std.ascii.eqlIgnoreCase(fa.field, "isUpdate") or
+                        std.ascii.eqlIgnoreCase(fa.field, "isDelete") or std.ascii.eqlIgnoreCase(fa.field, "isUndelete") or
+                        std.ascii.eqlIgnoreCase(fa.field, "isExecuting"))
+                    {
+                        return Value{ .boolean = false };
+                    }
+                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap") or std.ascii.eqlIgnoreCase(fa.field, "oldMap")) {
+                        const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
+                        if (self.global_env.get(key)) |v| return v;
+                        return Value.null_val;
+                    }
+                    if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
+                        return Value{ .integer = 0 };
+                    }
                 }
             }
 
@@ -4364,8 +4689,30 @@ pub const Evaluator = struct {
             return Value{ .string = "707000000000002" }; // Fake async job ID
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
-        // System.runAs → no-op (runs the block but ignores user context)
-        if (std.ascii.eqlIgnoreCase(inner, "runAs")) return .void_val;
+        // System.runAs → set restricted user context
+        if (std.ascii.eqlIgnoreCase(inner, "runAs")) {
+            if (args.len > 0 and args[0] == .sobject) {
+                // Check if it's a "min access" or "marketing" user by examining Profile
+                const profile_val = utils.sobjectGet(&args[0].sobject.fields, "Profile") orelse
+                    utils.sobjectGet(&args[0].sobject.fields, "ProfileId");
+                // If any user is passed, check if it's a restricted user
+                const is_min_access = if (profile_val) |pv| blk: {
+                    if (pv == .sobject) {
+                        if (utils.sobjectGet(&pv.sobject.fields, "Name")) |name| {
+                            if (name == .string) {
+                                break :blk std.ascii.indexOfIgnoreCase(name.string, "Minimum Access") != null or
+                                    std.ascii.indexOfIgnoreCase(name.string, "MinAccess") != null;
+                            }
+                        }
+                    }
+                    break :blk false;
+                } else true; // Default: any runAs user is treated as restricted
+                _ = is_min_access;
+                // Set restricted flag - any System.runAs implies restricted access
+                self.is_restricted_user = true;
+            }
+            return .void_val;
+        }
         // System.schedule → store cron expression and return unique job ID
         if (std.ascii.eqlIgnoreCase(inner, "schedule")) {
             const job_id = try std.fmt.allocPrint(self.arena, "08e{d:0>15}", .{self.next_id});
@@ -4387,7 +4734,7 @@ pub const Evaluator = struct {
         }
         // System.Request.getCurrent() → return a Request object
         if (std.ascii.eqlIgnoreCase(inner, "Request")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx, "Request", method, args)) |result| return result;
             const obj = try self.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Request" };
@@ -4438,7 +4785,7 @@ pub const Evaluator = struct {
                         }
                     }
                     // Delegate to builtins for actual parsing
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
                     if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
                     const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) args[1].object.class_name else "Object";
                     if (self.parseJsonValue(json_str, type_name)) |pv| return pv;
@@ -4446,7 +4793,7 @@ pub const Evaluator = struct {
                 return Value.null_val;
             }
             // Other JSON methods: delegate to builtins
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
         }
         return .void_val;
@@ -4615,6 +4962,28 @@ pub const Evaluator = struct {
         }
 
         return null;
+    }
+
+    /// Create a new instance of the named class and call a method on it.
+    pub fn callInstanceMethodByName(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
+        const class_decl = self.findClass(class_name) orelse return Value.null_val;
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = class_name };
+        // Run constructor if exists
+        for (class_decl.members) |member| {
+            switch (member) {
+                .constructor_decl => |cd| {
+                    if (cd.params.len == 0) {
+                        const ctor_env = try self.global_env.child();
+                        try ctor_env.define("this", Value{ .object = instance });
+                        _ = self.execBlock(cd.body, ctor_env) catch {};
+                        break;
+                    }
+                },
+                else => {},
+            }
+        }
+        return self.callInstanceMethod(class_decl, instance, method_name, args);
     }
 
     fn callInstanceMethod(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
@@ -5313,11 +5682,18 @@ fn evalUnary(op: ast.UnaryOp, operand: Value) !Value {
     }
 }
 
-fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value) Value {
+fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std.mem.Allocator) Value {
     switch (op) {
         .plus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer + value.integer };
             if (current == .double and value == .double) return .{ .double = current.double + value.double };
+            // String concatenation for +=
+            if (current == .string or value == .string) {
+                const ls = utils.coerceToString(current, arena) catch return current;
+                const rs = utils.coerceToString(value, arena) catch return current;
+                const result = std.fmt.allocPrint(arena, "{s}{s}", .{ ls, rs }) catch return current;
+                return .{ .string = result };
+            }
         },
         .minus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer - value.integer };

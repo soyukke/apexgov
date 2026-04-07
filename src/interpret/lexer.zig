@@ -376,6 +376,7 @@ fn keywordKind(lexeme: []const u8) ?TokenKind {
         .{ "class", .class_kw },
         .{ "interface", .interface_kw },
         .{ "enum", .enum_kw },
+        .{ "trigger", .trigger_kw },
         .{ "extends", .extends_kw },
         .{ "implements", .implements_kw },
         .{ "public", .public_kw },

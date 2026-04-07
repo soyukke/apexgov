@@ -88,12 +88,14 @@ pub const MethodCallExpr = struct {
     method: []const u8,
     args: []Expr,
     loc: SourceLoc = .zero,
+    null_safe: bool = false,
 };
 
 pub const FieldAccess = struct {
     object: *Expr,
     field: []const u8,
     loc: SourceLoc = .zero,
+    null_safe: bool = false,
 };
 
 pub const IndexAccess = struct {
@@ -277,6 +279,7 @@ pub const Decl = union(enum) {
     field_decl: *FieldDecl,
     constructor_decl: *ConstructorDecl,
     static_init: []Stmt,
+    trigger_decl: *TriggerDecl,
 };
 
 pub const Modifiers = struct {
@@ -353,5 +356,23 @@ pub const FieldDecl = struct {
     initializer: ?*Expr = null,
     getter_body: ?[]Stmt = null,
     setter_body: ?[]Stmt = null,
+    loc: SourceLoc = .zero,
+};
+
+pub const TriggerEvent = enum {
+    before_insert,
+    before_update,
+    before_delete,
+    after_insert,
+    after_update,
+    after_delete,
+    after_undelete,
+};
+
+pub const TriggerDecl = struct {
+    name: []const u8,
+    object_name: []const u8,
+    events: []TriggerEvent,
+    body: []Stmt,
     loc: SourceLoc = .zero,
 };

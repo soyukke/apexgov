@@ -48,6 +48,8 @@ const Parser = struct {
                 try decls.append(self.arena, .{ .interface_decl = try self.parseInterfaceDecl(mods) });
             } else if (self.check(.enum_kw)) {
                 try decls.append(self.arena, .{ .enum_decl = try self.parseEnumDecl(mods) });
+            } else if (self.check(.trigger_kw)) {
+                try decls.append(self.arena, .{ .trigger_decl = try self.parseTriggerDecl() });
             } else {
                 // skip unknown token
                 self.pos += 1;
@@ -156,6 +158,73 @@ const Parser = struct {
             .name = name,
             .modifiers = mods,
             .values = try values.toOwnedSlice(self.arena),
+            .loc = loc,
+        };
+        return decl;
+    }
+
+    fn parseTriggerDecl(self: *Parser) !*ast.TriggerDecl {
+        const loc = self.currentLoc();
+        self.pos += 1; // skip 'trigger'
+        const name = try self.expectIdentifier();
+
+        // skip 'on'
+        if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "on")) {
+            self.pos += 1;
+        }
+
+        // object name
+        const object_name = try self.expectIdentifier();
+
+        // parse event list: (before insert, after insert, ...)
+        try self.expect(.lparen);
+        var events: std.ArrayListUnmanaged(ast.TriggerEvent) = .empty;
+        while (!self.atEnd() and !self.check(.rparen)) {
+            // Parse "before"/"after" + "insert"/"update"/"delete"/"undelete"
+            if (self.check(.identifier)) {
+                const timing = self.current().lexeme;
+                self.pos += 1;
+                // The DML keyword may be a keyword token or identifier
+                const op_lexeme = if (!self.atEnd()) self.current().lexeme else "";
+                self.pos += 1;
+
+                if (std.ascii.eqlIgnoreCase(timing, "before")) {
+                    if (std.ascii.eqlIgnoreCase(op_lexeme, "insert")) {
+                        try events.append(self.arena, .before_insert);
+                    } else if (std.ascii.eqlIgnoreCase(op_lexeme, "update")) {
+                        try events.append(self.arena, .before_update);
+                    } else if (std.ascii.eqlIgnoreCase(op_lexeme, "delete")) {
+                        try events.append(self.arena, .before_delete);
+                    }
+                } else if (std.ascii.eqlIgnoreCase(timing, "after")) {
+                    if (std.ascii.eqlIgnoreCase(op_lexeme, "insert")) {
+                        try events.append(self.arena, .after_insert);
+                    } else if (std.ascii.eqlIgnoreCase(op_lexeme, "update")) {
+                        try events.append(self.arena, .after_update);
+                    } else if (std.ascii.eqlIgnoreCase(op_lexeme, "delete")) {
+                        try events.append(self.arena, .after_delete);
+                    } else if (std.ascii.eqlIgnoreCase(op_lexeme, "undelete")) {
+                        try events.append(self.arena, .after_undelete);
+                    }
+                }
+            } else {
+                self.pos += 1;
+            }
+            _ = self.matchKind(.comma);
+        }
+        try self.expect(.rparen);
+
+        // parse body { ... }
+        try self.expect(.lbrace);
+        const body = try self.parseBlock();
+        try self.expect(.rbrace);
+
+        const decl = try self.arena.create(ast.TriggerDecl);
+        decl.* = .{
+            .name = name,
+            .object_name = object_name,
+            .events = try events.toOwnedSlice(self.arena),
+            .body = body,
             .loc = loc,
         };
         return decl;
@@ -400,14 +469,20 @@ const Parser = struct {
         // Expression statement
         const expr = try self.expression();
 
-        // Handle System.runAs(user) { block } — treat as block execution
+        // Handle System.runAs(user) { block } — evaluate runAs expr, then execute block
         if (self.check(.lbrace) and expr.* == .method_call) {
             const mc = expr.method_call;
             if (std.ascii.eqlIgnoreCase(mc.method, "runAs")) {
                 self.pos += 1; // skip {
                 const block_stmts = try self.parseBlock();
                 try self.expect(.rbrace);
-                return .{ .block = block_stmts };
+                // Wrap: first execute the runAs expression (to set context), then the block
+                var stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
+                try stmts.append(self.arena, .{ .expr_stmt = expr });
+                for (block_stmts) |s| {
+                    try stmts.append(self.arena, s);
+                }
+                return .{ .block = try stmts.toOwnedSlice(self.arena) };
             }
         }
 
@@ -909,6 +984,7 @@ const Parser = struct {
         }
 
         while (true) {
+            const is_null_safe = self.check(.question_dot);
             if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
                 const field_name = try self.expectIdentifier();
 
@@ -917,13 +993,13 @@ const Parser = struct {
                     const args = try self.parseArgList();
                     try self.expect(.rparen);
                     const node = try self.arena.create(ast.MethodCallExpr);
-                    node.* = .{ .object = expr, .method = field_name, .args = args };
+                    node.* = .{ .object = expr, .method = field_name, .args = args, .null_safe = is_null_safe };
                     const result = try self.arena.create(ast.Expr);
                     result.* = .{ .method_call = node };
                     expr = result;
                 } else {
                     const node = try self.arena.create(ast.FieldAccess);
-                    node.* = .{ .object = expr, .field = field_name };
+                    node.* = .{ .object = expr, .field = field_name, .null_safe = is_null_safe };
                     const result = try self.arena.create(ast.Expr);
                     result.* = .{ .field_access = node };
                     expr = result;
@@ -1092,8 +1168,8 @@ const Parser = struct {
             return result;
         }
 
-        // Identifier (or function call)
-        if (kind == .identifier) {
+        // Identifier (or function call) — trigger_kw also acts as identifier in expression context
+        if (kind == .identifier or kind == .trigger_kw) {
             const name = self.current().lexeme;
             const loc = self.currentLoc();
             self.pos += 1;

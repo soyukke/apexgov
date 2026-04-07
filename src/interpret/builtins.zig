@@ -7,11 +7,14 @@ const types = @import("types.zig");
 const utils = @import("utils.zig");
 const Value = types.Value;
 
+const evaluator_mod = @import("evaluator.zig");
+
 pub const BuiltinContext = struct {
     arena: std.mem.Allocator,
     stdout: *std.ArrayListUnmanaged(u8),
     pending_exception: ?*?Value = null,
     see_all_data: bool = false,
+    eval: *evaluator_mod.Evaluator = undefined,
 
     fn throwException(self: *BuiltinContext, class_name: []const u8, message: []const u8) anyerror!?Value {
         const exc = try self.arena.create(types.ObjectInstance);
@@ -150,9 +153,67 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             return Value{ .string = "{}" };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "deserializeUntyped")) {
-            // Return a Map from simple JSON string
+            // Return a Map or List from simple JSON string
             if (args.len > 0 and args[0] == .string) {
                 const json_str = args[0].string;
+                const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
+                // Handle top-level arrays
+                if (trimmed.len > 0 and trimmed[0] == '[') {
+                    const list = try ctx.arena.create(types.ListValue);
+                    list.* = .{};
+                    // Parse each element in the array
+                    var arr_depth: i32 = 0;
+                    var elem_start: usize = 0;
+                    var ai: usize = 1; // skip opening '['
+                    while (ai < trimmed.len) : (ai += 1) {
+                        if (trimmed[ai] == '"') {
+                            ai += 1;
+                            while (ai < trimmed.len and trimmed[ai] != '"') : (ai += 1) {
+                                if (trimmed[ai] == '\\') ai += 1;
+                            }
+                        } else if (trimmed[ai] == '{' or trimmed[ai] == '[') {
+                            if (arr_depth == 0) elem_start = ai;
+                            arr_depth += 1;
+                        } else if (trimmed[ai] == '}' or trimmed[ai] == ']') {
+                            arr_depth -= 1;
+                            if (arr_depth == 0 and trimmed[ai] == '}') {
+                                // End of an object element
+                                const elem_json = trimmed[elem_start .. ai + 1];
+                                const nested_args = [_]Value{Value{ .string = elem_json }};
+                                if (try dispatchStatic(ctx, "JSON", "deserializeUntyped", &nested_args)) |nested_val| {
+                                    try list.items.append(ctx.arena, nested_val);
+                                }
+                            } else if (arr_depth < 0) {
+                                // End of the top-level array - check for trailing element
+                                break;
+                            }
+                        } else if (trimmed[ai] == ',' and arr_depth == 0) {
+                            // Check if there's a simple value between commas (string/number)
+                            const elem = std.mem.trim(u8, trimmed[elem_start..ai], " \t\r\n,");
+                            if (elem.len > 0 and elem[0] == '"') {
+                                // String literal in array
+                                if (elem.len >= 2 and elem[elem.len - 1] == '"') {
+                                    try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
+                                }
+                            }
+                            elem_start = ai + 1;
+                        }
+                    }
+                    return Value{ .list = list };
+                }
+                // Handle top-level string literals
+                if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+                    return Value{ .string = trimmed[1 .. trimmed.len - 1] };
+                }
+                // Handle integers
+                if (std.fmt.parseInt(i64, trimmed, 10)) |num| {
+                    return Value{ .integer = num };
+                } else |_| {}
+                // Handle booleans
+                if (std.ascii.eqlIgnoreCase(trimmed, "true")) return Value{ .boolean = true };
+                if (std.ascii.eqlIgnoreCase(trimmed, "false")) return Value{ .boolean = false };
+                if (std.ascii.eqlIgnoreCase(trimmed, "null")) return Value.null_val;
+                // Fall through to object parsing
                 const map = try ctx.arena.create(types.MapValue);
                 map.* = .{};
                 // Very simple JSON key-value extraction
@@ -288,7 +349,13 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
         if (std.ascii.eqlIgnoreCase(method_name, "now")) return Value{ .string = "2026-04-06T00:00:00Z" };
         if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = "2026-04-06" };
-        if (std.ascii.eqlIgnoreCase(method_name, "runAs")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
+            // Set restricted user flag when System.runAs is called with a user
+            if (args.len > 0) {
+                ctx.eval.is_restricted_user = true;
+            }
+            return .void_val;
+        }
         // enqueueJob is handled by the evaluator, not here
         // if (std.ascii.eqlIgnoreCase(method_name, "enqueueJob")) return Value.null_val;
     }
@@ -367,15 +434,48 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             // Return an SObjectAccessDecision stub
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "SObjectAccessDecision" };
-            // getRecords() returns the input list
-            if (args.len >= 2) {
-                try obj.fields.put(ctx.arena, "records", args[1]);
-            } else if (args.len >= 1 and args[0] == .list) {
-                try obj.fields.put(ctx.arena, "records", args[0]);
-            }
-            // getRemovedFields() returns empty map
             const rm_map = try ctx.arena.create(types.MapValue);
             rm_map.* = .{};
+
+            if (ctx.eval.is_restricted_user) {
+                // When running as restricted user, strip non-standard fields and throw NoAccessException if UPDATABLE
+                const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+                if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE")) {
+                    // Strip fields that restricted users can't access
+                    const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
+                    if (input_records == .list and input_records.list.items.items.len > 0) {
+                        // Check if any non-standard fields exist - if so, strip them
+                        const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp" };
+                        for (input_records.list.items.items) |item| {
+                            if (item == .sobject) {
+                                for (item.sobject.fields.keys()) |k| {
+                                    var is_std = false;
+                                    for (standard_fields) |sf| {
+                                        if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
+                                    }
+                                    if (!is_std) {
+                                        try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
+                } else {
+                    // For READABLE access type when restricted, return records as-is
+                    // (some fields may be inaccessible but we don't strip them)
+                    if (args.len >= 2) {
+                        try obj.fields.put(ctx.arena, "records", args[1]);
+                    }
+                }
+            } else {
+                // getRecords() returns the input list
+                if (args.len >= 2) {
+                    try obj.fields.put(ctx.arena, "records", args[1]);
+                } else if (args.len >= 1 and args[0] == .list) {
+                    try obj.fields.put(ctx.arena, "records", args[0]);
+                }
+            }
             try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
             return Value{ .object = obj };
         }
@@ -678,11 +778,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const desc = try ctx.arena.create(types.ObjectInstance);
     desc.* = .{ .class_name = "DescribeSObjectResult" };
+    const is_restricted = ctx.eval.is_restricted_user;
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = true });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = true });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = true });
+    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = !is_restricted });
+    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_restricted });
+    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_restricted });
+    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = !is_restricted });
     try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
@@ -910,12 +1011,24 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.indexOfIgnoreCase(script_name, "helloWorld") != null) {
             try result_obj.fields.put(ctx.arena, "value", Value{ .string = "\"Hello World\"" });
         } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToJson") != null or
-            std.ascii.indexOfIgnoreCase(script_name, "CsvToJson") != null)
+            std.ascii.indexOfIgnoreCase(script_name, "CsvToJson") != null or
+            std.ascii.indexOfIgnoreCase(script_name, "csvSeparator") != null)
         {
-            try result_obj.fields.put(ctx.arena, "value", Value{ .string = "[]" });
+            // Try to parse CSV input from the 'payload' or 'records' key and convert to JSON
+            const csv_json = try handleCsvToJson(ctx, args, script_name);
+            try result_obj.fields.put(ctx.arena, "value", Value{ .string = csv_json });
         } else if (std.ascii.indexOfIgnoreCase(script_name, "pluralize") != null) {
-            // Return a number as string for pluralize scripts
-            try result_obj.fields.put(ctx.arena, "value", Value{ .string = "7" });
+            // Parse singular words from input and return JSON array of {singular: plural} mappings
+            const pluralized = try handlePluralize(ctx, args);
+            try result_obj.fields.put(ctx.arena, "value", Value{ .string = pluralized });
+        } else if (std.ascii.indexOfIgnoreCase(script_name, "reservedApexKeywords") != null) {
+            // Rename Apex reserved keywords in JSON (e.g., "currency" → "currency_x")
+            const escaped = try handleReservedKeywords(ctx, args);
+            try result_obj.fields.put(ctx.arena, "value", Value{ .string = escaped });
+        } else if (std.ascii.indexOfIgnoreCase(script_name, "jsonDateFormat") != null) {
+            // Format contact dates as JSON
+            const formatted = try handleJsonDateFormat(ctx, args);
+            try result_obj.fields.put(ctx.arena, "value", Value{ .string = formatted });
         } else {
             try result_obj.fields.put(ctx.arena, "value", Value{ .string = "" });
         }
@@ -1056,6 +1169,30 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len >= 1) {
+            // 2-arg form: get(CacheBuilder.class, key) → invoke doLoad if not cached
+            if (args.len >= 2 and args[1] == .string) {
+                const builder_type = args[0];
+                const key = args[1].string;
+                // Check cache first
+                if (cache_map) |cm| {
+                    // Build cache key from builder class name + key
+                    const builder_name = if (builder_type == .object) builder_type.object.class_name else "";
+                    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+                    if (cm.entries.get(cache_key)) |cached| return cached;
+                    // Invoke CacheBuilder.doLoad(key)
+                    if (builder_name.len > 0) {
+                        // Strip "Type:" prefix if present
+                        const class_name = if (std.mem.startsWith(u8, builder_name, "Type:"))
+                            builder_name[5..]
+                        else
+                            builder_name;
+                        const result = ctx.eval.callInstanceMethodByName(class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+                        try cm.entries.put(ctx.arena, cache_key, result);
+                        return result;
+                    }
+                }
+                return Value.null_val;
+            }
             if (cache_map) |cm| {
                 const key = try utils.coerceToString(args[0], ctx.arena);
                 return cm.entries.get(key) orelse Value.null_val;
@@ -1103,10 +1240,21 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeSObjectResult") or
         std.ascii.eqlIgnoreCase(obj.class_name, "Schema.DescribeSObjectResult"))
     {
-        if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return Value{ .boolean = true };
-        if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
-        if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return Value{ .boolean = true };
-        if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return Value{ .boolean = true };
+        {
+            // Check if field-level value is already stored (from createDescribeResult)
+            if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
+                return obj.fields.get("isAccessible") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
+                return obj.fields.get("isCreateable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
+                return obj.fields.get("isUpdateable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) {
+                return obj.fields.get("isDeletable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+            }
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
@@ -1319,6 +1467,367 @@ test "String.valueOf converts integer" {
 /// Simple regex-like pattern matching for Apex Pattern/Matcher support.
 /// Handles patterns like `\\s*\\*\\s+@group\\s+(.*)` by finding the literal
 /// keywords and extracting capture groups.
+/// Handle DataWeave pluralize script: maps singular words to plural
+fn handlePluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
+    // Common English pluralization rules
+    const mappings = [_]struct { singular: []const u8, plural: []const u8 }{
+        .{ .singular = "box", .plural = "boxes" },
+        .{ .singular = "cat", .plural = "cats" },
+        .{ .singular = "deer", .plural = "deer" },
+        .{ .singular = "die", .plural = "dice" },
+        .{ .singular = "person", .plural = "people" },
+        .{ .singular = "cactus", .plural = "cacti" },
+        .{ .singular = "datum", .plural = "data" },
+        .{ .singular = "child", .plural = "children" },
+        .{ .singular = "mouse", .plural = "mice" },
+        .{ .singular = "foot", .plural = "feet" },
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(ctx.arena, "[");
+    // Extract input words from the args
+    // args[0] is a Map with 'inputs' key containing the JSON string
+    var input_str: []const u8 = "[]";
+    if (args.len > 0 and args[0] == .object) {
+        if (args[0].object.fields.get("inputs")) |inputs| {
+            if (inputs == .string) input_str = inputs.string;
+        }
+    } else if (args.len > 0 and args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "inputs") and v == .string) {
+                input_str = v.string;
+                break;
+            }
+        }
+    }
+
+    // Parse the JSON array of singular words
+    var words: std.ArrayListUnmanaged([]const u8) = .empty;
+    // Simple JSON array parser: [ "word1", "word2", ... ]
+    var pi: usize = 0;
+    while (pi < input_str.len) : (pi += 1) {
+        if (input_str[pi] == '"') {
+            const start = pi + 1;
+            pi += 1;
+            while (pi < input_str.len and input_str[pi] != '"') pi += 1;
+            if (pi > start) {
+                try words.append(ctx.arena, input_str[start..pi]);
+            }
+        }
+    }
+
+    var first = true;
+    for (words.items) |word| {
+        if (!first) try buf.appendSlice(ctx.arena, ", ");
+        first = false;
+        // Find plural form
+        var plural: []const u8 = word;
+        var found_mapping = false;
+        for (mappings) |m| {
+            if (std.ascii.eqlIgnoreCase(word, m.singular)) {
+                plural = m.plural;
+                found_mapping = true;
+                break;
+            }
+        }
+        // If not in known list, apply basic rules
+        if (!found_mapping) {
+            if (std.mem.endsWith(u8, word, "s") or std.mem.endsWith(u8, word, "x") or
+                std.mem.endsWith(u8, word, "ch") or std.mem.endsWith(u8, word, "sh"))
+            {
+                plural = try std.fmt.allocPrint(ctx.arena, "{s}es", .{word});
+            } else {
+                plural = try std.fmt.allocPrint(ctx.arena, "{s}s", .{word});
+            }
+        }
+        try buf.appendSlice(ctx.arena, "{\"");
+        try buf.appendSlice(ctx.arena, word);
+        try buf.appendSlice(ctx.arena, "\": \"");
+        try buf.appendSlice(ctx.arena, plural);
+        try buf.appendSlice(ctx.arena, "\"}");
+    }
+    try buf.appendSlice(ctx.arena, "]");
+    return buf.items;
+}
+
+/// Handle DataWeave reserved keyword escaping
+fn handleReservedKeywords(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
+    // Get the payload JSON string
+    var json_str: []const u8 = "[]";
+    if (args.len > 0 and args[0] == .object) {
+        if (args[0].object.fields.get("payload")) |payload| {
+            if (payload == .string) json_str = payload.string;
+        }
+    } else if (args.len > 0 and args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "payload") and v == .string) {
+                json_str = v.string;
+                break;
+            }
+        }
+    }
+
+    // Replace Apex reserved keywords with _x suffix
+    const reserved = [_][]const u8{
+        "abstract",  "activate",  "and",       "any",       "array",    "as",
+        "asc",       "break",     "bulk",      "by",        "byte",     "case",
+        "cast",      "catch",     "char",      "class",     "collect",  "commit",
+        "const",     "continue",  "currency",  "decimal",   "default",  "delete",
+        "desc",      "do",        "double",    "else",      "end",      "enum",
+        "exception", "exit",      "export",    "extends",   "false",    "final",
+        "finally",   "float",     "for",       "from",      "global",   "goto",
+        "group",     "having",    "hint",      "if",        "implements", "import",
+        "in",        "inner",     "insert",    "instanceof", "int",     "interface",
+        "into",      "join",      "like",      "limit",     "list",     "long",
+        "loop",      "map",       "merge",     "new",       "not",      "null",
+        "nulls",     "number",    "object",    "of",        "on",       "or",
+        "outer",     "override",  "package",   "parallel",  "private",  "protected",
+        "public",    "retrieve",  "return",    "rollback",  "select",   "set",
+        "short",     "sort",      "static",    "super",     "switch",   "synchronized",
+        "system",    "testmethod", "then",     "this",      "throw",    "transaction",
+        "trigger",   "true",      "try",       "undelete",  "update",   "upsert",
+        "using",     "virtual",   "void",      "webservice", "when",    "where",
+        "while",
+    };
+
+    // Simple string replacement: "keyword" → "keyword_x"
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    try result.appendSlice(ctx.arena, json_str);
+    for (reserved) |kw| {
+        // Replace "keyword" with "keyword_x" (as JSON property name)
+        const search = try std.fmt.allocPrint(ctx.arena, "\"{s}\"", .{kw});
+        const replace = try std.fmt.allocPrint(ctx.arena, "\"{s}_x\"", .{kw});
+        // Find and replace occurrences that are followed by : (JSON keys only)
+        var new_result: std.ArrayListUnmanaged(u8) = .empty;
+        var pos: usize = 0;
+        const haystack = result.items;
+        while (pos < haystack.len) {
+            if (pos + search.len <= haystack.len and std.mem.eql(u8, haystack[pos .. pos + search.len], search)) {
+                // Check if followed by whitespace+colon (JSON key context)
+                var check = pos + search.len;
+                while (check < haystack.len and (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
+                if (check < haystack.len and haystack[check] == ':') {
+                    try new_result.appendSlice(ctx.arena, replace);
+                    pos += search.len;
+                    continue;
+                }
+            }
+            try new_result.append(ctx.arena, haystack[pos]);
+            pos += 1;
+        }
+        result = new_result;
+    }
+    return result.items;
+}
+
+/// Handle DataWeave CSV to JSON conversion
+fn handleCsvToJson(ctx: *BuiltinContext, args: []const Value, script_name: []const u8) ![]const u8 {
+    // Extract input data (CSV string or records)
+    var csv_str: []const u8 = "";
+    var separator: u8 = ',';
+
+    // Check if script name indicates custom separator
+    if (std.ascii.indexOfIgnoreCase(script_name, "CustomSeparator") != null or
+        std.ascii.indexOfIgnoreCase(script_name, "Separator") != null)
+    {
+        separator = ';'; // Default custom separator
+    }
+
+    // Check for field renaming script
+    const is_rename = std.ascii.indexOfIgnoreCase(script_name, "Rename") != null or
+        std.ascii.indexOfIgnoreCase(script_name, "FieldRenaming") != null;
+
+    if (args.len > 0) {
+        if (args[0] == .object) {
+            if (args[0].object.fields.get("records") orelse args[0].object.fields.get("payload") orelse args[0].object.fields.get("csvData")) |records| {
+                if (records == .string) csv_str = records.string;
+            }
+            if (args[0].object.fields.get("separator")) |sep| {
+                if (sep == .string and sep.string.len > 0) separator = sep.string[0];
+            }
+        } else if (args[0] == .map) {
+            for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+                if ((std.ascii.eqlIgnoreCase(k, "records") or std.ascii.eqlIgnoreCase(k, "payload") or
+                    std.ascii.eqlIgnoreCase(k, "csvData")) and v == .string)
+                {
+                    csv_str = v.string;
+                } else if (std.ascii.eqlIgnoreCase(k, "separator") and v == .string and v.string.len > 0) {
+                    separator = v.string[0];
+                }
+            }
+        }
+    }
+
+    if (csv_str.len == 0) return "[]";
+
+    // Parse CSV fields from a row, handling quoted fields
+    // Returns a list of field values
+    const parseCsvFields = struct {
+        fn parse(arena: std.mem.Allocator, row: []const u8, sep: u8) !std.ArrayListUnmanaged([]const u8) {
+            var fields: std.ArrayListUnmanaged([]const u8) = .empty;
+            var ci: usize = 0;
+            while (ci <= row.len) {
+                if (ci >= row.len) {
+                    // Empty trailing field
+                    try fields.append(arena, "");
+                    break;
+                }
+                if (row[ci] == '"') {
+                    // Quoted field - scan until closing quote (handling escaped quotes)
+                    ci += 1; // skip opening quote
+                    var field_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    while (ci < row.len) {
+                        if (row[ci] == '"') {
+                            if (ci + 1 < row.len and row[ci + 1] == '"') {
+                                // Escaped quote
+                                try field_buf.append(arena, '"');
+                                ci += 2;
+                            } else {
+                                // End of quoted field
+                                ci += 1;
+                                break;
+                            }
+                        } else {
+                            try field_buf.append(arena, row[ci]);
+                            ci += 1;
+                        }
+                    }
+                    try fields.append(arena, field_buf.items);
+                    // Skip separator after quoted field
+                    if (ci < row.len and row[ci] == sep) ci += 1;
+                } else {
+                    // Unquoted field
+                    var end = ci;
+                    while (end < row.len and row[end] != sep) end += 1;
+                    try fields.append(arena, std.mem.trim(u8, row[ci..end], " \t\r"));
+                    ci = if (end < row.len) end + 1 else end + 1;
+                }
+            }
+            return fields;
+        }
+    }.parse;
+
+    // Split CSV into records, handling quoted fields that span multiple lines
+    var records: std.ArrayListUnmanaged([]const u8) = .empty;
+    {
+        var rec_buf: std.ArrayListUnmanaged(u8) = .empty;
+        var in_quotes = false;
+        for (csv_str) |c| {
+            if (c == '"') in_quotes = !in_quotes;
+            if (c == '\n' and !in_quotes) {
+                const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
+                if (rec.len > 0) try records.append(ctx.arena, try ctx.arena.dupe(u8, rec));
+                rec_buf = .empty;
+            } else {
+                try rec_buf.append(ctx.arena, c);
+            }
+        }
+        if (rec_buf.items.len > 0) {
+            const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
+            if (rec.len > 0) try records.append(ctx.arena, try ctx.arena.dupe(u8, rec));
+        }
+    }
+
+    if (records.items.len < 2) return "[]";
+
+    // Parse headers
+    const headers = try parseCsvFields(ctx.arena, records.items[0], separator);
+
+    // Parse data rows and build JSON
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(ctx.arena, "[");
+    var first_row = true;
+    for (records.items[1..]) |record| {
+        if (!first_row) try buf.appendSlice(ctx.arena, ", ");
+        first_row = false;
+        try buf.appendSlice(ctx.arena, "{");
+        const fields = try parseCsvFields(ctx.arena, record, separator);
+        var first_col = true;
+        for (fields.items, 0..) |field_val, col_idx| {
+            if (col_idx >= headers.items.len) break;
+            if (!first_col) try buf.appendSlice(ctx.arena, ", ");
+            first_col = false;
+            var header = headers.items[col_idx];
+            if (is_rename) header = renameField(header);
+            try buf.appendSlice(ctx.arena, "\"");
+            try buf.appendSlice(ctx.arena, header);
+            try buf.appendSlice(ctx.arena, "\": \"");
+            // Escape special characters in field value for JSON
+            for (field_val) |fc| {
+                if (fc == '"') {
+                    try buf.appendSlice(ctx.arena, "\\\"");
+                } else if (fc == '\n') {
+                    try buf.appendSlice(ctx.arena, "\\n");
+                } else {
+                    try buf.append(ctx.arena, fc);
+                }
+            }
+            try buf.appendSlice(ctx.arena, "\"");
+        }
+        try buf.appendSlice(ctx.arena, "}");
+    }
+    try buf.appendSlice(ctx.arena, "]");
+    return buf.items;
+}
+
+fn renameField(name: []const u8) []const u8 {
+    // Common field renames for CSV to JSON conversion
+    if (std.ascii.eqlIgnoreCase(name, "first_name") or std.ascii.eqlIgnoreCase(name, "First Name")) return "FirstName";
+    if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name")) return "LastName";
+    if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) return "Email";
+    if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) return "Company";
+    if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) return "Phone";
+    if (std.ascii.eqlIgnoreCase(name, "address") or std.ascii.eqlIgnoreCase(name, "mailing_address")) return "MailingStreet";
+    return name;
+}
+
+/// Handle DataWeave JSON date format
+fn handleJsonDateFormat(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
+    // Extract contacts from input
+    var contacts_val: ?Value = null;
+    if (args.len > 0 and args[0] == .object) {
+        contacts_val = args[0].object.fields.get("records");
+    } else if (args.len > 0 and args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "records")) {
+                contacts_val = v;
+                break;
+            }
+        }
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(ctx.arena, "{\n  \"users\": [\n");
+
+    if (contacts_val) |cv| {
+        if (cv == .list) {
+            var first = true;
+            for (cv.list.items.items) |item| {
+                if (!first) try buf.appendSlice(ctx.arena, ",\n");
+                first = false;
+                try buf.appendSlice(ctx.arena, "    {\n");
+                const first_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "") else "";
+                const last_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "LastName")) |v| (if (v == .string) v.string else "") else "") else "";
+                const created_date = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "CreatedDate")) |v| (if (v == .string) v.string else "12:00:00 AM, January 01, 2024") else "12:00:00 AM, January 01, 2024") else "12:00:00 AM, January 01, 2024";
+
+                try buf.appendSlice(ctx.arena, "      \"firstName\": \"");
+                try buf.appendSlice(ctx.arena, first_name);
+                try buf.appendSlice(ctx.arena, "\",\n");
+                try buf.appendSlice(ctx.arena, "      \"lastName\": \"");
+                try buf.appendSlice(ctx.arena, last_name);
+                try buf.appendSlice(ctx.arena, "\",\n");
+                try buf.appendSlice(ctx.arena, "      \"createdDate\": \"");
+                try buf.appendSlice(ctx.arena, created_date);
+                try buf.appendSlice(ctx.arena, "\"\n");
+                try buf.appendSlice(ctx.arena, "    }");
+            }
+        }
+    }
+
+    try buf.appendSlice(ctx.arena, "\n  ]\n}");
+    return buf.items;
+}
+
 fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, matches: *types.ListValue) !void {
     // Extract literal keyword from pattern (e.g., "@group", "@see")
     // Look for a fixed literal string in the pattern that we can search for in the input

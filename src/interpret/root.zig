@@ -122,7 +122,7 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
         }
     }
 
-    try writer.print("interpret: registered {d} class(es), {d} parse error(s)\n", .{ eval.classes.count(), parse_errors });
+    try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
 
     // Run static initializer blocks after all classes are registered
     eval.runStaticInits();
@@ -277,8 +277,8 @@ fn isTestMethod(md: *ast.MethodDecl) bool {
 }
 
 fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
-    // Try as single .cls file first
-    if (std.mem.endsWith(u8, path, ".cls")) {
+    // Try as single .cls/.trigger file first
+    if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
         const content = std.fs.cwd().readFileAlloc(alloc, path, 10 * 1024 * 1024) catch return;
         const path_copy = alloc.dupe(u8, path) catch return;
         files.append(alloc, .{ .path = path_copy, .content = content }) catch return;
@@ -292,7 +292,7 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
     defer walker.deinit();
     while (walker.next() catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".cls")) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 10 * 1024 * 1024) catch continue;

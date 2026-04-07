@@ -53,6 +53,7 @@ pub const TokenKind = enum {
     class_kw,
     interface_kw,
     enum_kw,
+    trigger_kw,
     extends_kw,
     implements_kw,
     public_kw,
