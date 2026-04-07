@@ -452,3 +452,56 @@ test "E2E: method calling another method in same class" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 14), result.value.integer);
 }
+
+test "E2E: static Map with Set values are independent" {
+    const source =
+        \\public class MapSetTest {
+        \\    private static Map<String, Set<String>> mapA = new Map<String, Set<String>>();
+        \\    private static Map<String, Set<String>> mapB = new Map<String, Set<String>>();
+        \\    public static Integer test() {
+        \\        Set<String> setA = new Set<String>();
+        \\        setA.add('a');
+        \\        setA.add('b');
+        \\        Set<String> setB = new Set<String>();
+        \\        setB.add('a');
+        \\        mapA.put('key', setA);
+        \\        mapB.put('key', setB);
+        \\        Integer sizeA = mapA.get('key').size();
+        \\        Integer sizeB = mapB.get('key').size();
+        \\        if (sizeA == sizeB) return 0;
+        \\        return sizeA * 10 + sizeB;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MapSetTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // sizeA should be 2, sizeB should be 1 → result = 21
+    try std.testing.expectEqual(@as(i64, 21), result.value.integer);
+}
+
+test "E2E: instanceof checks superclass hierarchy" {
+    const source =
+        \\public class InstanceofTest {
+        \\    public interface IFoo {}
+        \\    public virtual class Base implements IFoo {}
+        \\    public class Child extends Base {}
+        \\    public static Integer test() {
+        \\        Child c = new Child();
+        \\        Integer result = 0;
+        \\        if (c instanceof Child) result += 1;
+        \\        if (c instanceof Base) result += 10;
+        \\        if (c instanceof IFoo) result += 100;
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InstanceofTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 111), result.value.integer);
+}

@@ -37,7 +37,16 @@ pub fn valueEql(a: Value, b: Value) bool {
         .sobject => |av| {
             // Compare by Id if both have one
             if (av.id != null and b.sobject.id != null) return std.ascii.eqlIgnoreCase(av.id.?, b.sobject.id.?);
-            return av == b.sobject; // pointer equality
+            // Pointer equality first
+            if (av == b.sobject) return true;
+            // Deep equality: same type, same fields
+            if (!std.ascii.eqlIgnoreCase(av.type_name, b.sobject.type_name)) return false;
+            if (av.fields.count() != b.sobject.fields.count()) return false;
+            for (av.fields.keys(), av.fields.values()) |k, v| {
+                const bv = b.sobject.fields.get(k) orelse return false;
+                if (!valueEql(v, bv)) return false;
+            }
+            return true;
         },
         .list => |av| {
             if (av == b.list) return true;

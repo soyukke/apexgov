@@ -2897,8 +2897,22 @@ pub const Evaluator = struct {
                 const val = try self.evalExpr(ie.operand, current_env);
                 if (val == .sobject) return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
                 if (val == .object) {
-                    // Check class name and superclass hierarchy
+                    // Check class name and superclass/interface hierarchy
                     if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
+                    // Walk superclass hierarchy
+                    if (self.findClass(val.object.class_name)) |cd| {
+                        var cur: ?*ast.ClassDecl = cd;
+                        while (cur) |ccd| {
+                            // Check implemented interfaces
+                            for (ccd.interfaces) |iface| {
+                                if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name)) return Value{ .boolean = true };
+                            }
+                            if (ccd.super_class) |sc| {
+                                if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name)) return Value{ .boolean = true };
+                                cur = self.findClass(sc.name);
+                            } else break;
+                        }
+                    }
                     // Check if it's an exception type matching Exception hierarchy
                     if (std.mem.endsWith(u8, ie.type_name.name, "Exception") and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
                         return Value{ .boolean = true };
@@ -4293,15 +4307,15 @@ pub const Evaluator = struct {
                 return Value{ .object = instance };
             }
 
-            // Initialize instance fields from class (non-static)
-            self.initInstanceFields(class_decl, instance) catch {};
-
-            // Initialize parent class fields
+            // Initialize parent class fields first (so child fields can shadow)
             if (class_decl.super_class) |sc| {
                 if (self.findClass(sc.name)) |parent_decl| {
                     self.initInstanceFields(parent_decl, instance) catch {};
                 }
             }
+
+            // Initialize instance fields from class (non-static) — after parent
+            self.initInstanceFields(class_decl, instance) catch {};
 
             // Evaluate constructor args
             var eval_args: std.ArrayListUnmanaged(Value) = .empty;
