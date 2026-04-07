@@ -327,10 +327,20 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                         var val_end = val_start;
                                         while (val_end < json_str.len and json_str[val_end] != ',' and json_str[val_end] != '}' and json_str[val_end] != '\n') val_end += 1;
                                         const val_str = std.mem.trim(u8, json_str[val_start..val_end], " \t\r\n");
-                                        if (std.fmt.parseInt(i64, val_str, 10)) |num| {
+                                        if (std.ascii.eqlIgnoreCase(val_str, "true")) {
+                                            try map.entries.put(ctx.arena, key, Value{ .boolean = true });
+                                        } else if (std.ascii.eqlIgnoreCase(val_str, "false")) {
+                                            try map.entries.put(ctx.arena, key, Value{ .boolean = false });
+                                        } else if (std.ascii.eqlIgnoreCase(val_str, "null")) {
+                                            try map.entries.put(ctx.arena, key, Value.null_val);
+                                        } else if (std.fmt.parseInt(i64, val_str, 10)) |num| {
                                             try map.entries.put(ctx.arena, key, Value{ .integer = num });
                                         } else |_| {
-                                            try map.entries.put(ctx.arena, key, Value{ .string = val_str });
+                                            if (std.fmt.parseFloat(f64, val_str)) |fnum| {
+                                                try map.entries.put(ctx.arena, key, Value{ .double = fnum });
+                                            } else |_| {
+                                                try map.entries.put(ctx.arena, key, Value{ .string = val_str });
+                                            }
                                         }
                                         pos = val_end;
                                         continue;
@@ -849,10 +859,41 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     desc.* = .{ .class_name = "DescribeSObjectResult" };
     const is_restricted = ctx.eval.is_restricted_user;
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = !is_restricted });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_restricted });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_restricted });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = !is_restricted });
+
+    // Check ObjectPermissions for granular CRUD access when user has permission sets
+    var perm_accessible = !is_restricted;
+    var perm_createable = !is_restricted;
+    var perm_updateable = !is_restricted;
+    var perm_deletable = !is_restricted;
+    if (is_restricted) {
+        if (ctx.eval.store.get("ObjectPermissions")) |op_records| {
+            for (op_records.items) |op_item| {
+                if (op_item == .sobject) {
+                    const sobj_type = utils.sobjectGet(&op_item.sobject.fields, "SobjectType") orelse continue;
+                    if (sobj_type == .string and std.ascii.eqlIgnoreCase(sobj_type.string, obj_name)) {
+                        // Found ObjectPermissions for this object type
+                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsRead")) |v| {
+                            if (v == .boolean and v.boolean) perm_accessible = true;
+                        }
+                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsCreate")) |v| {
+                            if (v == .boolean and v.boolean) perm_createable = true;
+                        }
+                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsEdit")) |v| {
+                            if (v == .boolean and v.boolean) perm_updateable = true;
+                        }
+                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsDelete")) |v| {
+                            if (v == .boolean and v.boolean) perm_deletable = true;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = perm_accessible });
+    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = perm_createable });
+    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = perm_updateable });
+    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = perm_deletable });
     try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
@@ -1342,6 +1383,12 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
         if (std.ascii.eqlIgnoreCase(method_name, "getCapacity")) {
             return Value{ .integer = 10000000 }; // 10MB default
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getNumKeys")) {
+            if (cache_map) |cm| {
+                return Value{ .integer = @intCast(cm.entries.count()) };
+            }
+            return Value{ .integer = 0 };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "getKeys")) {
             const set = try ctx.arena.create(types.SetValue);

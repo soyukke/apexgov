@@ -572,6 +572,44 @@ pub const Evaluator = struct {
                             .normal => {},
                         }
                     }
+                } else if (iterable == .object) {
+                    // Custom Iterable/Iterator: call iterator() then hasNext()/next()
+                    const iterator_obj = blk: {
+                        // Try calling iterator() method on the object
+                        if (self.findClass(iterable.object.class_name)) |cd| {
+                            const iter_val = self.callInstanceMethod(cd, iterable.object, "iterator", &.{}) catch break :blk iterable;
+                            break :blk iter_val;
+                        }
+                        break :blk iterable;
+                    };
+                    if (iterator_obj == .object) {
+                        const iter_cd = self.findClass(iterator_obj.object.class_name);
+                        const loop_env = try current_env.child();
+                        var iterations: u32 = 0;
+                        while (iterations < 100_000) : (iterations += 1) {
+                            // Call hasNext()
+                            const has_next = if (iter_cd) |icd|
+                                self.callInstanceMethod(icd, iterator_obj.object, "hasNext", &.{}) catch break
+                            else
+                                break;
+                            if (!(utils.coerceToBool(has_next) catch false)) break;
+                            // Call next()
+                            const next_val = if (iter_cd) |icd|
+                                self.callInstanceMethod(icd, iterator_obj.object, "next", &.{}) catch break
+                            else
+                                break;
+                            loop_env.set(fes.elem_name, next_val) catch {
+                                try loop_env.define(fes.elem_name, next_val);
+                            };
+                            const result = try self.execBlock(fes.body, loop_env);
+                            switch (result) {
+                                .break_signal => break,
+                                .continue_signal => {},
+                                .return_val => return result,
+                                .normal => {},
+                            }
+                        }
+                    }
                 }
                 return .normal;
             },
@@ -1630,6 +1668,84 @@ pub const Evaluator = struct {
                     try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
                     try records.append(self.arena, Value{ .sobject = fp });
                 }
+            } else if ((std.ascii.eqlIgnoreCase(from_type, "StaticResource") or std.ascii.eqlIgnoreCase(from_type, "ApexClass")) and std.ascii.indexOfIgnoreCase(soql, " IN (") != null) {
+                // Handle IN clause for metadata types: extract all names from IN ('a', 'b', 'c')
+                const where_clause = extractWhereClause(soql) orelse "";
+                if (std.ascii.indexOfIgnoreCase(where_clause, " IN ")) |in_pos| {
+                    // Find opening paren
+                    var pp = in_pos + 4;
+                    while (pp < where_clause.len and where_clause[pp] != '(') pp += 1;
+                    if (pp < where_clause.len) {
+                        pp += 1; // skip '('
+                        // Extract each quoted string
+                        while (pp < where_clause.len and where_clause[pp] != ')') {
+                            while (pp < where_clause.len and where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
+                            if (pp < where_clause.len and where_clause[pp] == '\'') {
+                                pp += 1;
+                                const start = pp;
+                                while (pp < where_clause.len and where_clause[pp] != '\'') pp += 1;
+                                if (pp > start) {
+                                    const in_name = where_clause[start..pp];
+                                    const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Id, Name FROM {s} WHERE Name = '{s}'", .{ from_type, in_name });
+                                    if (try self.generateMetadataStub(from_type, tmp_soql, current_env)) |stub| {
+                                        try records.append(self.arena, stub);
+                                    }
+                                }
+                                if (pp < where_clause.len) pp += 1; // skip closing quote
+                            }
+                        }
+                    }
+                }
+            } else if (std.ascii.eqlIgnoreCase(from_type, "ApexClass") and std.ascii.indexOfIgnoreCase(soql, " OR ") != null) {
+                // ApexClass with OR: extract all Name values and generate stubs for each
+                const where_clause = extractWhereClause(soql) orelse "";
+                var wpos: usize = 0;
+                while (wpos < where_clause.len) {
+                    // Find next Name LIKE or Name =
+                    const name_pos = std.ascii.indexOfIgnoreCasePos(where_clause, wpos, "Name") orelse break;
+                    var j = name_pos + 4;
+                    while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+                    // Skip operator
+                    if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) {
+                        j += 4;
+                    } else if (j < where_clause.len and where_clause[j] == '=') {
+                        j += 1;
+                    } else {
+                        wpos = j;
+                        continue;
+                    }
+                    while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+                    var name_val: ?[]const u8 = null;
+                    if (j < where_clause.len and where_clause[j] == '\'') {
+                        const start = j + 1;
+                        if (std.mem.indexOfPos(u8, where_clause, start, "'")) |end| {
+                            name_val = where_clause[start..end];
+                            wpos = end + 1;
+                        } else {
+                            wpos = j + 1;
+                        }
+                    } else if (j < where_clause.len and where_clause[j] == ':') {
+                        const start = j + 1;
+                        var end = start;
+                        while (end < where_clause.len and (std.ascii.isAlphanumeric(where_clause[end]) or where_clause[end] == '_')) end += 1;
+                        if (end > start) {
+                            if (current_env.get(where_clause[start..end])) |bv| {
+                                if (bv == .string) name_val = bv.string;
+                            }
+                        }
+                        wpos = end;
+                    } else {
+                        wpos = j + 1;
+                        continue;
+                    }
+                    if (name_val) |nv| {
+                        // Use a temporary soql for the stub generator with a single WHERE
+                        const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Name, Body FROM ApexClass WHERE Name = '{s}'", .{nv});
+                        if (try self.generateMetadataStub(from_type, tmp_soql, current_env)) |stub| {
+                            try records.append(self.arena, stub);
+                        }
+                    }
+                }
             } else if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
                 try records.append(self.arena, stub_record);
             }
@@ -1858,7 +1974,8 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(from_type, "Organization")) {
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = "Organization" };
-            const id = try self.allocId();
+            // Use a fixed ID for Organization (singleton object)
+            const id = "00D000000000001";
             sob.id = id;
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
             try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = true });
@@ -1886,6 +2003,8 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "StaticResource")) {
+            // This returns a single record; for IN clause with multiple names,
+            // the caller should handle generating multiple stubs.
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = "StaticResource" };
             const id = try self.allocId();
