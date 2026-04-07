@@ -446,10 +446,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             rm_map.* = .{};
 
             if (ctx.eval.is_restricted_user) {
-                // When running as restricted user, strip non-standard fields and throw NoAccessException if UPDATABLE
+                // When running as restricted user, strip non-standard fields
                 const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+                // Check 3rd arg: if true, CRUD enforcement is enabled → throw NoAccessException for min-access
+                const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
+                if (ctx.eval.is_min_access_user and enforce_crud) {
+                    return ctx.throwException("System.NoAccessException", "No access to entity");
+                }
                 if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) {
-                    // Strip fields that restricted users can't access
+                    // Min-access users have no CRUD access at all
+                    if (ctx.eval.is_min_access_user) {
+                        return ctx.throwException("System.NoAccessException", "No access to entity");
+                    }
+                    // Strip fields that restricted users (e.g. marketing) can't access
                     const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
                     if (input_records == .list and input_records.list.items.items.len > 0) {
                         // Check if any non-standard fields exist - if so, strip them
@@ -470,8 +479,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     }
                     try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
                 } else {
-                    // For READABLE access type when restricted, return records as-is
-                    // (some fields may be inaccessible but we don't strip them)
+                    // For READABLE and other access types, return records as-is for restricted users
                     if (args.len >= 2) {
                         try obj.fields.put(ctx.arena, "records", args[1]);
                     }
