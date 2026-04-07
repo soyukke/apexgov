@@ -2634,6 +2634,16 @@ pub const Evaluator = struct {
                     return self.handleSystemMethod(inner, mc.method, args.items, current_env);
                 }
 
+                // DataWeave.Script.createScript(scriptName)
+                if (std.ascii.eqlIgnoreCase(outer_class, "DataWeave") and std.ascii.eqlIgnoreCase(inner, "Script")) {
+                    if (std.ascii.eqlIgnoreCase(mc.method, "createScript") and args.items.len > 0 and args.items[0] == .string) {
+                        const dw = try self.arena.create(types.ObjectInstance);
+                        dw.* = .{ .class_name = "DataWeave.Script" };
+                        try dw.fields.put(self.arena, "scriptName", args.items[0]);
+                        return Value{ .object = dw };
+                    }
+                }
+
                 // ConnectApi → throw UnsupportedOperationException (data-siloed test)
                 // Note: in real Apex with @isTest(SeeAllData=true), ConnectApi works.
                 // We always throw since we can't distinguish annotations here.
@@ -3446,6 +3456,17 @@ pub const Evaluator = struct {
                 }
             }
             return Value{ .map = map };
+        }
+
+        // DataWeaveScriptResource.* → create DataWeave.Script stub
+        if (std.ascii.startsWithIgnoreCase(type_name, "DataWeaveScriptResource")) {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = "DataWeave.Script" };
+            // Extract script name from the type (e.g., "DataWeaveScriptResource.helloWorld" → "helloWorld")
+            const dot_pos = std.mem.lastIndexOfScalar(u8, type_name, '.');
+            const script_name = if (dot_pos) |dp| type_name[dp + 1 ..] else type_name;
+            try instance.fields.put(self.arena, "scriptName", Value{ .string = script_name });
+            return Value{ .object = instance };
         }
 
         // new Set<T>()
