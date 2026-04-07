@@ -4975,8 +4975,11 @@ pub const Evaluator = struct {
                         try obj.fields.put(self.arena, "StageName", Value{ .string = "Prospecting" });
                     }
 
-                    if (do_insert) try self.insertRecord(obj);
                     try list.items.append(self.arena, Value{ .sobject = obj });
+                }
+                // Insert all records with trigger support (uses executeDml for trigger firing)
+                if (do_insert) {
+                    try self.executeDml(.insert, Value{ .list = list });
                 }
                 return Value{ .list = list };
             }
