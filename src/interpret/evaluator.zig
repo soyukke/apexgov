@@ -809,7 +809,7 @@ pub const Evaluator = struct {
     // DML 操作
     // -----------------------------------------------------------------------
 
-    fn executeDml(self: *Evaluator, op: ast.DmlOp, target: Value) anyerror!void {
+    pub fn executeDml(self: *Evaluator, op: ast.DmlOp, target: Value) anyerror!void {
         // Null target → throw NullPointerException (like Salesforce)
         if (target == .null_val) {
             const exc = try self.arena.create(types.ObjectInstance);
@@ -1635,6 +1635,38 @@ pub const Evaluator = struct {
                         }
                     }
                     break;
+                }
+            }
+        }
+
+        // Ensure SELECT clause fields exist on result records (even as null)
+        // This allows Security.stripInaccessible to detect and strip them
+        {
+            const select_start2 = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
+            const from_start2 = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
+            if (from_start2 > select_start2) {
+                const select_clause2 = std.mem.trim(u8, soql[select_start2..from_start2], " \t\n\r");
+                // Skip FIELDS(STANDARD) and aggregate functions
+                if (std.ascii.indexOfIgnoreCase(select_clause2, "FIELDS(") == null and
+                    std.ascii.indexOfIgnoreCase(select_clause2, "COUNT(") == null and
+                    std.ascii.indexOfIgnoreCase(select_clause2, "SUM(") == null)
+                {
+                    var field_iter = std.mem.splitScalar(u8, select_clause2, ',');
+                    while (field_iter.next()) |raw_field| {
+                        const field_name = std.mem.trim(u8, raw_field, " \t\n\r");
+                        if (field_name.len == 0) continue;
+                        // Skip subqueries (SELECT ... FROM ...)
+                        if (field_name[0] == '(') continue;
+                        // Skip parent references (Account.Name → skip)
+                        if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
+                        for (records.items) |item| {
+                            if (item == .sobject) {
+                                if (utils.sobjectGet(&item.sobject.fields, field_name) == null) {
+                                    try item.sobject.fields.put(self.arena, field_name, Value.null_val);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

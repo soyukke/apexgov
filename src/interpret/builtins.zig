@@ -7,6 +7,7 @@ const types = @import("types.zig");
 const utils = @import("utils.zig");
 const Value = types.Value;
 
+const ast = @import("ast.zig");
 const evaluator_mod = @import("evaluator.zig");
 
 pub const BuiltinContext = struct {
@@ -511,8 +512,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     // Strip fields that restricted users (e.g. marketing) can't access
                     const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
                     if (input_records == .list and input_records.list.items.items.len > 0) {
-                        // Check if any non-standard fields exist - if so, strip them
-                        const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp" };
+                        const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
                         for (input_records.list.items.items) |item| {
                             if (item == .sobject) {
                                 for (item.sobject.fields.keys()) |k| {
@@ -533,6 +533,26 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     if (ctx.eval.is_min_access_user and !has_permset) {
                         return ctx.throwException("System.NoAccessException", "No access to entity");
                     }
+                    // With permission set: strip non-standard fields (FLS filtering)
+                    if (ctx.eval.is_min_access_user and has_permset) {
+                        const input_records2 = if (args.len >= 2) args[1] else Value.null_val;
+                        if (input_records2 == .list) {
+                            const standard_fields2 = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
+                            for (input_records2.list.items.items) |item| {
+                                if (item == .sobject) {
+                                    for (item.sobject.fields.keys()) |k| {
+                                        var is_std = false;
+                                        for (standard_fields2) |sf| {
+                                            if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
+                                        }
+                                        if (!is_std) {
+                                            try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (args.len >= 2) {
                         try obj.fields.put(ctx.arena, "records", args[1]);
                     }
@@ -548,6 +568,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                 } else if (args.len >= 1 and args[0] == .list) {
                     try obj.fields.put(ctx.arena, "records", args[0]);
                 }
+            }
+            // getRecords() returns the input list (fields are not removed from records)
+            if (args.len >= 2) {
+                try obj.fields.put(ctx.arena, "records", args[1]);
+            } else if (args.len >= 1 and args[0] == .list) {
+                try obj.fields.put(ctx.arena, "records", args[0]);
             }
             try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
             return Value{ .object = obj };
@@ -752,14 +778,31 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         {
             return Value{ .boolean = true };
         }
-        // create/edit/destroy/crud: only deny for min-access users, allow for marketing/other restricted
+        // create/edit/destroy/crud: check ObjectPermissions in store for min-access users
         if (std.ascii.eqlIgnoreCase(method_name, "create") or
             std.ascii.eqlIgnoreCase(method_name, "edit") or
             std.ascii.eqlIgnoreCase(method_name, "crud"))
         {
-            return Value{ .boolean = !ctx.eval.is_min_access_user };
+            if (ctx.eval.is_min_access_user) {
+                // Check ObjectPermissions store for the SObject type
+                const sobject_type = getSObjectTypeFromArgs(args);
+                if (sobject_type) |sot| {
+                    const perm = lookupObjectPermission(ctx.eval, sot, method_name);
+                    if (perm) |p| return Value{ .boolean = p };
+                }
+                return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "destroy")) {
+            if (ctx.eval.is_min_access_user) {
+                const sobject_type = getSObjectTypeFromArgs(args);
+                if (sobject_type) |sot| {
+                    const perm = lookupObjectPermission(ctx.eval, sot, "destroy");
+                    if (perm) |p| return Value{ .boolean = p };
+                }
+                return Value{ .boolean = false };
+            }
             // Only deny delete for restricted users
             return Value{ .boolean = !ctx.eval.is_restricted_user };
         }
@@ -821,7 +864,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             }
             return Value{ .map = map };
         }
-        return Value{ .boolean = true };
+        // For unknown methods (memoizeFLSMDC, etc.), fall through to user-defined class
+        return null;
     }
 
     // OrgShape
@@ -933,12 +977,26 @@ fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Valu
 }
 
 fn dispatchDatabase(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    // Database.insert / update / delete / upsert return SaveResult list
+    // Database.insert / update / delete / upsert — execute real DML + return SaveResult list
     if (std.ascii.eqlIgnoreCase(method_name, "insert") or
         std.ascii.eqlIgnoreCase(method_name, "update") or
         std.ascii.eqlIgnoreCase(method_name, "upsert") or
         std.ascii.eqlIgnoreCase(method_name, "delete"))
     {
+        if (args.len > 0 and (args[0] == .sobject or args[0] == .list)) {
+            const dml_op: ast.DmlOp = if (std.ascii.eqlIgnoreCase(method_name, "insert"))
+                .insert
+            else if (std.ascii.eqlIgnoreCase(method_name, "update"))
+                .update
+            else if (std.ascii.eqlIgnoreCase(method_name, "upsert"))
+                .upsert
+            else
+                .delete;
+            ctx.eval.executeDml(dml_op, args[0]) catch |err| {
+                if (err == error.ApexException) return err;
+                // Non-exception DML errors: silently succeed for allOrNone=false
+            };
+        }
         // Return a list of SaveResults matching the input records count
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -1605,6 +1663,52 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
             try map.entries.put(ctx.arena, k, v);
         }
         return Value{ .map = map };
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// CanTheUser ヘルパー
+// ---------------------------------------------------------------------------
+
+/// Extract SObject type name from CanTheUser method arguments
+fn getSObjectTypeFromArgs(args: []const Value) ?[]const u8 {
+    if (args.len == 0) return null;
+    if (args[0] == .sobject) return args[0].sobject.type_name;
+    if (args[0] == .list) {
+        for (args[0].list.items.items) |item| {
+            if (item == .sobject) return item.sobject.type_name;
+        }
+    }
+    // If the argument is a string, it might be the SObject type name directly
+    if (args[0] == .string) return args[0].string;
+    return null;
+}
+
+/// Lookup ObjectPermissions in the store for a given SObject type and operation
+fn lookupObjectPermission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) ?bool {
+    const op_records = eval.store.get("ObjectPermissions") orelse return null;
+    for (op_records.items) |item| {
+        if (item != .sobject) continue;
+        const sot_val = utils.sobjectGet(&item.sobject.fields, "SobjectType") orelse continue;
+        if (sot_val != .string) continue;
+        if (!std.ascii.eqlIgnoreCase(sot_val.string, sobject_type)) continue;
+
+        // Found matching ObjectPermissions record
+        const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
+            "PermissionsCreate"
+        else if (std.ascii.eqlIgnoreCase(operation, "edit"))
+            "PermissionsEdit"
+        else if (std.ascii.eqlIgnoreCase(operation, "destroy") or std.ascii.eqlIgnoreCase(operation, "delete"))
+            "PermissionsDelete"
+        else if (std.ascii.eqlIgnoreCase(operation, "read"))
+            "PermissionsRead"
+        else
+            "PermissionsRead";
+
+        const perm_val = utils.sobjectGet(&item.sobject.fields, perm_field) orelse return false;
+        if (perm_val == .boolean) return perm_val.boolean;
+        return false;
     }
     return null;
 }
