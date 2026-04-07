@@ -202,8 +202,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     return Value{ .list = list };
                 }
                 // Handle top-level string literals
-                if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
-                    return Value{ .string = trimmed[1 .. trimmed.len - 1] };
+                if (trimmed.len >= 2 and trimmed[0] == '"') {
+                    if (findJsonStringEndAlloc(trimmed, 1, ctx.arena)) |res| {
+                        return Value{ .string = res.value };
+                    } else if (trimmed[trimmed.len - 1] == '"') {
+                        return Value{ .string = trimmed[1 .. trimmed.len - 1] };
+                    }
                 }
                 // Handle integers
                 if (std.fmt.parseInt(i64, trimmed, 10)) |num| {
@@ -232,8 +236,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                 while (val_start < json_str.len and (json_str[val_start] == ' ' or json_str[val_start] == '\t' or json_str[val_start] == '\n' or json_str[val_start] == '\r')) val_start += 1;
                                 if (val_start < json_str.len) {
                                     if (json_str[val_start] == '"') {
-                                        // String value
-                                        if (std.mem.indexOfPos(u8, json_str, val_start + 1, "\"")) |val_end| {
+                                        // String value - handle escape sequences
+                                        if (findJsonStringEndAlloc(json_str, val_start + 1, ctx.arena)) |res| {
+                                            try map.entries.put(ctx.arena, key, Value{ .string = res.value });
+                                            pos = res.end + 1;
+                                            continue;
+                                        } else if (std.mem.indexOfPos(u8, json_str, val_start + 1, "\"")) |val_end| {
                                             try map.entries.put(ctx.arena, key, Value{ .string = json_str[val_start + 1 .. val_end] });
                                             pos = val_end + 1;
                                             continue;
@@ -440,7 +448,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             if (ctx.eval.is_restricted_user) {
                 // When running as restricted user, strip non-standard fields and throw NoAccessException if UPDATABLE
                 const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
-                if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE")) {
+                if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) {
                     // Strip fields that restricted users can't access
                     const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
                     if (input_records == .list and input_records.list.items.items.len > 0) {
@@ -674,18 +682,27 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
     }
 
-    // CanTheUser — security permission checks (always return true in tests)
+    // CanTheUser — security permission checks (respects restricted user context)
     if (std.ascii.eqlIgnoreCase(class_name, "CanTheUser")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "create") or
-            std.ascii.eqlIgnoreCase(method_name, "read") or
-            std.ascii.eqlIgnoreCase(method_name, "edit") or
-            std.ascii.eqlIgnoreCase(method_name, "destroy") or
-            std.ascii.eqlIgnoreCase(method_name, "crud") or
+        // read and flsAccessible are generally always true (even restricted users can read standard objects)
+        if (std.ascii.eqlIgnoreCase(method_name, "read") or
             std.ascii.eqlIgnoreCase(method_name, "flsAccessible"))
         {
             return Value{ .boolean = true };
         }
+        // create/edit/destroy/crud: only deny for min-access users, allow for marketing/other restricted
+        if (std.ascii.eqlIgnoreCase(method_name, "create") or
+            std.ascii.eqlIgnoreCase(method_name, "edit") or
+            std.ascii.eqlIgnoreCase(method_name, "crud"))
+        {
+            return Value{ .boolean = !ctx.eval.is_min_access_user };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "destroy")) {
+            // Only deny delete for restricted users
+            return Value{ .boolean = !ctx.eval.is_restricted_user };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
+            if (ctx.eval.is_min_access_user) return Value{ .boolean = false };
             // Id and system fields are not updatable
             if (args.len >= 2 and args[1] == .string) {
                 if (std.ascii.eqlIgnoreCase(args[1].string, "Id") or
@@ -1899,6 +1916,57 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
             } else break;
         }
     }
+}
+
+/// Find the end of a JSON string (handling backslash escapes) and return the unescaped content.
+/// `start` should point to the character after the opening `"`.
+fn findJsonStringEnd(json: []const u8, start: usize) ?struct { end: usize, value: []const u8 } {
+    return findJsonStringEndAlloc(json, start, null);
+}
+
+fn findJsonStringEndAlloc(json: []const u8, start: usize, arena_opt: ?std.mem.Allocator) ?struct { end: usize, value: []const u8 } {
+    var i = start;
+    var needs_unescape = false;
+    while (i < json.len) {
+        if (json[i] == '\\') {
+            needs_unescape = true;
+            i += 2; // skip backslash + escaped char
+            continue;
+        }
+        if (json[i] == '"') {
+            // Found end
+            if (!needs_unescape) {
+                return .{ .end = i, .value = json[start..i] };
+            }
+            // Unescape
+            const alloc = arena_opt orelse return .{ .end = i, .value = json[start..i] };
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            var j = start;
+            while (j < i) {
+                if (json[j] == '\\' and j + 1 < i) {
+                    j += 1;
+                    switch (json[j]) {
+                        'n' => buf.append(alloc, '\n') catch return null,
+                        't' => buf.append(alloc, '\t') catch return null,
+                        'r' => buf.append(alloc, '\r') catch return null,
+                        '\\' => buf.append(alloc, '\\') catch return null,
+                        '"' => buf.append(alloc, '"') catch return null,
+                        '/' => buf.append(alloc, '/') catch return null,
+                        else => |c| {
+                            buf.append(alloc, '\\') catch return null;
+                            buf.append(alloc, c) catch return null;
+                        },
+                    }
+                } else {
+                    buf.append(alloc, json[j]) catch return null;
+                }
+                j += 1;
+            }
+            return .{ .end = i, .value = buf.items };
+        }
+        i += 1;
+    }
+    return null;
 }
 
 test "String.length instance method" {

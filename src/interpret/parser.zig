@@ -469,20 +469,19 @@ const Parser = struct {
         // Expression statement
         const expr = try self.expression();
 
-        // Handle System.runAs(user) { block } — evaluate runAs expr, then execute block
+        // Handle System.runAs(user) { block } — scoped restricted user context
         if (self.check(.lbrace) and expr.* == .method_call) {
             const mc = expr.method_call;
             if (std.ascii.eqlIgnoreCase(mc.method, "runAs")) {
                 self.pos += 1; // skip {
                 const block_stmts = try self.parseBlock();
                 try self.expect(.rbrace);
-                // Wrap: first execute the runAs expression (to set context), then the block
-                var stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
-                try stmts.append(self.arena, .{ .expr_stmt = expr });
-                for (block_stmts) |s| {
-                    try stmts.append(self.arena, s);
-                }
-                return .{ .block = try stmts.toOwnedSlice(self.arena) };
+                const run_as = try self.arena.create(ast.RunAsStmt);
+                run_as.* = .{
+                    .user_expr = if (mc.args.len > 0) &mc.args[0] else expr,
+                    .body = block_stmts,
+                };
+                return .{ .run_as_stmt = run_as };
             }
         }
 
@@ -712,11 +711,13 @@ const Parser = struct {
         };
         self.pos += 1;
         // Handle "insert as system/user expr" syntax
+        var is_user_mode = false;
         if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "as")) {
             self.pos += 1; // skip 'as'
-            if (self.check(.identifier) and (std.ascii.eqlIgnoreCase(self.current().lexeme, "system") or
-                std.ascii.eqlIgnoreCase(self.current().lexeme, "user")))
-            {
+            if (self.check(.identifier)) {
+                if (std.ascii.eqlIgnoreCase(self.current().lexeme, "user")) {
+                    is_user_mode = true;
+                }
                 self.pos += 1; // skip 'system'/'user'
             }
         }
@@ -724,7 +725,7 @@ const Parser = struct {
         _ = self.matchKind(.semicolon);
 
         const stmt = try self.arena.create(ast.DmlStmt);
-        stmt.* = .{ .op = op, .target = target, .loc = loc };
+        stmt.* = .{ .op = op, .target = target, .is_user_mode = is_user_mode, .loc = loc };
         return .{ .dml_stmt = stmt };
     }
 

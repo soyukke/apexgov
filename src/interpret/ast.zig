@@ -169,6 +169,13 @@ pub const Stmt = union(enum) {
     try_stmt: *TryStmt,
     throw_stmt: *ThrowStmt,
     dml_stmt: *DmlStmt,
+    run_as_stmt: *RunAsStmt,
+};
+
+pub const RunAsStmt = struct {
+    user_expr: *Expr,
+    body: []Stmt,
+    loc: SourceLoc = .zero,
 };
 
 pub const VarDecl = struct {
@@ -264,6 +271,7 @@ pub const DmlOp = enum {
 pub const DmlStmt = struct {
     op: DmlOp,
     target: *Expr,
+    is_user_mode: bool = false,
     loc: SourceLoc = .zero,
 };
 

@@ -52,8 +52,10 @@ pub const Evaluator = struct {
     class_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // Whether current test has @isTest(SeeAllData=true) annotation
     see_all_data: bool = false,
-    // Whether running as a restricted user (System.runAs with min-access user)
+    // Whether running as a restricted user (System.runAs with min-access or marketing user)
     is_restricted_user: bool = false,
+    // Whether running as a minimum-access user specifically (stricter than is_restricted_user)
+    is_min_access_user: bool = false,
     // Trigger declarations (object name → list of triggers)
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
@@ -96,6 +98,7 @@ pub const Evaluator = struct {
         self.call_depth = 0;
         self.scheduled_jobs = .empty;
         self.is_restricted_user = false;
+        self.is_min_access_user = false;
 
         // Clear cache partitions
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
@@ -277,7 +280,7 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return error.StackOverflow;
         }
-        // EventBus.publish → store events in the store so they can be queried
+        // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             if (args.len > 0) {
                 if (args[0] == .sobject) {
@@ -286,6 +289,15 @@ pub const Evaluator = struct {
                     for (args[0].list.items.items) |item| {
                         if (item == .sobject) try self.insertRecord(item.sobject);
                     }
+                }
+                // Fire after insert triggers for the event type
+                const event_type = if (args[0] == .sobject) args[0].sobject.type_name
+                    else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
+                        args[0].list.items.items[0].sobject.type_name
+                    else null;
+                if (event_type) |et| {
+                    var record_list = try self.buildRecordList(args[0]);
+                    self.fireTrigger(et, .after_insert, &record_list, null) catch {};
                 }
             }
             const result = try self.arena.create(types.ObjectInstance);
@@ -684,8 +696,46 @@ pub const Evaluator = struct {
             },
             .dml_stmt => |dml| {
                 const target = try self.evalExpr(dml.target, current_env);
+                // Check USER_MODE access for min-access users (no CRUD access)
+                if (dml.is_user_mode and self.is_min_access_user) {
+                    const from_type = if (target == .sobject) target.sobject.type_name
+                        else if (target == .list and target.list.items.items.len > 0 and target.list.items.items[0] == .sobject)
+                            target.list.items.items[0].sobject.type_name
+                        else "SObject";
+                    const msg = try std.fmt.allocPrint(self.arena, "No Access: Access to entity '{s}' denied", .{from_type});
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "System.NoAccessException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
                 try self.executeDml(dml.op, target);
                 return .normal;
+            },
+            .run_as_stmt => |ras| {
+                const user_val = try self.evalExpr(ras.user_expr, current_env);
+                const prev_restricted = self.is_restricted_user;
+                const prev_min_access = self.is_min_access_user;
+                // Determine if the user is a restricted/min-access user
+                if (user_val == .sobject) {
+                    const profile_name = self.getUserProfileName(user_val.sobject);
+                    if (profile_name) |pn| {
+                        self.is_restricted_user = self.isRestrictedProfileName(pn);
+                        self.is_min_access_user = std.ascii.indexOfIgnoreCase(pn, "Minimum Access") != null or
+                            std.ascii.indexOfIgnoreCase(pn, "MinAccess") != null;
+                    } else {
+                        // No profile info found: assume non-restricted (e.g. runAs with current user)
+                        self.is_restricted_user = false;
+                        self.is_min_access_user = false;
+                    }
+                } else {
+                    self.is_restricted_user = true;
+                    self.is_min_access_user = true;
+                }
+                defer self.is_restricted_user = prev_restricted;
+                defer self.is_min_access_user = prev_min_access;
+                const result = self.execBlock(ras.body, current_env);
+                if (result) |r| return r else |e| return e;
             },
         }
     }
@@ -857,6 +907,45 @@ pub const Evaluator = struct {
             }
         }
         return null;
+    }
+
+    /// Get the profile name for a User SObject by checking Profile field or looking up profileId.
+    fn getUserProfileName(self: *Evaluator, user: *types.SObject) ?[]const u8 {
+        // Check the Profile field directly (SObject reference)
+        if (utils.sobjectGet(&user.fields, "Profile")) |pv| {
+            if (pv == .sobject) {
+                if (utils.sobjectGet(&pv.sobject.fields, "Name")) |name| {
+                    if (name == .string) return name.string;
+                }
+            }
+        }
+        // Check profileId → look up in the store
+        if (utils.sobjectGet(&user.fields, "profileId") orelse utils.sobjectGet(&user.fields, "ProfileId")) |pid| {
+            const pid_str = if (pid == .string) pid.string else null;
+            if (pid_str) |profile_id| {
+                var store_iter = self.store.iterator();
+                while (store_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "Profile")) {
+                        for (entry.value_ptr.items) |rec| {
+                            if (rec == .sobject and rec.sobject.id != null and
+                                std.mem.eql(u8, rec.sobject.id.?, profile_id))
+                            {
+                                if (utils.sobjectGet(&rec.sobject.fields, "Name")) |name| {
+                                    if (name == .string) return name.string;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn isRestrictedProfileName(_: *Evaluator, name: []const u8) bool {
+        return std.ascii.indexOfIgnoreCase(name, "Minimum Access") != null or
+            std.ascii.indexOfIgnoreCase(name, "MinAccess") != null or
+            std.ascii.indexOfIgnoreCase(name, "Marketing") != null;
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
@@ -1273,9 +1362,12 @@ pub const Evaluator = struct {
                 std.ascii.indexOfIgnoreCase(soql, "WITH USER_MODE") != null or
                 std.ascii.indexOfIgnoreCase(soql, "USER_MODE") != null)
             {
+                const from_type_name = extractFromType(soql) orelse "SObject";
+                const msg = try std.fmt.allocPrint(self.arena,
+                    "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.QueryException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "sObject type 'account' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name." });
+                try exc.fields.put(self.arena, "message", Value{ .string = msg });
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -1608,6 +1700,20 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
             try sob.fields.put(self.arena, "MasterLabel", Value{ .string = name_val });
             try sob.fields.put(self.arena, "Status", Value{ .string = "Updated" });
+            return Value{ .sobject = sob };
+        }
+
+        if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "Profile" };
+            const id = try self.allocId();
+            sob.id = id;
+            try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
+            // Store in the store so isRestrictedUser can look it up later
+            const gop = try self.store.getOrPut(self.arena, "Profile");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
             return Value{ .sobject = sob };
         }
 
@@ -4477,6 +4583,33 @@ pub const Evaluator = struct {
             // Check allOrNothing flag (second arg, defaults to true)
             const all_or_nothing = if (args.len >= 2 and args[1] == .boolean) args[1].boolean else true;
 
+            // Check if second arg is AccessLevel.USER_MODE for min-access user context
+            if (self.is_min_access_user and args.len >= 2) {
+                const is_user_mode = if (args[1] == .string)
+                    std.ascii.eqlIgnoreCase(args[1].string, "USER_MODE")
+                else if (args[1] == .object)
+                    blk: {
+                        if (args[1].object.fields.get("name")) |n| {
+                            if (n == .string) break :blk std.ascii.eqlIgnoreCase(n.string, "USER_MODE");
+                        }
+                        break :blk false;
+                    }
+                else
+                    false;
+                if (is_user_mode) {
+                    const from_type = if (args[0] == .sobject) args[0].sobject.type_name
+                        else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
+                            args[0].list.items.items[0].sobject.type_name
+                        else "SObject";
+                    const msg = try std.fmt.allocPrint(self.arena, "Access to entity '{s}' denied", .{from_type});
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "System.SecurityException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
+            }
+
             // For upsert, record which items had IDs before DML (to determine created vs updated)
             var had_id_before: std.ArrayListUnmanaged(bool) = .empty;
             if (std.ascii.eqlIgnoreCase(method, "upsert") and args.len > 0) {
@@ -4689,28 +4822,8 @@ pub const Evaluator = struct {
             return Value{ .string = "707000000000002" }; // Fake async job ID
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
-        // System.runAs → set restricted user context
+        // System.runAs → now handled by run_as_stmt in the AST; this is a fallback no-op
         if (std.ascii.eqlIgnoreCase(inner, "runAs")) {
-            if (args.len > 0 and args[0] == .sobject) {
-                // Check if it's a "min access" or "marketing" user by examining Profile
-                const profile_val = utils.sobjectGet(&args[0].sobject.fields, "Profile") orelse
-                    utils.sobjectGet(&args[0].sobject.fields, "ProfileId");
-                // If any user is passed, check if it's a restricted user
-                const is_min_access = if (profile_val) |pv| blk: {
-                    if (pv == .sobject) {
-                        if (utils.sobjectGet(&pv.sobject.fields, "Name")) |name| {
-                            if (name == .string) {
-                                break :blk std.ascii.indexOfIgnoreCase(name.string, "Minimum Access") != null or
-                                    std.ascii.indexOfIgnoreCase(name.string, "MinAccess") != null;
-                            }
-                        }
-                    }
-                    break :blk false;
-                } else true; // Default: any runAs user is treated as restricted
-                _ = is_min_access;
-                // Set restricted flag - any System.runAs implies restricted access
-                self.is_restricted_user = true;
-            }
             return .void_val;
         }
         // System.schedule → store cron expression and return unique job ID
@@ -4872,11 +4985,37 @@ pub const Evaluator = struct {
                 std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser") or
                 std.ascii.eqlIgnoreCase(method_name, "createMarketingUser"))
             {
+                // If user-defined TestFactory class has this method, delegate to it
+                var class_iter = self.classes.iterator();
+                while (class_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
+                        if (self.findBestMethodInClass(entry.value_ptr.*, method_name, args) != null) {
+                            return null; // Let the caller fall through to user-defined class
+                        }
+                    }
+                }
+                // Fallback: create a minimal user stub
                 const user = try self.arena.create(types.SObject);
                 user.* = .{ .type_name = "User" };
                 try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-                try user.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
-                user.id = "005000000000001";
+                const user_id = try self.allocId();
+                try user.fields.put(self.arena, "Id", Value{ .string = user_id });
+                user.id = user_id;
+                // Set profile info based on method name
+                const profile = try self.arena.create(types.SObject);
+                profile.* = .{ .type_name = "Profile" };
+                if (std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser")) {
+                    try profile.fields.put(self.arena, "Name", Value{ .string = "Minimum Access - Salesforce" });
+                } else if (std.ascii.eqlIgnoreCase(method_name, "createMarketingUser")) {
+                    try profile.fields.put(self.arena, "Name", Value{ .string = "Marketing User" });
+                } else {
+                    try profile.fields.put(self.arena, "Name", Value{ .string = "Standard User" });
+                }
+                try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
+                // Insert if first arg is true (or for createMinAccessUser/createMarketingUser)
+                if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
+                    try self.insertRecord(user);
+                }
                 return Value{ .sobject = user };
             }
             return null;
@@ -5202,7 +5341,7 @@ pub const Evaluator = struct {
                 } else if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
                     // List passed where non-List expected = poor match
                     score -= 1;
-                } else if (arg == .string and std.ascii.eqlIgnoreCase(pt, "String")) {
+                } else if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
                     score += 2;
                 } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
                     score += 2;
