@@ -351,5 +351,7 @@ pub const FieldDecl = struct {
     modifiers: Modifiers = .{},
     type_ref: TypeRef,
     initializer: ?*Expr = null,
+    getter_body: ?[]Stmt = null,
+    setter_body: ?[]Stmt = null,
     loc: SourceLoc = .zero,
 };

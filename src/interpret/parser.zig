@@ -166,10 +166,12 @@ const Parser = struct {
         while (!self.atEnd() and !self.check(.rbrace)) {
             var annotations: std.ArrayListUnmanaged([]const u8) = .empty;
             while (self.check(.annotation)) {
-                try annotations.append(self.arena, self.current().lexeme);
+                const ann_lexeme = self.current().lexeme;
                 self.pos += 1;
-                // skip annotation params like @IsTest(seeAllData=true)
+                // Capture annotation params like @IsTest(seeAllData=true)
                 if (self.matchKind(.lparen)) {
+                    // Build full annotation string with params
+                    const param_start = self.pos;
                     var depth: u32 = 1;
                     while (!self.atEnd() and depth > 0) {
                         if (self.check(.lparen)) depth += 1;
@@ -179,7 +181,19 @@ const Parser = struct {
                         }
                         self.pos += 1;
                     }
+                    const param_end = self.pos;
                     try self.expect(.rparen);
+                    // Reconstruct annotation with params
+                    var param_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    try param_buf.appendSlice(self.arena, ann_lexeme);
+                    try param_buf.append(self.arena, '(');
+                    for (self.tokens[param_start..param_end]) |tok| {
+                        try param_buf.appendSlice(self.arena, tok.lexeme);
+                    }
+                    try param_buf.append(self.arena, ')');
+                    try annotations.append(self.arena, param_buf.items);
+                } else {
+                    try annotations.append(self.arena, ann_lexeme);
                 }
             }
 
@@ -250,12 +264,48 @@ const Parser = struct {
             return .{ .method_decl = decl };
         }
 
-        // field
+        // field or property
         var initializer: ?*ast.Expr = null;
-        if (self.matchKind(.assign)) {
-            initializer = try self.expression();
+        var getter_body: ?[]ast.Stmt = null;
+        var setter_body: ?[]ast.Stmt = null;
+
+        if (self.matchKind(.lbrace)) {
+            // Property declaration: Type name { get { ... } set { ... } }
+            while (!self.atEnd() and !self.check(.rbrace)) {
+                // Skip modifiers like 'private', 'public' before get/set
+                while (self.check(.private_kw) or self.check(.public_kw) or self.check(.protected_kw)) {
+                    self.pos += 1;
+                }
+                if (self.check(.identifier)) {
+                    const accessor = self.current().lexeme;
+                    self.pos += 1;
+                    if (std.ascii.eqlIgnoreCase(accessor, "get")) {
+                        if (self.matchKind(.lbrace)) {
+                            getter_body = try self.parseBlock();
+                            try self.expect(.rbrace);
+                        } else {
+                            _ = self.matchKind(.semicolon);
+                        }
+                    } else if (std.ascii.eqlIgnoreCase(accessor, "set")) {
+                        if (self.matchKind(.lbrace)) {
+                            setter_body = try self.parseBlock();
+                            try self.expect(.rbrace);
+                        } else {
+                            _ = self.matchKind(.semicolon);
+                        }
+                    }
+                } else {
+                    // Skip unknown tokens
+                    self.pos += 1;
+                }
+            }
+            try self.expect(.rbrace);
+        } else {
+            if (self.matchKind(.assign)) {
+                initializer = try self.expression();
+            }
+            _ = self.matchKind(.semicolon);
         }
-        _ = self.matchKind(.semicolon);
 
         const decl = try self.arena.create(ast.FieldDecl);
         decl.* = .{
@@ -263,6 +313,8 @@ const Parser = struct {
             .modifiers = mods,
             .type_ref = type_ref,
             .initializer = initializer,
+            .getter_body = getter_body,
+            .setter_body = setter_body,
             .loc = loc,
         };
         return .{ .field_decl = decl };
@@ -948,7 +1000,35 @@ const Parser = struct {
         if (kind == .string_literal) {
             const raw = self.current().lexeme;
             // strip quotes
-            const content = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
+            const quoted = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
+            // Process escape sequences
+            const content = blk: {
+                // Quick check: if no backslash, return as-is
+                if (std.mem.indexOf(u8, quoted, "\\") == null) break :blk quoted;
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                var ci: usize = 0;
+                while (ci < quoted.len) : (ci += 1) {
+                    if (quoted[ci] == '\\' and ci + 1 < quoted.len) {
+                        ci += 1;
+                        switch (quoted[ci]) {
+                            'n' => buf.append(self.arena, '\n') catch break :blk quoted,
+                            't' => buf.append(self.arena, '\t') catch break :blk quoted,
+                            'r' => buf.append(self.arena, '\r') catch break :blk quoted,
+                            '\\' => buf.append(self.arena, '\\') catch break :blk quoted,
+                            '\'' => buf.append(self.arena, '\'') catch break :blk quoted,
+                            '"' => buf.append(self.arena, '"') catch break :blk quoted,
+                            else => |ch| {
+                                // Keep unknown escapes as-is (e.g., \s, \*)
+                                buf.append(self.arena, '\\') catch break :blk quoted;
+                                buf.append(self.arena, ch) catch break :blk quoted;
+                            },
+                        }
+                    } else {
+                        buf.append(self.arena, quoted[ci]) catch break :blk quoted;
+                    }
+                }
+                break :blk buf.items;
+            };
             self.pos += 1;
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .string_literal = content };

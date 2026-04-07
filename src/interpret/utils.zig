@@ -52,9 +52,11 @@ pub fn valueEql(a: Value, b: Value) bool {
         .set => |av| return av == b.set,
         .object => |av| {
             if (av == b.object) return true;
-            // Compare Schema.SObjectType by name field
-            if (std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType") and
-                std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectType"))
+            // Compare Schema.SObjectType and Type objects by name field
+            if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType") and
+                std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectType")) or
+                (std.ascii.eqlIgnoreCase(av.class_name, "Type") and
+                std.ascii.eqlIgnoreCase(b.object.class_name, "Type")))
             {
                 const a_name = av.fields.get("name") orelse return false;
                 const b_name = b.object.fields.get("name") orelse return false;

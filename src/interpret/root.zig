@@ -113,6 +113,13 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
             parse_errors += 1;
             continue;
         };
+        // Register class source for ApexClass.Body queries
+        // Extract class name from file path (basename without .cls)
+        const basename = std.fs.path.basename(file.path);
+        if (std.mem.endsWith(u8, basename, ".cls")) {
+            const class_name = basename[0 .. basename.len - 4];
+            eval.registerClassSource(class_name, file.content) catch {};
+        }
     }
 
     try writer.print("interpret: registered {d} class(es), {d} parse error(s)\n", .{ eval.classes.count(), parse_errors });
@@ -177,6 +184,16 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 
                     // Reset store and assertions before each test
                     eval.resetForTest();
+                    // Check for @isTest(SeeAllData=true) annotation
+                    eval.see_all_data = false;
+                    for (md.annotations) |ann| {
+                        if (std.ascii.indexOfIgnoreCase(ann, "seealldata") != null and
+                            std.ascii.indexOfIgnoreCase(ann, "true") != null)
+                        {
+                            eval.see_all_data = true;
+                            break;
+                        }
+                    }
                     // Re-init static fields for classes that have them
                     for (classes_with_statics.items) |cd| {
                         eval.reInitClassStaticFields(cd);
@@ -249,6 +266,10 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 fn isTestMethod(md: *ast.MethodDecl) bool {
     for (md.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or std.ascii.eqlIgnoreCase(ann, "@test")) {
+            return true;
+        }
+        // Also match @isTest(SeeAllData=true) and similar parameterized annotations
+        if (std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test(")) {
             return true;
         }
     }

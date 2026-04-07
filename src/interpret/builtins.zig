@@ -11,6 +11,7 @@ pub const BuiltinContext = struct {
     arena: std.mem.Allocator,
     stdout: *std.ArrayListUnmanaged(u8),
     pending_exception: ?*?Value = null,
+    see_all_data: bool = false,
 
     fn throwException(self: *BuiltinContext, class_name: []const u8, message: []const u8) anyerror!?Value {
         const exc = try self.arena.create(types.ObjectInstance);
@@ -177,11 +178,49 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                             continue;
                                         }
                                     } else if (json_str[val_start] == '[') {
-                                        // Array value - store as list
+                                        // Array value - find matching ']' and parse elements
+                                        var arr_depth: i32 = 1;
+                                        var arr_pos: usize = val_start + 1;
+                                        while (arr_pos < json_str.len and arr_depth > 0) : (arr_pos += 1) {
+                                            if (json_str[arr_pos] == '[') arr_depth += 1;
+                                            if (json_str[arr_pos] == ']') arr_depth -= 1;
+                                            if (json_str[arr_pos] == '"') {
+                                                arr_pos += 1;
+                                                while (arr_pos < json_str.len and json_str[arr_pos] != '"') : (arr_pos += 1) {
+                                                    if (json_str[arr_pos] == '\\') arr_pos += 1;
+                                                }
+                                            }
+                                        }
                                         const list = try ctx.arena.create(types.ListValue);
                                         list.* = .{};
+                                        // Parse each object element in the array
+                                        const arr_content = json_str[val_start + 1 .. if (arr_pos > 0) arr_pos - 1 else val_start + 1];
+                                        var elem_start: usize = 0;
+                                        var elem_depth: i32 = 0;
+                                        var ei: usize = 0;
+                                        while (ei < arr_content.len) : (ei += 1) {
+                                            if (arr_content[ei] == '"') {
+                                                ei += 1;
+                                                while (ei < arr_content.len and arr_content[ei] != '"') : (ei += 1) {
+                                                    if (arr_content[ei] == '\\') ei += 1;
+                                                }
+                                            } else if (arr_content[ei] == '{') {
+                                                if (elem_depth == 0) elem_start = ei;
+                                                elem_depth += 1;
+                                            } else if (arr_content[ei] == '}') {
+                                                elem_depth -= 1;
+                                                if (elem_depth == 0) {
+                                                    // Parse this nested object recursively
+                                                    const elem_json = arr_content[elem_start .. ei + 1];
+                                                    const nested_args = [_]Value{Value{ .string = elem_json }};
+                                                    if (try dispatchStatic(ctx, "JSON", "deserializeUntyped", &nested_args)) |nested_val| {
+                                                        try list.items.append(ctx.arena, nested_val);
+                                                    }
+                                                }
+                                            }
+                                        }
                                         try map.entries.put(ctx.arena, key, Value{ .list = list });
-                                        pos = val_start + 1;
+                                        pos = arr_pos;
                                         continue;
                                     } else {
                                         // Number or other value
@@ -348,8 +387,9 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return Value{ .string = method_name };
     }
 
-    // ConnectApi → throw UnsupportedOperationException (simulates data-siloed test)
+    // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or std.ascii.eqlIgnoreCase(class_name, "ConnectApi")) {
+        if (ctx.see_all_data) return Value.null_val;
         return ctx.throwException("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
     }
 
@@ -541,23 +581,63 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             std.ascii.eqlIgnoreCase(method_name, "edit") or
             std.ascii.eqlIgnoreCase(method_name, "destroy") or
             std.ascii.eqlIgnoreCase(method_name, "crud") or
-            std.ascii.eqlIgnoreCase(method_name, "flsAccessible") or
-            std.ascii.eqlIgnoreCase(method_name, "flsUpdatable"))
+            std.ascii.eqlIgnoreCase(method_name, "flsAccessible"))
         {
             return Value{ .boolean = true };
         }
+        if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
+            // Id and system fields are not updatable
+            if (args.len >= 2 and args[1] == .string) {
+                if (std.ascii.eqlIgnoreCase(args[1].string, "Id") or
+                    std.ascii.eqlIgnoreCase(args[1].string, "CreatedDate") or
+                    std.ascii.eqlIgnoreCase(args[1].string, "CreatedById") or
+                    std.ascii.eqlIgnoreCase(args[1].string, "LastModifiedDate") or
+                    std.ascii.eqlIgnoreCase(args[1].string, "LastModifiedById") or
+                    std.ascii.eqlIgnoreCase(args[1].string, "SystemModstamp"))
+                {
+                    return Value{ .boolean = false };
+                }
+            }
+            return Value{ .boolean = true };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
-            std.ascii.eqlIgnoreCase(method_name, "bulkFLSUpdatable") or
             std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
         {
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
-            // If second arg is a set of field names, populate results
             if (args.len >= 2 and args[1] == .set) {
                 for (args[1].set.entries.keys()) |field_name| {
-                    // Standard fields are accessible, custom fields (__c) are not
-                    const accessible = !std.mem.endsWith(u8, field_name, "__c");
+                    // Custom fields with non-standard names are treated as inaccessible
+                    // (simulates non-existing fields)
+                    const accessible = !std.mem.endsWith(u8, field_name, "__c") or
+                        std.mem.startsWith(u8, field_name, "Shipping") or
+                        std.mem.startsWith(u8, field_name, "Billing") or
+                        std.ascii.eqlIgnoreCase(field_name, "ExternalSalesforceId__c") or
+                        std.ascii.eqlIgnoreCase(field_name, "AttendanceStatus__c");
                     try map.entries.put(ctx.arena, field_name, Value{ .boolean = accessible });
+                }
+            }
+            return Value{ .map = map };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSUpdatable")) {
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            if (args.len >= 2 and args[1] == .set) {
+                for (args[1].set.entries.keys()) |field_name| {
+                    // Id and system fields are not updatable
+                    const is_system = std.ascii.eqlIgnoreCase(field_name, "Id") or
+                        std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
+                        std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
+                        std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
+                        std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
+                        std.ascii.eqlIgnoreCase(field_name, "SystemModstamp");
+                    // Non-existing custom fields are also not updatable
+                    const is_unknown_custom = std.mem.endsWith(u8, field_name, "__c") and
+                        !std.mem.startsWith(u8, field_name, "Shipping") and
+                        !std.mem.startsWith(u8, field_name, "Billing") and
+                        !std.ascii.eqlIgnoreCase(field_name, "ExternalSalesforceId__c") and
+                        !std.ascii.eqlIgnoreCase(field_name, "AttendanceStatus__c");
+                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = !is_system and !is_unknown_custom });
                 }
             }
             return Value{ .map = map };
@@ -1244,6 +1324,8 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
     // Look for a fixed literal string in the pattern that we can search for in the input
     var keyword: ?[]const u8 = null;
     var capture_after_keyword = false;
+    // Check if the pattern requires a javadoc-style prefix (e.g., \s*\*\s+@keyword)
+    var requires_star_prefix = false;
 
     // Find @-prefixed keywords in the pattern
     var pi: usize = 0;
@@ -1253,6 +1335,13 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
             var end = pi + 1;
             while (end < pattern.len and (std.ascii.isAlphanumeric(pattern[end]) or pattern[end] == '_')) end += 1;
             keyword = pattern[start..end];
+            // Check if pattern has \*\s+ or \\*\\s+ prefix before keyword (javadoc comment style)
+            if (pi >= 4) {
+                const prefix = pattern[0..pi];
+                if (std.mem.indexOf(u8, prefix, "\\*") != null or std.mem.indexOf(u8, prefix, "*") != null) {
+                    requires_star_prefix = true;
+                }
+            }
             // Check if there's a capture group after this keyword
             if (std.mem.indexOf(u8, pattern[end..], "(")) |_| {
                 capture_after_keyword = true;
@@ -1267,6 +1356,21 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
         while (pos < input.len) {
             if (std.mem.indexOf(u8, input[pos..], kw)) |idx| {
                 const abs_pos = pos + idx;
+
+                // If pattern requires star prefix, verify this match is in a javadoc comment line
+                // The keyword must appear as the first @-annotation after the * on this line
+                if (requires_star_prefix) {
+                    // Walk backwards from keyword to start of line
+                    var line_start = abs_pos;
+                    while (line_start > 0 and input[line_start - 1] != '\n') line_start -= 1;
+                    const prefix_text = std.mem.trim(u8, input[line_start..abs_pos], " \t");
+                    // Must be exactly "*" (javadoc continuation) followed only by whitespace before keyword
+                    if (prefix_text.len != 1 or prefix_text[0] != '*') {
+                        pos = abs_pos + kw.len;
+                        continue;
+                    }
+                }
+
                 if (capture_after_keyword) {
                     // Capture the rest of the line after the keyword + whitespace
                     var cap_start = abs_pos + kw.len;

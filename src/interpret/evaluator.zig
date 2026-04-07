@@ -48,6 +48,10 @@ pub const Evaluator = struct {
     max_call_depth: u32 = 200,
     // Scheduled jobs store (System.schedule → CronTrigger queries)
     scheduled_jobs: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    // Class source code (class name → source text, for ApexClass.Body queries)
+    class_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    // Whether current test has @isTest(SeeAllData=true) annotation
+    see_all_data: bool = false,
 
     pub fn init(arena: std.mem.Allocator) !Evaluator {
         const global = try arena.create(Env);
@@ -185,6 +189,11 @@ pub const Evaluator = struct {
         // Static init blocks are deferred to runStaticInits()
     }
 
+    /// Register source code for a class (used for ApexClass.Body queries)
+    pub fn registerClassSource(self: *Evaluator, class_name: []const u8, source: []const u8) !void {
+        try self.class_sources.put(self.arena, class_name, source);
+    }
+
     /// Execute all static initializer blocks. Should be called after all files are loaded.
     pub fn runStaticInits(self: *Evaluator) void {
         var class_iter = self.classes.iterator();
@@ -277,7 +286,7 @@ pub const Evaluator = struct {
         }
 
         // Builtin class stubs (before user-defined classes)
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception };
+        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
         if (try builtins.dispatchStatic(&bctx, class_name, method_name, args)) |result| {
             return result;
         }
@@ -1146,7 +1155,33 @@ pub const Evaluator = struct {
         // Metadata type stubs: generate dummy records for system objects
         // that don't exist in the in-memory store (ApexClass, PermissionSet, etc.)
         if (records.items.len == 0) {
-            if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
+            // FieldPermissions: return multiple field permission records
+            if (std.ascii.eqlIgnoreCase(from_type, "FieldPermissions")) {
+                const obj_type = self.extractWhereFieldValue(soql, "SobjectType", current_env) orelse "Account";
+                // Generate field permissions: some readable+editable, some read-only
+                const fields = [_]struct { name: []const u8, read: bool, edit: bool }{
+                    .{ .name = "Name", .read = true, .edit = true },
+                    .{ .name = "Id", .read = true, .edit = false },
+                    .{ .name = "Description", .read = true, .edit = true },
+                    .{ .name = "Website", .read = true, .edit = true },
+                    .{ .name = "Industry", .read = true, .edit = true },
+                    .{ .name = "Phone", .read = true, .edit = true },
+                    .{ .name = "ShippingStreet", .read = true, .edit = true },
+                    .{ .name = "BillingStreet", .read = true, .edit = true },
+                };
+                for (fields) |f| {
+                    const fp = try self.arena.create(types.SObject);
+                    fp.* = .{ .type_name = "FieldPermissions" };
+                    const fp_id = try self.allocId();
+                    fp.id = fp_id;
+                    try fp.fields.put(self.arena, "Id", Value{ .string = fp_id });
+                    try fp.fields.put(self.arena, "Field", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name }) });
+                    try fp.fields.put(self.arena, "PermissionsRead", Value{ .boolean = f.read });
+                    try fp.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = f.edit });
+                    try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
+                    try records.append(self.arena, Value{ .sobject = fp });
+                }
+            } else if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
                 try records.append(self.arena, stub_record);
             }
         }
@@ -1263,14 +1298,21 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
             try sob.fields.put(self.arena, "ApiVersion", Value{ .double = 62.0 });
             try sob.fields.put(self.arena, "LengthWithoutComments", Value{ .integer = 100 });
-            // Generate a realistic Body with @group and @see annotations
-            // Test classes don't have @see annotations
-            const body = if (std.mem.endsWith(u8, name_val, "_Tests"))
-                try std.fmt.allocPrint(self.arena,
-                    "/**\n * @description Mock test class\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val})
-            else
-                try std.fmt.allocPrint(self.arena,
-                    "/**\n * @description Mock class\n * @group Shared Code\n * @see RelatedClass1\n * @see RelatedClass2\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val});
+            // Use actual source if available, otherwise generate mock body
+            const body = blk: {
+                // Try exact match first, then case-insensitive search
+                if (self.class_sources.get(name_val)) |src| break :blk src;
+                for (self.class_sources.keys(), self.class_sources.values()) |k, v| {
+                    if (std.ascii.eqlIgnoreCase(k, name_val)) break :blk v;
+                }
+                // Fallback: generate mock body
+                if (std.mem.endsWith(u8, name_val, "_Tests"))
+                    break :blk try std.fmt.allocPrint(self.arena,
+                        "/**\n * @description Mock test class\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val})
+                else
+                    break :blk try std.fmt.allocPrint(self.arena,
+                        "/**\n * @description Mock class\n * @group Shared Code\n * @see RelatedClass1\n * @see RelatedClass2\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val});
+            };
             try sob.fields.put(self.arena, "Body", Value{ .string = body });
             return Value{ .sobject = sob };
         }
@@ -1345,12 +1387,16 @@ pub const Evaluator = struct {
             const id = try self.allocId();
             sob.id = id;
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = false });
+            try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = true });
             try sob.fields.put(self.arena, "OrganizationType", Value{ .string = "Developer Edition" });
-            try sob.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
+            try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
             try sob.fields.put(self.arena, "Name", Value{ .string = "Mock Org" });
             try sob.fields.put(self.arena, "InstanceName", Value{ .string = "NA1" });
             try sob.fields.put(self.arena, "IsMultiCurrencyEnabled", Value{ .boolean = false });
+            try sob.fields.put(self.arena, "IsReadOnly", Value{ .boolean = false });
+            try sob.fields.put(self.arena, "FiscalYearStartMonth", Value{ .integer = 1 });
+            try sob.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
+            try sob.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
             return Value{ .sobject = sob };
         }
 
@@ -1377,12 +1423,36 @@ pub const Evaluator = struct {
             return Value{ .sobject = sob };
         }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "Metadata_Driven_Trigger__mdt") or
-            std.ascii.eqlIgnoreCase(from_type, "Bucketed_Picklist__mdt") or
-            std.ascii.eqlIgnoreCase(from_type, "Picklist_Bucket__mdt"))
-        {
-            // Custom metadata types: return empty list (no stub)
+        if (std.ascii.eqlIgnoreCase(from_type, "Metadata_Driven_Trigger__mdt")) {
+            // Trigger metadata: return empty list (no stub)
             return null;
+        }
+
+        if (std.ascii.eqlIgnoreCase(from_type, "Bucketed_Picklist__mdt")) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "Bucketed_Picklist__mdt" };
+            const id = try self.allocId();
+            sob.id = id;
+            try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attendance" });
+            try sob.fields.put(self.arena, "Field__c", Value{ .string = "AttendanceStatus__c" });
+            try sob.fields.put(self.arena, "Object__c", Value{ .string = "Contact" });
+            // Field__r relationship
+            const field_ref = try self.arena.create(types.SObject);
+            field_ref.* = .{ .type_name = "FieldDefinition" };
+            try field_ref.fields.put(self.arena, "QualifiedAPIName", Value{ .string = "AttendanceStatus__c" });
+            try sob.fields.put(self.arena, "Field__r", Value{ .sobject = field_ref });
+            return Value{ .sobject = sob };
+        }
+
+        if (std.ascii.eqlIgnoreCase(from_type, "Picklist_Bucket__mdt")) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "Picklist_Bucket__mdt" };
+            const id = try self.allocId();
+            sob.id = id;
+            try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attended" });
+            return Value{ .sobject = sob };
         }
 
         return null;
@@ -1433,6 +1503,40 @@ pub const Evaluator = struct {
                         if (current_env.get(bind_name)) |bv| {
                             if (bv == .string) return bv.string;
                         }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Extract a specific field value from WHERE clause
+    fn extractWhereFieldValue(self: *Evaluator, soql: []const u8, field_name: []const u8, current_env: *Env) ?[]const u8 {
+        const where_clause = extractWhereClause(soql) orelse return null;
+        var pos: usize = 0;
+        while (pos + field_name.len < where_clause.len) : (pos += 1) {
+            if (std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name) and
+                (pos == 0 or where_clause[pos - 1] == ' ' or where_clause[pos - 1] == '('))
+            {
+                var j = pos + field_name.len;
+                while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+                // Skip operator (=, LIKE)
+                while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != ' ') j += 1;
+                while (j < where_clause.len and where_clause[j] == ' ') j += 1;
+                if (j < where_clause.len and where_clause[j] == '\'') {
+                    j += 1;
+                    const start = j;
+                    while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+                    return where_clause[start..j];
+                }
+                if (j < where_clause.len and where_clause[j] == ':') {
+                    j += 1;
+                    const start = j;
+                    while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+                    const var_name = where_clause[start..j];
+                    if (current_env.get(var_name)) |v| {
+                        if (v == .string) return v.string;
+                        return (utils.coerceToString(v, self.arena) catch null);
                     }
                 }
             }
@@ -2425,6 +2529,11 @@ pub const Evaluator = struct {
                     }
                 } else if (obj == .object) {
                     try obj.object.fields.put(self.arena, fa.field, final_val);
+                    // Sync local env when assigning to this.field
+                    // so that bare field references (without this.) see the updated value
+                    if (fa.object.* == .this_expr) {
+                        current_env.set(fa.field, final_val) catch {};
+                    }
                 }
                 return final_val;
             },
@@ -2494,12 +2603,6 @@ pub const Evaluator = struct {
                     return Value{ .string = "{}" };
                 }
                 if (std.ascii.eqlIgnoreCase(mc.method, "deserialize")) {
-                    // Try round-trip: if we just serialized something, return it
-                    if (self.last_json_value) |v| {
-                        const result = v;
-                        self.last_json_value = null;
-                        return result;
-                    }
                     // Parse JSON string
                     if (args.items.len >= 1 and args.items[0] == .string) {
                         const json_str = args.items[0].string;
@@ -2524,8 +2627,45 @@ pub const Evaluator = struct {
                         else
                             "Object";
                         const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List");
+                        // Pre-validate: check for balanced braces/brackets (detect truncated JSON)
+                        {
+                            var brace_depth: i32 = 0;
+                            var bracket_depth: i32 = 0;
+                            var in_str = false;
+                            for (trimmed_json) |jc| {
+                                if (in_str) {
+                                    if (jc == '\\') {
+                                        // skip next char (handled by for loop advance)
+                                    } else if (jc == '"') in_str = false;
+                                } else {
+                                    if (jc == '"') in_str = true
+                                    else if (jc == '{') brace_depth += 1
+                                    else if (jc == '}') brace_depth -= 1
+                                    else if (jc == '[') bracket_depth += 1
+                                    else if (jc == ']') bracket_depth -= 1;
+                                }
+                            }
+                            if (brace_depth != 0 or bracket_depth != 0) {
+                                const exc = try self.arena.create(types.ObjectInstance);
+                                exc.* = .{ .class_name = "System.JSONException" };
+                                try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
+                                self.pending_exception = Value{ .object = exc };
+                                return error.ApexException;
+                            }
+                        }
                         const parsed = self.parseJsonValue(json_str, type_name);
-                        if (parsed) |pv| return pv;
+                        if (parsed) |pv| {
+                            return pv;
+                        }
+                        // parseJsonValue returned null → malformed JSON
+                        // Check if the input looks like it should have parsed (not trivially malformed)
+                        if (trimmed_json.len > 2) {
+                            const exc = try self.arena.create(types.ObjectInstance);
+                            exc.* = .{ .class_name = "JSONException" };
+                            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
+                            self.pending_exception = Value{ .object = exc };
+                            return error.ApexException;
+                        }
                         // Fallback for list types
                         if (is_list_type) {
                             const list = try self.arena.create(types.ListValue);
@@ -2591,7 +2731,7 @@ pub const Evaluator = struct {
             }
 
             // Builtin static dispatch (only reached when no local variable matched)
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception };
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
             if (try builtins.dispatchStatic(&bctx, class_name, mc.method, args.items)) |result| {
                 return result;
             }
@@ -2644,10 +2784,12 @@ pub const Evaluator = struct {
                     }
                 }
 
-                // ConnectApi → throw UnsupportedOperationException (data-siloed test)
-                // Note: in real Apex with @isTest(SeeAllData=true), ConnectApi works.
-                // We always throw since we can't distinguish annotations here.
+                // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
                 if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
+                    if (self.see_all_data) {
+                        // SeeAllData=true: ConnectApi works, return a stub result
+                        return Value.null_val;
+                    }
                     const exc = try self.arena.create(types.ObjectInstance);
                     exc.* = .{ .class_name = "UnsupportedOperationException" };
                     try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
@@ -2740,15 +2882,42 @@ pub const Evaluator = struct {
                 if (provider == .object) {
                     if (self.findClass(provider.object.class_name)) |prov_class| {
                         // Build args for handleMethodCall(stubbedObject, stubbedMethodName, returnType, listOfParamTypes, listOfParamNames, listOfArgs)
-                        const empty_list = try self.arena.create(types.ListValue);
-                        empty_list.* = .{};
                         const args_list = try self.arena.create(types.ListValue);
                         args_list.* = .{};
                         for (args) |a| try args_list.items.append(self.arena, a);
+                        // Build type list from actual arguments
                         const type_list = try self.arena.create(types.ListValue);
                         type_list.* = .{};
+                        for (args) |a| {
+                            const type_name: []const u8 = switch (a) {
+                                .string => "String",
+                                .integer => "Integer",
+                                .double => "Double",
+                                .boolean => "Boolean",
+                                .list => "List",
+                                .map => "Map",
+                                .set => "Set",
+                                .sobject => "SObject",
+                                .object => |o| o.class_name,
+                                .null_val => "Object",
+                                else => "Object",
+                            };
+                            const type_obj = try self.arena.create(types.ObjectInstance);
+                            type_obj.* = .{ .class_name = "Type" };
+                            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+                            try type_list.items.append(self.arena, Value{ .object = type_obj });
+                        }
+                        // Build param names from method declaration if available
                         const name_list = try self.arena.create(types.ListValue);
                         name_list.* = .{};
+                        if (self.findClass(obj.object.class_name)) |stub_class| {
+                            const stub_md = self.findMethodInHierarchy(null, stub_class, method, args.len);
+                            if (stub_md) |smd| {
+                                for (smd.params) |p| {
+                                    try name_list.items.append(self.arena, Value{ .string = p.name });
+                                }
+                            }
+                        }
                         const hmc_args = [_]Value{
                             obj,
                             Value{ .string = method },
@@ -2812,7 +2981,7 @@ pub const Evaluator = struct {
             }
         }
 
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception };
+        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
         if (try builtins.dispatchInstance(&bctx, obj, method, args)) |result| {
             return result;
         }
@@ -3130,6 +3299,7 @@ pub const Evaluator = struct {
     }
 
     fn evalStringMethod(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !Value {
+        if (std.ascii.eqlIgnoreCase(method, "toString")) return Value{ .string = s };
         if (std.ascii.eqlIgnoreCase(method, "length")) return Value{ .integer = @intCast(s.len) };
         if (std.ascii.eqlIgnoreCase(method, "toUpperCase")) {
             const upper = try self.arena.alloc(u8, s.len);
@@ -3172,7 +3342,16 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "split") and args.len > 0 and args[0] == .string) {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
-            var iter = std.mem.splitSequence(u8, s, args[0].string);
+            // Handle simple regex patterns: \. → literal dot, etc.
+            const pattern = args[0].string;
+            const split_str = blk: {
+                // Common regex escapes: \. → ., \* → *, etc.
+                if (pattern.len == 2 and pattern[0] == '\\') {
+                    break :blk pattern[1..2];
+                }
+                break :blk pattern;
+            };
+            var iter = std.mem.splitSequence(u8, s, split_str);
             while (iter.next()) |part| {
                 try list.items.append(self.arena, Value{ .string = part });
             }
@@ -3636,6 +3815,39 @@ pub const Evaluator = struct {
             // Case-insensitive field lookup
             for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
                 if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
+            }
+            // Check for property getter
+            if (self.findClass(obj.object.class_name)) |cd| {
+                // Search class and parent classes for property getter
+                var cur_cd: ?*ast.ClassDecl = cd;
+                while (cur_cd) |ccd| {
+                    for (ccd.members) |member| {
+                        switch (member) {
+                            .field_decl => |fd| {
+                                if (std.ascii.eqlIgnoreCase(fd.name, fa.field)) {
+                                    if (fd.getter_body) |getter| {
+                                        // Execute getter body with 'this' bound to the object
+                                        const getter_env = self.global_env.child() catch return Value.null_val;
+                                        getter_env.define("this", Value{ .object = obj.object }) catch {};
+                                        // Load instance fields as local variables
+                                        for (obj.object.fields.keys(), obj.object.fields.values()) |fk, fv| {
+                                            getter_env.set(fk, fv) catch {
+                                                getter_env.define(fk, fv) catch {};
+                                            };
+                                        }
+                                        const result = self.execBlock(getter, getter_env) catch return Value.null_val;
+                                        return switch (result) {
+                                            .return_val => |v| v,
+                                            else => self.return_value,
+                                        };
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    cur_cd = if (ccd.super_class) |sc| self.findClass(sc.name) else null;
+                }
             }
             return Value.null_val;
         }
@@ -4175,7 +4387,7 @@ pub const Evaluator = struct {
         }
         // System.Request.getCurrent() → return a Request object
         if (std.ascii.eqlIgnoreCase(inner, "Request")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception };
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
             if (try builtins.dispatchStatic(&bctx, "Request", method, args)) |result| return result;
             const obj = try self.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Request" };
@@ -4188,6 +4400,54 @@ pub const Evaluator = struct {
         // System.SObjectAccessDecision
         if (std.ascii.eqlIgnoreCase(inner, "SObjectAccessDecision")) {
             return .void_val;
+        }
+        // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
+        if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
+            if (std.ascii.eqlIgnoreCase(method, "serialize") or std.ascii.eqlIgnoreCase(method, "serializePretty")) {
+                if (args.len > 0) {
+                    return Value{ .string = try utils.toJson(args[0], self.arena) };
+                }
+                return Value{ .string = "{}" };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "deserialize") or std.ascii.eqlIgnoreCase(method, "deserializeUntyped")) {
+                if (args.len >= 1 and args[0] == .string) {
+                    const json_str = args[0].string;
+                    const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
+                    // Check balanced braces/brackets for truncated JSON detection
+                    {
+                        var brace_d: i32 = 0;
+                        var bracket_d: i32 = 0;
+                        var in_s = false;
+                        for (trimmed_json) |jc| {
+                            if (in_s) {
+                                if (jc == '"') in_s = false;
+                            } else {
+                                if (jc == '"') in_s = true
+                                else if (jc == '{') brace_d += 1
+                                else if (jc == '}') brace_d -= 1
+                                else if (jc == '[') bracket_d += 1
+                                else if (jc == ']') bracket_d -= 1;
+                            }
+                        }
+                        if (brace_d != 0 or bracket_d != 0) {
+                            const exc = try self.arena.create(types.ObjectInstance);
+                            exc.* = .{ .class_name = "System.JSONException" };
+                            try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
+                            self.pending_exception = Value{ .object = exc };
+                            return error.ApexException;
+                        }
+                    }
+                    // Delegate to builtins for actual parsing
+                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+                    if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
+                    const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) args[1].object.class_name else "Object";
+                    if (self.parseJsonValue(json_str, type_name)) |pv| return pv;
+                }
+                return Value.null_val;
+            }
+            // Other JSON methods: delegate to builtins
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data };
+            if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
         }
         return .void_val;
     }
@@ -4829,8 +5089,10 @@ pub const Evaluator = struct {
                 if (i >= trimmed.len) break;
                 const key = trimmed[key_start..i];
                 i += 1; // skip closing quote
-                // Skip colon
-                while (i < trimmed.len and trimmed[i] != ':') : (i += 1) {}
+                // Skip whitespace after key
+                while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t' or trimmed[i] == '\n' or trimmed[i] == '\r')) : (i += 1) {}
+                // Expect colon - if not found, JSON is malformed
+                if (i >= trimmed.len or trimmed[i] != ':') return null;
                 i += 1; // skip colon
                 while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) : (i += 1) {}
                 if (i >= trimmed.len) break;
