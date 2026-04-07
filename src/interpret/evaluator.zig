@@ -1098,6 +1098,17 @@ pub const Evaluator = struct {
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
 
+        // Auto-generate system timestamp fields
+        if (utils.sobjectGet(&obj.fields, "CreatedDate") == null) {
+            try obj.fields.put(self.arena, "CreatedDate", Value{ .string = "2026-04-04T00:00:00.000Z" });
+        }
+        if (utils.sobjectGet(&obj.fields, "LastModifiedDate") == null) {
+            try obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = "2026-04-04T00:00:00.000Z" });
+        }
+        if (utils.sobjectGet(&obj.fields, "SystemModstamp") == null) {
+            try obj.fields.put(self.arena, "SystemModstamp", Value{ .string = "2026-04-04T00:00:00.000Z" });
+        }
+
         // Auto-generate Name if not set (simulates auto-number for custom objects)
         if (utils.sobjectGet(&obj.fields, "Name") == null) {
             const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
@@ -1161,7 +1172,7 @@ pub const Evaluator = struct {
             if (id_field == null or id_field.? == .null_val) {
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: Id not specified in an update call" });
+                try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: Id not specified in an update call:" });
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -1654,6 +1665,17 @@ pub const Evaluator = struct {
         const name_val = self.extractWhereNameValue(soql, current_env) orelse "MockRecord";
 
         if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) {
+            // Only generate stub if the class actually exists in registered classes or class_sources
+            var class_exists = self.findClass(name_val) != null;
+            if (!class_exists) {
+                for (self.class_sources.keys()) |k| {
+                    if (std.ascii.eqlIgnoreCase(k, name_val)) {
+                        class_exists = true;
+                        break;
+                    }
+                }
+            }
+            if (!class_exists) return null; // Class doesn't exist → no record
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = "ApexClass" };
             const id = try self.allocId();
@@ -3057,10 +3079,10 @@ pub const Evaluator = struct {
                                     else if (jc == ']') bracket_depth -= 1;
                                 }
                             }
-                            if (brace_depth != 0 or bracket_depth != 0) {
+                            if (brace_depth != 0 or bracket_depth != 0 or in_str) {
                                 const exc = try self.arena.create(types.ObjectInstance);
                                 exc.* = .{ .class_name = "System.JSONException" };
-                                try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
+                                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
                                 self.pending_exception = Value{ .object = exc };
                                 return error.ApexException;
                             }
@@ -3850,9 +3872,62 @@ pub const Evaluator = struct {
             }
             return Value{ .string = s };
         }
-        if (std.ascii.eqlIgnoreCase(method, "format") or std.ascii.eqlIgnoreCase(method, "escapeHtml4") or
+        if (std.ascii.eqlIgnoreCase(method, "format")) {
+            // String.format(formatString, List<String>) — replace {0}, {1}, ... with args
+            if (args.len > 0 and args[0] == .list) {
+                var result = std.ArrayListUnmanaged(u8).empty;
+                const items = args[0].list.items.items;
+                var i: usize = 0;
+                while (i < s.len) {
+                    if (s[i] == '{' and i + 1 < s.len) {
+                        // Find closing brace
+                        if (std.mem.indexOfScalarPos(u8, s, i + 1, '}')) |close| {
+                            const idx_str = s[i + 1 .. close];
+                            if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
+                                if (idx < items.len) {
+                                    const val_str: []const u8 = switch (items[idx]) {
+                                        .string => |str| str,
+                                        .integer => |iv| try std.fmt.allocPrint(self.arena, "{d}", .{iv}),
+                                        .double => |dv| try std.fmt.allocPrint(self.arena, "{d}", .{dv}),
+                                        .boolean => |bv| if (bv) "true" else "false",
+                                        .null_val => "null",
+                                        else => "null",
+                                    };
+                                    try result.appendSlice(self.arena, val_str);
+                                    i = close + 1;
+                                    continue;
+                                }
+                            } else |_| {}
+                        }
+                    }
+                    try result.append(self.arena, s[i]);
+                    i += 1;
+                }
+                return Value{ .string = result.items };
+            }
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "escapeHtml4") or
             std.ascii.eqlIgnoreCase(method, "escapeJava") or std.ascii.eqlIgnoreCase(method, "escapeSingleQuotes"))
         {
+            return Value{ .string = s };
+        }
+        // formatGMT — format a DateTime string according to a pattern
+        if (std.ascii.eqlIgnoreCase(method, "formatGMT") or std.ascii.eqlIgnoreCase(method, "formatGmt")) {
+            // Parse ISO date: YYYY-MM-DDTHH:MM:SS
+            if (s.len >= 19 and s[4] == '-' and s[7] == '-' and s[10] == 'T') {
+                const year = s[0..4];
+                const month_num = std.fmt.parseInt(u8, s[5..7], 10) catch 1;
+                const day = s[8..10];
+                const hour24 = std.fmt.parseInt(u8, s[11..13], 10) catch 0;
+                const minute = s[14..16];
+                const second = s[17..19];
+                const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+                const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
+                const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+                const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
+                return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}", .{ hour12, minute, second, am_pm, month_name, day, year }) };
+            }
             return Value{ .string = s };
         }
         if (std.ascii.eqlIgnoreCase(method, "toInteger")) {
@@ -4229,13 +4304,8 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         if (obj == .object) {
-            // Case-insensitive field lookup
-            for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
-                if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
-            }
-            // Check for property getter
+            // Check for property getter FIRST (before returning raw field value)
             if (self.findClass(obj.object.class_name)) |cd| {
-                // Search class and parent classes for property getter
                 var cur_cd: ?*ast.ClassDecl = cd;
                 while (cur_cd) |ccd| {
                     for (ccd.members) |member| {
@@ -4265,6 +4335,10 @@ pub const Evaluator = struct {
                     }
                     cur_cd = if (ccd.super_class) |sc| self.findClass(sc.name) else null;
                 }
+            }
+            // Case-insensitive field lookup (no custom getter found)
+            for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
+                if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
             }
             return Value.null_val;
         }
@@ -4654,12 +4728,24 @@ pub const Evaluator = struct {
                         }
                         const list = try self.arena.create(types.ListValue);
                         list.* = .{};
-                        const count: usize = if (args[0] == .list) args[0].list.items.items.len else 1;
-                        for (0..count) |_| {
+                        if (args[0] == .list) {
+                            for (args[0].list.items.items) |item| {
+                                const sr = try self.arena.create(types.ObjectInstance);
+                                sr.* = .{ .class_name = result_class };
+                                try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = false });
+                                try sr.fields.put(self.arena, "success", Value{ .boolean = false });
+                                // Set id from the record
+                                if (item == .sobject and item.sobject.id != null) {
+                                    try sr.fields.put(self.arena, "id", Value{ .string = item.sobject.id.? });
+                                    try sr.fields.put(self.arena, "Id", Value{ .string = item.sobject.id.? });
+                                }
+                                try list.items.append(self.arena, Value{ .object = sr });
+                            }
+                        } else {
                             const sr = try self.arena.create(types.ObjectInstance);
                             sr.* = .{ .class_name = result_class };
                             try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = false });
-                                try sr.fields.put(self.arena, "success", Value{ .boolean = false });
+                            try sr.fields.put(self.arena, "success", Value{ .boolean = false });
                             try list.items.append(self.arena, Value{ .object = sr });
                         }
                         return Value{ .list = list };
@@ -4770,7 +4856,12 @@ pub const Evaluator = struct {
             return Value{ .integer = 0 };
         }
         if (std.ascii.eqlIgnoreCase(method, "getQueryLocator")) {
-            return Value.null_val;
+            const ql = try self.arena.create(types.ObjectInstance);
+            ql.* = .{ .class_name = "Database.QueryLocator" };
+            if (args.len > 0 and args[0] == .string) {
+                try ql.fields.put(self.arena, "query", args[0]);
+            }
+            return Value{ .object = ql };
         }
         if (std.ascii.eqlIgnoreCase(method, "setSavepoint")) {
             const sp = try self.arena.create(types.ObjectInstance);
@@ -4785,16 +4876,29 @@ pub const Evaluator = struct {
             if (args.len > 0 and args[0] == .object) {
                 const batch_obj = args[0].object;
                 if (self.findClass(batch_obj.class_name)) |batch_class| {
-                    // Call start() to get the scope
+                    // Call start() to get the QueryLocator
                     const scope = self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val}) catch Value.null_val;
-                    _ = scope;
-                    // Call execute() with the full store
-                    // Get all records from store
+                    // Use QueryLocator's query to get the correct records
                     var all_records: std.ArrayListUnmanaged(Value) = .empty;
-                    var store_iter = self.store.iterator();
-                    while (store_iter.next()) |entry| {
-                        for (entry.value_ptr.items) |item| {
-                            try all_records.append(self.arena, item);
+                    if (scope == .object and scope.object.fields.get("query") != null) {
+                        const query_val = scope.object.fields.get("query").?;
+                        if (query_val == .string) {
+                            // Execute the SOQL query to get records
+                            const batch_env = try self.global_env.child();
+                            const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
+                            if (query_result == .list) {
+                                for (query_result.list.items.items) |item| {
+                                    try all_records.append(self.arena, item);
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback: get all records from store
+                        var store_iter = self.store.iterator();
+                        while (store_iter.next()) |entry| {
+                            for (entry.value_ptr.items) |item| {
+                                try all_records.append(self.arena, item);
+                            }
                         }
                     }
                     const record_list = try self.arena.create(types.ListValue);
@@ -5397,29 +5501,70 @@ pub const Evaluator = struct {
     }
 
     fn runConstructor(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, args: []const Value) anyerror!void {
+        // Collect candidates with matching param count
+        var candidates: [8]*ast.ConstructorDecl = undefined;
+        var count: usize = 0;
+        var best_any: ?*ast.ConstructorDecl = null;
         for (class_decl.members) |member| {
             switch (member) {
                 .constructor_decl => |cd| {
-                    // Match by param count if possible
-                    if (cd.params.len == args.len or args.len == 0) {
-                        const ctor_env = try self.global_env.child();
-                        try ctor_env.define("this", Value{ .object = instance });
-                        // Also define instance fields as local variables
-                        for (instance.fields.keys(), instance.fields.values()) |k, v| {
-                            ctor_env.set(k, v) catch {
-                                try ctor_env.define(k, v);
-                            };
+                    if (cd.params.len == args.len) {
+                        if (count < candidates.len) {
+                            candidates[count] = cd;
+                            count += 1;
                         }
-                        for (cd.params, 0..) |param, pi| {
-                            const pval = if (pi < args.len) args[pi] else Value.null_val;
-                            try ctor_env.define(param.name, pval);
-                        }
-                        _ = try self.execBlock(cd.body, ctor_env);
-                        return;
                     }
+                    if (best_any == null and (cd.params.len == args.len or args.len == 0)) best_any = cd;
                 },
                 else => {},
             }
+        }
+        // Pick best candidate using type scoring
+        const chosen: ?*ast.ConstructorDecl = if (count == 0) best_any else if (count == 1) candidates[0] else blk: {
+            var best: ?*ast.ConstructorDecl = null;
+            var best_score: i32 = -1;
+            for (candidates[0..count]) |cd| {
+                var score: i32 = 0;
+                for (cd.params, 0..) |param, i| {
+                    if (i >= args.len) break;
+                    const pt = param.type_ref.name;
+                    const arg = args[i];
+                    if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                        score += 2;
+                    } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                        score += 2;
+                    } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
+                        score += 2;
+                    } else if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) {
+                        score += 2;
+                    } else if (arg == .object) {
+                        score += 1;
+                    } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
+                        score += 2;
+                    } else if (arg == .sobject) {
+                        score += 1;
+                    }
+                }
+                if (best == null or score > best_score) {
+                    best = cd;
+                    best_score = score;
+                }
+            }
+            break :blk best;
+        };
+        if (chosen) |cd| {
+            const ctor_env = try self.global_env.child();
+            try ctor_env.define("this", Value{ .object = instance });
+            for (instance.fields.keys(), instance.fields.values()) |k, v| {
+                ctor_env.set(k, v) catch {
+                    try ctor_env.define(k, v);
+                };
+            }
+            for (cd.params, 0..) |param, pi| {
+                const pval = if (pi < args.len) args[pi] else Value.null_val;
+                try ctor_env.define(param.name, pval);
+            }
+            _ = try self.execBlock(cd.body, ctor_env);
         }
     }
 

@@ -56,9 +56,40 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
         return Value{ .string = "" };
     }
-    // String.format
+    // String.format(formatString, List<String>) — replace {0}, {1}, ... with args
     if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "format")) {
-        if (args.len > 0 and args[0] == .string) return args[0]; // simplified
+        if (args.len >= 2 and args[0] == .string and args[1] == .list) {
+            const fmt_str = args[0].string;
+            const items = args[1].list.items.items;
+            var result = std.ArrayListUnmanaged(u8).empty;
+            var i: usize = 0;
+            while (i < fmt_str.len) {
+                if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
+                    if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
+                        const idx_str = fmt_str[i + 1 .. close];
+                        if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
+                            if (idx < items.len) {
+                                const val_str: []const u8 = switch (items[idx]) {
+                                    .string => |str| str,
+                                    .integer => |iv| std.fmt.allocPrint(ctx.arena, "{d}", .{iv}) catch "",
+                                    .double => |dv| std.fmt.allocPrint(ctx.arena, "{d}", .{dv}) catch "",
+                                    .boolean => |bv| if (bv) "true" else "false",
+                                    .null_val => "null",
+                                    else => "null",
+                                };
+                                result.appendSlice(ctx.arena, val_str) catch {};
+                                i = close + 1;
+                                continue;
+                            }
+                        } else |_| {}
+                    }
+                }
+                result.append(ctx.arena, fmt_str[i]) catch {};
+                i += 1;
+            }
+            return Value{ .string = result.items };
+        }
+        if (args.len > 0 and args[0] == .string) return args[0];
         return Value{ .string = "" };
     }
     // String.valueOf
@@ -673,15 +704,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return .void_val;
     }
 
-    // EventBus
+    // EventBus — publish is handled by the evaluator's callMethod (which inserts records and fires triggers)
+    // Only handle non-publish methods here
     if (std.ascii.eqlIgnoreCase(class_name, "EventBus")) {
         if (std.ascii.eqlIgnoreCase(method_name, "publish")) {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Database.SaveResult" };
-            try obj.fields.put(ctx.arena, "isSuccess", Value{ .boolean = true });
-            // Store the published event(s) for later query (stub __events__ field)
-            try obj.fields.put(ctx.arena, "__event__", if (args.len > 0) args[0] else Value.null_val);
-            return Value{ .object = obj };
+            // Fall through to evaluator.callMethod which does the actual insert + trigger
+            return null;
         }
         return .void_val;
     }
@@ -1097,7 +1125,26 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         return Value{ .string = "" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {
-        return Value{ .string = obj.class_name };
+        const cn = obj.class_name;
+        // Add "System." prefix for standard system exceptions (no dot in name = not user-defined)
+        if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
+            // Check if it's a well-known system exception
+            const system_exceptions = [_][]const u8{
+                "DMLException", "DmlException", "NullPointerException", "TypeException",
+                "QueryException", "JSONException", "ListException", "MathException",
+                "SecurityException", "NoAccessException", "InvalidParameterValueException",
+                "CalloutException", "StringException", "NoSuchElementException",
+                "NoDataFoundException", "SearchException", "SObjectException",
+                "HandledException", "IllegalArgumentException", "LimitException",
+                "AsyncException", "SerializationException",
+            };
+            for (system_exceptions) |se| {
+                if (std.ascii.eqlIgnoreCase(cn, se)) {
+                    return Value{ .string = try std.fmt.allocPrint(ctx.arena, "System.{s}", .{cn}) };
+                }
+            }
+        }
+        return Value{ .string = cn };
     }
     // toString() - return the value field if it's a Blob, otherwise class name
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
@@ -1849,7 +1896,24 @@ fn handleJsonDateFormat(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
                 try buf.appendSlice(ctx.arena, "    {\n");
                 const first_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "") else "";
                 const last_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "LastName")) |v| (if (v == .string) v.string else "") else "") else "";
-                const created_date = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "CreatedDate")) |v| (if (v == .string) v.string else "12:00:00 AM, January 01, 2024") else "12:00:00 AM, January 01, 2024") else "12:00:00 AM, January 01, 2024";
+                const raw_date = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "CreatedDate")) |v| (if (v == .string) v.string else "2024-01-01T00:00:00.000Z") else "2024-01-01T00:00:00.000Z") else "2024-01-01T00:00:00.000Z";
+                // Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
+                const created_date = blk: {
+                    if (raw_date.len >= 19 and raw_date[4] == '-' and raw_date[7] == '-' and raw_date[10] == 'T') {
+                        const year = raw_date[0..4];
+                        const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
+                        const day = raw_date[8..10];
+                        const hour24 = std.fmt.parseInt(u8, raw_date[11..13], 10) catch 0;
+                        const minute = raw_date[14..16];
+                        const second = raw_date[17..19];
+                        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+                        const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
+                        const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+                        const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
+                        break :blk try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}", .{ hour12, minute, second, am_pm, month_name, day, year });
+                    }
+                    break :blk raw_date;
+                };
 
                 try buf.appendSlice(ctx.arena, "      \"firstName\": \"");
                 try buf.appendSlice(ctx.arena, first_name);
