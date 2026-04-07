@@ -448,14 +448,23 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             if (ctx.eval.is_restricted_user) {
                 // When running as restricted user, strip non-standard fields
                 const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+
+                // Check if the user has been granted permissions via PermissionSetAssignment
+                const has_permset = blk: {
+                    if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
+                        break :blk psa_records.items.len > 0;
+                    }
+                    break :blk false;
+                };
+
                 // Check 3rd arg: if true, CRUD enforcement is enabled → throw NoAccessException for min-access
                 const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
-                if (ctx.eval.is_min_access_user and enforce_crud) {
+                if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
                     return ctx.throwException("System.NoAccessException", "No access to entity");
                 }
                 if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) {
-                    // Min-access users have no CRUD access at all
-                    if (ctx.eval.is_min_access_user) {
+                    // Min-access users without permission sets have no CRUD access
+                    if (ctx.eval.is_min_access_user and !has_permset) {
                         return ctx.throwException("System.NoAccessException", "No access to entity");
                     }
                     // Strip fields that restricted users (e.g. marketing) can't access
@@ -478,8 +487,15 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                         }
                     }
                     try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
+                } else if (std.ascii.eqlIgnoreCase(access_type, "READABLE")) {
+                    // For READABLE access type, min-access users without permission sets have no access
+                    if (ctx.eval.is_min_access_user and !has_permset) {
+                        return ctx.throwException("System.NoAccessException", "No access to entity");
+                    }
+                    if (args.len >= 2) {
+                        try obj.fields.put(ctx.arena, "records", args[1]);
+                    }
                 } else {
-                    // For READABLE and other access types, return records as-is for restricted users
                     if (args.len >= 2) {
                         try obj.fields.put(ctx.arena, "records", args[1]);
                     }

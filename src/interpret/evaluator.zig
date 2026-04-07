@@ -696,8 +696,9 @@ pub const Evaluator = struct {
             },
             .dml_stmt => |dml| {
                 const target = try self.evalExpr(dml.target, current_env);
-                // Check USER_MODE access for min-access users (no CRUD access)
-                if (dml.is_user_mode and self.is_min_access_user) {
+                // Check USER_MODE access for min-access users without permission sets
+                const has_permset_dml = if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
+                if (dml.is_user_mode and self.is_min_access_user and !has_permset_dml) {
                     const from_type = if (target == .sobject) target.sobject.type_name
                         else if (target == .list and target.list.items.items.len > 0 and target.list.items.items[0] == .sobject)
                             target.list.items.items[0].sobject.type_name
@@ -4583,8 +4584,9 @@ pub const Evaluator = struct {
             // Check allOrNothing flag (second arg, defaults to true)
             const all_or_nothing = if (args.len >= 2 and args[1] == .boolean) args[1].boolean else true;
 
-            // Check if second arg is AccessLevel.USER_MODE for min-access user context
-            if (self.is_min_access_user and args.len >= 2) {
+            // Check if second arg is AccessLevel.USER_MODE for min-access user context (without permsets)
+            const has_permset_db = if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
+            if (self.is_min_access_user and !has_permset_db and args.len >= 2) {
                 const is_user_mode = if (args[1] == .string)
                     std.ascii.eqlIgnoreCase(args[1].string, "USER_MODE")
                 else if (args[1] == .object)
@@ -4979,6 +4981,15 @@ pub const Evaluator = struct {
                 return Value{ .list = list };
             }
             if (std.ascii.eqlIgnoreCase(method_name, "assignPermSetToUser")) {
+                // Delegate to user-defined TestFactory if available
+                var assign_iter = self.classes.iterator();
+                while (assign_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
+                        if (self.findBestMethodInClass(entry.value_ptr.*, method_name, args) != null) {
+                            return null; // Fall through to user-defined class
+                        }
+                    }
+                }
                 return .void_val;
             }
             if (std.ascii.eqlIgnoreCase(method_name, "createTestUser") or
