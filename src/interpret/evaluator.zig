@@ -2849,6 +2849,37 @@ pub const Evaluator = struct {
                         }
                     }
                 }
+                // Check if identifier is an inner enum/class of enclosing class or parent
+                // (e.g., HttpVerb inside RestClient → used as HttpVerb.GET)
+                {
+                    const check_classes = [_]?[]const u8{
+                        if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
+                        self.current_class,
+                    };
+                    for (check_classes) |cc_opt| {
+                        var cur_class: ?[]const u8 = cc_opt;
+                        while (cur_class) |ccn| {
+                            if (self.findClass(ccn)) |ccd| {
+                                for (ccd.members) |member| {
+                                    switch (member) {
+                                        .enum_decl => |ed| {
+                                            if (std.ascii.eqlIgnoreCase(ed.name, id.name)) {
+                                                return Value{ .string = id.name };
+                                            }
+                                        },
+                                        .class_decl => |inner_cd| {
+                                            if (std.ascii.eqlIgnoreCase(inner_cd.name, id.name)) {
+                                                return Value{ .string = id.name };
+                                            }
+                                        },
+                                        else => {},
+                                    }
+                                }
+                                cur_class = if (ccd.super_class) |sc| sc.name else null;
+                            } else break;
+                        }
+                    }
+                }
                 return .null_val;
             },
 
@@ -5427,7 +5458,6 @@ pub const Evaluator = struct {
                 // Insert all records with trigger support
                 if (do_insert) {
                     self.executeDml(.insert, Value{ .list = list }) catch |err| {
-                        // If triggers fail (e.g., addError), propagate the exception
                         if (err == error.ApexException) return err;
                     };
                 }
