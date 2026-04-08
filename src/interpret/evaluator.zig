@@ -4614,6 +4614,14 @@ pub const Evaluator = struct {
             for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
                 if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
             }
+            // If this SObject was processed by stripInaccessible, throw SObjectException
+            if (obj.sobject.is_stripped) {
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "SObjectException" };
+                try exc.fields.put(self.arena, "message", Value{ .string = "SObject row was retrieved via SOQL without querying the requested field: " });
+                self.pending_exception = Value{ .object = exc };
+                return error.ApexException;
+            }
             return Value.null_val;
         }
         if (obj == .object) {

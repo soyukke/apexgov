@@ -184,6 +184,9 @@ pub const SObject = struct {
     type_name: []const u8,
     fields: std.StringArrayHashMapUnmanaged(Value) = .empty,
     id: ?[]const u8 = null,
+    /// When true, accessing a field not in `fields` throws SObjectException
+    /// (set by Security.stripInaccessible)
+    is_stripped: bool = false,
 };
 
 pub const ListValue = struct {

@@ -542,6 +542,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                 const clone = try ctx.arena.create(types.SObject);
                                 clone.* = .{ .type_name = item.sobject.type_name };
                                 clone.id = item.sobject.id;
+                                clone.is_stripped = true;
                                 for (item.sobject.fields.keys(), item.sobject.fields.values()) |fk, fv| {
                                     if (rm_map.entries.get(fk) == null) {
                                         try clone.fields.put(ctx.arena, fk, fv);
@@ -582,7 +583,33 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                             }
                         }
                     }
-                    if (args.len >= 2) {
+                    // Create stripped clones for READABLE too
+                    if (rm_map.entries.count() > 0) {
+                        const input_recs3 = if (args.len >= 2) args[1] else Value.null_val;
+                        if (input_recs3 == .list) {
+                            const stripped3 = try ctx.arena.create(types.ListValue);
+                            stripped3.* = .{};
+                            for (input_recs3.list.items.items) |item| {
+                                if (item == .sobject) {
+                                    const clone = try ctx.arena.create(types.SObject);
+                                    clone.* = .{ .type_name = item.sobject.type_name };
+                                    clone.id = item.sobject.id;
+                                    clone.is_stripped = true;
+                                    for (item.sobject.fields.keys(), item.sobject.fields.values()) |fk, fv| {
+                                        if (rm_map.entries.get(fk) == null) {
+                                            try clone.fields.put(ctx.arena, fk, fv);
+                                        }
+                                    }
+                                    try stripped3.items.append(ctx.arena, Value{ .sobject = clone });
+                                } else {
+                                    try stripped3.items.append(ctx.arena, item);
+                                }
+                            }
+                            try obj.fields.put(ctx.arena, "records", Value{ .list = stripped3 });
+                        } else if (args.len >= 2) {
+                            try obj.fields.put(ctx.arena, "records", args[1]);
+                        }
+                    } else if (args.len >= 2) {
                         try obj.fields.put(ctx.arena, "records", args[1]);
                     }
                 } else {
