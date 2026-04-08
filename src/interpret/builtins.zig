@@ -1693,9 +1693,10 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         }
         return Value{ .sobject = new_sob };
     }
-    // addError
-    if (std.ascii.eqlIgnoreCase(method_name, "addError")) {
-        return .void_val;
+    // addError → throw DmlException
+    if (std.ascii.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
+        const msg = if (args[0] == .string) args[0].string else "Validation error";
+        return ctx.throwException("DmlException", msg);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
         // Case-insensitive lookup

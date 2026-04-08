@@ -505,3 +505,31 @@ test "E2E: instanceof checks superclass hierarchy" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 111), result.value.integer);
 }
+
+test "E2E: beforeUpdate trigger addError causes DmlException" {
+    const source =
+        \\trigger TestTrigger on Account (before update) {
+        \\    for (Account a : Trigger.new) {
+        \\        a.addError('always fail');
+        \\    }
+        \\}
+        \\public class TrigTest {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        try {
+        \\            update a;
+        \\            return 'no error';
+        \\        } catch (DmlException e) {
+        \\            return 'caught: ' + e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TrigTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "caught:"));
+}
