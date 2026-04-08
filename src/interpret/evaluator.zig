@@ -1780,7 +1780,7 @@ pub const Evaluator = struct {
                     }
                     if (name_val) |nv| {
                         // Use a temporary soql for the stub generator with a single WHERE
-                        const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Name, Body FROM ApexClass WHERE Name = '{s}'", .{nv});
+                        const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Name, Body FROM {s} WHERE Name = '{s}'", .{from_type, nv});
                         if (try self.generateMetadataStub(from_type, tmp_soql, current_env)) |stub| {
                             try records.append(self.arena, stub);
                         }
