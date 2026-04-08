@@ -702,7 +702,6 @@ pub const Evaluator = struct {
                             break :blk exc;
                         };
                         const exc_class_name = exc_obj.class_name;
-
                         // Find matching catch clause by exception type
                         var matched_catch: ?*const ast.CatchClause = null;
                         var generic_catch: ?*const ast.CatchClause = null;

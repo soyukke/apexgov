@@ -103,7 +103,19 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .string => |s| s,
         .void_val => "void",
         .list => |l| try std.fmt.allocPrint(arena, "List[{d}]", .{l.items.items.len}),
-        .map => |m| try std.fmt.allocPrint(arena, "Map[{d}]", .{m.entries.count()}),
+        .map => |m| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.appendSlice(arena, "{");
+            for (m.entries.keys(), m.entries.values(), 0..) |k, val, i| {
+                if (i > 0) try buf.appendSlice(arena, ", ");
+                try buf.appendSlice(arena, k);
+                try buf.append(arena, '=');
+                const vs = try coerceToString(val, arena);
+                try buf.appendSlice(arena, vs);
+            }
+            try buf.appendSlice(arena, "}");
+            break :blk buf.items;
+        },
         .set => |s2| try std.fmt.allocPrint(arena, "Set[{d}]", .{s2.entries.count()}),
         .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
         .object => |obj| blk: {
