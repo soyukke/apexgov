@@ -2239,6 +2239,7 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
     }
 
     if (keyword) |kw| {
+        // Debug removed
         // Search input for all occurrences of the keyword
         var pos: usize = 0;
         while (pos < input.len) {
@@ -2273,6 +2274,7 @@ fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []cons
                     try match_groups.items.append(arena, Value{ .string = input[abs_pos..cap_end] });
                     try match_groups.items.append(arena, Value{ .string = captured });
                     try matches.items.append(arena, Value{ .list = match_groups });
+                    // Debug removed
                 }
                 pos = abs_pos + kw.len;
             } else break;

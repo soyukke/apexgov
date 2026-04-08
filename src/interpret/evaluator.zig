@@ -1671,6 +1671,15 @@ pub const Evaluator = struct {
             }
         }
 
+        // Throw QueryException for objects that are known to not exist
+        if (records.items.len == 0 and (std.ascii.eqlIgnoreCase(from_type, "DatedConversionRate"))) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.QueryException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported", .{from_type}) });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+
         // Metadata type stubs: generate dummy records for system objects
         // that don't exist in the in-memory store (ApexClass, PermissionSet, etc.)
         if (records.items.len == 0) {
@@ -1887,6 +1896,7 @@ pub const Evaluator = struct {
         const name_val = self.extractWhereNameValue(soql, current_env) orelse "MockRecord";
 
         if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) {
+            // Debug removed
             // Only generate stub if the class actually exists in registered classes or class_sources
             var class_exists = self.findClass(name_val) != null;
             if (!class_exists) {
@@ -1922,6 +1932,10 @@ pub const Evaluator = struct {
                         "/**\n * @description Mock class\n * @group Shared Code\n * @see RelatedClass1\n * @see RelatedClass2\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val});
             };
             try sob.fields.put(self.arena, "Body", Value{ .string = body });
+            // Store in the store so SOSL can find it later
+            const gop = try self.store.getOrPut(self.arena, "ApexClass");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
             return Value{ .sobject = sob };
         }
 
@@ -2020,6 +2034,12 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "FiscalYearStartMonth", Value{ .integer = 1 });
             try sob.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
             try sob.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+            // Store so subsequent queries return the same record
+            const gop = try self.store.getOrPut(self.arena, "Organization");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            if (gop.value_ptr.items.len == 0) {
+                try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+            }
             return Value{ .sobject = sob };
         }
 
@@ -2215,20 +2235,26 @@ pub const Evaluator = struct {
             }
         }
 
-        // For each RETURNING type, find matching records from store
+        // For each RETURNING type, find matching records from store (or metadata stubs)
         for (type_names[0..type_count]) |type_name| {
             const inner = try self.arena.create(types.ListValue);
             inner.* = .{};
+            var found_in_store = false;
             var store_iter = self.store.iterator();
             while (store_iter.next()) |entry| {
                 if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, type_name)) {
+                    found_in_store = true;
                     for (entry.value_ptr.items) |record| {
                         if (record == .sobject and record.sobject.id != null) {
-                            // Check if Id is in fixed search results
-                            for (search_ids.items) |sid| {
-                                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, sid)) {
-                                    try inner.items.append(self.arena, record);
-                                    break;
+                            // Check if Id is in fixed search results (or no filter)
+                            if (search_ids.items.len == 0) {
+                                try inner.items.append(self.arena, record);
+                            } else {
+                                for (search_ids.items) |sid| {
+                                    if (std.ascii.eqlIgnoreCase(record.sobject.id.?, sid)) {
+                                        try inner.items.append(self.arena, record);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -2236,6 +2262,7 @@ pub const Evaluator = struct {
                     break;
                 }
             }
+            // For metadata types not in store, no results returned
             try outer.items.append(self.arena, Value{ .list = inner });
         }
 
@@ -4374,14 +4401,26 @@ pub const Evaluator = struct {
             return Value{ .object = instance };
         }
 
-        // new Set<T>()
+        // new Set<T>() or new Set<T>(collection)
         if (std.ascii.eqlIgnoreCase(type_name, "Set")) {
             const set = try self.arena.create(types.SetValue);
             set.* = .{};
             for (ne.args) |*arg| {
                 const v = try self.evalExpr(arg, current_env);
-                const key = try utils.coerceToString(v, self.arena);
-                try set.entries.put(self.arena, key, {});
+                // If argument is a list or set, add each element individually
+                if (v == .list) {
+                    for (v.list.items.items) |item| {
+                        const key = try utils.coerceToString(item, self.arena);
+                        try set.entries.put(self.arena, key, {});
+                    }
+                } else if (v == .set) {
+                    for (v.set.entries.keys()) |k| {
+                        try set.entries.put(self.arena, k, {});
+                    }
+                } else {
+                    const key = try utils.coerceToString(v, self.arena);
+                    try set.entries.put(self.arena, key, {});
+                }
             }
             return Value{ .set = set };
         }
@@ -4543,6 +4582,45 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         if (obj == .object) {
+            // OrgShape instance: return Organization field values directly
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "OrgShape")) {
+                // Special computed properties
+                if (std.ascii.eqlIgnoreCase(fa.field, "hasNamespacePrefix")) return Value{ .boolean = false };
+                if (std.ascii.eqlIgnoreCase(fa.field, "multiCurrencyEnabled")) return Value{ .boolean = false };
+                if (std.ascii.eqlIgnoreCase(fa.field, "lightningEnabled")) return Value{ .boolean = true };
+                // Map OrgShape property names to Organization field names
+                const org_field_mappings = [_]struct { prop: []const u8, field: []const u8 }{
+                    .{ .prop = "isSandbox", .field = "IsSandbox" },
+                    .{ .prop = "orgType", .field = "OrganizationType" },
+                    .{ .prop = "isReadOnly", .field = "IsReadOnly" },
+                    .{ .prop = "instanceName", .field = "InstanceName" },
+                    .{ .prop = "podName", .field = "InstanceName" },
+                    .{ .prop = "getFiscalYearStartMonth", .field = "FiscalYearStartMonth" },
+                    .{ .prop = "id", .field = "Id" },
+                    .{ .prop = "locale", .field = "LanguageLocaleKey" },
+                    .{ .prop = "name", .field = "Name" },
+                    .{ .prop = "timeZoneKey", .field = "TimeZoneSidKey" },
+                    .{ .prop = "namespacePrefix", .field = "NamespacePrefix" },
+                };
+                for (org_field_mappings) |m| {
+                    if (std.ascii.eqlIgnoreCase(fa.field, m.prop)) {
+                        // Get from Organization store or generate stub
+                        if (self.store.get("Organization")) |org_records| {
+                            if (org_records.items.len > 0 and org_records.items[0] == .sobject) {
+                                if (utils.sobjectGet(&org_records.items[0].sobject.fields, m.field)) |v| return v;
+                            }
+                        }
+                        // Generate stub
+                        const org_soql = "SELECT FIELDS(STANDARD) FROM Organization LIMIT 1";
+                        if (self.generateMetadataStub("Organization", org_soql, self.global_env) catch null) |org_val| {
+                            if (org_val == .sobject) {
+                                if (utils.sobjectGet(&org_val.sobject.fields, m.field)) |v| return v;
+                            }
+                        }
+                        return Value.null_val;
+                    }
+                }
+            }
             // Check for property getter FIRST (before returning raw field value)
             if (self.findClass(obj.object.class_name)) |cd| {
                 var cur_cd: ?*ast.ClassDecl = cd;
