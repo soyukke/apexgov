@@ -6614,7 +6614,10 @@ fn extractSubQuery(soql: []const u8) ?SubQueryInfo {
                     var end = start;
                     while (end < after_paren.len and after_paren[end] != ' ' and after_paren[end] != ')' and after_paren[end] != '\n' and after_paren[end] != '\t') end += 1;
                     if (end > start) {
-                        return SubQueryInfo{ .relationship = after_paren[start..end] };
+                        const raw_rel = after_paren[start..end];
+                        // Strip parent prefix: "Account.Contacts" → "Contacts"
+                        const rel = if (std.mem.lastIndexOfScalar(u8, raw_rel, '.')) |dot_pos| raw_rel[dot_pos + 1 ..] else raw_rel;
+                        return SubQueryInfo{ .relationship = rel };
                     }
                 }
             }

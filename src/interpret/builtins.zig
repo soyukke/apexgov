@@ -517,7 +517,9 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                         // E.g., "provides_access_to_actual_cost_field_on_campaign" → "actual_cost" is allowed
                         for (input_records.list.items.items) |item| {
                             if (item == .sobject) {
-                                for (item.sobject.fields.keys()) |k| {
+                                for (item.sobject.fields.keys(), item.sobject.fields.values()) |k, fv| {
+                                    // Skip subquery relationship fields (list values)
+                                    if (fv == .list) continue;
                                     var is_std = false;
                                     for (standard_fields) |sf| {
                                         if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
@@ -569,7 +571,14 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                             const standard_fields2 = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
                             for (input_records2.list.items.items) |item| {
                                 if (item == .sobject) {
-                                    for (item.sobject.fields.keys()) |k| {
+                                    for (item.sobject.fields.keys(), item.sobject.fields.values()) |k, fv| {
+                                        // Subquery relationship fields (list values): keep if related object has permset
+                                        if (fv == .list) {
+                                            if (!isFieldAllowedByPermSets(ctx.eval, k)) {
+                                                try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
+                                            }
+                                            continue;
+                                        }
                                         var is_std = false;
                                         for (standard_fields2) |sf| {
                                             if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
@@ -1689,11 +1698,16 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
-        return sob.fields.get(args[0].string) orelse blk: {
-            const list = try ctx.arena.create(types.ListValue);
-            list.* = .{};
-            break :blk Value{ .list = list };
-        };
+        // Case-insensitive lookup
+        for (sob.fields.keys(), sob.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, args[0].string)) return v;
+        }
+        // If stripped SObject, throw SObjectException for missing relationship
+        if (sob.is_stripped) {
+            const msg = try std.fmt.allocPrint(ctx.arena, "SObject row was retrieved via SOQL without querying the requested field: {s}", .{args[0].string});
+            return ctx.throwException("SObjectException", msg);
+        }
+        return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
         // Case-insensitive field lookup
@@ -1752,6 +1766,11 @@ fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const 
         if (std.mem.indexOf(u8, ps_lower, snake_name) != null) return true;
         // Also try direct field name match
         if (std.mem.indexOf(u8, ps_lower, field_lower) != null) return true;
+        // Try singular form (strip trailing 's': "contacts" → "contact")
+        if (field_lower.len > 1 and field_lower[field_lower.len - 1] == 's') {
+            const singular = field_lower[0 .. field_lower.len - 1];
+            if (std.mem.indexOf(u8, ps_lower, singular) != null) return true;
+        }
     }
     return false;
 }
