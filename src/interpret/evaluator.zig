@@ -2826,13 +2826,31 @@ pub const Evaluator = struct {
                 // When `this` is available, check ClassName.fieldName and parent class
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_val.object.class_name, id.name }) catch return .null_val;
+                        const this_cn = this_val.object.class_name;
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, id.name }) catch return .null_val;
                         if (self.global_env.get(key)) |val| return val;
                         // Check parent class static fields
-                        if (self.findClass(this_val.object.class_name)) |cd| {
+                        if (self.findClass(this_cn)) |cd| {
                             if (cd.super_class) |sc| {
                                 const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id.name }) catch return .null_val;
                                 if (self.global_env.get(pkey)) |val| return val;
+                            }
+                        }
+                        // Check outer class static fields (for inner classes)
+                        // Find any class that has this class as an inner class
+                        var oc_iter = self.classes.iterator();
+                        while (oc_iter.next()) |oc_entry| {
+                            const oc_cd = oc_entry.value_ptr.*;
+                            for (oc_cd.members) |member| {
+                                switch (member) {
+                                    .class_decl => |inner_cd| {
+                                        if (std.ascii.eqlIgnoreCase(inner_cd.name, this_cn)) {
+                                            const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc_entry.key_ptr.*, id.name }) catch break;
+                                            if (self.global_env.get(okey)) |val| return val;
+                                        }
+                                    },
+                                    else => {},
+                                }
                             }
                         }
                     }
@@ -3336,7 +3354,7 @@ pub const Evaluator = struct {
                     }
                     return Value{ .string = "{}" };
                 }
-                if (std.ascii.eqlIgnoreCase(mc.method, "deserialize")) {
+                if (std.ascii.eqlIgnoreCase(mc.method, "deserialize") or std.ascii.eqlIgnoreCase(mc.method, "deserializeStrict")) {
                     // Parse JSON string
                     if (args.items.len >= 1 and args.items[0] == .string) {
                         const json_str = args.items[0].string;
@@ -4923,6 +4941,14 @@ pub const Evaluator = struct {
                     return Value{ .object = sot };
                 }
             }
+        }
+
+        // ClassName.class → Type object
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            const type_obj = try self.arena.create(types.ObjectInstance);
+            type_obj.* = .{ .class_name = "Type" };
+            try type_obj.fields.put(self.arena, "name", Value{ .string = fa.object.identifier.name });
+            return Value{ .object = type_obj };
         }
 
         return Value.null_val;

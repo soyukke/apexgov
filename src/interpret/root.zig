@@ -587,6 +587,115 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
+    const source =
+        \\public class MockHttp implements HttpCalloutMock {
+        \\    public HttpResponse respond(HttpRequest req) {
+        \\        HttpResponse res = new HttpResponse();
+        \\        res.setStatusCode(200);
+        \\        res.setBody('{"count":3,"items":["a","b","c"]}');
+        \\        return res;
+        \\    }
+        \\}
+        \\public class PageResult {
+        \\    public Integer count;
+        \\    public List<String> items;
+        \\}
+        \\public class MyIterator implements Iterator<String> {
+        \\    private Integer pos = 0;
+        \\    private List<String> data;
+        \\    public MyIterator(List<String> d) { this.data = d; }
+        \\    public Boolean hasNext() { return this.pos < this.data.size(); }
+        \\    public String next() {
+        \\        String val = this.data.get(this.pos);
+        \\        this.pos++;
+        \\        return val;
+        \\    }
+        \\}
+        \\public class MyIterable implements Iterable<String> {
+        \\    private List<String> data;
+        \\    public MyIterable(List<String> d) { this.data = d; }
+        \\    public Iterator<String> iterator() { return new MyIterator(this.data); }
+        \\}
+        \\public class IterTest {
+        \\    public static String test() {
+        \\        List<String> items = new List<String>{'x','y','z'};
+        \\        MyIterable iterable = new MyIterable(items);
+        \\        List<String> result = new List<String>();
+        \\        for (String s : iterable) {
+        \\            result.add(s);
+        \\        }
+        \\        return String.valueOf(result.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IterTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
+test "E2E: virtual class with overloaded methods and auto property" {
+    const source =
+        \\public class MockH implements HttpCalloutMock {
+        \\    public HttpResponse respond(HttpRequest req) {
+        \\        HttpResponse res = new HttpResponse();
+        \\        res.setStatusCode(200);
+        \\        res.setBody('resp-body');
+        \\        return res;
+        \\    }
+        \\}
+        \\public virtual class RC {
+        \\    protected String namedCredentialName { get; set; }
+        \\    private static Map<String, String> defaultHeaders = new Map<String, String>();
+        \\    public enum HttpVerb { GET, POST, PUT, DEL }
+        \\    public RC(String nc) { this.namedCredentialName = nc; }
+        \\    protected RC() { }
+        \\    // 5-arg instance
+        \\    protected HttpResponse makeApiCall(HttpVerb method, String path, String query, String body, Map<String, String> headers) {
+        \\        HttpRequest req = new HttpRequest();
+        \\        req.setEndpoint('callout:' + this.namedCredentialName + '/' + path);
+        \\        req.setMethod(String.valueOf(method));
+        \\        return new Http().send(req);
+        \\    }
+        \\    // 2-arg instance
+        \\    protected HttpResponse makeApiCall(HttpVerb method, String path) {
+        \\        return this.makeApiCall(method, path, '', '', RC.defaultHeaders);
+        \\    }
+        \\    // 1-arg get
+        \\    protected HttpResponse get(String path) {
+        \\        return this.makeApiCall(HttpVerb.GET, path);
+        \\    }
+        \\    // 3-arg static
+        \\    public static HttpResponse makeApiCall(String nc, HttpVerb method, String path) {
+        \\        return new RC(nc).makeApiCall(method, path, '', '', RC.defaultHeaders);
+        \\    }
+        \\}
+        \\public class Child extends RC {
+        \\    public Child(String nc) { super(nc); }
+        \\    public String fetch() {
+        \\        HttpResponse res = this.get('/data');
+        \\        return String.valueOf(res.getStatusCode());
+        \\    }
+        \\}
+        \\public class VTest {
+        \\    public static String test() {
+        \\        Test.setMock(HttpCalloutMock.class, new MockH());
+        \\        Child c = new Child('myAPI');
+        \\        return c.fetch();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "VTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("200", result.value.string);
+}
+
 test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
     const source =
         \\public class MyQ implements Queueable {
