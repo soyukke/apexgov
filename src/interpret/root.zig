@@ -533,3 +533,29 @@ test "E2E: beforeUpdate trigger addError causes DmlException" {
     defer result.deinit();
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "caught:"));
 }
+
+test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains class name" {
+    const source =
+        \\public class MyCacheBuilder implements Cache.CacheBuilder {
+        \\    public Object doLoad(String key) { return 'cached-value'; }
+        \\}
+        \\public class CacheTest {
+        \\    public static String test() {
+        \\        Cache.OrgPartition p = Cache.Org.getPartition('local.default');
+        \\        p.remove(MyCacheBuilder.class, 'myKey');
+        \\        System.assertEquals(0, p.getNumKeys(), 'start empty');
+        \\        Object val = p.get(MyCacheBuilder.class, 'myKey');
+        \\        Integer numKeys = p.getNumKeys();
+        \\        String keysStr = p.getKeys().toString();
+        \\        Boolean hasBuilder = keysStr.containsIgnoreCase('mycachebuilder');
+        \\        return numKeys + ':' + hasBuilder;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CacheTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true", result.value.string);
+}

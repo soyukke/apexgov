@@ -116,7 +116,16 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
             try buf.appendSlice(arena, "}");
             break :blk buf.items;
         },
-        .set => |s2| try std.fmt.allocPrint(arena, "Set[{d}]", .{s2.entries.count()}),
+        .set => |s2| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.appendSlice(arena, "{");
+            for (s2.entries.keys(), 0..) |k, i| {
+                if (i > 0) try buf.appendSlice(arena, ", ");
+                try buf.appendSlice(arena, k);
+            }
+            try buf.appendSlice(arena, "}");
+            break :blk buf.items;
+        },
         .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
         .object => |obj| blk: {
             // Schema.SObjectType → return the "name" field (e.g. "Account")

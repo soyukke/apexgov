@@ -4002,6 +4002,9 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(set.entries.count()) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = set.entries.count() == 0 };
+        if (std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = try utils.coerceToString(Value{ .set = set }, self.arena) };
+        }
         if (std.ascii.eqlIgnoreCase(method, "addAll") and args.len > 0) {
             if (args[0] == .list) {
                 for (args[0].list.items.items) |item| {
@@ -4631,6 +4634,23 @@ pub const Evaluator = struct {
                 if (std.ascii.eqlIgnoreCase(fa.field, "hasNamespacePrefix")) return Value{ .boolean = false };
                 if (std.ascii.eqlIgnoreCase(fa.field, "multiCurrencyEnabled")) return Value{ .boolean = false };
                 if (std.ascii.eqlIgnoreCase(fa.field, "lightningEnabled")) return Value{ .boolean = true };
+                // Populate the cache partition (simulates OrgShape.getOrgShape() using CachedOrgShape)
+                if (self.global_env.get("Cache.Org.partition")) |partition_val| {
+                    if (partition_val == .object) {
+                        if (partition_val.object.fields.get("_cache")) |cache_val| {
+                            if (cache_val == .map) {
+                                const cache_key = "CachedOrgShape:requiredButNotUsed";
+                                if (!cache_val.map.entries.contains(cache_key)) {
+                                    // Store Organization record in cache
+                                    const org_soql2 = "SELECT FIELDS(STANDARD) FROM Organization LIMIT 1";
+                                    if (self.generateMetadataStub("Organization", org_soql2, self.global_env) catch null) |org_val| {
+                                        cache_val.map.entries.put(self.arena, cache_key, org_val) catch {};
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Map OrgShape property names to Organization field names
                 const org_field_mappings = [_]struct { prop: []const u8, field: []const u8 }{
                     .{ .prop = "isSandbox", .field = "IsSandbox" },

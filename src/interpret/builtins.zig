@@ -1493,8 +1493,20 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
         if (std.ascii.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
             if (cache_map) |cm| {
-                const key = try utils.coerceToString(args[0], ctx.arena);
-                _ = cm.entries.orderedRemove(key);
+                if (args.len >= 2 and args[1] == .string) {
+                    // 2-arg form: remove(CacheBuilder.class, key)
+                    const builder_name = if (args[0] == .object) blk: {
+                        if (args[0].object.fields.get("name")) |n| {
+                            if (n == .string) break :blk n.string;
+                        }
+                        break :blk args[0].object.class_name;
+                    } else try utils.coerceToString(args[0], ctx.arena);
+                    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, args[1].string });
+                    _ = cm.entries.orderedRemove(cache_key);
+                } else {
+                    const key = try utils.coerceToString(args[0], ctx.arena);
+                    _ = cm.entries.orderedRemove(key);
+                }
             }
             return .void_val;
         }
