@@ -4666,6 +4666,21 @@ pub const Evaluator = struct {
         if (obj == .string) {
             // String.length as property (shouldn't be needed but just in case)
             if (std.ascii.eqlIgnoreCase(fa.field, "length")) return Value{ .integer = @intCast(obj.string.len) };
+            // Enum value pattern: when obj is an enum name (from ClassName.EnumName),
+            // field access returns the enum value string (e.g., HttpVerb.GET → "GET")
+            var enum_iter = self.classes.iterator();
+            while (enum_iter.next()) |entry| {
+                for (entry.value_ptr.*.members) |member| {
+                    switch (member) {
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, obj.string)) {
+                                return Value{ .string = fa.field };
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
         }
 
         // Static field: ClassName.fieldName
@@ -4785,7 +4800,14 @@ pub const Evaluator = struct {
                 // It might be a class with the enum as inner
                 for (cd.members) |member| {
                     switch (member) {
-                        .enum_decl => |_| {},
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, fa.field)) {
+                                // Return the enum name as a string - when used in
+                                // ClassName.EnumName.VALUE patterns, the next field_access
+                                // will match the enum name in the enum check above (line 4767)
+                                return Value{ .string = fa.field };
+                            }
+                        },
                         .field_decl => |fd| {
                             if (std.ascii.eqlIgnoreCase(fd.name, fa.field)) {
                                 if (fd.modifiers.is_static) {
