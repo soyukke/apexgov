@@ -1947,6 +1947,10 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
             try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
             try sob.fields.put(self.arena, "Label", Value{ .string = name_val });
+            // Store so PermissionSet can be looked up later (e.g., by isFieldAllowedByPermSets)
+            const gop = try self.store.getOrPut(self.arena, "PermissionSet");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
             return Value{ .sobject = sob };
         }
 

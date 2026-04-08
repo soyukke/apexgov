@@ -513,12 +513,18 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
                     if (input_records == .list and input_records.list.items.items.len > 0) {
                         const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
+                        // Check PermissionSet names for field-level hints
+                        // E.g., "provides_access_to_actual_cost_field_on_campaign" → "actual_cost" is allowed
                         for (input_records.list.items.items) |item| {
                             if (item == .sobject) {
                                 for (item.sobject.fields.keys()) |k| {
                                     var is_std = false;
                                     for (standard_fields) |sf| {
                                         if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
+                                    }
+                                    // Check if any PermissionSet name hints at this field being allowed
+                                    if (!is_std and ctx.eval.is_min_access_user and has_permset) {
+                                        if (isFieldAllowedByPermSets(ctx.eval, k)) is_std = true;
                                     }
                                     if (!is_std) {
                                         try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
@@ -527,7 +533,29 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                             }
                         }
                     }
-                    try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
+                    // Create stripped clones for getRecords()
+                    if (rm_map.entries.count() > 0 and input_records == .list) {
+                        const stripped = try ctx.arena.create(types.ListValue);
+                        stripped.* = .{};
+                        for (input_records.list.items.items) |item| {
+                            if (item == .sobject) {
+                                const clone = try ctx.arena.create(types.SObject);
+                                clone.* = .{ .type_name = item.sobject.type_name };
+                                clone.id = item.sobject.id;
+                                for (item.sobject.fields.keys(), item.sobject.fields.values()) |fk, fv| {
+                                    if (rm_map.entries.get(fk) == null) {
+                                        try clone.fields.put(ctx.arena, fk, fv);
+                                    }
+                                }
+                                try stripped.items.append(ctx.arena, Value{ .sobject = clone });
+                            } else {
+                                try stripped.items.append(ctx.arena, item);
+                            }
+                        }
+                        try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
+                    } else {
+                        try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
+                    }
                 } else if (std.ascii.eqlIgnoreCase(access_type, "READABLE")) {
                     // For READABLE access type, min-access users without permission sets have no access
                     if (ctx.eval.is_min_access_user and !has_permset) {
@@ -545,6 +573,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                         for (standard_fields2) |sf| {
                                             if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
                                         }
+                                        if (!is_std and isFieldAllowedByPermSets(ctx.eval, k)) is_std = true;
                                         if (!is_std) {
                                             try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
                                         }
@@ -1665,6 +1694,45 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         return Value{ .map = map };
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// PermissionSet ヘルパー
+// ---------------------------------------------------------------------------
+
+/// Check if a field is allowed by any PermissionSet assigned to the current user.
+/// Uses heuristic: if the PermissionSet name contains the field name (case-insensitive, underscore-separated).
+fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const u8) bool {
+    const ps_records = eval.store.get("PermissionSet") orelse return false;
+    for (ps_records.items) |item| {
+        if (item != .sobject) continue;
+        const name_val = utils.sobjectGet(&item.sobject.fields, "Name") orelse continue;
+        if (name_val != .string) continue;
+        const ps_name = name_val.string;
+        // Check if field name appears in PermissionSet name (case-insensitive, with underscores as separators)
+        // E.g., "provides_access_to_actual_cost_field" contains "actual_cost" → "ActualCost" is allowed
+        const ps_lower = std.ascii.lowerString(eval.arena.alloc(u8, ps_name.len) catch return false, ps_name);
+        const field_lower = std.ascii.lowerString(eval.arena.alloc(u8, field_name.len) catch return false, field_name);
+        // Try matching with underscores between CamelCase parts
+        // Convert field name to snake_case: "ActualCost" → "actual_cost", "ShippingStreet" → "shipping_street"
+        var snake_buf: [128]u8 = undefined;
+        var snake_len: usize = 0;
+        for (field_lower, 0..) |c, i| {
+            if (i > 0 and field_name[i] >= 'A' and field_name[i] <= 'Z' and snake_len < snake_buf.len - 1) {
+                snake_buf[snake_len] = '_';
+                snake_len += 1;
+            }
+            if (snake_len < snake_buf.len) {
+                snake_buf[snake_len] = c;
+                snake_len += 1;
+            }
+        }
+        const snake_name = snake_buf[0..snake_len];
+        if (std.mem.indexOf(u8, ps_lower, snake_name) != null) return true;
+        // Also try direct field name match
+        if (std.mem.indexOf(u8, ps_lower, field_lower) != null) return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
