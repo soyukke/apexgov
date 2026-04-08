@@ -559,3 +559,67 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
     defer result.deinit();
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
+
+test "E2E: static field set before enqueueJob is visible in execute" {
+    const source =
+        \\public class MyQueueable implements Queueable {
+        \\    @testVisible private static Boolean throwError = false;
+        \\    @testVisible private static Boolean circuitBreakerThrown = false;
+        \\    public static void execute(QueueableContext qc) {
+        \\        if (Test.isRunningTest() && throwError) {
+        \\            MyQueueable.circuitBreakerThrown = true;
+        \\        }
+        \\    }
+        \\}
+        \\public class QTest {
+        \\    public static String test() {
+        \\        MyQueueable.throwError = true;
+        \\        System.enqueueJob(new MyQueueable());
+        \\        return String.valueOf(MyQueueable.circuitBreakerThrown);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
+    const source =
+        \\public class MyQ implements Queueable {
+        \\    @testVisible private static Boolean throwError = false;
+        \\    @testVisible private static Boolean circuitBreakerThrown = false;
+        \\    public static void execute(QueueableContext qc) {
+        \\        List<Account> accounts = [SELECT Id FROM Account LIMIT 1000];
+        \\        if (Test.isRunningTest() && throwError) {
+        \\            for (Account a : accounts) { a.put('Name', ''); }
+        \\        }
+        \\        try {
+        \\            update accounts;
+        \\        } catch (DmlException dmle) {
+        \\            if (Test.isRunningTest()) {
+        \\                MyQ.circuitBreakerThrown = true;
+        \\            }
+        \\        }
+        \\    }
+        \\}
+        \\public class QTest2 {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        MyQ.throwError = true;
+        \\        System.enqueueJob(new MyQ());
+        \\        return String.valueOf(MyQ.circuitBreakerThrown);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QTest2",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}

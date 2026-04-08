@@ -1730,7 +1730,7 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
-        try sob.fields.put(ctx.arena, args[0].string, args[1]);
+        try utils.sobjectPut(&sob.fields, ctx.arena, args[0].string, args[1]);
         return args[1];
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap")) {
