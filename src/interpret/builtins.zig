@@ -598,12 +598,6 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     try obj.fields.put(ctx.arena, "records", args[0]);
                 }
             }
-            // getRecords() returns the input list (fields are not removed from records)
-            if (args.len >= 2) {
-                try obj.fields.put(ctx.arena, "records", args[1]);
-            } else if (args.len >= 1 and args[0] == .list) {
-                try obj.fields.put(ctx.arena, "records", args[0]);
-            }
             try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
             return Value{ .object = obj };
         }

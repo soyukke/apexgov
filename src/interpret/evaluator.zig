@@ -3682,6 +3682,7 @@ pub const Evaluator = struct {
                 if (md != null) {
                     return self.callInstanceMethod(class_decl, obj.object, method, args);
                 }
+                // debug removed
             }
         }
 
