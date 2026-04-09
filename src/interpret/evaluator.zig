@@ -2925,6 +2925,35 @@ pub const Evaluator = struct {
 
             .identifier => |id| {
                 if (current_env.get(id.name)) |val| return val;
+                // Check if this is a property with a getter on `this`
+                // (bare identifier in getter body referencing another property)
+                if (current_env.get("this")) |this_check| {
+                    if (this_check == .object) {
+                        if (self.findClass(this_check.object.class_name)) |this_cd| {
+                            var scan_cd: ?*ast.ClassDecl = this_cd;
+                            while (scan_cd) |scd| {
+                                for (scd.members) |m| {
+                                    switch (m) {
+                                        .field_decl => |pfd| {
+                                            if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and pfd.getter_body != null) {
+                                                // Evaluate as this.propertyName → triggers getter
+                                                const this_expr_node = try self.arena.create(ast.Expr);
+                                                this_expr_node.* = .this_expr;
+                                                const fa_node = try self.arena.create(ast.FieldAccess);
+                                                fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
+                                                const fa_expr = try self.arena.create(ast.Expr);
+                                                fa_expr.* = .{ .field_access = fa_node };
+                                                return self.evalExpr(fa_expr, current_env);
+                                            }
+                                        },
+                                        else => {},
+                                    }
+                                }
+                                scan_cd = if (scd.super_class) |sc| self.findClass(sc.name) else null;
+                            }
+                        }
+                    }
+                }
                 // Check static fields in enclosing class context
                 // When `this` is available, check ClassName.fieldName and parent class
                 if (current_env.get("this")) |this_val| {
@@ -4755,62 +4784,6 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         if (obj == .object) {
-            // OrgShape instance: return Organization field values directly
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "OrgShape")) {
-                // Special computed properties
-                if (std.ascii.eqlIgnoreCase(fa.field, "hasNamespacePrefix")) return Value{ .boolean = false };
-                if (std.ascii.eqlIgnoreCase(fa.field, "multiCurrencyEnabled")) return Value{ .boolean = false };
-                if (std.ascii.eqlIgnoreCase(fa.field, "lightningEnabled")) return Value{ .boolean = true };
-                // Populate the cache partition (simulates OrgShape.getOrgShape() using CachedOrgShape)
-                if (self.global_env.get("Cache.Org.partition")) |partition_val| {
-                    if (partition_val == .object) {
-                        if (partition_val.object.fields.get("_cache")) |cache_val| {
-                            if (cache_val == .map) {
-                                const cache_key = "CachedOrgShape:requiredButNotUsed";
-                                if (!cache_val.map.entries.contains(cache_key)) {
-                                    // Store Organization record in cache
-                                    const org_soql2 = "SELECT FIELDS(STANDARD) FROM Organization LIMIT 1";
-                                    if (self.generateMetadataStub("Organization", org_soql2, self.global_env) catch null) |org_val| {
-                                        cache_val.map.entries.put(self.arena, cache_key, org_val) catch {};
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Map OrgShape property names to Organization field names
-                const org_field_mappings = [_]struct { prop: []const u8, field: []const u8 }{
-                    .{ .prop = "isSandbox", .field = "IsSandbox" },
-                    .{ .prop = "orgType", .field = "OrganizationType" },
-                    .{ .prop = "isReadOnly", .field = "IsReadOnly" },
-                    .{ .prop = "instanceName", .field = "InstanceName" },
-                    .{ .prop = "podName", .field = "InstanceName" },
-                    .{ .prop = "getFiscalYearStartMonth", .field = "FiscalYearStartMonth" },
-                    .{ .prop = "id", .field = "Id" },
-                    .{ .prop = "locale", .field = "LanguageLocaleKey" },
-                    .{ .prop = "name", .field = "Name" },
-                    .{ .prop = "timeZoneKey", .field = "TimeZoneSidKey" },
-                    .{ .prop = "namespacePrefix", .field = "NamespacePrefix" },
-                };
-                for (org_field_mappings) |m| {
-                    if (std.ascii.eqlIgnoreCase(fa.field, m.prop)) {
-                        // Get from Organization store or generate stub
-                        if (self.store.get("Organization")) |org_records| {
-                            if (org_records.items.len > 0 and org_records.items[0] == .sobject) {
-                                if (utils.sobjectGet(&org_records.items[0].sobject.fields, m.field)) |v| return v;
-                            }
-                        }
-                        // Generate stub
-                        const org_soql = "SELECT FIELDS(STANDARD) FROM Organization LIMIT 1";
-                        if (self.generateMetadataStub("Organization", org_soql, self.global_env) catch null) |org_val| {
-                            if (org_val == .sobject) {
-                                if (utils.sobjectGet(&org_val.sobject.fields, m.field)) |v| return v;
-                            }
-                        }
-                        return Value.null_val;
-                    }
-                }
-            }
             // Check for property getter FIRST (before returning raw field value)
             if (self.findClass(obj.object.class_name)) |cd| {
                 var cur_cd: ?*ast.ClassDecl = cd;
@@ -4824,12 +4797,36 @@ pub const Evaluator = struct {
                                         const getter_env = self.global_env.child() catch return Value.null_val;
                                         getter_env.define("this", Value{ .object = obj.object }) catch {};
                                         // Load instance fields as local variables
+                                        // SKIP fields that have their own getter (to force
+                                        // property access via this.field → getter chain)
                                         for (obj.object.fields.keys(), obj.object.fields.values()) |fk, fv| {
-                                            getter_env.set(fk, fv) catch {
-                                                getter_env.define(fk, fv) catch {};
-                                            };
+                                            var has_getter = false;
+                                            if (!std.ascii.eqlIgnoreCase(fk, fd.name)) { // Don't skip current property
+                                                var check_cd: ?*ast.ClassDecl = cd;
+                                                while (check_cd) |ccd2| {
+                                                    for (ccd2.members) |m2| {
+                                                        switch (m2) {
+                                                            .field_decl => |fd2| {
+                                                                if (std.ascii.eqlIgnoreCase(fd2.name, fk) and fd2.getter_body != null) {
+                                                                    has_getter = true;
+                                                                }
+                                                            },
+                                                            else => {},
+                                                        }
+                                                    }
+                                                    check_cd = if (ccd2.super_class) |sc| self.findClass(sc.name) else null;
+                                                }
+                                            }
+                                            if (!has_getter) {
+                                                getter_env.set(fk, fv) catch {
+                                                    getter_env.define(fk, fv) catch {};
+                                                };
+                                            }
                                         }
-                                        const result = self.execBlock(getter, getter_env) catch return Value.null_val;
+                                        const result = self.execBlock(getter, getter_env) catch |err| {
+                                            if (err == error.StackOverflow) return Value.null_val;
+                                            return err;
+                                        };
                                         return switch (result) {
                                             .return_val => |v| v,
                                             else => self.return_value,
