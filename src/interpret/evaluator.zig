@@ -1784,6 +1784,7 @@ pub const Evaluator = struct {
                                 while (pp < where_clause.len and where_clause[pp] != '\'') pp += 1;
                                 if (pp > start) {
                                     const in_name = where_clause[start..pp];
+                                    // debug removed
                                     const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Id, Name FROM {s} WHERE Name = '{s}'", .{ from_type, in_name });
                                     if (try self.generateMetadataStub(from_type, tmp_soql, current_env)) |stub| {
                                         try records.append(self.arena, stub);
@@ -5026,6 +5027,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "areEqual") or std.ascii.eqlIgnoreCase(method, "assertEquals")) {
             if (args.len >= 2) {
                 if (!utils.valueEql(args[0], args[1])) {
+                    // debug removed
                     const msg = if (args.len >= 3 and args[2] == .string)
                         args[2].string
                     else

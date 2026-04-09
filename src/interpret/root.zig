@@ -560,6 +560,28 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
+test "E2E: StaticResource IN clause returns multiple stubs" {
+    // Multi-line SOQL like in apex-recipes
+    const source =
+        \\public class SRTest {
+        \\    public static String test() {
+        \\        StaticResource[] testData = [
+        \\            SELECT Id, Body, Name
+        \\            FROM StaticResource
+        \\            WHERE Name IN ('alpha', 'beta', 'gamma')
+        \\        ];
+        \\        return String.valueOf(testData.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SRTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
 test "E2E: static field set before enqueueJob is visible in execute" {
     const source =
         \\public class MyQueueable implements Queueable {
