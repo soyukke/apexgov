@@ -14,6 +14,7 @@ pub const env = @import("env.zig");
 pub const evaluator = @import("evaluator.zig");
 pub const builtins = @import("builtins.zig");
 pub const utils = @import("utils.zig");
+pub const regex = @import("regex.zig");
 
 // 型の再エクスポート
 pub const Value = types.Value;
