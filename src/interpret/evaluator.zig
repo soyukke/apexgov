@@ -5300,6 +5300,7 @@ pub const Evaluator = struct {
             return Value{ .list = list };
         }
         if (std.ascii.eqlIgnoreCase(method, "queryWithBinds")) {
+            // debug removed
             // Database.queryWithBinds(queryString, bindMap, accessLevel)
             if (args.len >= 2 and args[0] == .string) {
                 // Resolve bind variables from the map

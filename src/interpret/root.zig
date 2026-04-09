@@ -675,6 +675,134 @@ test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
+test "E2E: getFilteredAttachments full flow" {
+    const source =
+        \\public class FTest {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'Test');
+        \\        insert acct;
+        \\        // Insert 3 ContentVersions
+        \\        for (Integer i = 0; i < 3; i++) {
+        \\            ContentVersion cv = new ContentVersion();
+        \\            cv.ContentLocation = 'S';
+        \\            cv.PathOnClient = 'file' + i + '.png';
+        \\            cv.Title = 'file' + i;
+        \\            cv.VersionData = Blob.valueOf('data');
+        \\            cv.FirstPublishLocationId = acct.Id;
+        \\            Database.insert(cv, AccessLevel.USER_MODE);
+        \\        }
+        \\        // queryWithBinds to get CDLs
+        \\        Map<String, Object> recordBind = new Map<String, Object>{ 'recordId' => acct.Id };
+        \\        String qs = 'SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = :recordId';
+        \\        List<ContentDocumentLink> links = Database.queryWithBinds(qs, recordBind, AccessLevel.USER_MODE);
+        \\        Set<Id> fileIds = new Set<Id>();
+        \\        for (ContentDocumentLink cdl : links) {
+        \\            fileIds.add(cdl.ContentDocumentId);
+        \\        }
+        \\        List<ContentVersion> versions = [SELECT Id, Title FROM ContentVersion WHERE ContentDocumentId IN :fileIds];
+        \\        return links.size() + ':' + fileIds.size() + ':' + versions.size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3:3:3", result.value.string);
+}
+
+test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
+    const source =
+        \\public class CVTest {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'TestAcct');
+        \\        insert acct;
+        \\        for (Integer i = 0; i < 3; i++) {
+        \\            ContentVersion cv = new ContentVersion();
+        \\            cv.ContentLocation = 'S';
+        \\            cv.PathOnClient = 'file' + i + '.png';
+        \\            cv.Title = 'file' + i;
+        \\            cv.VersionData = Blob.valueOf('data' + i);
+        \\            cv.FirstPublishLocationId = acct.Id;
+        \\            Database.insert(cv);
+        \\        }
+        \\        List<ContentDocumentLink> links = [
+        \\            SELECT ContentDocumentId
+        \\            FROM ContentDocumentLink
+        \\            WHERE LinkedEntityId = :acct.Id
+        \\        ];
+        \\        Set<Id> fileIds = new Set<Id>();
+        \\        for (ContentDocumentLink cdl : links) {
+        \\            fileIds.add(cdl.ContentDocumentId);
+        \\        }
+        \\        List<ContentVersion> versions = [
+        \\            SELECT Id, Title FROM ContentVersion
+        \\            WHERE ContentDocumentId IN :fileIds
+        \\        ];
+        \\        return links.size() + ':' + versions.size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CVTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3:3", result.value.string);
+}
+
+test "E2E: StaticResource Body → ContentVersion insert via method" {
+    const source =
+        \\public class FileHelper {
+        \\    public static Database.SaveResult createFileAttachedToRecord(
+        \\        Blob fileContents, Id attachedTo, String fileName
+        \\    ) {
+        \\        ContentVersion cv = new ContentVersion();
+        \\        cv.ContentLocation = 'S';
+        \\        cv.PathOnClient = fileName;
+        \\        cv.Title = fileName;
+        \\        cv.VersionData = fileContents;
+        \\        cv.FirstPublishLocationId = attachedTo;
+        \\        Database.SaveResult saveResult;
+        \\        try {
+        \\            saveResult = Database.insert(cv, AccessLevel.USER_MODE);
+        \\        } catch (DmlException e) {
+        \\            System.debug('DML error: ' + e.getMessage());
+        \\        }
+        \\        return saveResult;
+        \\    }
+        \\}
+        \\public class FSTest {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'Test');
+        \\        insert acct;
+        \\        StaticResource[] resources = [
+        \\            SELECT Id, Body, Name
+        \\            FROM StaticResource
+        \\            WHERE Name IN ('audio', 'doc', 'img')
+        \\        ];
+        \\        for (StaticResource r : resources) {
+        \\            String fileName = r.Name + '.png';
+        \\            FileHelper.createFileAttachedToRecord(r.Body, acct.Id, fileName);
+        \\        }
+        \\        List<ContentDocumentLink> links = [
+        \\            SELECT ContentDocumentId
+        \\            FROM ContentDocumentLink
+        \\            WHERE LinkedEntityId = :acct.Id
+        \\        ];
+        \\        return String.valueOf(links.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FSTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
 test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
     const source =
         \\public class MockHttp implements HttpCalloutMock {
