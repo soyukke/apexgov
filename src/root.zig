@@ -5,6 +5,7 @@ pub const profile = @import("profile.zig");
 pub const report = @import("report.zig");
 pub const transpile = @import("transpile/root.zig");
 pub const interpret = @import("interpret/root.zig");
+pub const apex_parser = @import("apex_parser/root.zig");
 
 test {
     _ = model;
@@ -14,4 +15,5 @@ test {
     _ = report;
     _ = transpile;
     _ = interpret;
+    _ = apex_parser;
 }

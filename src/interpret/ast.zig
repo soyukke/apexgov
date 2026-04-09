@@ -1,386 +1,57 @@
-//! ast — Apex AST ノード定義。
+//! ast — apex_parser.ast への委譲。
 //!
-//! パーサーが生成し、エバリュエーターが消費する。
-//! 全ノードは arena アロケーション。SourceLoc でソース位置を追跡。
+//! 後方互換のため残す。新規コードは apex_parser.ast を直接使うこと。
 
-const types = @import("types.zig");
-const SourceLoc = types.SourceLoc;
-const TypeRef = types.TypeRef;
-const TokenKind = types.TokenKind;
+pub const apex_ast = @import("../apex_parser/ast.zig");
 
-// ---------------------------------------------------------------------------
-// 式 (Expression)
-// ---------------------------------------------------------------------------
+// 式
+pub const Expr = apex_ast.Expr;
+pub const Identifier = apex_ast.Identifier;
+pub const BinaryOp = apex_ast.BinaryOp;
+pub const UnaryOp = apex_ast.UnaryOp;
+pub const BinaryExpr = apex_ast.BinaryExpr;
+pub const UnaryExpr = apex_ast.UnaryExpr;
+pub const CallExpr = apex_ast.CallExpr;
+pub const MethodCallExpr = apex_ast.MethodCallExpr;
+pub const FieldAccess = apex_ast.FieldAccess;
+pub const IndexAccess = apex_ast.IndexAccess;
+pub const Assignment = apex_ast.Assignment;
+pub const AssignOp = apex_ast.AssignOp;
+pub const NewExpr = apex_ast.NewExpr;
+pub const CastExpr = apex_ast.CastExpr;
+pub const TernaryExpr = apex_ast.TernaryExpr;
+pub const InstanceofExpr = apex_ast.InstanceofExpr;
+pub const SoqlExpr = apex_ast.SoqlExpr;
 
-pub const Expr = union(enum) {
-    integer_literal: i64,
-    double_literal: f64,
-    string_literal: []const u8,
-    boolean_literal: bool,
-    null_literal,
-    identifier: Identifier,
-    this_expr,
-    super_expr,
-    binary: *BinaryExpr,
-    unary: *UnaryExpr,
-    call: *CallExpr,
-    method_call: *MethodCallExpr,
-    field_access: *FieldAccess,
-    index_access: *IndexAccess,
-    assignment: *Assignment,
-    new_expr: *NewExpr,
-    cast_expr: *CastExpr,
-    ternary: *TernaryExpr,
-    instanceof: *InstanceofExpr,
-    soql: *SoqlExpr,
-    grouped: *Expr,
-};
+// 文
+pub const Stmt = apex_ast.Stmt;
+pub const RunAsStmt = apex_ast.RunAsStmt;
+pub const VarDecl = apex_ast.VarDecl;
+pub const IfStmt = apex_ast.IfStmt;
+pub const ForStmt = apex_ast.ForStmt;
+pub const ForEachStmt = apex_ast.ForEachStmt;
+pub const WhileStmt = apex_ast.WhileStmt;
+pub const DoWhileStmt = apex_ast.DoWhileStmt;
+pub const ReturnStmt = apex_ast.ReturnStmt;
+pub const SwitchStmt = apex_ast.SwitchStmt;
+pub const WhenClause = apex_ast.WhenClause;
+pub const WhenPattern = apex_ast.WhenPattern;
+pub const TryStmt = apex_ast.TryStmt;
+pub const CatchClause = apex_ast.CatchClause;
+pub const ThrowStmt = apex_ast.ThrowStmt;
+pub const DmlOp = apex_ast.DmlOp;
+pub const DmlStmt = apex_ast.DmlStmt;
 
-pub const Identifier = struct {
-    name: []const u8,
-    loc: SourceLoc = .zero,
-};
-
-pub const BinaryOp = enum {
-    add,
-    sub,
-    mul,
-    div,
-    mod,
-    eq,
-    neq,
-    lt,
-    gt,
-    lte,
-    gte,
-    strict_eq,
-    strict_neq,
-    and_op,
-    or_op,
-};
-
-pub const UnaryOp = enum {
-    negate,
-    not,
-};
-
-pub const BinaryExpr = struct {
-    left: *Expr,
-    op: BinaryOp,
-    right: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const UnaryExpr = struct {
-    op: UnaryOp,
-    operand: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const CallExpr = struct {
-    callee: []const u8,
-    args: []Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const MethodCallExpr = struct {
-    object: *Expr,
-    method: []const u8,
-    args: []Expr,
-    loc: SourceLoc = .zero,
-    null_safe: bool = false,
-};
-
-pub const FieldAccess = struct {
-    object: *Expr,
-    field: []const u8,
-    loc: SourceLoc = .zero,
-    null_safe: bool = false,
-};
-
-pub const IndexAccess = struct {
-    object: *Expr,
-    index: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const Assignment = struct {
-    target: *Expr,
-    op: AssignOp,
-    value: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const AssignOp = enum {
-    assign,
-    plus_assign,
-    minus_assign,
-    star_assign,
-    slash_assign,
-};
-
-pub const NewExpr = struct {
-    type_name: TypeRef,
-    args: []Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const CastExpr = struct {
-    target_type: TypeRef,
-    operand: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const TernaryExpr = struct {
-    condition: *Expr,
-    then_expr: *Expr,
-    else_expr: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const InstanceofExpr = struct {
-    operand: *Expr,
-    type_name: TypeRef,
-    loc: SourceLoc = .zero,
-};
-
-pub const SoqlExpr = struct {
-    raw: []const u8,
-    loc: SourceLoc = .zero,
-};
-
-// ---------------------------------------------------------------------------
-// 文 (Statement)
-// ---------------------------------------------------------------------------
-
-pub const Stmt = union(enum) {
-    expr_stmt: *Expr,
-    var_decl: *VarDecl,
-    block: []Stmt,
-    if_stmt: *IfStmt,
-    for_stmt: *ForStmt,
-    for_each_stmt: *ForEachStmt,
-    while_stmt: *WhileStmt,
-    do_while: *DoWhileStmt,
-    return_stmt: *ReturnStmt,
-    break_stmt,
-    continue_stmt,
-    switch_stmt: *SwitchStmt,
-    try_stmt: *TryStmt,
-    throw_stmt: *ThrowStmt,
-    dml_stmt: *DmlStmt,
-    run_as_stmt: *RunAsStmt,
-};
-
-pub const RunAsStmt = struct {
-    user_expr: *Expr,
-    body: []Stmt,
-    loc: SourceLoc = .zero,
-};
-
-pub const VarDecl = struct {
-    type_ref: TypeRef,
-    name: []const u8,
-    initializer: ?*Expr = null,
-    loc: SourceLoc = .zero,
-};
-
-pub const IfStmt = struct {
-    condition: *Expr,
-    then_body: []Stmt,
-    else_body: ?[]Stmt = null,
-    loc: SourceLoc = .zero,
-};
-
-pub const ForStmt = struct {
-    init: ?*Stmt,
-    condition: ?*Expr,
-    update: ?*Expr,
-    body: []Stmt,
-    loc: SourceLoc = .zero,
-};
-
-pub const ForEachStmt = struct {
-    elem_type: TypeRef,
-    elem_name: []const u8,
-    iterable: *Expr,
-    body: []Stmt,
-    loc: SourceLoc = .zero,
-};
-
-pub const WhileStmt = struct {
-    condition: *Expr,
-    body: []Stmt,
-    loc: SourceLoc = .zero,
-};
-
-pub const DoWhileStmt = struct {
-    body: []Stmt,
-    condition: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const ReturnStmt = struct {
-    value: ?*Expr = null,
-    loc: SourceLoc = .zero,
-};
-
-pub const SwitchStmt = struct {
-    subject: *Expr,
-    when_clauses: []WhenClause,
-    loc: SourceLoc = .zero,
-};
-
-pub const WhenClause = struct {
-    pattern: WhenPattern,
-    body: []Stmt,
-};
-
-pub const WhenPattern = union(enum) {
-    values: []Expr,
-    else_clause,
-};
-
-pub const TryStmt = struct {
-    body: []Stmt,
-    catches: []CatchClause,
-    finally_body: ?[]Stmt = null,
-    loc: SourceLoc = .zero,
-};
-
-pub const CatchClause = struct {
-    exception_type: TypeRef,
-    name: []const u8,
-    body: []Stmt,
-};
-
-pub const ThrowStmt = struct {
-    expr: *Expr,
-    loc: SourceLoc = .zero,
-};
-
-pub const DmlOp = enum {
-    insert,
-    update,
-    upsert,
-    delete,
-    undelete,
-    merge,
-};
-
-pub const DmlStmt = struct {
-    op: DmlOp,
-    target: *Expr,
-    is_user_mode: bool = false,
-    loc: SourceLoc = .zero,
-};
-
-// ---------------------------------------------------------------------------
-// 宣言 (Declaration)
-// ---------------------------------------------------------------------------
-
-pub const Decl = union(enum) {
-    class_decl: *ClassDecl,
-    interface_decl: *InterfaceDecl,
-    enum_decl: *EnumDecl,
-    method_decl: *MethodDecl,
-    field_decl: *FieldDecl,
-    constructor_decl: *ConstructorDecl,
-    static_init: []Stmt,
-    trigger_decl: *TriggerDecl,
-};
-
-pub const Modifiers = struct {
-    is_public: bool = false,
-    is_private: bool = false,
-    is_protected: bool = false,
-    is_global: bool = false,
-    is_static: bool = false,
-    is_final: bool = false,
-    is_abstract: bool = false,
-    is_virtual: bool = false,
-    is_override: bool = false,
-    is_transient: bool = false,
-};
-
-pub const SharingMode = enum {
-    with_sharing,
-    without_sharing,
-    inherited,
-};
-
-pub const ClassDecl = struct {
-    name: []const u8,
-    modifiers: Modifiers = .{},
-    sharing: SharingMode = .inherited,
-    super_class: ?TypeRef = null,
-    interfaces: []TypeRef = &.{},
-    members: []Decl = &.{},
-    annotations: [][]const u8 = &.{},
-    loc: SourceLoc = .zero,
-};
-
-pub const InterfaceDecl = struct {
-    name: []const u8,
-    modifiers: Modifiers = .{},
-    extends: []TypeRef = &.{},
-    members: []Decl = &.{},
-    loc: SourceLoc = .zero,
-};
-
-pub const EnumDecl = struct {
-    name: []const u8,
-    modifiers: Modifiers = .{},
-    values: [][]const u8 = &.{},
-    loc: SourceLoc = .zero,
-};
-
-pub const Param = struct {
-    type_ref: TypeRef,
-    name: []const u8,
-};
-
-pub const MethodDecl = struct {
-    name: []const u8,
-    modifiers: Modifiers = .{},
-    return_type: TypeRef,
-    params: []Param = &.{},
-    body: []Stmt = &.{},
-    annotations: [][]const u8 = &.{},
-    loc: SourceLoc = .zero,
-};
-
-pub const ConstructorDecl = struct {
-    modifiers: Modifiers = .{},
-    params: []Param = &.{},
-    body: []Stmt = &.{},
-    loc: SourceLoc = .zero,
-};
-
-pub const FieldDecl = struct {
-    name: []const u8,
-    modifiers: Modifiers = .{},
-    type_ref: TypeRef,
-    initializer: ?*Expr = null,
-    getter_body: ?[]Stmt = null,
-    setter_body: ?[]Stmt = null,
-    loc: SourceLoc = .zero,
-};
-
-pub const TriggerEvent = enum {
-    before_insert,
-    before_update,
-    before_delete,
-    after_insert,
-    after_update,
-    after_delete,
-    after_undelete,
-};
-
-pub const TriggerDecl = struct {
-    name: []const u8,
-    object_name: []const u8,
-    events: []TriggerEvent,
-    body: []Stmt,
-    loc: SourceLoc = .zero,
-};
+// 宣言
+pub const Decl = apex_ast.Decl;
+pub const Modifiers = apex_ast.Modifiers;
+pub const SharingMode = apex_ast.SharingMode;
+pub const ClassDecl = apex_ast.ClassDecl;
+pub const InterfaceDecl = apex_ast.InterfaceDecl;
+pub const EnumDecl = apex_ast.EnumDecl;
+pub const Param = apex_ast.Param;
+pub const MethodDecl = apex_ast.MethodDecl;
+pub const ConstructorDecl = apex_ast.ConstructorDecl;
+pub const FieldDecl = apex_ast.FieldDecl;
+pub const TriggerEvent = apex_ast.TriggerEvent;
+pub const TriggerDecl = apex_ast.TriggerDecl;
