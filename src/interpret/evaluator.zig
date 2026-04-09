@@ -354,6 +354,11 @@ pub const Evaluator = struct {
             return Value{ .object = result };
         }
 
+        // Database methods that need store access (must be before builtins to avoid dead-code fallback)
+        if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
+            return self.handleDatabaseMethod(method_name, args);
+        }
+
         // Builtin class stubs (before user-defined classes)
         var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
         if (try builtins.dispatchStatic(&bctx, class_name, method_name, args)) |result| {
@@ -3469,7 +3474,7 @@ pub const Evaluator = struct {
                         }
                     }
                 }
-                return Value{ .string = "707000000000002" };
+                return Value{ .string = try self.allocId() };
             }
 
             // Database methods that need store access
@@ -5444,7 +5449,7 @@ pub const Evaluator = struct {
                     _ = self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val}) catch {};
                 }
             }
-            return Value{ .string = "707000000000001" }; // Fake job ID
+            return Value{ .string = try self.allocId() }; // Fake job ID
         }
         return .void_val;
     }
@@ -5461,7 +5466,7 @@ pub const Evaluator = struct {
                     _ = self.callInstanceMethod(job_class, job_obj, "execute", &.{Value.null_val}) catch {};
                 }
             }
-            return Value{ .string = "707000000000002" }; // Fake async job ID
+            return Value{ .string = try self.allocId() }; // Fake async job ID
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
         // System.runAs → now handled by run_as_stmt in the AST; this is a fallback no-op
@@ -5679,6 +5684,15 @@ pub const Evaluator = struct {
 
         // TestDataHelpers
         if (std.ascii.eqlIgnoreCase(class_name, "TestDataHelpers")) {
+            // If user-defined TestDataHelpers class has this method, delegate to it
+            var tdh_iter = self.classes.iterator();
+            while (tdh_iter.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestDataHelpers")) {
+                    if (self.findBestMethodInClass(entry.value_ptr.*, method_name, args) != null) {
+                        return null; // Fall through to user-defined class
+                    }
+                }
+            }
             if (std.ascii.eqlIgnoreCase(method_name, "createAccount")) {
                 const acct = try self.arena.create(types.SObject);
                 acct.* = .{ .type_name = "Account" };
@@ -5734,6 +5748,15 @@ pub const Evaluator = struct {
 
         // TestHelper
         if (std.ascii.eqlIgnoreCase(class_name, "TestHelper")) {
+            // If user-defined TestHelper class has this method, delegate to it
+            var th_iter = self.classes.iterator();
+            while (th_iter.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestHelper")) {
+                    if (self.findBestMethodInClass(entry.value_ptr.*, method_name, args) != null) {
+                        return null; // Fall through to user-defined class
+                    }
+                }
+            }
             if (std.ascii.eqlIgnoreCase(method_name, "getUnknownObjectType")) {
                 // Return the class name of the object
                 if (args.len > 0) {

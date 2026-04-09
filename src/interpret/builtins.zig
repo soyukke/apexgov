@@ -165,7 +165,32 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // Date.today / Date.newInstance
     if (std.ascii.eqlIgnoreCase(class_name, "Date")) {
         if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = "2026-04-06" };
-        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) return Value{ .string = "2026-01-01" };
+        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+            // Date.newInstance(year, month, day) — format from args
+            if (args.len >= 3) {
+                const y = switch (args[0]) {
+                    .integer => |i| i,
+                    .double => |d| @as(i64, @intFromFloat(d)),
+                    else => 2026,
+                };
+                const m = switch (args[1]) {
+                    .integer => |i| i,
+                    .double => |d| @as(i64, @intFromFloat(d)),
+                    else => 1,
+                };
+                const d = switch (args[2]) {
+                    .integer => |i| i,
+                    .double => |d2| @as(i64, @intFromFloat(d2)),
+                    else => 1,
+                };
+                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                    @as(u32, @intCast(if (y < 0) 1 else y)),
+                    @as(u32, @intCast(if (m < 1) 1 else if (m > 12) 12 else m)),
+                    @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
+                }) };
+            }
+            return Value{ .string = "2026-01-01" };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
             if (args.len > 0 and args[0] == .string) return args[0];
             return Value{ .string = "2026-01-01" };
@@ -175,6 +200,36 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // DateTime
     if (std.ascii.eqlIgnoreCase(class_name, "DateTime")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "now")) {
+            return Value{ .string = "2026-04-06T00:00:00Z" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+            // DateTime.newInstance(year, month, day, hour, minute, second)
+            if (args.len >= 6) {
+                const y = switch (args[0]) { .integer => |i| i, .double => |d| @as(i64, @intFromFloat(d)), else => 2026 };
+                const mo = switch (args[1]) { .integer => |i| i, .double => |d| @as(i64, @intFromFloat(d)), else => 1 };
+                const d = switch (args[2]) { .integer => |i| i, .double => |d2| @as(i64, @intFromFloat(d2)), else => 1 };
+                const h = switch (args[3]) { .integer => |i| i, .double => |d3| @as(i64, @intFromFloat(d3)), else => 0 };
+                const mi = switch (args[4]) { .integer => |i| i, .double => |d4| @as(i64, @intFromFloat(d4)), else => 0 };
+                const s = switch (args[5]) { .integer => |i| i, .double => |d5| @as(i64, @intFromFloat(d5)), else => 0 };
+                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                    @as(u32, @intCast(if (y < 0) 1 else y)),
+                    @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                    @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
+                    @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
+                    @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
+                    @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
+                }) };
+            }
+            // DateTime.newInstance(milliseconds) or fewer args
+            return Value{ .string = "2026-04-06T00:00:00Z" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+            // DateTime.valueOf(string) — return the input string
+            if (args.len > 0 and args[0] == .string) return args[0];
+            return Value{ .string = "2026-04-06T00:00:00Z" };
+        }
+        // Fallback for other DateTime static methods
         return Value{ .string = "2026-04-06T00:00:00Z" };
     }
 
@@ -927,14 +982,9 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return null;
     }
 
-    // OrgShape
+    // OrgShape — fall through to user-defined class if available
     if (std.ascii.eqlIgnoreCase(class_name, "OrgShape")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "isPlatformCacheEnabled")) return Value{ .boolean = true };
-        if (std.ascii.eqlIgnoreCase(method_name, "isSandbox")) return Value{ .boolean = true };
-        if (std.ascii.eqlIgnoreCase(method_name, "isAdvancedMultiCurrencyManagement")) return Value{ .boolean = false };
-        if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };
-        if (std.ascii.eqlIgnoreCase(method_name, "isSeeAllDataTrue")) return Value{ .boolean = false };
-        return Value{ .boolean = false };
+        return null;
     }
 
     // Url.getOrgDomainUrl / Url.getSalesforceBaseUrl
@@ -1036,6 +1086,11 @@ fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Valu
 }
 
 fn dispatchDatabase(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    // NOTE: evaluator.handleDatabaseMethod is the primary handler and is called first
+    // in both callMethod and evalMethodCall paths. This builtin path is only reached as
+    // a last-resort fallback (e.g. from dispatchStatic when class_name is "Database"
+    // but the evaluator path was not taken). The query method returns null to fall through.
+    //
     // Database.insert / update / delete / upsert — execute real DML + return SaveResult list
     if (std.ascii.eqlIgnoreCase(method_name, "insert") or
         std.ascii.eqlIgnoreCase(method_name, "update") or
@@ -1069,13 +1124,13 @@ fn dispatchDatabase(ctx: *BuiltinContext, method_name: []const u8, args: []const
         }
         return Value{ .list = list };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "query")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        return Value{ .list = list };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "countQuery")) {
-        return Value{ .integer = 0 };
+    if (std.ascii.eqlIgnoreCase(method_name, "query") or
+        std.ascii.eqlIgnoreCase(method_name, "countQuery") or
+        std.ascii.eqlIgnoreCase(method_name, "countQueryWithBinds") or
+        std.ascii.eqlIgnoreCase(method_name, "queryWithBinds"))
+    {
+        // Fall through to evaluator.handleDatabaseMethod which executes actual SOQL
+        return null;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getQueryLocator")) {
         return Value.null_val;
