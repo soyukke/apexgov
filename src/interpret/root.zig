@@ -506,6 +506,27 @@ test "E2E: instanceof checks superclass hierarchy" {
     try std.testing.expectEqual(@as(i64, 111), result.value.integer);
 }
 
+test "E2E: Database.query on unknown object throws QueryException" {
+    const source =
+        \\public class UnknownObjTest {
+        \\    public static String test() {
+        \\        try {
+        \\            Database.query('SELECT Id FROM CompletelyFakeObject__x LIMIT 1');
+        \\            return 'no error';
+        \\        } catch (QueryException e) {
+        \\            return 'caught';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UnknownObjTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("caught", result.value.string);
+}
+
 test "E2E: beforeUpdate trigger addError causes DmlException" {
     const source =
         \\trigger TestTrigger on Account (before update) {

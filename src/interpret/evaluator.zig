@@ -1736,14 +1736,10 @@ pub const Evaluator = struct {
             }
         }
 
-        // Throw QueryException for objects that are known to not exist
-        if (records.items.len == 0 and (std.ascii.eqlIgnoreCase(from_type, "DatedConversionRate"))) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "System.QueryException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported", .{from_type}) });
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
-        }
+        // For dynamic queries (Database.query), throw QueryException for unknown object types.
+        // An object type is "known" if it exists in the store OR has a metadata stub.
+        // This is checked BEFORE metadata stub generation — if stubs generate records,
+        // the object is known. If not, and the store doesn't have it either, it's unknown.
 
         // Metadata type stubs: generate dummy records for system objects
         // that don't exist in the in-memory store (ApexClass, PermissionSet, etc.)
@@ -1855,6 +1851,46 @@ pub const Evaluator = struct {
                 }
             } else if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
                 try records.append(self.arena, stub_record);
+            }
+        }
+
+        // If no records found from store or metadata stubs, and the object type
+        // is not recognized at all, throw QueryException (unknown SObject type).
+        // Known types: anything in the store, known metadata stubs, or common Salesforce objects.
+        if (records.items.len == 0) {
+            const in_store = self.store.get(from_type) != null;
+            if (!in_store) {
+                // Check if it's a common/known SObject type
+                const known_types = [_][]const u8{
+                    "Account", "Contact", "Opportunity", "Case", "Lead", "Task", "Event",
+                    "Campaign", "User", "ContentVersion", "ContentDocument", "ContentDocumentLink",
+                    "ContentDistribution", "PermissionSet", "PermissionSetAssignment",
+                    "ObjectPermissions", "Profile", "Organization", "ApexClass", "StaticResource",
+                    "FieldPermissions", "PermissionSetGroup", "PlatformCachePartition",
+                    "Metadata_Driven_Trigger__mdt", "CronTrigger", "AsyncApexJob",
+                    "EntityDefinition", "FieldDefinition", "AggregateResult",
+                };
+                var is_known = false;
+                for (known_types) |kt| {
+                    if (std.ascii.eqlIgnoreCase(from_type, kt)) { is_known = true; break; }
+                }
+                // Also known if it ends with __c (custom object), __e (platform event), __mdt (custom metadata)
+                if (std.mem.endsWith(u8, from_type, "__c") or std.mem.endsWith(u8, from_type, "__e") or std.mem.endsWith(u8, from_type, "__mdt")) {
+                    is_known = true;
+                }
+                // Also known if generateMetadataStub can handle it
+                if (!is_known) {
+                    if (try self.generateMetadataStub(from_type, soql, current_env)) |_| {
+                        is_known = true;
+                    }
+                }
+                if (!is_known) {
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "System.QueryException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type}) });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
             }
         }
 
