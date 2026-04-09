@@ -587,6 +587,72 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
+    const source =
+        \\public class MockH2 implements HttpCalloutMock {
+        \\    private Integer callCount = 0;
+        \\    public HttpResponse respond(HttpRequest req) {
+        \\        HttpResponse res = new HttpResponse();
+        \\        res.setStatusCode(200);
+        \\        if (this.callCount == 0) {
+        \\            res.setBody('{"records":["a","b"],"totalRecordCount":3}');
+        \\        } else {
+        \\            res.setBody('{"records":["c"],"totalRecordCount":3}');
+        \\        }
+        \\        this.callCount++;
+        \\        return res;
+        \\    }
+        \\}
+        \\public class RecordPage2 {
+        \\    public List<String> records;
+        \\    public Integer totalRecordCount;
+        \\    public List<String> getRecords() { return this.records; }
+        \\}
+        \\public class ApiClient2 implements Iterable<RecordPage2> {
+        \\    private String cred;
+        \\    public ApiClient2(String c) { this.cred = c; }
+        \\    public Iterator<RecordPage2> iterator() { return new PageIter(this); }
+        \\    public RecordPage2 getPage(Integer idx) {
+        \\        HttpRequest req = new HttpRequest();
+        \\        req.setEndpoint('callout:' + this.cred + '/page=' + idx);
+        \\        req.setMethod('GET');
+        \\        HttpResponse res = new Http().send(req);
+        \\        return (RecordPage2) JSON.deserializeStrict(res.getBody(), RecordPage2.class);
+        \\    }
+        \\}
+        \\public class PageIter implements Iterator<RecordPage2> {
+        \\    private ApiClient2 client;
+        \\    private Integer pageIdx;
+        \\    private Integer total;
+        \\    public PageIter(ApiClient2 c) { this.client = c; this.pageIdx = 0; this.total = null; }
+        \\    public Boolean hasNext() { return this.total == null || this.pageIdx * 2 < this.total; }
+        \\    public RecordPage2 next() {
+        \\        RecordPage2 p = this.client.getPage(this.pageIdx);
+        \\        this.pageIdx++;
+        \\        this.total = p.totalRecordCount;
+        \\        return p;
+        \\    }
+        \\}
+        \\public class IterTest2 {
+        \\    public static String test() {
+        \\        Test.setMock(HttpCalloutMock.class, new MockH2());
+        \\        ApiClient2 client = new ApiClient2('myAPI');
+        \\        List<String> results = new List<String>();
+        \\        for (RecordPage2 page : client) {
+        \\            results.addAll(page.getRecords());
+        \\        }
+        \\        return String.valueOf(results.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IterTest2",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
 test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
     const source =
         \\public class MockHttp implements HttpCalloutMock {

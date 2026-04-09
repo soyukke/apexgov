@@ -584,6 +584,7 @@ pub const Evaluator = struct {
                     };
                     if (iterator_obj == .object) {
                         const iter_cd = self.findClass(iterator_obj.object.class_name);
+                        // debug removed
                         const loop_env = try current_env.child();
                         var iterations: u32 = 0;
                         while (iterations < 100_000) : (iterations += 1) {
@@ -595,7 +596,7 @@ pub const Evaluator = struct {
                             if (!(utils.coerceToBool(has_next) catch false)) break;
                             // Call next()
                             const next_val = if (iter_cd) |icd|
-                                self.callInstanceMethod(icd, iterator_obj.object, "next", &.{}) catch break
+                                try self.callInstanceMethod(icd, iterator_obj.object, "next", &.{})
                             else
                                 break;
                             loop_env.set(fes.elem_name, next_val) catch {
@@ -3374,10 +3375,16 @@ pub const Evaluator = struct {
                             return error.ApexException;
                         }
                         // Determine target type name from second arg
-                        const type_name: []const u8 = if (args.items.len >= 2 and args.items[1] == .object)
-                            args.items[1].object.class_name
-                        else
-                            "Object";
+                        const type_name: []const u8 = if (args.items.len >= 2 and args.items[1] == .object) blk: {
+                            const tobj = args.items[1].object;
+                            // For Type objects (from ClassName.class), use the "name" field
+                            if (std.ascii.eqlIgnoreCase(tobj.class_name, "Type")) {
+                                if (tobj.fields.get("name")) |n| {
+                                    if (n == .string) break :blk n.string;
+                                }
+                            }
+                            break :blk tobj.class_name;
+                        } else "Object";
                         const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List");
                         // Pre-validate: check for balanced braces/brackets (detect truncated JSON)
                         {
@@ -6168,7 +6175,56 @@ pub const Evaluator = struct {
         }
 
         if (trimmed[0] == '{') {
-            // JSON object → SObject
+            // Check if type_hint is a user-defined class → ObjectInstance
+            const is_user_class = self.findClass(type_hint) != null;
+            if (is_user_class) {
+                const obj = self.arena.create(types.ObjectInstance) catch return null;
+                obj.* = .{ .class_name = type_hint };
+                // Parse key-value pairs into fields
+                var jd: i32 = 0;
+                var js: usize = 1;
+                var ji: usize = 1;
+                while (ji < trimmed.len) : (ji += 1) {
+                    if (trimmed[ji] == '"' and jd == 0) {
+                        const key_start = ji + 1;
+                        ji += 1;
+                        while (ji < trimmed.len and trimmed[ji] != '"') : (ji += 1) {}
+                        const key_name = trimmed[key_start..ji];
+                        ji += 1;
+                        while (ji < trimmed.len and trimmed[ji] != ':') : (ji += 1) {}
+                        ji += 1;
+                        while (ji < trimmed.len and (trimmed[ji] == ' ' or trimmed[ji] == '\t')) : (ji += 1) {}
+                        js = ji;
+                        var val_depth: i32 = 0;
+                        while (ji < trimmed.len) : (ji += 1) {
+                            if (trimmed[ji] == '"') {
+                                ji += 1;
+                                while (ji < trimmed.len and trimmed[ji] != '"') : (ji += 1) {
+                                    if (trimmed[ji] == '\\') ji += 1;
+                                }
+                            } else if (trimmed[ji] == '{' or trimmed[ji] == '[') {
+                                val_depth += 1;
+                            } else if (trimmed[ji] == '}' or trimmed[ji] == ']') {
+                                if (val_depth == 0) break;
+                                val_depth -= 1;
+                            } else if (trimmed[ji] == ',' and val_depth == 0) break;
+                        }
+                        const val_str = std.mem.trim(u8, trimmed[js..ji], " \t\r\n");
+                        if (val_str.len > 0) {
+                            if (self.parseJsonValue(val_str, "Object")) |v| {
+                                obj.fields.put(self.arena, key_name, v) catch {};
+                            }
+                        }
+                    } else if (trimmed[ji] == '{' or trimmed[ji] == '[') {
+                        jd += 1;
+                    } else if (trimmed[ji] == '}' or trimmed[ji] == ']') {
+                        if (jd == 0) break;
+                        jd -= 1;
+                    }
+                }
+                return Value{ .object = obj };
+            }
+            // JSON object → SObject (for unknown/SObject types)
             const sob = self.arena.create(types.SObject) catch return null;
             var resolved_type = type_hint;
             sob.* = .{ .type_name = resolved_type };
