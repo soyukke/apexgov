@@ -506,6 +506,33 @@ test "E2E: instanceof checks superclass hierarchy" {
     try std.testing.expectEqual(@as(i64, 111), result.value.integer);
 }
 
+test "E2E: Pattern.compile with digit and word patterns" {
+    const source =
+        \\public class RegexTest {
+        \\    public static String test() {
+        \\        // Test 1: \d+ matches digits
+        \\        Pattern p1 = Pattern.compile('\\d+');
+        \\        Matcher m1 = p1.matcher('abc 123 def 456');
+        \\        List<String> nums = new List<String>();
+        \\        while (m1.find()) { nums.add(m1.group(0)); }
+        \\        // Test 2: capture group
+        \\        Pattern p2 = Pattern.compile('(\\w+)@(\\w+)');
+        \\        Matcher m2 = p2.matcher('user@host');
+        \\        String user = '';
+        \\        String host = '';
+        \\        if (m2.find()) { user = m2.group(1); host = m2.group(2); }
+        \\        return nums.size() + ':' + nums.get(0) + ':' + nums.get(1) + ':' + user + ':' + host;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RegexTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:123:456:user:host", result.value.string);
+}
+
 test "E2E: Date.today returns current date, Date.newInstance builds from args" {
     const source =
         \\public class DateTest {

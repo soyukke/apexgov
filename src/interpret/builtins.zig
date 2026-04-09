@@ -2528,79 +2528,326 @@ fn handleMultipleInputs(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     return buf.items;
 }
 
+const GroupSpan = struct { start: usize, end: usize };
+
+/// Regex engine for Pattern.compile / Matcher.find / Matcher.group.
+/// Supports: \d \w \s \D \W \S . * + ? {n} {n,m} [...] (...) | ^ $ and literal chars.
+/// Backtracking NFA approach, sufficient for typical Apex regex usage.
 fn simpleRegexMatch(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, matches: *types.ListValue) !void {
-    // Extract literal keyword from pattern (e.g., "@group", "@see")
-    // Look for a fixed literal string in the pattern that we can search for in the input
-    var keyword: ?[]const u8 = null;
-    var capture_after_keyword = false;
-    // Check if the pattern requires a javadoc-style prefix (e.g., \s*\*\s+@keyword)
-    var requires_star_prefix = false;
-
-    // Find @-prefixed keywords in the pattern
-    var pi: usize = 0;
-    while (pi < pattern.len) : (pi += 1) {
-        if (pattern[pi] == '@' and pi + 1 < pattern.len) {
-            const start = pi;
-            var end = pi + 1;
-            while (end < pattern.len and (std.ascii.isAlphanumeric(pattern[end]) or pattern[end] == '_')) end += 1;
-            keyword = pattern[start..end];
-            // Check if pattern has \*\s+ or \\*\\s+ prefix before keyword (javadoc comment style)
-            if (pi >= 4) {
-                const prefix = pattern[0..pi];
-                if (std.mem.indexOf(u8, prefix, "\\*") != null or std.mem.indexOf(u8, prefix, "*") != null) {
-                    requires_star_prefix = true;
-                }
-            }
-            // Check if there's a capture group after this keyword
-            if (std.mem.indexOf(u8, pattern[end..], "(")) |_| {
-                capture_after_keyword = true;
-            }
-            break;
-        }
-    }
-
-    if (keyword) |kw| {
-        // Debug removed
-        // Search input for all occurrences of the keyword
-        var pos: usize = 0;
-        while (pos < input.len) {
-            if (std.mem.indexOf(u8, input[pos..], kw)) |idx| {
-                const abs_pos = pos + idx;
-
-                // If pattern requires star prefix, verify this match is in a javadoc comment line
-                // The keyword must appear as the first @-annotation after the * on this line
-                if (requires_star_prefix) {
-                    // Walk backwards from keyword to start of line
-                    var line_start = abs_pos;
-                    while (line_start > 0 and input[line_start - 1] != '\n') line_start -= 1;
-                    const prefix_text = std.mem.trim(u8, input[line_start..abs_pos], " \t");
-                    // Must be exactly "*" (javadoc continuation) followed only by whitespace before keyword
-                    if (prefix_text.len != 1 or prefix_text[0] != '*') {
-                        pos = abs_pos + kw.len;
-                        continue;
+    // Preprocess: unescape Java/Apex regex escapes (\\s → \s, \\d → \d, etc.)
+    var clean_pat: std.ArrayListUnmanaged(u8) = .empty;
+    {
+        var i: usize = 0;
+        while (i < pattern.len) : (i += 1) {
+            if (pattern[i] == '\\' and i + 1 < pattern.len) {
+                const next = pattern[i + 1];
+                if (next == '\\') {
+                    // \\\\ → single backslash (Java double-escape)
+                    // But if followed by another char like 's', 'd', etc → regex escape
+                    if (i + 2 < pattern.len and (pattern[i + 2] == 's' or pattern[i + 2] == 'd' or
+                        pattern[i + 2] == 'w' or pattern[i + 2] == 'S' or pattern[i + 2] == 'D' or
+                        pattern[i + 2] == 'W' or pattern[i + 2] == '*' or pattern[i + 2] == '.'))
+                    {
+                        // \\s → \s (skip one backslash)
+                        i += 1;
+                        try clean_pat.append(arena, '\\');
+                        try clean_pat.append(arena, pattern[i + 1]);
+                        i += 1;
+                    } else {
+                        try clean_pat.append(arena, '\\');
+                        i += 1;
                     }
+                } else {
+                    try clean_pat.append(arena, '\\');
+                    try clean_pat.append(arena, next);
+                    i += 1;
                 }
-
-                if (capture_after_keyword) {
-                    // Capture the rest of the line after the keyword + whitespace
-                    var cap_start = abs_pos + kw.len;
-                    while (cap_start < input.len and (input[cap_start] == ' ' or input[cap_start] == '\t')) cap_start += 1;
-                    var cap_end = cap_start;
-                    while (cap_end < input.len and input[cap_end] != '\n' and input[cap_end] != '\r') cap_end += 1;
-                    const captured = std.mem.trim(u8, input[cap_start..cap_end], " \t\r\n");
-
-                    // Build match result as a list: [full_match, group1]
-                    const match_groups = try arena.create(types.ListValue);
-                    match_groups.* = .{};
-                    try match_groups.items.append(arena, Value{ .string = input[abs_pos..cap_end] });
-                    try match_groups.items.append(arena, Value{ .string = captured });
-                    try matches.items.append(arena, Value{ .list = match_groups });
-                    // Debug removed
-                }
-                pos = abs_pos + kw.len;
-            } else break;
+            } else {
+                try clean_pat.append(arena, pattern[i]);
+            }
         }
     }
+    const pat = clean_pat.items;
+
+    // Find all non-overlapping matches in input
+    var search_start: usize = 0;
+    while (search_start <= input.len) {
+        // Try to match at each position
+        var best_end: ?usize = null;
+        var best_start: usize = search_start;
+        var best_groups: [16]?GroupSpan = .{null} ** 16;
+        var pos = search_start;
+        while (pos <= input.len) : (pos += 1) {
+            var groups: [16]?GroupSpan = .{null} ** 16;
+            if (regexMatch(pat, 0, input, pos, &groups, 0)) |end_pos| {
+                if (end_pos > pos or best_end == null) {
+                    best_end = end_pos;
+                    best_start = pos;
+                    best_groups = groups;
+                    break; // Take first (leftmost) match
+                }
+            }
+        }
+        if (best_end) |end_pos| {
+            const match_start = if (best_groups[0]) |g| g.start else best_start;
+            const match_end = end_pos;
+            // Build match result: [group0 (full match), group1, group2, ...]
+            const match_groups = try arena.create(types.ListValue);
+            match_groups.* = .{};
+            try match_groups.items.append(arena, Value{ .string = input[match_start..match_end] });
+            // Add capture groups
+            for (best_groups[1..]) |grp| {
+                if (grp) |g| {
+                    try match_groups.items.append(arena, Value{ .string = input[g.start..g.end] });
+                } else break;
+            }
+            try matches.items.append(arena, Value{ .list = match_groups });
+            search_start = if (match_end > match_start) match_end else match_start + 1;
+        } else break;
+    }
+}
+
+/// Recursive backtracking regex matcher. Returns end position if match, null if no match.
+fn regexMatch(
+    pat: []const u8,
+    pat_pos: usize,
+    input: []const u8,
+    input_pos: usize,
+    groups: *[16]?GroupSpan,
+    depth: u32,
+) ?usize {
+    if (depth > 200) return null; // Prevent infinite recursion
+    const pp = pat_pos;
+    var ip = input_pos;
+
+    while (pp < pat.len) {
+        // Alternation: handle '|' at current group level
+        // (simplified: split at top-level '|')
+
+        // Capture group start
+        if (pat[pp] == '(') {
+            const group_end = findGroupEnd(pat, pp);
+            if (group_end == null) return null;
+            const inner = pat[pp + 1 .. group_end.?];
+            const after = pat[group_end.? + 1 ..];
+            // Check for quantifier after group
+            const quant = getQuantifier(after);
+            // Find group index (count open parens before this one)
+            var grp_idx: u8 = 1;
+            for (pat[0..pp]) |c| { if (c == '(') grp_idx += 1; }
+            if (grp_idx > 15) grp_idx = 15;
+            // Handle alternation inside group
+            const alternatives = splitAlternatives(inner);
+            const rest_pat_start = group_end.? + 1 + quant.len;
+            if (quant.min == 1 and quant.max == 1) {
+                // No quantifier or {1}
+                for (alternatives) |alt| {
+                    if (alt) |a| {
+                        // Build sub-pattern: alternative + rest
+                        if (regexMatch(a, 0, input, ip, groups, depth + 1)) |alt_end| {
+                            groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                            if (rest_pat_start >= pat.len) return alt_end;
+                            if (regexMatch(pat, rest_pat_start, input, alt_end, groups, depth + 1)) |final_end| {
+                                return final_end;
+                            }
+                            groups.*[grp_idx] = null;
+                        }
+                    } else break;
+                }
+                return null;
+            }
+            // Quantified group: try min..max repetitions
+            return matchQuantifiedGroup(pat, pp, group_end.?, rest_pat_start, quant, input, ip, groups, grp_idx, depth);
+        }
+
+        // Single character match with possible quantifier
+        const atom_len = atomLength(pat, pp);
+        if (atom_len == 0) return null;
+        const after_atom = pat[pp + atom_len ..];
+        const quant = getQuantifier(after_atom);
+        const rest_start = pp + atom_len + quant.len;
+
+        // Quantified atom: try greedy match
+        var count: usize = 0;
+        var positions: [1001]usize = undefined;
+        positions[0] = ip;
+        while (count < quant.max and ip <= input.len) {
+            if (!atomMatches(pat, pp, input, ip)) break;
+            ip += 1;
+            count += 1;
+            if (count < positions.len) positions[count] = ip;
+        }
+        // Greedy backtrack: try from max down to min
+        var try_count = count;
+        while (true) {
+            if (try_count >= quant.min) {
+                const try_ip = positions[@min(try_count, positions.len - 1)];
+                if (rest_start >= pat.len) return try_ip;
+                if (regexMatch(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+            }
+            if (try_count == 0) break;
+            try_count -= 1;
+        }
+        return null;
+    }
+    return ip; // Pattern exhausted = match
+}
+
+fn atomMatches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
+    if (ip >= input.len) return false;
+    const c = input[ip];
+    if (pat[pp] == '.') return c != '\n';
+    if (pat[pp] == '\\' and pp + 1 < pat.len) {
+        return switch (pat[pp + 1]) {
+            'd' => std.ascii.isDigit(c),
+            'D' => !std.ascii.isDigit(c),
+            'w' => std.ascii.isAlphanumeric(c) or c == '_',
+            'W' => !(std.ascii.isAlphanumeric(c) or c == '_'),
+            's' => std.ascii.isWhitespace(c),
+            'S' => !std.ascii.isWhitespace(c),
+            else => c == pat[pp + 1], // Escaped literal
+        };
+    }
+    if (pat[pp] == '[') {
+        return charClassMatches(pat, pp, c);
+    }
+    return c == pat[pp];
+}
+
+fn atomLength(pat: []const u8, pp: usize) usize {
+    if (pp >= pat.len) return 0;
+    if (pat[pp] == '\\' and pp + 1 < pat.len) return 2;
+    if (pat[pp] == '[') {
+        var i = pp + 1;
+        if (i < pat.len and pat[i] == '^') i += 1;
+        if (i < pat.len and pat[i] == ']') i += 1; // ] as first char in class
+        while (i < pat.len and pat[i] != ']') : (i += 1) {}
+        return if (i < pat.len) i + 1 - pp else 1;
+    }
+    return 1;
+}
+
+fn charClassMatches(pat: []const u8, pp: usize, c: u8) bool {
+    var i = pp + 1;
+    var negate = false;
+    if (i < pat.len and pat[i] == '^') { negate = true; i += 1; }
+    var matched = false;
+    while (i < pat.len and pat[i] != ']') {
+        if (i + 2 < pat.len and pat[i + 1] == '-' and pat[i + 2] != ']') {
+            if (c >= pat[i] and c <= pat[i + 2]) matched = true;
+            i += 3;
+        } else if (pat[i] == '\\' and i + 1 < pat.len) {
+            const m = switch (pat[i + 1]) {
+                'd' => std.ascii.isDigit(c),
+                'w' => std.ascii.isAlphanumeric(c) or c == '_',
+                's' => std.ascii.isWhitespace(c),
+                else => c == pat[i + 1],
+            };
+            if (m) matched = true;
+            i += 2;
+        } else {
+            if (c == pat[i]) matched = true;
+            i += 1;
+        }
+    }
+    return if (negate) !matched else matched;
+}
+
+const Quantifier = struct { min: usize, max: usize, len: usize };
+
+fn getQuantifier(after: []const u8) Quantifier {
+    if (after.len == 0) return .{ .min = 1, .max = 1, .len = 0 };
+    if (after[0] == '*') return .{ .min = 0, .max = 1000, .len = 1 };
+    if (after[0] == '+') return .{ .min = 1, .max = 1000, .len = 1 };
+    if (after[0] == '?') return .{ .min = 0, .max = 1, .len = 1 };
+    if (after[0] == '{') {
+        var i: usize = 1;
+        var n1: usize = 0;
+        while (i < after.len and std.ascii.isDigit(after[i])) : (i += 1) {
+            n1 = n1 * 10 + (after[i] - '0');
+        }
+        if (i < after.len and after[i] == '}') return .{ .min = n1, .max = n1, .len = i + 1 };
+        if (i < after.len and after[i] == ',') {
+            i += 1;
+            var n2: usize = 1000;
+            if (i < after.len and std.ascii.isDigit(after[i])) {
+                n2 = 0;
+                while (i < after.len and std.ascii.isDigit(after[i])) : (i += 1) {
+                    n2 = n2 * 10 + (after[i] - '0');
+                }
+            }
+            if (i < after.len and after[i] == '}') return .{ .min = n1, .max = n2, .len = i + 1 };
+        }
+    }
+    return .{ .min = 1, .max = 1, .len = 0 };
+}
+
+fn findGroupEnd(pat: []const u8, start: usize) ?usize {
+    var depth: u32 = 0;
+    var i = start;
+    while (i < pat.len) : (i += 1) {
+        if (pat[i] == '\\') { i += 1; continue; }
+        if (pat[i] == '(') depth += 1;
+        if (pat[i] == ')') { depth -= 1; if (depth == 0) return i; }
+    }
+    return null;
+}
+
+fn splitAlternatives(inner: []const u8) [8]?[]const u8 {
+    var result: [8]?[]const u8 = .{null} ** 8;
+    var count: usize = 0;
+    var start: usize = 0;
+    var depth: u32 = 0;
+    for (inner, 0..) |c, i| {
+        if (c == '(') depth += 1;
+        if (c == ')') { if (depth > 0) depth -= 1; }
+        if (c == '|' and depth == 0) {
+            if (count < result.len) { result[count] = inner[start..i]; count += 1; }
+            start = i + 1;
+        }
+    }
+    if (count < result.len) { result[count] = inner[start..]; }
+    return result;
+}
+
+fn matchQuantifiedGroup(
+    pat: []const u8,
+    group_start: usize,
+    group_end: usize,
+    rest_start: usize,
+    quant: Quantifier,
+    input: []const u8,
+    start_ip: usize,
+    groups: *[16]?GroupSpan,
+    grp_idx: u8,
+    depth: u32,
+) ?usize {
+    const inner = pat[group_start + 1 .. group_end];
+    // Try max repetitions down to min (greedy)
+    var reps: [64]usize = undefined;
+    var rep_count: usize = 0;
+    var ip = start_ip;
+    reps[0] = ip;
+    while (rep_count < quant.max) {
+        if (regexMatch(inner, 0, input, ip, groups, depth + 1)) |end| {
+            if (end == ip) break; // Zero-width match, avoid infinite loop
+            ip = end;
+            rep_count += 1;
+            if (rep_count < reps.len) reps[rep_count] = ip;
+        } else break;
+    }
+    var try_reps = rep_count;
+    while (true) {
+        if (try_reps >= quant.min) {
+            const try_ip = reps[@min(try_reps, reps.len - 1)];
+            if (try_reps > 0) groups.*[grp_idx] = .{ .start = reps[try_reps - 1], .end = try_ip };
+            if (rest_start >= pat.len) return try_ip;
+            if (regexMatch(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+        }
+        if (try_reps == 0) break;
+        try_reps -= 1;
+    }
+    return null;
 }
 
 /// Find the end of a JSON string (handling backslash escapes) and return the unescaped content.
