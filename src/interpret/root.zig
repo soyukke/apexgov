@@ -506,6 +506,26 @@ test "E2E: instanceof checks superclass hierarchy" {
     try std.testing.expectEqual(@as(i64, 111), result.value.integer);
 }
 
+test "E2E: Date.today returns current date, Date.newInstance builds from args" {
+    const source =
+        \\public class DateTest {
+        \\    public static String test() {
+        \\        String today = String.valueOf(Date.today());
+        \\        String custom = String.valueOf(Date.newInstance(2025, 3, 15));
+        \\        Boolean todayHas4digitYear = today.length() >= 10;
+        \\        Boolean customCorrect = custom == '2025-03-15';
+        \\        return todayHas4digitYear + ':' + customCorrect;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
 test "E2E: Database.query on unknown object throws QueryException" {
     const source =
         \\public class UnknownObjTest {

@@ -10,6 +10,30 @@ const Value = types.Value;
 const ast = @import("ast.zig");
 const evaluator_mod = @import("evaluator.zig");
 
+/// Return the current date as "YYYY-MM-DD" string.
+pub fn currentDateString(arena: std.mem.Allocator) ![]const u8 {
+    const ts = std.time.timestamp();
+    const epoch_secs: u64 = @intCast(if (ts > 0) ts else 0);
+    const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+    const day = es.getEpochDay().calculateYearDay();
+    const md = day.calculateMonthDay();
+    return std.fmt.allocPrint(arena, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
+}
+
+/// Return the current datetime as "YYYY-MM-DDThh:mm:ssZ" string.
+pub fn currentDateTimeString(arena: std.mem.Allocator) ![]const u8 {
+    const ts = std.time.timestamp();
+    const epoch_secs: u64 = @intCast(if (ts > 0) ts else 0);
+    const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+    const day = es.getEpochDay().calculateYearDay();
+    const md = day.calculateMonthDay();
+    const day_secs = es.getDaySeconds();
+    return std.fmt.allocPrint(arena, "{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        day.year, md.month.numeric(), md.day_index + 1,
+        day_secs.getHoursIntoDay(), day_secs.getMinutesIntoHour(), day_secs.getSecondsIntoMinute(),
+    });
+}
+
 pub const BuiltinContext = struct {
     arena: std.mem.Allocator,
     stdout: *std.ArrayListUnmanaged(u8),
@@ -164,7 +188,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // Date.today / Date.newInstance
     if (std.ascii.eqlIgnoreCase(class_name, "Date")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = "2026-04-06" };
+        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = try currentDateString(ctx.arena) };
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
             // Date.newInstance(year, month, day) — format from args
             if (args.len >= 3) {
@@ -195,13 +219,13 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             if (args.len > 0 and args[0] == .string) return args[0];
             return Value{ .string = "2026-01-01" };
         }
-        return Value{ .string = "2026-04-06" };
+        return Value{ .string = try currentDateString(ctx.arena) };
     }
 
     // DateTime
     if (std.ascii.eqlIgnoreCase(class_name, "DateTime")) {
         if (std.ascii.eqlIgnoreCase(method_name, "now")) {
-            return Value{ .string = "2026-04-06T00:00:00Z" };
+            return Value{ .string = try currentDateTimeString(ctx.arena) };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
             // DateTime.newInstance(year, month, day, hour, minute, second)
@@ -453,7 +477,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (std.ascii.eqlIgnoreCase(class_name, "System")) {
         if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
         if (std.ascii.eqlIgnoreCase(method_name, "now")) return Value{ .string = "2026-04-06T00:00:00Z" };
-        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = "2026-04-06" };
+        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = try currentDateString(ctx.arena) };
         if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
             // Set restricted user flag when System.runAs is called with a user
             if (args.len > 0) {
@@ -794,7 +818,10 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
             std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
         {
-            return Value{ .integer = 42 };
+            var buf: [8]u8 = undefined;
+            std.crypto.random.bytes(&buf);
+            const val: i64 = @bitCast(buf);
+            return Value{ .integer = if (val < 0) -val else val };
         }
         return Value.null_val;
     }
@@ -942,15 +969,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
             if (args.len >= 2 and args[1] == .set) {
+                // Check FieldPermissions in store first
+                const has_fp = ctx.eval.store.get("FieldPermissions") != null and
+                    (if (ctx.eval.store.get("FieldPermissions")) |fp| fp.items.len > 0 else false);
                 for (args[1].set.entries.keys()) |field_name| {
-                    // Custom fields with non-standard names are treated as inaccessible
-                    // (simulates non-existing fields)
-                    const accessible = !std.mem.endsWith(u8, field_name, "__c") or
-                        std.mem.startsWith(u8, field_name, "Shipping") or
-                        std.mem.startsWith(u8, field_name, "Billing") or
-                        std.ascii.eqlIgnoreCase(field_name, "ExternalSalesforceId__c") or
-                        std.ascii.eqlIgnoreCase(field_name, "AttendanceStatus__c");
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = accessible });
+                    if (has_fp) {
+                        // Use FieldPermissions as authoritative source
+                        try map.entries.put(ctx.arena, field_name, Value{ .boolean = checkFieldPermission(ctx.eval, field_name, "PermissionsRead") });
+                    } else {
+                        // Fallback: standard fields accessible, __c unknown fields not
+                        const accessible = !std.mem.endsWith(u8, field_name, "__c") or
+                            isFieldAllowedByPermSets(ctx.eval, field_name);
+                        try map.entries.put(ctx.arena, field_name, Value{ .boolean = accessible });
+                    }
                 }
             }
             return Value{ .map = map };
@@ -959,21 +990,24 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
             if (args.len >= 2 and args[1] == .set) {
+                const has_fp = ctx.eval.store.get("FieldPermissions") != null and
+                    (if (ctx.eval.store.get("FieldPermissions")) |fp| fp.items.len > 0 else false);
                 for (args[1].set.entries.keys()) |field_name| {
-                    // Id and system fields are not updatable
                     const is_system = std.ascii.eqlIgnoreCase(field_name, "Id") or
                         std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
                         std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
                         std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
                         std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
                         std.ascii.eqlIgnoreCase(field_name, "SystemModstamp");
-                    // Non-existing custom fields are also not updatable
-                    const is_unknown_custom = std.mem.endsWith(u8, field_name, "__c") and
-                        !std.mem.startsWith(u8, field_name, "Shipping") and
-                        !std.mem.startsWith(u8, field_name, "Billing") and
-                        !std.ascii.eqlIgnoreCase(field_name, "ExternalSalesforceId__c") and
-                        !std.ascii.eqlIgnoreCase(field_name, "AttendanceStatus__c");
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = !is_system and !is_unknown_custom });
+                    if (is_system) {
+                        try map.entries.put(ctx.arena, field_name, Value{ .boolean = false });
+                    } else if (has_fp) {
+                        try map.entries.put(ctx.arena, field_name, Value{ .boolean = checkFieldPermission(ctx.eval, field_name, "PermissionsEdit") });
+                    } else {
+                        const is_unknown_custom = std.mem.endsWith(u8, field_name, "__c") and
+                            !isFieldAllowedByPermSets(ctx.eval, field_name);
+                        try map.entries.put(ctx.arena, field_name, Value{ .boolean = !is_unknown_custom });
+                    }
                 }
             }
             return Value{ .map = map };
@@ -1802,6 +1836,25 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
 // ---------------------------------------------------------------------------
 // PermissionSet ヘルパー
 // ---------------------------------------------------------------------------
+
+/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
+fn checkFieldPermission(eval: *evaluator_mod.Evaluator, field_name: []const u8, perm_field: []const u8) bool {
+    const fp_records = eval.store.get("FieldPermissions") orelse return false;
+    for (fp_records.items) |fp| {
+        if (fp != .sobject) continue;
+        const fp_field = utils.sobjectGet(&fp.sobject.fields, "Field") orelse continue;
+        if (fp_field != .string) continue;
+        const fp_field_name = if (std.mem.lastIndexOfScalar(u8, fp_field.string, '.')) |dot|
+            fp_field.string[dot + 1 ..]
+        else
+            fp_field.string;
+        if (std.ascii.eqlIgnoreCase(fp_field_name, field_name)) {
+            const perm_val = utils.sobjectGet(&fp.sobject.fields, perm_field);
+            if (perm_val != null and perm_val.? == .boolean) return perm_val.?.boolean;
+        }
+    }
+    return false;
+}
 
 /// Check if a field is allowed by any PermissionSet assigned to the current user.
 ///

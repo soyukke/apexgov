@@ -1167,15 +1167,18 @@ pub const Evaluator = struct {
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
 
-        // Auto-generate system timestamp fields
-        if (utils.sobjectGet(&obj.fields, "CreatedDate") == null) {
-            try obj.fields.put(self.arena, "CreatedDate", Value{ .string = "2026-04-04T00:00:00.000Z" });
-        }
-        if (utils.sobjectGet(&obj.fields, "LastModifiedDate") == null) {
-            try obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = "2026-04-04T00:00:00.000Z" });
-        }
-        if (utils.sobjectGet(&obj.fields, "SystemModstamp") == null) {
-            try obj.fields.put(self.arena, "SystemModstamp", Value{ .string = "2026-04-04T00:00:00.000Z" });
+        // Auto-generate system timestamp fields using current time
+        {
+            const now_str = builtins.currentDateTimeString(self.arena) catch "2026-01-01T00:00:00Z";
+            if (utils.sobjectGet(&obj.fields, "CreatedDate") == null) {
+                try obj.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
+            }
+            if (utils.sobjectGet(&obj.fields, "LastModifiedDate") == null) {
+                try obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str });
+            }
+            if (utils.sobjectGet(&obj.fields, "SystemModstamp") == null) {
+                try obj.fields.put(self.arena, "SystemModstamp", Value{ .string = now_str });
+            }
         }
 
         // Auto-generate Name if not set (simulates auto-number for custom objects)
@@ -4877,7 +4880,7 @@ pub const Evaluator = struct {
 
             // Date.today()
             if (std.ascii.eqlIgnoreCase(class_name, "Date") and std.ascii.eqlIgnoreCase(fa.field, "today")) {
-                return Value{ .string = "2026-04-06" };
+                return Value{ .string = try builtins.currentDateString(self.arena) };
             }
 
             // AccessLevel / AccessType enum
