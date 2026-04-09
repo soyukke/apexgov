@@ -1247,6 +1247,14 @@ pub const Evaluator = struct {
             }
         }
 
+        // Auto-set IsLatest for ContentVersion
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
+            if (utils.sobjectGet(&obj.fields, "IsLatest") == null) {
+                try obj.fields.put(self.arena, "IsLatest", Value{ .boolean = true });
+                try snapshot.fields.put(self.arena, "IsLatest", Value{ .boolean = true });
+            }
+        }
+
         // Auto-create ContentDocumentLink when ContentVersion is inserted
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
             const first_pub_loc = utils.sobjectGet(&obj.fields, "FirstPublishLocationId");
