@@ -1749,20 +1749,47 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
 // ---------------------------------------------------------------------------
 
 /// Check if a field is allowed by any PermissionSet assigned to the current user.
-/// Uses heuristic: if the PermissionSet name contains the field name (case-insensitive, underscore-separated).
+///
+/// Strategy (in priority order):
+/// 1. Check FieldPermissions records in store (authoritative if present)
+/// 2. Fallback: heuristic based on PermissionSet name containing the field name
+///    (necessary because FieldPermissions metadata is not always available in test context)
 fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const u8) bool {
+    // --- Strategy 1: Check FieldPermissions in store ---
+    if (eval.store.get("FieldPermissions")) |fp_records| {
+        if (fp_records.items.len > 0) {
+            // FieldPermissions exist: use them as authoritative source
+            for (fp_records.items) |fp| {
+                if (fp != .sobject) continue;
+                const fp_field = utils.sobjectGet(&fp.sobject.fields, "Field") orelse continue;
+                if (fp_field != .string) continue;
+                // Field format: "SObjectType.FieldName" → extract FieldName after dot
+                const fp_field_name = if (std.mem.lastIndexOfScalar(u8, fp_field.string, '.')) |dot|
+                    fp_field.string[dot + 1 ..]
+                else
+                    fp_field.string;
+                if (std.ascii.eqlIgnoreCase(fp_field_name, field_name)) {
+                    const perm_read = utils.sobjectGet(&fp.sobject.fields, "PermissionsRead");
+                    if (perm_read != null and perm_read.? == .boolean and perm_read.?.boolean) return true;
+                }
+            }
+            return false; // FieldPermissions exist but field not found → not allowed
+        }
+    }
+
+    // --- Strategy 2: Heuristic from PermissionSet names ---
+    // When FieldPermissions are not available (common in test contexts where
+    // PermissionSets are referenced by name but their metadata isn't deployed),
+    // infer field access from the PermissionSet name.
     const ps_records = eval.store.get("PermissionSet") orelse return false;
     for (ps_records.items) |item| {
         if (item != .sobject) continue;
         const name_val = utils.sobjectGet(&item.sobject.fields, "Name") orelse continue;
         if (name_val != .string) continue;
         const ps_name = name_val.string;
-        // Check if field name appears in PermissionSet name (case-insensitive, with underscores as separators)
-        // E.g., "provides_access_to_actual_cost_field" contains "actual_cost" → "ActualCost" is allowed
         const ps_lower = std.ascii.lowerString(eval.arena.alloc(u8, ps_name.len) catch return false, ps_name);
         const field_lower = std.ascii.lowerString(eval.arena.alloc(u8, field_name.len) catch return false, field_name);
-        // Try matching with underscores between CamelCase parts
-        // Convert field name to snake_case: "ActualCost" → "actual_cost", "ShippingStreet" → "shipping_street"
+        // CamelCase → snake_case: "ActualCost" → "actual_cost"
         var snake_buf: [128]u8 = undefined;
         var snake_len: usize = 0;
         for (field_lower, 0..) |c, i| {
@@ -1777,9 +1804,8 @@ fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const 
         }
         const snake_name = snake_buf[0..snake_len];
         if (std.mem.indexOf(u8, ps_lower, snake_name) != null) return true;
-        // Also try direct field name match
         if (std.mem.indexOf(u8, ps_lower, field_lower) != null) return true;
-        // Try singular form (strip trailing 's': "contacts" → "contact")
+        // Singular form: "contacts" → "contact"
         if (field_lower.len > 1 and field_lower[field_lower.len - 1] == 's') {
             const singular = field_lower[0 .. field_lower.len - 1];
             if (std.mem.indexOf(u8, ps_lower, singular) != null) return true;
