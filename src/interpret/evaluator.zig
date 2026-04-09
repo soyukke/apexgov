@@ -1238,6 +1238,63 @@ pub const Evaluator = struct {
             gop.value_ptr.* = .empty;
         }
         try gop.value_ptr.append(self.arena, Value{ .sobject = snapshot });
+
+        // Auto-generate ContentDownloadUrl for ContentDistribution
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentDistribution")) {
+            if (utils.sobjectGet(&obj.fields, "ContentDownloadUrl") == null) {
+                try obj.fields.put(self.arena, "ContentDownloadUrl", Value{ .string = "https://mock.salesforce.com/content/download" });
+                try snapshot.fields.put(self.arena, "ContentDownloadUrl", Value{ .string = "https://mock.salesforce.com/content/download" });
+            }
+        }
+
+        // Auto-create ContentDocumentLink when ContentVersion is inserted
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
+            const first_pub_loc = utils.sobjectGet(&obj.fields, "FirstPublishLocationId");
+            if (first_pub_loc != null and first_pub_loc.? != .null_val) {
+                // Create ContentDocument
+                const cd_id = try self.allocId();
+                const cd = try self.arena.create(types.SObject);
+                cd.* = .{ .type_name = "ContentDocument", .id = cd_id };
+                try cd.fields.put(self.arena, "Id", Value{ .string = cd_id });
+                try cd.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
+                try cd.fields.put(self.arena, "Title", utils.sobjectGet(&obj.fields, "Title") orelse Value{ .string = "Untitled" });
+                // Derive FileType from PathOnClient extension
+                const path_on_client = if (utils.sobjectGet(&obj.fields, "PathOnClient")) |poc| (if (poc == .string) poc.string else "") else "";
+                const file_type: []const u8 = if (std.mem.endsWith(u8, path_on_client, ".png") or std.mem.endsWith(u8, path_on_client, ".PNG")) "PNG"
+                    else if (std.mem.endsWith(u8, path_on_client, ".jpg") or std.mem.endsWith(u8, path_on_client, ".jpeg")) "JPG"
+                    else if (std.mem.endsWith(u8, path_on_client, ".gif")) "GIF"
+                    else if (std.mem.endsWith(u8, path_on_client, ".pdf")) "PDF"
+                    else if (std.mem.endsWith(u8, path_on_client, ".docx")) "WORD_X"
+                    else if (std.mem.endsWith(u8, path_on_client, ".xlsx")) "EXCEL_X"
+                    else if (std.mem.endsWith(u8, path_on_client, ".pptx")) "POWER_POINT_X"
+                    else if (std.mem.endsWith(u8, path_on_client, ".m4a")) "M4A"
+                    else "UNKNOWN";
+                try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
+                const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
+                if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
+                try cd_gop.value_ptr.append(self.arena, Value{ .sobject = cd });
+                // Store ContentDocumentId on the ContentVersion
+                try obj.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+                try snapshot.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+                // Create ContentDocumentLink
+                const cdl_id = try self.allocId();
+                const cdl = try self.arena.create(types.SObject);
+                cdl.* = .{ .type_name = "ContentDocumentLink", .id = cdl_id };
+                try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
+                try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+                try cdl.fields.put(self.arena, "LinkedEntityId", first_pub_loc.?);
+                // Nested ContentDocument reference for SOQL
+                const cd_ref = try self.arena.create(types.SObject);
+                cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
+                try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
+                try cd_ref.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
+                try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
+                try cdl.fields.put(self.arena, "ContentDocument", Value{ .sobject = cd_ref });
+                const cdl_gop = try self.store.getOrPut(self.arena, "ContentDocumentLink");
+                if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
+                try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
+            }
+        }
     }
 
     fn validateRequiredFields(self: *Evaluator, obj: *types.SObject) !?[]const u8 {
