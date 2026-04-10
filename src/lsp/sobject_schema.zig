@@ -387,3 +387,44 @@ test "parseObjectMetaXml extracts custom fields" {
     try std.testing.expectEqualStrings("Amount__c", fields[1].name);
     try std.testing.expectEqualStrings("Decimal", fields[1].type_name);
 }
+
+test "parseFieldMetaXml extracts single field" {
+    const xml =
+        \\<?xml version="1.0" encoding="UTF-8" ?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\  <fullName>ExternalId__c</fullName>
+        \\  <type>Text</type>
+        \\  <length>18</length>
+        \\</CustomField>
+    ;
+    const field = try parseFieldMetaXml(xml, std.testing.allocator);
+    try std.testing.expect(field != null);
+    try std.testing.expectEqualStrings("ExternalId__c", field.?.name);
+    try std.testing.expectEqualStrings("String", field.?.type_name);
+    std.testing.allocator.free(field.?.name);
+}
+
+test "parseFieldMetaXml returns null for missing fullName" {
+    const xml =
+        \\<CustomField>
+        \\  <type>Text</type>
+        \\</CustomField>
+    ;
+    const field = try parseFieldMetaXml(xml, std.testing.allocator);
+    try std.testing.expect(field == null);
+}
+
+test "CustomFieldRegistry getFields and isSObject" {
+    var registry = CustomFieldRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    const alloc = registry.arena.allocator();
+    const fields = try alloc.alloc(FieldInfo, 1);
+    fields[0] = .{ .name = "MyField__c", .type_name = "String" };
+    try registry.objects.put(try alloc.dupe(u8, "MyCustom__c"), fields);
+
+    try std.testing.expect(registry.getFields("MyCustom__c") != null);
+    try std.testing.expectEqual(@as(usize, 1), registry.getFields("MyCustom__c").?.len);
+    try std.testing.expect(registry.isSObject("MyCustom__c"));
+    try std.testing.expect(!registry.isSObject("NonExistent__c"));
+}

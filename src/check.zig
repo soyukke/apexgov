@@ -1054,3 +1054,124 @@ test "same arity overload uses indexed collection element type for positive case
     const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
+
+// --------------- SOQL for ループ偽陽性テスト ---------------
+
+test "SOQL for loop does not trigger AG002" {
+    const source =
+        \\public with sharing class SoqlForLoopService {
+        \\    public static Integer countAccounts() {
+        \\        Integer count = 0;
+        \\        for (Account acct : [SELECT Name FROM Account]) {
+        \\            count++;
+        \\        }
+        \\        return count;
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG002") == null);
+    try std.testing.expect(findFindingByRule(findings.items, "AG009") == null);
+}
+
+test "nested SOQL for loop inside outer loop triggers AG002" {
+    const source =
+        \\public with sharing class NestedSoqlForService {
+        \\    public static void run() {
+        \\        for (Account acct : [SELECT Id FROM Account]) {
+        \\            for (Contact c : [SELECT Id FROM Contact WHERE AccountId = :acct.Id]) {
+        \\                System.debug(c);
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG002") != null);
+}
+
+test "regular SOQL in loop still triggers AG002" {
+    const source =
+        \\public with sharing class RegularSoqlInLoopService {
+        \\    public static void run(List<Account> accounts) {
+        \\        for (Account a : accounts) {
+        \\            List<Contact> cs = [SELECT Id FROM Contact WHERE AccountId = :a.Id];
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG002") != null);
+}
+
+// --------------- @isTest 除外テスト ---------------
+
+test "@isTest class findings are suppressed by default" {
+    const source =
+        \\@isTest
+        \\public class MyTest {
+        \\    @isTest
+        \\    static void testMethod() {
+        \\        for (Account a : [SELECT Id FROM Account]) {
+        \\            for (Contact c : [SELECT Id FROM Contact]) {
+        \\                System.debug(c);
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expectEqual(@as(usize, 0), findings.items.len);
+}
+
+test "@isTest class findings shown with include_tests" {
+    const source =
+        \\@isTest
+        \\public class MyTest {
+        \\    @isTest
+        \\    static void testMethod() {
+        \\        for (Account a : [SELECT Id FROM Account]) {
+        \\            for (Contact c : [SELECT Id FROM Contact]) {
+        \\                System.debug(c);
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var cfg = config.Config.defaults();
+    cfg.include_tests = true;
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, cfg);
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findings.items.len > 0);
+}
+
+test "non-test class still produces findings" {
+    const source =
+        \\public with sharing class ProductionCode {
+        \\    public static void run(List<Account> accounts) {
+        \\        for (Account a : accounts) {
+        \\            update a;
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
+    defer model.deinitFindings(std.testing.allocator, &findings);
+
+    try std.testing.expect(findFindingByRule(findings.items, "AG003") != null);
+}
