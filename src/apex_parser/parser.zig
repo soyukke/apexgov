@@ -322,7 +322,8 @@ const Parser = struct {
             return self.parseConstructor(mods, loc);
         }
 
-        const name = try self.expectIdentifier();
+        // Method/field name — keywords like 'when', 'with' can be member names in Apex
+        const name = try self.expectIdentifierOrKeyword();
 
         // method: name followed by (
         if (self.matchKind(.lparen)) {
@@ -389,6 +390,13 @@ const Parser = struct {
         } else {
             if (self.matchKind(.assign)) {
                 initializer = try self.expression();
+            }
+            // Handle comma-separated field declarations: Type a, b, c;
+            while (self.matchKind(.comma)) {
+                _ = try self.expectIdentifier();
+                if (self.matchKind(.assign)) {
+                    _ = try self.expression();
+                }
             }
             _ = self.matchKind(.semicolon);
         }
@@ -1297,6 +1305,22 @@ const Parser = struct {
                 return result;
             }
 
+            // Handle Type[].class → array type literal
+            if (self.check(.lbracket) and self.peekKind(1) == .rbracket and self.peekKind(2) == .dot) {
+                self.pos += 2; // skip []
+                if (self.matchKind(.dot)) {
+                    if (!self.matchKind(.class_kw)) {
+                        _ = self.matchKind(.identifier);
+                    }
+                }
+                const arr_name = try std.fmt.allocPrint(self.arena, "{s}[]", .{name});
+                const type_obj = try self.arena.create(ast.NewExpr);
+                type_obj.* = .{ .type_name = .{ .name = arr_name }, .args = &.{}, .loc = loc };
+                const result = try self.arena.create(ast.Expr);
+                result.* = .{ .new_expr = type_obj };
+                return result;
+            }
+
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .identifier = .{ .name = name, .loc = loc } };
             return result;
@@ -1313,6 +1337,19 @@ const Parser = struct {
         self.pos += 1; // skip 'new'
         const loc = self.currentLoc();
         const type_name = try self.parseTypeRef();
+
+        // Array size: new Type[size] — e.g. new String[0], new Account[n]
+        if (self.matchKind(.lbracket)) {
+            const size_expr = try self.expression();
+            try self.expect(.rbracket);
+            var arr_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
+            try arr_args.append(self.arena, size_expr.*);
+            const node = try self.arena.create(ast.NewExpr);
+            node.* = .{ .type_name = type_name, .args = try arr_args.toOwnedSlice(self.arena), .loc = loc };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .new_expr = node };
+            return result;
+        }
 
         var args: []ast.Expr = &.{};
         if (self.matchKind(.lparen)) {
@@ -1414,11 +1451,10 @@ const Parser = struct {
             return .{ .name = full_name, .params = try params.toOwnedSlice(self.arena) };
         }
 
-        // Array notation: Type[]
-        if (self.matchKind(.lbracket)) {
-            if (self.matchKind(.rbracket)) {
-                return .{ .name = "List", .params = &.{.{ .name = full_name }} };
-            }
+        // Array notation: Type[] (only if followed immediately by ])
+        if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
+            self.pos += 2; // skip [ ]
+            return .{ .name = "List", .params = &.{.{ .name = full_name }} };
         }
 
         return .{ .name = full_name };
@@ -2318,6 +2354,144 @@ test "no diagnostics: switch on parenthesized expression" {
         \\                System.debug('b');
         \\            }
         \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: new Type[0] array size" {
+    const source =
+        \\public class ArraySize {
+        \\    public void run() {
+        \\        Contact[] contacts = new Contact[0];
+        \\        String[] names = new String[0];
+        \\        Address__c[] addrs = new Address__c[0];
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: <> not-equal operator" {
+    const source =
+        \\public class NotEqual {
+        \\    public void run() {
+        \\        if (status <> 'Closed') {
+        \\            System.debug('open');
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: comma-separated field declarations" {
+    const source =
+        \\public class MultiField {
+        \\    private Id filterGroupId1, filterGroupId2, filterGroupId3;
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: when and with as method names" {
+    const source =
+        \\public class KeywordMethods {
+        \\    public Object when(Object val) {
+        \\        return val;
+        \\    }
+        \\    public KeywordMethods with(List<String> items) {
+        \\        return this;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: array type .class literal" {
+    const source =
+        \\public class ArrayClass {
+        \\    public void run() {
+        \\        Object obj = (String[])JSON.deserialize(data, String[].class);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: SOQL with line comment containing quote" {
+    const source =
+        \\public class SoqlComment {
+        \\    public void run() {
+        \\        List<Object> results = [
+        \\            SELECT
+        \\                LastModifiedBy, // This is NOT a lookup :'(
+        \\                Name
+        \\            FROM FlowDefinitionView
+        \\        ];
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: new Type[size] array initialization" {
+    const source =
+        \\public class ArrayInit {
+        \\    public void run() {
+        \\        Map<Id, Contact[]> m = new Map<Id, Contact[]>();
+        \\        m.put(acc.Id, new Contact[0]);
+        \\        String[] names = new String[10];
         \\    }
         \\}
     ;

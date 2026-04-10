@@ -159,6 +159,27 @@ const Lexer = struct {
                     return self.makeTokenAt(.soql_literal, self.source[start..self.pos], start_loc);
                 }
             }
+            // skip line comments inside SOQL (e.g. // comment with 'quotes')
+            if (ch == '/' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '/') {
+                while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+                    self.advance();
+                }
+                continue;
+            }
+            // skip block comments inside SOQL
+            if (ch == '/' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '*') {
+                self.advance();
+                self.advance();
+                while (self.pos + 1 < self.source.len) {
+                    if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
+                        self.advance();
+                        self.advance();
+                        break;
+                    }
+                    self.advance();
+                }
+                continue;
+            }
             // skip string literals inside SOQL
             if (ch == '\'') {
                 self.advance();
@@ -248,6 +269,10 @@ const Lexer = struct {
                 if (next_char == '=') {
                     self.advance();
                     return self.makeTokenAt(.lte, self.source[start..self.pos], start_loc);
+                }
+                if (next_char == '>') {
+                    self.advance();
+                    return self.makeTokenAt(.neq, self.source[start..self.pos], start_loc);
                 }
                 return self.makeTokenAt(.lt, self.source[start..self.pos], start_loc);
             },
