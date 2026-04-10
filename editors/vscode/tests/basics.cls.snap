@@ -1,0 +1,71 @@
+>// SYNTAX TEST "source.apex"
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>// Line comment
+#^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>// <--- comment.line.double-slash.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>/* Block comment */
+#^^ source.apex comment.block.apex
+#  ^^^^^^^^^^^^^^^ source.apex comment.block.apex
+#                 ^^ source.apex comment.block.apex
+>// <--- comment.block.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>'hello world'
+#^ source.apex string.quoted.single.apex
+# ^^^^^^^^^^^ source.apex string.quoted.single.apex
+#            ^ source.apex string.quoted.single.apex
+>// <--- string.quoted.single.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>'escaped \' quote'
+#^ source.apex string.quoted.single.apex
+# ^^^^^^^^ source.apex string.quoted.single.apex
+#         ^^ source.apex string.quoted.single.apex constant.character.escape.apex
+#           ^^^^^^ source.apex string.quoted.single.apex
+#                 ^ source.apex string.quoted.single.apex
+>// <--- string.quoted.single.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>123
+#^^^ source.apex constant.numeric.integer.apex
+>// <-- constant.numeric.integer.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>3.14
+#^^^^ source.apex constant.numeric.decimal.apex
+>// <-- constant.numeric.decimal.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>0xFF
+#^^^^ source.apex constant.numeric.hex.apex
+>// <-- constant.numeric.hex.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>true
+#^^^^ source.apex constant.language.apex
+>// <-- constant.language.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>false
+#^^^^^ source.apex constant.language.apex
+>// <-- constant.language.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>null
+#^^^^ source.apex constant.language.apex
+>// <-- constant.language.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>@isTest
+#^^^^^^^ source.apex meta.annotation.apex storage.type.annotation.apex
+>// <----- storage.type.annotation.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>@AuraEnabled
+#^^^^^^^^^^^^ source.apex meta.annotation.apex storage.type.annotation.apex
+>// <----------- storage.type.annotation.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>

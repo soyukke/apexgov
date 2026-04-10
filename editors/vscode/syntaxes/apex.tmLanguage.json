@@ -1,0 +1,180 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Apex",
+  "scopeName": "source.apex",
+  "fileTypes": ["cls", "trigger", "apex"],
+  "patterns": [
+    { "include": "#comment-line" },
+    { "include": "#comment-block" },
+    { "include": "#string" },
+    { "include": "#soql" },
+    { "include": "#annotation" },
+    { "include": "#constant-numeric" },
+    { "include": "#constant-language" },
+    { "include": "#keyword-control" },
+    { "include": "#keyword-declaration" },
+    { "include": "#keyword-dml" },
+    { "include": "#keyword-other" },
+    { "include": "#storage-modifier" },
+    { "include": "#method-call" },
+    { "include": "#support-type" },
+    { "include": "#type-name" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment-line": {
+      "name": "comment.line.double-slash.apex",
+      "match": "//.*$"
+    },
+    "comment-block": {
+      "name": "comment.block.apex",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": []
+    },
+    "string": {
+      "name": "string.quoted.single.apex",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "name": "constant.character.escape.apex",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "soql": {
+      "name": "meta.soql.apex",
+      "begin": "\\[\\s*(?i)(SELECT|FIND)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.soql.apex" }
+      },
+      "end": "\\]",
+      "patterns": [
+        { "include": "#soql-keyword" },
+        { "include": "#soql-string" },
+        { "include": "#soql-bind" },
+        { "include": "#constant-numeric" }
+      ]
+    },
+    "soql-keyword": {
+      "name": "keyword.other.soql.apex",
+      "match": "(?i)\\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|LIMIT|OFFSET|ORDER|BY|GROUP|HAVING|ASC|DESC|NULLS|FIRST|LAST|COUNT|COUNT_DISTINCT|SUM|AVG|MIN|MAX|WITH|FOR|UPDATE|VIEW|REFERENCE|ALL|ROWS|TYPEOF|WHEN|THEN|ELSE|END|INCLUDES|EXCLUDES|FIND|RETURNING|IS|NULL|TODAY|YESTERDAY|TOMORROW|LAST_WEEK|THIS_WEEK|NEXT_WEEK|LAST_MONTH|THIS_MONTH|NEXT_MONTH|LAST_90_DAYS|NEXT_90_DAYS|LAST_N_DAYS|NEXT_N_DAYS|THIS_QUARTER|LAST_QUARTER|NEXT_QUARTER|THIS_YEAR|LAST_YEAR|NEXT_YEAR|THIS_FISCAL_QUARTER|LAST_FISCAL_QUARTER|NEXT_FISCAL_QUARTER|THIS_FISCAL_YEAR|LAST_FISCAL_YEAR|NEXT_FISCAL_YEAR|USING|SCOPE|SECURITY_ENFORCED|USER_MODE|SYSTEM_MODE)\\b"
+    },
+    "soql-string": {
+      "name": "string.quoted.single.soql.apex",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "name": "constant.character.escape.apex",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "soql-bind": {
+      "name": "variable.other.bind.apex",
+      "match": ":[A-Za-z_][A-Za-z0-9_.]*"
+    },
+    "annotation": {
+      "name": "meta.annotation.apex",
+      "match": "@[A-Za-z_][A-Za-z0-9_]*",
+      "captures": {
+        "0": { "name": "storage.type.annotation.apex" }
+      }
+    },
+    "constant-numeric": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.apex",
+          "match": "\\b0[xX][0-9a-fA-F]+[lL]?\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.apex",
+          "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.apex",
+          "match": "\\b[0-9]+[lL]?\\b"
+        }
+      ]
+    },
+    "constant-language": {
+      "name": "constant.language.apex",
+      "match": "(?i)\\b(true|false|null)\\b"
+    },
+    "keyword-control": {
+      "name": "keyword.control.apex",
+      "match": "\\b(if|else|for|while|do|return|break|continue|switch|when|try|catch|finally|throw)\\b"
+    },
+    "keyword-declaration": {
+      "name": "keyword.declaration.apex",
+      "match": "\\b(class|interface|enum|trigger|extends|implements)\\b"
+    },
+    "keyword-dml": {
+      "name": "keyword.other.dml.apex",
+      "match": "\\b(insert|update|upsert|delete|undelete|merge)\\b"
+    },
+    "keyword-other": {
+      "name": "keyword.other.apex",
+      "match": "\\b(new|this|super|instanceof)\\b"
+    },
+    "storage-modifier": {
+      "name": "storage.modifier.apex",
+      "match": "\\b(public|private|protected|global|static|final|abstract|virtual|override|transient|with|without|sharing)\\b"
+    },
+    "support-type": {
+      "name": "support.type.apex",
+      "match": "\\b(String|Integer|Boolean|Decimal|Date|Datetime|Id|List|Map|Set|Blob|Long|Double|Object|Time|void|SObject|System|Database|Limits|Test|Schema|UserInfo|Trigger|ApexPages|Messaging|Http|HttpRequest|HttpResponse|JSON|JSONParser|JSONGenerator|Pattern|Matcher|Math|Url|EncodingUtil|Crypto)\\b"
+    },
+    "method-call": {
+      "comment": "メソッド呼び出し/定義: 識別子( の直前",
+      "match": "\\b([a-zA-Z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.apex" }
+      }
+    },
+    "type-name": {
+      "comment": "大文字始まりの識別子を型名として色付け",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)\\b",
+      "name": "entity.name.type.apex"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.apex",
+          "match": "===|!==|==|!=|<=|>="
+        },
+        {
+          "name": "keyword.operator.logical.apex",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.assignment.apex",
+          "match": "\\+=|-=|\\*=|/=|&=|\\|=|\\^=|="
+        },
+        {
+          "name": "keyword.operator.arithmetic.apex",
+          "match": "\\+\\+|--|\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.ternary.apex",
+          "match": "\\?\\.|\\?"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.terminator.apex",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.apex",
+          "match": ","
+        }
+      ]
+    }
+  }
+}

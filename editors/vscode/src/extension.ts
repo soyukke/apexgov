@@ -48,6 +48,10 @@ export async function activate(context: vscode.ExtensionContext) {
       { scheme: "file", pattern: "**/*.trigger" },
     ],
     outputChannel,
+    middleware: {
+      provideDocumentSemanticTokens: () => undefined,
+      provideDocumentSemanticTokensEdits: () => undefined,
+    },
   };
 
   client = new LanguageClient(

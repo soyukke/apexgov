@@ -2,7 +2,7 @@
   "name": "apexgov",
   "displayName": "apexgov",
   "description": "Apex Governor Limit Checker & Language Server — offline static analysis for Salesforce Apex",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "soyukke",
   "license": "MIT",
   "repository": {
@@ -34,9 +34,21 @@
     "languages": [
       {
         "id": "apex",
-        "aliases": ["Apex"],
-        "extensions": [".cls", ".trigger"],
+        "aliases": [
+          "Apex"
+        ],
+        "extensions": [
+          ".cls",
+          ".trigger"
+        ],
         "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "apex",
+        "scopeName": "source.apex",
+        "path": "./syntaxes/apex.tmLanguage.json"
       }
     ],
     "configuration": {
@@ -53,15 +65,17 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "test:grammar": "vscode-tmgrammar-snap -s source.apex -g syntaxes/apex.tmLanguage.json tests/*.cls",
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "^1.80.0",
     "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.0.0",
     "typescript": "^5.4.0",
-    "@vscode/vsce": "^3.0.0"
+    "vscode-tmgrammar-test": "^0.1.3"
   }
 }
