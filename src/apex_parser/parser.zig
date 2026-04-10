@@ -2612,3 +2612,23 @@ test "no diagnostics: bitwise shift and XOR operators" {
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
+
+test "no diagnostics: double literal with d suffix" {
+    const source =
+        \\public class DoubleSuffix {
+        \\    public void run() {
+        \\        Type t = Double.class;
+        \\        Object o = Argument.getType(42.0d);
+        \\        Double d = 3.14D;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}

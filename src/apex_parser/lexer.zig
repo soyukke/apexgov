@@ -102,10 +102,15 @@ const Lexer = struct {
             }
             self.advance();
         }
-        // long suffix
+        // long suffix (L/l)
         if (self.pos < self.source.len and (self.source[self.pos] == 'L' or self.source[self.pos] == 'l')) {
             self.advance();
             return self.makeTokenAt(.long_literal, self.source[start..self.pos], start_loc);
+        }
+        // double suffix (D/d)
+        if (self.pos < self.source.len and (self.source[self.pos] == 'D' or self.source[self.pos] == 'd')) {
+            self.advance();
+            return self.makeTokenAt(.double_literal, self.source[start..self.pos], start_loc);
         }
         const kind: TokenKind = if (is_double) .double_literal else .integer_literal;
         return self.makeTokenAt(kind, self.source[start..self.pos], start_loc);
