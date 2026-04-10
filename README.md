@@ -34,6 +34,27 @@
 | AG010 | HTTP callout inside loops |
 | AG011 | Messaging.sendEmail inside loops |
 
+## LSP (Language Server)
+
+apexgov includes a built-in Apex language server. It provides diagnostics (governor limit violations + parse errors), code completion, go to definition, references, hover, rename, semantic highlighting, and more.
+
+```bash
+apexgov lsp   # Starts the LSP server (stdio)
+```
+
+Neovim + lazy.nvim quick setup:
+
+```lua
+{ "soyukke/apexgov", build = "zig build", config = function(p)
+    vim.filetype.add({ extension = { cls = "apex", trigger = "apex" } })
+    vim.lsp.config("apexgov", { cmd = { p.dir.."/zig-out/bin/apexgov", "lsp" },
+      filetypes = { "apex" }, root_markers = { "sfdx-project.json", ".git" } })
+    vim.lsp.enable("apexgov")
+end }
+```
+
+See [docs/lsp-setup.md](docs/lsp-setup.md) for detailed VS Code and Neovim setup instructions.
+
 ## Commands
 
 ### `check`

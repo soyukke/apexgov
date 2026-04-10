@@ -34,6 +34,27 @@
 | AG010 | ループ内 HTTP callout |
 | AG011 | ループ内 Messaging.sendEmail |
 
+## LSP (言語サーバー)
+
+apexgov には Apex 言語サーバーが内蔵されています。Governor 制限違反の診断、コード補完、定義ジャンプ、参照検索、ホバー、リネーム、セマンティックハイライトなどを提供します。
+
+```bash
+apexgov lsp   # LSP サーバーを起動 (stdio)
+```
+
+Neovim + lazy.nvim クイックセットアップ:
+
+```lua
+{ "soyukke/apexgov", build = "zig build", config = function(p)
+    vim.filetype.add({ extension = { cls = "apex", trigger = "apex" } })
+    vim.lsp.config("apexgov", { cmd = { p.dir.."/zig-out/bin/apexgov", "lsp" },
+      filetypes = { "apex" }, root_markers = { "sfdx-project.json", ".git" } })
+    vim.lsp.enable("apexgov")
+end }
+```
+
+詳細なセットアップ手順は [docs/lsp-setup.md](docs/lsp-setup.md) を参照してください（VS Code / Neovim 対応）。
+
 ## コマンド
 
 ### `check`
