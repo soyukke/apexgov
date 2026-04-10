@@ -430,11 +430,14 @@ const Parser = struct {
         var params: std.ArrayListUnmanaged(ast.Param) = .empty;
         if (self.check(.rparen)) return params.toOwnedSlice(self.arena);
 
+        // Skip optional 'final' modifier on parameter
+        _ = self.matchKind(.final_kw);
         try params.append(self.arena, .{
             .type_ref = try self.parseTypeRef(),
             .name = try self.expectIdentifier(),
         });
         while (self.matchKind(.comma)) {
+            _ = self.matchKind(.final_kw);
             try params.append(self.arena, .{
                 .type_ref = try self.parseTypeRef(),
                 .name = try self.expectIdentifier(),
@@ -475,6 +478,16 @@ const Parser = struct {
             kind == .delete_kw or kind == .undelete_kw or kind == .merge_kw)
         {
             return self.parseDmlStmt();
+        }
+
+        // 'final' local variable: final Type name = ...
+        if (kind == .final_kw) {
+            self.pos += 1; // skip 'final'
+            if (self.looksLikeVarDecl()) {
+                return self.parseVarDeclStmt();
+            }
+            // final not followed by var decl — treat as expression fallthrough
+            self.pos -= 1;
         }
 
         // Variable declaration or expression statement
@@ -550,6 +563,16 @@ const Parser = struct {
             const init_stmt = try self.arena.create(ast.Stmt);
             if (self.looksLikeVarDecl()) {
                 init_stmt.* = try self.parseVarDeclStmt();
+                // Handle multiple var decls: Integer i = 0, j = list.size()
+                while (self.matchKind(.comma)) {
+                    if (self.check(.identifier) and (self.peekKind(1) == .assign or self.peekKind(1) == .semicolon or self.peekKind(1) == .comma)) {
+                        // name = expr or name;
+                        _ = try self.expectIdentifier();
+                        if (self.matchKind(.assign)) {
+                            _ = try self.expression();
+                        }
+                    }
+                }
             } else {
                 const expr = try self.expression();
                 init_stmt.* = .{ .expr_stmt = expr };
@@ -645,10 +668,16 @@ const Parser = struct {
                     try clauses.append(self.arena, .{ .pattern = .else_clause, .body = body });
                 } else {
                     // when value1, value2 { ... }
+                    // OR: when TypeName varName { ... } (type-binding pattern)
                     var values: std.ArrayListUnmanaged(ast.Expr) = .empty;
                     try values.append(self.arena, (try self.expression()).*);
-                    while (self.matchKind(.comma)) {
-                        try values.append(self.arena, (try self.expression()).*);
+                    // Type-binding pattern: when Ident Ident { — skip the variable name
+                    if (self.check(.identifier) and self.peekKind(1) == .lbrace) {
+                        self.pos += 1; // skip variable name
+                    } else {
+                        while (self.matchKind(.comma)) {
+                            try values.append(self.arena, (try self.expression()).*);
+                        }
                     }
                     try self.expect(.lbrace);
                     const body = try self.parseBlock();
@@ -789,7 +818,7 @@ const Parser = struct {
     }
 
     fn parseAssignment(self: *Parser) !*ast.Expr {
-        const expr = try self.parseTernary();
+        const expr = try self.parseNullCoalesce();
 
         const op: ?ast.AssignOp = switch (self.currentKind()) {
             .assign => .assign,
@@ -810,6 +839,21 @@ const Parser = struct {
             return result;
         }
 
+        return expr;
+    }
+
+    /// Null-coalescing: a ?? b (right-associative, lower than ternary)
+    fn parseNullCoalesce(self: *Parser) !*ast.Expr {
+        var expr = try self.parseTernary();
+        while (self.matchKind(.question_question)) {
+            const right = try self.parseTernary();
+            // Represent as ternary: expr != null ? expr : right
+            const node = try self.arena.create(ast.TernaryExpr);
+            node.* = .{ .condition = expr, .then_expr = expr, .else_expr = right };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .ternary = node };
+            expr = result;
+        }
         return expr;
     }
 
@@ -840,9 +884,19 @@ const Parser = struct {
     }
 
     fn parseAnd(self: *Parser) !*ast.Expr {
-        var left = try self.parseEquality();
+        var left = try self.parseBitwiseAnd();
         while (self.matchKind(.and_op)) {
+            const right = try self.parseBitwiseAnd();
+            left = try self.makeBinary(left, .and_op, right);
+        }
+        return left;
+    }
+
+    fn parseBitwiseAnd(self: *Parser) !*ast.Expr {
+        var left = try self.parseEquality();
+        while (self.matchKind(.ampersand)) {
             const right = try self.parseEquality();
+            // Bitwise AND — reuse and_op in AST for simplicity
             left = try self.makeBinary(left, .and_op, right);
         }
         return left;
@@ -941,6 +995,10 @@ const Parser = struct {
             result.* = .{ .unary = node };
             return result;
         }
+        // Unary plus: +expr — just parse the operand (no-op)
+        if (self.matchKind(.plus)) {
+            return self.parseUnary();
+        }
         if (self.matchKind(.not_op)) {
             const operand = try self.parseUnary();
             const node = try self.arena.create(ast.UnaryExpr);
@@ -990,12 +1048,13 @@ const Parser = struct {
     fn parsePostfix(self: *Parser) !*ast.Expr {
         var expr = try self.parsePrimary();
 
-        // super(args) → call to parent constructor
-        if (expr.* == .super_expr and self.matchKind(.lparen)) {
+        // super(args) / this(args) → constructor delegation
+        if ((expr.* == .super_expr or expr.* == .this_expr) and self.matchKind(.lparen)) {
+            const callee_name: []const u8 = if (expr.* == .super_expr) "super" else "this";
             const args = try self.parseArgList();
             try self.expect(.rparen);
             const node = try self.arena.create(ast.CallExpr);
-            node.* = .{ .callee = "super", .args = args };
+            node.* = .{ .callee = callee_name, .args = args };
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .call = node };
             expr = result;
@@ -1004,7 +1063,7 @@ const Parser = struct {
         while (true) {
             const is_null_safe = self.check(.question_dot);
             if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
-                const field_name = try self.expectIdentifier();
+                const field_name = try self.expectIdentifierOrKeyword();
 
                 // method call: obj.method(args)
                 if (self.matchKind(.lparen)) {
@@ -1328,14 +1387,13 @@ const Parser = struct {
         }
         const name = try self.expectIdentifier();
 
-        // Handle dotted names: System.Type
+        // Handle dotted names: System.Type, Messaging.inboundEmail.BinaryAttachment
         var full_name = name;
-        if (self.matchKind(.dot)) {
-            if (self.check(.identifier)) {
-                const second = self.current().lexeme;
-                self.pos += 1;
-                full_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ name, second });
-            }
+        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+            self.pos += 1; // skip dot
+            const next_part = self.current().lexeme;
+            self.pos += 1;
+            full_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ full_name, next_part });
         }
 
         // Generic params: <T, U>
@@ -1380,9 +1438,9 @@ const Parser = struct {
         if (!self.check(.identifier) and !self.check(.void_kw)) return false;
         self.pos += 1;
 
-        // skip dotted name
-        if (self.matchKind(.dot)) {
-            if (self.check(.identifier)) self.pos += 1;
+        // skip dotted name (multi-level: A.B.C)
+        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+            self.pos += 2;
         }
 
         // skip generic params
@@ -1452,7 +1510,9 @@ const Parser = struct {
                     return false;
                 }
             }
-            if (self.check(.semicolon) or self.check(.rparen) or self.check(.comma)) return false;
+            if (self.check(.semicolon) or self.check(.rparen)) return false;
+            // comma at depth 0 means we're not in generics; inside <...> commas are param separators
+            if (self.check(.comma) and depth == 0) return false;
             self.pos += 1;
         }
         return false;
@@ -1469,9 +1529,9 @@ const Parser = struct {
         if (!self.check(.identifier)) return false;
         self.pos += 1;
 
-        // skip dotted name
-        if (self.matchKind(.dot)) {
-            if (self.check(.identifier)) self.pos += 1;
+        // skip dotted name (multi-level: A.B.C)
+        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+            self.pos += 2;
         }
 
         // skip generic params: <T, U, ...>
@@ -1492,7 +1552,19 @@ const Parser = struct {
             self.pos += 2;
         }
 
-        return self.check(.rparen);
+        if (!self.check(.rparen)) return false;
+        // After ')' must come an expression-start token, not an operator / ';' / '{'
+        // to distinguish (Type)expr cast from (expr) grouping
+        const after_rparen = self.peekKind(1);
+        return after_rparen == .identifier or after_rparen == .integer_literal or
+            after_rparen == .double_literal or after_rparen == .long_literal or
+            after_rparen == .string_literal or after_rparen == .true_kw or
+            after_rparen == .false_kw or after_rparen == .null_kw or
+            after_rparen == .this_kw or after_rparen == .super_kw or
+            after_rparen == .new_kw or after_rparen == .lparen or
+            after_rparen == .not_op or after_rparen == .minus or
+            after_rparen == .plus_plus or after_rparen == .minus_minus or
+            after_rparen == .soql_literal or after_rparen == .trigger_kw;
     }
 
     // -----------------------------------------------------------------------
@@ -1526,6 +1598,18 @@ const Parser = struct {
                     self.pos += 1;
                     continue;
                 },
+                .identifier => {
+                    // Apex 追加修飾子: webservice, testMethod, inherited (sharing)
+                    const lex = self.current().lexeme;
+                    if (std.ascii.eqlIgnoreCase(lex, "webservice") or
+                        std.ascii.eqlIgnoreCase(lex, "testmethod") or
+                        std.ascii.eqlIgnoreCase(lex, "inherited"))
+                    {
+                        self.pos += 1;
+                        continue;
+                    }
+                    return mods;
+                },
                 else => return mods,
             }
             self.pos += 1;
@@ -1556,6 +1640,33 @@ const Parser = struct {
         }
         try self.addDiagnostic(self.currentLoc(), .identifier);
         return "_unknown";
+    }
+
+    /// ドットの後に来る識別子を期待するが、Apex ではキーワードも
+    /// フィールド名として使える（例: Trigger.new, Account.class）。
+    fn expectIdentifierOrKeyword(self: *Parser) ![]const u8 {
+        if (self.check(.identifier)) {
+            const name = self.current().lexeme;
+            self.pos += 1;
+            return name;
+        }
+        // Apex ではキーワードもフィールド/メソッド名として出現しうる
+        const kind = self.currentKind();
+        if (kind != .eof and kind != .semicolon and kind != .lbrace and
+            kind != .rbrace and kind != .lparen and kind != .rparen and
+            kind != .lbracket and kind != .rbracket and kind != .comma and
+            kind != .dot and kind != .question_dot and kind != .assign and
+            kind != .plus_assign and kind != .minus_assign and kind != .star_assign and
+            kind != .slash_assign and kind != .soql_literal and kind != .string_literal and
+            kind != .integer_literal and kind != .double_literal and kind != .long_literal and
+            kind != .annotation)
+        {
+            const name = self.current().lexeme;
+            self.pos += 1;
+            return name;
+        }
+        // 本当に識別子が必要な場合は通常の expectIdentifier にフォールバック
+        return self.expectIdentifier();
     }
 
     fn addDiagnostic(self: *Parser, loc: SourceLoc, expected: TokenKind) !void {
@@ -1726,4 +1837,496 @@ test "parse switch on statement" {
     const stmt = try p.parseStmt();
     try std.testing.expect(stmt == .switch_stmt);
     try std.testing.expectEqual(@as(usize, 2), stmt.switch_stmt.when_clauses.len);
+}
+
+// ---------------------------------------------------------------------------
+// 誤検知テスト — 有効な Apex コードが 0 diagnostic であることを保証
+// ---------------------------------------------------------------------------
+
+test "no diagnostics: Trigger.new field access" {
+    const source =
+        \\public class MyTriggerHandler {
+        \\    public void run() {
+        \\        List<Account> accs = Trigger.new;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 1), result.decls.len);
+}
+
+test "no diagnostics: for-each over Trigger.new" {
+    const source =
+        \\public class MyHandler {
+        \\    public void run() {
+        \\        for (Account acc : Trigger.new) {
+        \\            acc.Name = 'test';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: Account.class type literal" {
+    const source =
+        \\public class TypeTest {
+        \\    public void run() {
+        \\        Type t = Account.class;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: switch on with type-binding when clause" {
+    const source =
+        \\public class SwitchTest {
+        \\    public void run(SObject record) {
+        \\        switch on record {
+        \\            when Account acc {
+        \\                System.debug(acc.Name);
+        \\            }
+        \\            when Contact c {
+        \\                System.debug(c.LastName);
+        \\            }
+        \\            when null {
+        \\                System.debug('null');
+        \\            }
+        \\            when else {
+        \\                System.debug('other');
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    // switch 文に 4 つの when 句
+    try std.testing.expectEqual(@as(usize, 1), result.decls.len);
+    const class_decl = result.decls[0].class_decl;
+    const method = class_decl.members[0].method_decl;
+    try std.testing.expect(method.body[0] == .switch_stmt);
+    try std.testing.expectEqual(@as(usize, 4), method.body[0].switch_stmt.when_clauses.len);
+}
+
+test "no diagnostics: this() constructor delegation" {
+    const source =
+        \\public class MyClass {
+        \\    private String name;
+        \\    public MyClass() {
+        \\        this('default');
+        \\    }
+        \\    public MyClass(String name) {
+        \\        this.name = name;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: this() with multiple args" {
+    const source =
+        \\public class MyClass {
+        \\    public MyClass() {
+        \\        this('default', 0);
+        \\    }
+        \\    public MyClass(String name, Integer count) {
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: final parameter modifier" {
+    const source =
+        \\public class FinalTest {
+        \\    public void run(final String name) {
+        \\        System.debug(name);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: webservice modifier" {
+    const source =
+        \\global class MyWebService {
+        \\    webservice static String echo(String input) {
+        \\        return input;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: testMethod modifier" {
+    const source =
+        \\@IsTest
+        \\public class MyTest {
+        \\    static testMethod void myTest() {
+        \\        System.assert(true);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: final local variable" {
+    const source =
+        \\public class FinalLocal {
+        \\    public void run() {
+        \\        final String name = 'test';
+        \\        final List<Account> accs = new List<Account>();
+        \\        System.debug(name);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: comprehensive real-world Apex" {
+    const source =
+        \\public with sharing class AccountService {
+        \\    public String Name { get; set; }
+        \\    public Integer Count { get; private set; }
+        \\
+        \\    public AccountService() {
+        \\        this('default');
+        \\    }
+        \\
+        \\    public AccountService(String name) {
+        \\        this.Name = name;
+        \\    }
+        \\
+        \\    @AuraEnabled(cacheable=true)
+        \\    public static List<Account> getAccounts() {
+        \\        return [SELECT Id, Name FROM Account LIMIT 10];
+        \\    }
+        \\
+        \\    public void process(SObject record) {
+        \\        switch on record {
+        \\            when Account acc {
+        \\                System.debug(acc.Name);
+        \\            }
+        \\            when null {
+        \\                System.debug('null');
+        \\            }
+        \\            when else {
+        \\                System.debug('other');
+        \\            }
+        \\        }
+        \\
+        \\        Type t = Account.class;
+        \\
+        \\        String result = record != null ? 'yes' : 'no';
+        \\
+        \\        List<Account> accounts = [SELECT Id FROM Account];
+        \\        try {
+        \\            update accounts;
+        \\        } catch (DmlException e) {
+        \\            System.debug(e.getMessage());
+        \\        } finally {
+        \\            System.debug('done');
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: null-coalescing operator ??" {
+    const source =
+        \\public class NullCoalesce {
+        \\    public void run() {
+        \\        String name = inputName ?? 'default';
+        \\        Integer count = a ?? b ?? 0;
+        \\        Object val = record.Field__c ?? fallbackValue;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: multi-level dotted type name" {
+    const source =
+        \\public class DottedType {
+        \\    public void run() {
+        \\        Messaging.inboundEmail.BinaryAttachment att;
+        \\        List<Invocable.Action.Result> results;
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: multi-level dotted type in catch" {
+    const source =
+        \\public class CatchDotted {
+        \\    public void run() {
+        \\        try {
+        \\            System.debug('test');
+        \\        } catch (Cache.Org.OrgCacheException e) {
+        \\            System.debug(e);
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: for-init multiple variable declarations" {
+    const source =
+        \\public class ForMultiVar {
+        \\    public void run() {
+        \\        List<String> items = new List<String>();
+        \\        for (Integer i = 0, size = items.size(); i < size; i++) {
+        \\            System.debug(items[i]);
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: bitwise AND operator" {
+    const source =
+        \\public class BitwiseTest {
+        \\    public void run() {
+        \\        if (System.Test.isRunningTest() & hasRecords()) {
+        \\            System.debug('ok');
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: inherited sharing" {
+    const source =
+        \\public inherited sharing class SecureService {
+        \\    public void run() {
+        \\        System.debug('test');
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: inherited sharing inner class" {
+    const source =
+        \\public class Outer {
+        \\    public inherited sharing class Inner {
+        \\        public void run() {
+        \\            System.debug('test');
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: unary plus in method args" {
+    const source =
+        \\public class UnaryPlus {
+        \\    public void run() {
+        \\        Date d = Date.today().addYears(+1);
+        \\        Date d2 = dt.addYears(+0);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: dot-prefixed decimal literal" {
+    const source =
+        \\public class DotDecimal {
+        \\    public void run() {
+        \\        Decimal d = (amount * percent * .01).setScale(2);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: generic type .class in args" {
+    const source =
+        \\public class TypeLiteral {
+        \\    public void run() {
+        \\        Object obj = JSON.deserialize(response, Map<String, Object>.class);
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: switch on parenthesized expression" {
+    const source =
+        \\global class C {
+        \\    void run() {
+        \\        switch on (cleanActionText) {
+        \\            when 'a' {
+        \\                System.debug('a');
+        \\            }
+        \\            when else {
+        \\                System.debug('b');
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }

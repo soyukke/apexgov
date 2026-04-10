@@ -55,6 +55,15 @@ const Lexer = struct {
         // アノテーション
         if (c == '@') return self.scanAnnotation(start, start_loc);
 
+        // ドット始まり小数: .01, .5 etc.
+        if (c == '.' and self.pos + 1 < self.source.len and std.ascii.isDigit(self.source[self.pos + 1])) {
+            self.advance(); // skip '.'
+            while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
+                self.advance();
+            }
+            return self.makeTokenAt(.double_literal, self.source[start..self.pos], start_loc);
+        }
+
         // SOQL リテラル [SELECT ...]
         if (c == '[') {
             if (self.peekSoql()) return self.scanSoql(start, start_loc);
@@ -254,8 +263,7 @@ const Lexer = struct {
                     self.advance();
                     return self.makeTokenAt(.and_op, self.source[start..self.pos], start_loc);
                 }
-                // single & not used in Apex, treat as unknown
-                return self.makeTokenAt(.identifier, self.source[start..self.pos], start_loc);
+                return self.makeTokenAt(.ampersand, self.source[start..self.pos], start_loc);
             },
             '|' => {
                 if (next_char == '|') {
@@ -274,6 +282,10 @@ const Lexer = struct {
             ';' => return self.makeTokenAt(.semicolon, self.source[start..self.pos], start_loc),
             ':' => return self.makeTokenAt(.colon, self.source[start..self.pos], start_loc),
             '?' => {
+                if (next_char == '?') {
+                    self.advance();
+                    return self.makeTokenAt(.question_question, self.source[start..self.pos], start_loc);
+                }
                 if (next_char == '.') {
                     self.advance();
                     return self.makeTokenAt(.question_dot, self.source[start..self.pos], start_loc);
