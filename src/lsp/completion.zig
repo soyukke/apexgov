@@ -31,11 +31,12 @@ pub fn getCompletions(
     source: []const u8,
     offset: u32,
     allocator: std.mem.Allocator,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
 ) ![]lsp_types.CompletionItem {
     // ドット補完の検出: offset の直前が '.' かチェック
-    const dot_ctx = detectDotContext(source, offset, result);
+    const dot_ctx = detectDotContext(source, offset, result, custom_fields);
     if (dot_ctx) |type_name| {
-        return getDotCompletions(type_name, result, allocator);
+        return getDotCompletions(type_name, result, allocator, custom_fields);
     }
 
     // 通常補完: スコープ内シンボル + キーワード
@@ -43,7 +44,7 @@ pub fn getCompletions(
 }
 
 /// ドットの直前にある変数/型の type_name を解決する。
-fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.BindResult) ?[]const u8 {
+fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.BindResult, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ?[]const u8 {
     if (offset == 0) return null;
 
     // offset の直前（空白をスキップ）に '.' があるか
@@ -66,6 +67,9 @@ fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.B
     // 1. 静的クラス名としてマッチ（System.debug 等）
     if (apex_stdlib.isStdlibType(receiver_name)) return receiver_name;
     if (sobject_schema.isSObject(receiver_name)) return receiver_name;
+    if (custom_fields) |cf| {
+        if (cf.isSObject(receiver_name)) return receiver_name;
+    }
 
     // 2. binder でシンボル解決 → type_name を取得
     const sym = binder_mod.symbolAtPosition(result, pos) orelse {
@@ -81,10 +85,10 @@ fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.B
 }
 
 /// 型ベースのドット補完。SObject フィールド + 標準ライブラリメソッド。
-fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult, allocator: std.mem.Allocator) ![]lsp_types.CompletionItem {
+fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult, allocator: std.mem.Allocator, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
 
-    // SObject フィールド
+    // SObject 標準フィールド
     if (sobject_schema.getFields(type_name)) |fields| {
         for (fields) |f| {
             try items.append(allocator, .{
@@ -92,6 +96,19 @@ fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult
                 .kind = .field,
                 .detail = f.type_name,
             });
+        }
+    }
+
+    // カスタムフィールド (__c / __mdt 等)
+    if (custom_fields) |cf| {
+        if (cf.getFields(type_name)) |fields| {
+            for (fields) |f| {
+                try items.append(allocator, .{
+                    .label = f.name,
+                    .kind = .field,
+                    .detail = f.type_name,
+                });
+            }
         }
     }
 
@@ -183,7 +200,7 @@ fn completeAt(source: []const u8, offset: u32) !TestComplCtx {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     const br = try binder_mod.bind(decls, tokens, source, alloc);
-    const items = try getCompletions(&br, source, offset, alloc);
+    const items = try getCompletions(&br, source, offset, alloc, null);
     return .{ .items = items, .arena = arena };
 }
 

@@ -25,10 +25,13 @@ const document_highlight_mod = @import("document_highlight.zig");
 const JsonValue = std.json.Value;
 const JsonObjectMap = std.json.ObjectMap;
 
+const sobject_schema = @import("sobject_schema.zig");
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
     transport: Transport,
     store: DocumentStore,
+    custom_fields: sobject_schema.CustomFieldRegistry,
     initialized: bool = false,
     shutdown_requested: bool = false,
 
@@ -37,10 +40,12 @@ pub const Server = struct {
             .allocator = allocator,
             .transport = Transport.init(allocator, in_file, out_file),
             .store = DocumentStore.init(allocator),
+            .custom_fields = sobject_schema.CustomFieldRegistry.init(allocator),
         };
     }
 
     pub fn deinit(self: *Server) void {
+        self.custom_fields.deinit();
         self.store.deinit();
         self.transport.deinit();
     }
@@ -73,7 +78,7 @@ pub const Server = struct {
         const id = extractId(obj);
 
         if (std.mem.eql(u8, method, "initialize")) {
-            try self.handleInitialize(id);
+            try self.handleInitialize(id, obj);
         } else if (std.mem.eql(u8, method, "initialized")) {
             // no-op
         } else if (std.mem.eql(u8, method, "shutdown")) {
@@ -118,10 +123,33 @@ pub const Server = struct {
         return false;
     }
 
-    fn handleInitialize(self: *Server, id: types.RequestId) !void {
+    fn handleInitialize(self: *Server, id: types.RequestId, obj: JsonObjectMap) !void {
         self.initialized = true;
+
+        // rootUri からワークスペースのカスタムフィールドを読み込む
+        if (objGet(obj, "params")) |params| {
+            if (valGet(params, "rootUri")) |root_uri_val| {
+                const root_uri = switch (root_uri_val) {
+                    .string => |s| s,
+                    else => null,
+                };
+                if (root_uri) |uri| {
+                    if (uriToPath(uri)) |ws_path| {
+                        self.custom_fields.loadFromWorkspace(ws_path) catch {};
+                    }
+                }
+            }
+        }
+
         const result = types.InitializeResult{};
         try self.transport.sendResponse(self.allocator, id, result);
+    }
+
+    /// file:// URI をファイルパスに変換する。
+    fn uriToPath(uri: []const u8) ?[]const u8 {
+        if (std.mem.startsWith(u8, uri, "file:///")) return uri[7..];
+        if (std.mem.startsWith(u8, uri, "file://")) return uri[7..];
+        return null;
     }
 
     fn handleDidOpen(self: *Server, obj: JsonObjectMap) !void {
@@ -363,7 +391,7 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const items = try completion_mod.getCompletions(br, doc.text, ctx.offset, self.allocator);
+        const items = try completion_mod.getCompletions(br, doc.text, ctx.offset, self.allocator, &self.custom_fields);
         defer self.allocator.free(items);
         try self.transport.sendResponse(self.allocator, id, types.CompletionList{ .items = items });
     }

@@ -145,6 +145,103 @@ const builtin_schemas = [_]SObjectSchema{
     .{ .name = "User", .fields = &user_fields },
 };
 
+/// ワークスペースから読み込んだカスタムフィールドを保持するレジストリ。
+pub const CustomFieldRegistry = struct {
+    /// オブジェクト名 → フィールド一覧
+    objects: std.StringHashMap([]FieldInfo),
+    arena: std.heap.ArenaAllocator,
+
+    pub fn init(allocator: std.mem.Allocator) CustomFieldRegistry {
+        return .{
+            .objects = std.StringHashMap([]FieldInfo).init(allocator),
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *CustomFieldRegistry) void {
+        self.objects.deinit();
+        self.arena.deinit();
+    }
+
+    /// ワークスペースの objects/ ディレクトリからカスタムフィールドを読み込む。
+    pub fn loadFromWorkspace(self: *CustomFieldRegistry, workspace_path: []const u8) !void {
+        const alloc = self.arena.allocator();
+
+        // sfdx-project.json と同階層の force-app/main/default/objects を探す
+        const search_dirs = [_][]const u8{
+            "force-app/main/default/objects",
+            "src/main/default/objects",
+        };
+
+        for (&search_dirs) |rel_dir| {
+            const objects_path = try std.fs.path.join(alloc, &.{ workspace_path, rel_dir });
+            var dir = std.fs.openDirAbsolute(objects_path, .{ .iterate = true }) catch continue;
+            defer dir.close();
+
+            var iter = dir.iterate();
+            while (try iter.next()) |entry| {
+                if (entry.kind != .directory) continue;
+                const obj_name = try alloc.dupe(u8, entry.name);
+                try self.loadObjectFields(objects_path, obj_name);
+            }
+        }
+    }
+
+    fn loadObjectFields(self: *CustomFieldRegistry, objects_path: []const u8, obj_name: []const u8) !void {
+        const alloc = self.arena.allocator();
+        const fields_path = try std.fs.path.join(alloc, &.{ objects_path, obj_name, "fields" });
+
+        var fields_dir = std.fs.openDirAbsolute(fields_path, .{ .iterate = true }) catch return;
+        defer fields_dir.close();
+
+        var fields: std.ArrayList(FieldInfo) = .empty;
+
+        var iter = fields_dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".field-meta.xml")) continue;
+
+            const content = fields_dir.readFileAlloc(alloc, entry.name, 64 * 1024) catch continue;
+            const parsed = parseFieldMetaXml(content, alloc) catch continue;
+            if (parsed) |field| {
+                try fields.append(alloc, field);
+            }
+        }
+
+        if (fields.items.len > 0) {
+            const owned = try fields.toOwnedSlice(alloc);
+            try self.objects.put(obj_name, owned);
+        }
+    }
+
+    pub fn getFields(self: *const CustomFieldRegistry, type_name: []const u8) ?[]const FieldInfo {
+        // 完全一致
+        if (self.objects.get(type_name)) |fields| return fields;
+        // 大文字小文字を無視してサーチ
+        var it = self.objects.iterator();
+        while (it.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, type_name)) {
+                return entry.value_ptr.*;
+            }
+        }
+        return null;
+    }
+
+    pub fn isSObject(self: *const CustomFieldRegistry, type_name: []const u8) bool {
+        return self.getFields(type_name) != null;
+    }
+};
+
+/// .field-meta.xml (個別フィールドファイル) から 1 フィールドを抽出する。
+fn parseFieldMetaXml(content: []const u8, allocator: std.mem.Allocator) !?FieldInfo {
+    const name = extractTag(content, "fullName") orelse return null;
+    const field_type = extractTag(content, "type");
+    return .{
+        .name = try allocator.dupe(u8, name),
+        .type_name = mapSfFieldType(field_type),
+    };
+}
+
 /// 型名から SObject フィールド一覧を取得する。
 pub fn getFields(type_name: []const u8) ?[]const FieldInfo {
     // ビルトイン検索
