@@ -1,0 +1,67 @@
+{
+  "name": "apexgov",
+  "displayName": "apexgov",
+  "description": "Apex Governor Limit Checker & Language Server — offline static analysis for Salesforce Apex",
+  "version": "0.2.0",
+  "publisher": "soyukke",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soyukke/apexgov"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "apex",
+    "salesforce",
+    "governor limits",
+    "soql",
+    "dml",
+    "lsp"
+  ],
+  "activationEvents": [
+    "onLanguage:apex",
+    "workspaceContains:**/*.cls",
+    "workspaceContains:**/*.trigger"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "apex",
+        "aliases": ["Apex"],
+        "extensions": [".cls", ".trigger"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "apexgov",
+      "properties": {
+        "apexgov.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to apexgov binary. If empty, the extension downloads it automatically."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

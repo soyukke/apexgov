@@ -1,0 +1,158 @@
+import * as vscode from "vscode";
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import * as https from "https";
+import { execSync } from "child_process";
+import {
+  LanguageClient,
+  LanguageClientOptions,
+  ServerOptions,
+} from "vscode-languageclient/node";
+
+let client: LanguageClient | undefined;
+
+export async function activate(context: vscode.ExtensionContext) {
+  const serverPath = await ensureServer(context);
+  if (!serverPath) {
+    vscode.window.showErrorMessage(
+      "apexgov: Failed to find or download the server binary."
+    );
+    return;
+  }
+
+  const serverOptions: ServerOptions = {
+    command: serverPath,
+    args: ["lsp"],
+  };
+
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [
+      { scheme: "file", language: "apex" },
+      { scheme: "file", pattern: "**/*.cls" },
+      { scheme: "file", pattern: "**/*.trigger" },
+    ],
+  };
+
+  client = new LanguageClient(
+    "apexgov",
+    "apexgov LSP",
+    serverOptions,
+    clientOptions
+  );
+
+  await client.start();
+}
+
+export async function deactivate() {
+  if (client) {
+    await client.stop();
+  }
+}
+
+async function ensureServer(
+  context: vscode.ExtensionContext
+): Promise<string | undefined> {
+  // 1. User-configured path
+  const configPath = vscode.workspace
+    .getConfiguration("apexgov")
+    .get<string>("serverPath");
+  if (configPath && fs.existsSync(configPath)) {
+    return configPath;
+  }
+
+  // 2. Already downloaded binary
+  const binDir = path.join(context.globalStorageUri.fsPath, "bin");
+  const binName = process.platform === "win32" ? "apexgov.exe" : "apexgov";
+  const binPath = path.join(binDir, binName);
+  if (fs.existsSync(binPath)) {
+    return binPath;
+  }
+
+  // 3. Download from GitHub Releases
+  return await downloadServer(binDir, binPath);
+}
+
+async function downloadServer(
+  binDir: string,
+  binPath: string
+): Promise<string | undefined> {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "apexgov-darwin-aarch64",
+    "darwin-x64": "apexgov-darwin-x86_64",
+    "linux-arm64": "apexgov-linux-aarch64",
+    "linux-x64": "apexgov-linux-x86_64",
+  };
+
+  const key = `${process.platform}-${process.arch}`;
+  const asset = platformMap[key];
+  if (!asset) {
+    vscode.window.showErrorMessage(
+      `apexgov: Unsupported platform: ${key}`
+    );
+    return undefined;
+  }
+
+  const url = `https://github.com/soyukke/apexgov/releases/latest/download/${asset}.tar.gz`;
+
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "apexgov: Downloading server...",
+      cancellable: false,
+    },
+    async () => {
+      try {
+        fs.mkdirSync(binDir, { recursive: true });
+        const tarPath = path.join(binDir, `${asset}.tar.gz`);
+
+        await downloadFile(url, tarPath);
+        execSync(`tar xzf "${tarPath}" -C "${binDir}"`, { stdio: "ignore" });
+        fs.unlinkSync(tarPath);
+
+        // Ensure executable
+        if (process.platform !== "win32") {
+          fs.chmodSync(binPath, 0o755);
+        }
+
+        if (fs.existsSync(binPath)) {
+          return binPath;
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage(
+          `apexgov: Download failed: ${e}`
+        );
+      }
+      return undefined;
+    }
+  );
+}
+
+function downloadFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const follow = (u: string) => {
+      https
+        .get(u, (res) => {
+          if (res.statusCode === 301 || res.statusCode === 302) {
+            const loc = res.headers.location;
+            if (loc) {
+              follow(loc);
+              return;
+            }
+          }
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode}`));
+            return;
+          }
+          const file = fs.createWriteStream(dest);
+          res.pipe(file);
+          file.on("finish", () => {
+            file.close();
+            resolve();
+          });
+        })
+        .on("error", reject);
+    };
+    follow(url);
+  });
+}
