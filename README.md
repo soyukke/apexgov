@@ -42,12 +42,18 @@ apexgov includes a built-in Apex language server. It provides diagnostics (gover
 apexgov lsp   # Starts the LSP server (stdio)
 ```
 
-Neovim + lazy.nvim quick setup:
+Neovim + lazy.nvim quick setup (prebuilt binary, no Zig required):
 
 ```lua
-{ "soyukke/apexgov", build = "zig build", config = function(p)
+{ "soyukke/apexgov", build = function(p)
+    local u = vim.uv.os_uname()
+    local os = u.sysname == "Darwin" and "darwin" or "linux"
+    local arch = u.machine == "arm64" and "aarch64" or "x86_64"
+    vim.fn.mkdir(p.dir.."/bin", "p")
+    vim.fn.system(("curl -sL https://github.com/soyukke/apexgov/releases/latest/download/apexgov-%s-%s.tar.gz | tar xz -C %s/bin"):format(os, arch, p.dir))
+  end, config = function(p)
     vim.filetype.add({ extension = { cls = "apex", trigger = "apex" } })
-    vim.lsp.config("apexgov", { cmd = { p.dir.."/zig-out/bin/apexgov", "lsp" },
+    vim.lsp.config("apexgov", { cmd = { p.dir.."/bin/apexgov", "lsp" },
       filetypes = { "apex" }, root_markers = { "sfdx-project.json", ".git" } })
     vim.lsp.enable("apexgov")
 end }

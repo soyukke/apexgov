@@ -2,26 +2,42 @@
 
 apexgov には Apex 言語サーバー (LSP) が内蔵されています。エディタと連携することで、Governor 制限違反の診断、コード補完、定義ジャンプなどをリアルタイムで利用できます。
 
-## 前提条件
+## インストール
 
-[Zig](https://ziglang.org/) (0.15+) が必要です。Neovim + lazy.nvim の場合はプラグイン側で自動ビルドされるため、手動ビルドは不要です。
+### GitHub Releases からダウンロード (推奨)
 
-手動でビルドする場合:
+[Releases](https://github.com/soyukke/apexgov/releases) からプラットフォームに合ったバイナリをダウンロード:
 
 ```bash
-zig build
-# バイナリ: zig-out/bin/apexgov
+# macOS (Apple Silicon)
+curl -L https://github.com/soyukke/apexgov/releases/latest/download/apexgov-darwin-aarch64.tar.gz | tar xz
+mv apexgov ~/.local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/soyukke/apexgov/releases/latest/download/apexgov-darwin-x86_64.tar.gz | tar xz
+mv apexgov ~/.local/bin/
+
+# Linux (x86_64)
+curl -L https://github.com/soyukke/apexgov/releases/latest/download/apexgov-linux-x86_64.tar.gz | tar xz
+mv apexgov ~/.local/bin/
+
+# Linux (aarch64)
+curl -L https://github.com/soyukke/apexgov/releases/latest/download/apexgov-linux-aarch64.tar.gz | tar xz
+mv apexgov ~/.local/bin/
 ```
 
-パスを通す例:
+### ソースからビルド
+
+[Zig](https://ziglang.org/) (0.15+) が必要です:
 
 ```bash
-# シンボリックリンク
+git clone https://github.com/soyukke/apexgov.git
+cd apexgov
+zig build --release=fast
 ln -s "$(pwd)/zig-out/bin/apexgov" ~/.local/bin/apexgov
-
-# または PATH に追加 (~/.zshrc / ~/.bashrc)
-export PATH="$PATH:/path/to/apexgov/zig-out/bin"
 ```
+
+> **Note**: Neovim + lazy.nvim を使う場合は手動インストール不要です（プラグインが自動でダウンロードまたはビルドします）。
 
 ## 対応機能
 
@@ -101,14 +117,52 @@ Apex 用の VS Code 拡張（例: [Apex PMD](https://marketplace.visualstudio.co
 
 ## Neovim
 
-### 方法 1: lazy.nvim (推奨)
+### 方法 1: lazy.nvim — プリビルドバイナリ (推奨)
 
-[lazy.nvim](https://github.com/folke/lazy.nvim) でリポジトリを指定するだけで、clone・ビルド・LSP 設定が一括で完了します。
+[lazy.nvim](https://github.com/folke/lazy.nvim) で GitHub Releases からバイナリを自動ダウンロードします。Zig のインストールは不要です。
 
 ```lua
 {
   "soyukke/apexgov",
-  build = "zig build",
+  build = function(plugin)
+    local uname = vim.uv.os_uname()
+    local os = uname.sysname == "Darwin" and "darwin" or "linux"
+    local arch = uname.machine == "arm64" and "aarch64" or "x86_64"
+    local name = ("apexgov-%s-%s"):format(os, arch)
+    local url = ("https://github.com/soyukke/apexgov/releases/latest/download/%s.tar.gz"):format(name)
+    vim.fn.mkdir(plugin.dir .. "/bin", "p")
+    vim.fn.system(("curl -sL %s | tar xz -C %s/bin"):format(url, plugin.dir))
+  end,
+  config = function(plugin)
+    vim.filetype.add({
+      extension = { cls = "apex", trigger = "apex" },
+    })
+
+    local bin = plugin.dir .. "/bin/apexgov"
+
+    vim.lsp.config("apexgov", {
+      cmd = { bin, "lsp" },
+      filetypes = { "apex" },
+      root_markers = { "sfdx-project.json", ".git" },
+    })
+
+    vim.lsp.enable("apexgov")
+  end,
+}
+```
+
+`:Lazy install` で初回ダウンロード、`:Lazy update` で最新リリースに更新されます。
+
+> **Note**: `vim.lsp.config` / `vim.lsp.enable` は Neovim 0.11+ の API です。それ以前のバージョンでは方法 3 を参照してください。
+
+### 方法 2: lazy.nvim — ソースビルド
+
+Zig がインストール済みの場合はソースからビルドもできます:
+
+```lua
+{
+  "soyukke/apexgov",
+  build = "zig build --release=fast",
   config = function(plugin)
     vim.filetype.add({
       extension = { cls = "apex", trigger = "apex" },
@@ -127,11 +181,9 @@ Apex 用の VS Code 拡張（例: [Apex PMD](https://marketplace.visualstudio.co
 }
 ```
 
-`:Lazy install` で初回ビルド、`:Lazy update` で pull + 再ビルドが実行されます。
+> **Note**: `vim.lsp.config` / `vim.lsp.enable` は Neovim 0.11+ の API です。それ以前のバージョンでは方法 3 を参照してください。
 
-> **Note**: `vim.lsp.config` / `vim.lsp.enable` は Neovim 0.11+ の API です。それ以前のバージョンでは方法 2 を参照してください。
-
-### 方法 2: vim.lsp.start (Neovim 0.10 以前)
+### 方法 3: vim.lsp.start (Neovim 0.10 以前)
 
 `apexgov` を手動ビルドしてパスを通した上で、`init.lua` に以下を追加:
 
@@ -152,7 +204,7 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-### 方法 3: nvim-lspconfig
+### 方法 4: nvim-lspconfig
 
 [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) を使う場合。apexgov はまだ組み込まれていないため、カスタム設定を追加します:
 
@@ -180,7 +232,7 @@ vim.api.nvim_create_autocmd("FileType", {
 }
 ```
 
-### 方法 4: coc.nvim
+### 方法 5: coc.nvim
 
 [coc.nvim](https://github.com/neoclide/coc.nvim) を使う場合は `:CocConfig` で以下を追加:
 
