@@ -6,6 +6,7 @@ pub const report = @import("report.zig");
 pub const transpile = @import("transpile/root.zig");
 pub const interpret = @import("interpret/root.zig");
 pub const apex_parser = @import("apex_parser/root.zig");
+pub const lsp = @import("lsp/root.zig");
 
 test {
     _ = model;
@@ -16,4 +17,5 @@ test {
     _ = transpile;
     _ = interpret;
     _ = apex_parser;
+    _ = lsp;
 }

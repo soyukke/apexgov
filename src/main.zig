@@ -102,6 +102,9 @@ fn run(gpa: std.mem.Allocator, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "interpret")) {
         return runInterpret(gpa, argv[2..]);
     }
+    if (std.mem.eql(u8, cmd, "lsp")) {
+        return runLsp(gpa);
+    }
 
     return error.UnknownCommand;
 }
@@ -242,6 +245,11 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         &.{};
 
     return spawnScript(gpa, script_path, opts.use_nix, extra_args_buf[0..extra_count], env_entries[0..env_count], str_env);
+}
+
+fn runLsp(gpa: std.mem.Allocator) !u8 {
+    try apexgov.lsp.serve(gpa);
+    return 0;
 }
 
 fn runInterpret(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
@@ -765,6 +773,7 @@ fn printUsage() void {
         \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
         \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --best-effort --nix
         \\  apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
+        \\  apexgov lsp                 Start the Language Server Protocol server (stdio)
         \\
     , .{});
 }

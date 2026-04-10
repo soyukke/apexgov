@@ -11,9 +11,25 @@ const TokenKind = types.TokenKind;
 const TypeRef = types.TypeRef;
 const SourceLoc = types.SourceLoc;
 
+/// パース結果（AST + 診断情報）。
+pub const ParseResult = struct {
+    decls: []ast.Decl,
+    diagnostics: []types.ParseDiagnostic,
+};
+
 pub fn parse(tokens: []const Token, arena: std.mem.Allocator) ![]ast.Decl {
     var p = Parser{ .tokens = tokens, .arena = arena };
     return p.parseProgram();
+}
+
+/// 診断情報付きでパースする。LSP 向け。
+pub fn parseWithDiagnostics(tokens: []const Token, arena: std.mem.Allocator) !ParseResult {
+    var p = Parser{ .tokens = tokens, .arena = arena };
+    const decls = try p.parseProgram();
+    return .{
+        .decls = decls,
+        .diagnostics = try p.diagnostics.toOwnedSlice(arena),
+    };
 }
 
 pub fn parseExpr(tokens: []const Token, arena: std.mem.Allocator) !*ast.Expr {
@@ -25,6 +41,7 @@ const Parser = struct {
     tokens: []const Token,
     arena: std.mem.Allocator,
     pos: u32 = 0,
+    diagnostics: std.ArrayListUnmanaged(types.ParseDiagnostic) = .empty,
 
     // -----------------------------------------------------------------------
     // トップレベル
@@ -1520,8 +1537,8 @@ const Parser = struct {
             self.pos += 1;
             return;
         }
-        // For robustness, don't crash — just skip
-        return;
+        // 診断を記録して続行
+        try self.addDiagnostic(self.currentLoc(), kind);
     }
 
     fn expectIdentifier(self: *Parser) ![]const u8 {
@@ -1532,11 +1549,25 @@ const Parser = struct {
         }
         // Fallback: use current token's lexeme
         if (!self.atEnd()) {
+            try self.addDiagnostic(self.currentLoc(), .identifier);
             const name = self.current().lexeme;
             self.pos += 1;
             return name;
         }
+        try self.addDiagnostic(self.currentLoc(), .identifier);
         return "_unknown";
+    }
+
+    fn addDiagnostic(self: *Parser, loc: SourceLoc, expected: TokenKind) !void {
+        const got_name = if (!self.atEnd()) @tagName(self.current().kind) else "end of file";
+        const msg = try std.fmt.allocPrint(self.arena, "expected {s}, got {s}", .{
+            @tagName(expected),
+            got_name,
+        });
+        try self.diagnostics.append(self.arena, .{
+            .message = msg,
+            .loc = loc,
+        });
     }
 
     fn matchKind(self: *Parser, kind: TokenKind) bool {

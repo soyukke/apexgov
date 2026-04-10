@@ -22,6 +22,10 @@ pub const Token = types.Token;
 pub const TokenKind = types.TokenKind;
 pub const SourceLoc = types.SourceLoc;
 pub const TypeRef = types.TypeRef;
+pub const Span = types.Span;
+pub const ParseDiagnostic = types.ParseDiagnostic;
+pub const ParseSeverity = types.ParseSeverity;
+pub const ParseResult = parser.ParseResult;
 pub const Decl = ast.Decl;
 pub const Expr = ast.Expr;
 pub const Stmt = ast.Stmt;
@@ -34,6 +38,11 @@ pub fn tokenize(source: []const u8, arena: @import("std").mem.Allocator) ![]Toke
 /// トークン列を AST に変換する。
 pub fn parse(tokens: []const Token, arena: @import("std").mem.Allocator) ![]Decl {
     return parser.parse(tokens, arena);
+}
+
+/// 診断情報付きでパースする（LSP 向け）。
+pub fn parseWithDiagnostics(tokens: []const Token, arena: @import("std").mem.Allocator) !ParseResult {
+    return parser.parseWithDiagnostics(tokens, arena);
 }
 
 test {
