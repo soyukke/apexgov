@@ -12,14 +12,29 @@ import {
 
 let client: LanguageClient | undefined;
 
+const outputChannel = vscode.window.createOutputChannel("apexgov");
+
 export async function activate(context: vscode.ExtensionContext) {
-  const serverPath = await ensureServer(context);
+  outputChannel.appendLine("apexgov: activating...");
+
+  let serverPath: string | undefined;
+  try {
+    serverPath = await ensureServer(context);
+  } catch (e) {
+    outputChannel.appendLine(`apexgov: ensureServer failed: ${e}`);
+    vscode.window.showErrorMessage(`apexgov: ${e}`);
+    return;
+  }
+
   if (!serverPath) {
+    outputChannel.appendLine("apexgov: server binary not found");
     vscode.window.showErrorMessage(
       "apexgov: Failed to find or download the server binary."
     );
     return;
   }
+
+  outputChannel.appendLine(`apexgov: using server at ${serverPath}`);
 
   const serverOptions: ServerOptions = {
     command: serverPath,
@@ -32,6 +47,7 @@ export async function activate(context: vscode.ExtensionContext) {
       { scheme: "file", pattern: "**/*.cls" },
       { scheme: "file", pattern: "**/*.trigger" },
     ],
+    outputChannel,
   };
 
   client = new LanguageClient(
@@ -41,7 +57,13 @@ export async function activate(context: vscode.ExtensionContext) {
     clientOptions
   );
 
-  await client.start();
+  try {
+    await client.start();
+    outputChannel.appendLine("apexgov: LSP client started");
+  } catch (e) {
+    outputChannel.appendLine(`apexgov: LSP client failed to start: ${e}`);
+    vscode.window.showErrorMessage(`apexgov: LSP failed to start: ${e}`);
+  }
 }
 
 export async function deactivate() {
