@@ -111,6 +111,53 @@ const rule_specs = [_]RuleSpec{
 // ルール検出ヘルパー
 // ---------------------------------------------------------------------------
 
+/// ファイル内容がテストクラス（クラス定義前に `@isTest` アノテーション）かどうかを判定する。
+fn isTestClass(content: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r");
+        if (trimmed.len == 0) continue;
+        // @isTest アノテーションを検出（大文字小文字区別なし）
+        if (trimmed[0] == '@') {
+            const anno = std.mem.trim(u8, trimmed[1..], " \t");
+            if (anno.len >= 6) {
+                const prefix = anno[0..6];
+                if (std.ascii.eqlIgnoreCase(prefix, "istest")) return true;
+            }
+        }
+        // class/interface/trigger 宣言に到達したらアノテーション探索を終了
+        if (containsClassDecl(trimmed)) return false;
+    }
+    return false;
+}
+
+fn containsClassDecl(line: []const u8) bool {
+    const keywords = [_][]const u8{ "class ", "interface ", "trigger " };
+    for (keywords) |kw| {
+        if (std.mem.indexOf(u8, line, kw) != null) return true;
+    }
+    return false;
+}
+
+/// SOQL for ループ (`for (X : [SELECT ...])`) かどうかを判定する。
+/// `Database.query()` 等は対象外（チャンク取得されないため）。
+fn isSoqlForLoop(trimmed: []const u8) bool {
+    const lower = blk: {
+        var buf: [512]u8 = undefined;
+        if (trimmed.len > buf.len) break :blk trimmed;
+        for (trimmed, 0..) |c, i| {
+            buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+        }
+        break :blk buf[0..trimmed.len];
+    };
+    // "for" で始まり、":" の後に "[select" があるか
+    if (!std.mem.startsWith(u8, lower, "for ") and !std.mem.startsWith(u8, lower, "for(")) return false;
+    const colon_pos = std.mem.indexOfScalar(u8, lower, ':') orelse return false;
+    const after_colon = lower[colon_pos + 1 ..];
+    const after_trimmed = std.mem.trimLeft(u8, after_colon, " \t");
+    return std.mem.startsWith(u8, after_trimmed, "[select ");
+}
+
 /// 全検出器を実行し、各操作の直接検出カウント (0 or 1) を返す。
 /// MethodMetrics と同じフィールド構造を再利用して `@field` アクセスを可能にする。
 fn runDetectors(trimmed: []const u8, type_env: *std.StringHashMap([]const u8)) MethodMetrics {
@@ -208,6 +255,9 @@ pub fn scanContent(
     var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
     const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
 
+    // @isTest クラスの findings をスキップ（method_summaries 登録は維持）
+    const is_test_class = !cfg.include_tests and isTestClass(stripped_content);
+
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
     var pending_loop_scope: ?PendingLoopScopeStart = null;
@@ -286,7 +336,7 @@ pub fn scanContent(
         const in_loop = loop_started or loop_level > 0;
 
         // AG001: ネストされたループ検出（他ルールとパターンが異なるため個別処理）
-        if (loop_started and loop_level > 0) {
+        if (!is_test_class and loop_started and loop_level > 0) {
             try appendFinding(
                 gpa,
                 findings,
@@ -301,10 +351,18 @@ pub fn scanContent(
         }
 
         // AG002–AG011: テーブル駆動ルール検出
-        if (in_loop) {
+        if (!is_test_class and in_loop) {
             const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
             const call_metrics = inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries, type_relations);
-            const direct = runDetectors(trimmed, &type_env);
+            var direct = runDetectors(trimmed, &type_env);
+
+            // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では
+            // iterable の SOQL はループ本体内の SOQL ではない（1回だけ発行される）。
+            // ただしネスト（loop_level > 0）の場合は外側ループ内の SOQL なので除外しない。
+            if (loop_started and direct.soql > 0 and loop_level == 0 and isSoqlForLoop(trimmed)) {
+                direct.soql = 0;
+            }
+
             try emitRuleFindings(gpa, findings, path, line_no, direct, call_metrics, loop_upper_bound, cfg.cpu_model);
         }
 

@@ -10,6 +10,7 @@ const CheckOptions = struct {
     out_path: ?[]const u8 = null,
     format: apexgov.model.OutputFormat = .text,
     threshold: ?apexgov.model.Severity = .warning,
+    include_tests: bool = false,
     paths: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *CheckOptions, gpa: std.mem.Allocator) void {
@@ -113,7 +114,8 @@ fn runCheck(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     var opts = try parseCheckOptions(gpa, args);
     defer opts.deinit(gpa);
 
-    const cfg = try apexgov.config.load(gpa, opts.config_path);
+    var cfg = try apexgov.config.load(gpa, opts.config_path);
+    cfg.include_tests = opts.include_tests;
 
     var findings = try apexgov.check.runWithConfig(gpa, opts.paths.items, cfg);
     defer apexgov.model.deinitFindings(gpa, &findings);
@@ -387,6 +389,11 @@ fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOpt
         }
         if (try consumeOption(args, &i, "--severity-threshold")) |v| {
             opts.threshold = try parseThreshold(v);
+            continue;
+        }
+        if (std.mem.eql(u8, args[i], "--include-tests")) {
+            opts.include_tests = true;
+            i += 1;
             continue;
         }
         if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;

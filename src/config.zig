@@ -28,6 +28,7 @@ pub const Config = struct {
     budget_async: Budget,
     cpu_model: CpuModel,
     ci: Ci,
+    include_tests: bool = false,
 
     pub fn defaults() Config {
         return .{
