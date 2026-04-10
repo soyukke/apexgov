@@ -77,7 +77,7 @@ fn classifyToken(tok: Token) ?u32 {
         .annotation => TT.decorator,
 
         // 演算子
-        .plus, .minus, .star, .slash, .percent, .eq, .neq, .lt, .gt, .lte, .gte, .strict_eq, .strict_neq, .and_op, .or_op, .not_op, .assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .arrow, .question, .question_question, .question_dot, .ampersand => TT.operator,
+        .plus, .minus, .star, .slash, .percent, .eq, .neq, .lt, .gt, .lte, .gte, .strict_eq, .strict_neq, .and_op, .or_op, .not_op, .assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .arrow, .question, .question_question, .question_dot, .ampersand, .caret, .pipe => TT.operator,
 
         // 識別子 — 今は全て variable として分類（型推論は Phase 2+）
         .identifier => TT.variable,

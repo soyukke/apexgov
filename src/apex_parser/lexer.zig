@@ -295,8 +295,10 @@ const Lexer = struct {
                     self.advance();
                     return self.makeTokenAt(.or_op, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.identifier, self.source[start..self.pos], start_loc);
+                return self.makeTokenAt(.pipe, self.source[start..self.pos], start_loc);
             },
+            '^' => return self.makeTokenAt(.caret, self.source[start..self.pos], start_loc),
+            '~' => return self.makeTokenAt(.not_op, self.source[start..self.pos], start_loc),
             '(' => return self.makeTokenAt(.lparen, self.source[start..self.pos], start_loc),
             ')' => return self.makeTokenAt(.rparen, self.source[start..self.pos], start_loc),
             '{' => return self.makeTokenAt(.lbrace, self.source[start..self.pos], start_loc),

@@ -892,10 +892,29 @@ const Parser = struct {
     }
 
     fn parseAnd(self: *Parser) !*ast.Expr {
-        var left = try self.parseBitwiseAnd();
+        var left = try self.parseBitwiseOr();
         while (self.matchKind(.and_op)) {
-            const right = try self.parseBitwiseAnd();
+            const right = try self.parseBitwiseOr();
             left = try self.makeBinary(left, .and_op, right);
+        }
+        return left;
+    }
+
+    fn parseBitwiseOr(self: *Parser) !*ast.Expr {
+        var left = try self.parseBitwiseXor();
+        while (self.matchKind(.pipe)) {
+            const right = try self.parseBitwiseXor();
+            left = try self.makeBinary(left, .or_op, right);
+        }
+        return left;
+    }
+
+    fn parseBitwiseXor(self: *Parser) !*ast.Expr {
+        var left = try self.parseBitwiseAnd();
+        while (self.matchKind(.caret)) {
+            const right = try self.parseBitwiseAnd();
+            // XOR — reuse neq in AST for simplicity
+            left = try self.makeBinary(left, .neq, right);
         }
         return left;
     }
@@ -904,7 +923,6 @@ const Parser = struct {
         var left = try self.parseEquality();
         while (self.matchKind(.ampersand)) {
             const right = try self.parseEquality();
-            // Bitwise AND — reuse and_op in AST for simplicity
             left = try self.makeBinary(left, .and_op, right);
         }
         return left;
@@ -930,7 +948,7 @@ const Parser = struct {
     }
 
     fn parseComparison(self: *Parser) !*ast.Expr {
-        var left = try self.parseAddition();
+        var left = try self.parseShift();
         while (true) {
             const op: ?ast.BinaryOp = switch (self.currentKind()) {
                 .lt => .lt,
@@ -941,7 +959,7 @@ const Parser = struct {
             };
             if (op) |binary_op| {
                 self.pos += 1;
-                const right = try self.parseAddition();
+                const right = try self.parseShift();
                 left = try self.makeBinary(left, binary_op, right);
             } else break;
         }
@@ -956,6 +974,36 @@ const Parser = struct {
             return result;
         }
 
+        return left;
+    }
+
+    /// Shift operators: << >> >>> — detected as consecutive < or > tokens
+    fn parseShift(self: *Parser) !*ast.Expr {
+        var left = try self.parseAddition();
+        while (true) {
+            // << : two consecutive lt tokens
+            if (self.check(.lt) and self.peekKind(1) == .lt) {
+                self.pos += 2;
+                const right = try self.parseAddition();
+                left = try self.makeBinary(left, .mul, right); // reuse mul for shift in AST
+                continue;
+            }
+            // >>> : three consecutive gt tokens
+            if (self.check(.gt) and self.peekKind(1) == .gt and self.peekKind(2) == .gt) {
+                self.pos += 3;
+                const right = try self.parseAddition();
+                left = try self.makeBinary(left, .div, right); // reuse div for unsigned shift
+                continue;
+            }
+            // >> : two consecutive gt tokens
+            if (self.check(.gt) and self.peekKind(1) == .gt) {
+                self.pos += 2;
+                const right = try self.parseAddition();
+                left = try self.makeBinary(left, .div, right); // reuse div for shift
+                continue;
+            }
+            break;
+        }
         return left;
     }
 
@@ -2492,6 +2540,66 @@ test "no diagnostics: new Type[size] array initialization" {
         \\        Map<Id, Contact[]> m = new Map<Id, Contact[]>();
         \\        m.put(acc.Id, new Contact[0]);
         \\        String[] names = new String[10];
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: .class in method arguments" {
+    const source =
+        \\public class ClassLiteral {
+        \\    public void run() {
+        \\        Object stub = Test.createStub(UnitOfWork.class, mock);
+        \\        mocks.mockVoidMethod(this, 'registerNew', new List<Type> {SObject.class, Schema.sObjectField.class}, new List<Object> {record, field});
+        \\        String name = TDTM_RunnableMutableMock.class.getName();
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: Describe with SObjectType and List args" {
+    const source =
+        \\public class DescribeTest {
+        \\    public void run() {
+        \\        Describer.describe(Hoge__c.SObjectType, new List<String>{'Name', 'Id'});
+        \\        Schema.DescribeSObjectResult result = Hoge__c.SObjectType.getDescribe();
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: bitwise shift and XOR operators" {
+    const source =
+        \\public class BitwiseOps {
+        \\    public void run() {
+        \\        Integer a = 1 << 3;
+        \\        Integer b = val >>> 8;
+        \\        Integer c = (crc ^ byteVal) & 255;
+        \\        Integer d = hex.mid(i << 1, 2);
         \\    }
         \\}
     ;

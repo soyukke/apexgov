@@ -188,6 +188,8 @@ pub const TokenKind = enum {
     question_question,
     question_dot,
     ampersand,
+    caret,
+    pipe,
     dot,
     comma,
     semicolon,
