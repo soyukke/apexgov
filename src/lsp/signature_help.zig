@@ -3,7 +3,6 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
-const parser_types = @import("../apex_parser/types.zig");
 
 pub fn getSignatureHelp(
     result: *const binder_mod.BindResult,

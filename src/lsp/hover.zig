@@ -3,7 +3,6 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
-const position_mod = @import("position.zig");
 
 pub fn getHover(result: *const binder_mod.BindResult, source: []const u8, offset: u32, allocator: std.mem.Allocator) !?lsp_types.HoverResult {
     _ = source;

@@ -112,13 +112,6 @@ pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
     return false;
 }
 
-/// 最初のマッチを1つだけ返す。見つからなければ null。
-pub fn findFirst(arena: std.mem.Allocator, pattern: []const u8, input: []const u8) !?Match {
-    const all = try findAll(arena, pattern, input);
-    if (all.len > 0) return all[0];
-    return null;
-}
-
 // ---------------------------------------------------------------------------
 // パターンプリプロセッサ
 // ---------------------------------------------------------------------------

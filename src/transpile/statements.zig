@@ -3006,21 +3006,6 @@ pub fn detectSwitchMode(
     return .value;
 }
 
-pub fn uniqueMethodName(
-    gpa: std.mem.Allocator,
-    name_counts: *std.StringHashMap(usize),
-    method_name: []const u8,
-) ![]u8 {
-    const normalized = method_name;
-    if (name_counts.get(normalized)) |seen| {
-        const next = seen + 1;
-        try name_counts.put(normalized, next);
-        return std.fmt.allocPrint(gpa, "{s}__apex{d}", .{ method_name, next });
-    }
-
-    try name_counts.put(normalized, 1);
-    return gpa.dupe(u8, method_name);
-}
 // ---------------------------------------------------------------------------
 // Tests (moved from root.zig)
 // ---------------------------------------------------------------------------

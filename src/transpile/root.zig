@@ -8,8 +8,6 @@ const types = @import("types.zig");
 const util = @import("util.zig");
 const file_io = @import("file_io.zig");
 const trigger = @import("trigger.zig");
-const compat = @import("compat.zig");
-const stmt_mod = @import("statements.zig");
 const parser_mod = @import("parser.zig");
 const renderer = @import("renderer.zig");
 

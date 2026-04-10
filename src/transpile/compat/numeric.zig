@@ -7,7 +7,6 @@ const stmt_mod = @import("../statements.zig");
 const std = @import("std");
 const util = @import("../util.zig");
 
-const getas = @import("getas.zig");
 const helpers = @import("helpers.zig");
 
 const CompatibilityState = helpers.CompatibilityState;

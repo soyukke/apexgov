@@ -10,12 +10,7 @@ const config = @import("config.zig");
 
 // Sub-modules
 const types = @import("check/types.zig");
-const utils = @import("check/utils.zig");
 const preprocessor_mod = @import("check/preprocessor.zig");
-const detectors_mod = @import("check/detectors.zig");
-const scope_module = @import("check/scope.zig");
-const parser_mod = @import("check/parser.zig");
-const type_env_module = @import("check/type_env.zig");
 const bounds_mod = @import("check/bounds.zig");
 const call_graph_mod = @import("check/call_graph.zig");
 const rules_mod = @import("check/rules.zig");

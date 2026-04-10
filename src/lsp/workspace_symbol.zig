@@ -3,7 +3,6 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 const ast = @import("../apex_parser/ast.zig");
-const parser_types = @import("../apex_parser/types.zig");
 const DocumentStore = @import("document_store.zig").DocumentStore;
 const position_mod = @import("position.zig");
 

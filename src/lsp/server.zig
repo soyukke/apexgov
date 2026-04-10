@@ -8,14 +8,12 @@ const std = @import("std");
 const types = @import("types.zig");
 const Transport = @import("transport.zig").Transport;
 const DocumentStore = @import("document_store.zig").DocumentStore;
-const apex_parser = @import("../apex_parser/root.zig");
 const symbols_mod = @import("symbols.zig");
 const semantic_tokens_mod = @import("semantic_tokens.zig");
 const governor_diags_mod = @import("governor_diagnostics.zig");
 const folding_range_mod = @import("folding_range.zig");
 const formatting_mod = @import("formatting.zig");
 const workspace_symbol_mod = @import("workspace_symbol.zig");
-const binder_mod = @import("binder.zig");
 const position_mod = @import("position.zig");
 const hover_mod = @import("hover.zig");
 const definition_mod = @import("definition.zig");
@@ -24,8 +22,6 @@ const completion_mod = @import("completion.zig");
 const signature_help_mod = @import("signature_help.zig");
 const rename_mod = @import("rename.zig");
 const document_highlight_mod = @import("document_highlight.zig");
-const code_action_mod = @import("code_action.zig");
-
 const JsonValue = std.json.Value;
 const JsonObjectMap = std.json.ObjectMap;
 

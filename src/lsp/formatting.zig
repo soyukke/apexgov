@@ -3,7 +3,6 @@
 //! インデント正規化を行い、全文置換の TextEdit を返す。
 
 const std = @import("std");
-const lsp_types = @import("types.zig");
 const parser_types = @import("../apex_parser/types.zig");
 const Token = parser_types.Token;
 const TokenKind = parser_types.TokenKind;
