@@ -155,7 +155,6 @@ pub fn renderLabel(label_name: []const u8, writer: anytype) !void {
         \\    var {s}: string;
         \\    export default {s};
         \\}}
-        \\
     , .{ label_name, label_name, label_name });
 }
 
@@ -170,7 +169,6 @@ pub fn renderResourceUrl(resource_name: []const u8, writer: anytype) !void {
         \\    var {s}: string;
         \\    export default {s};
         \\}}
-        \\
     , .{ resource_name, resource_name, resource_name });
 }
 
@@ -179,14 +177,28 @@ pub fn renderResourceUrl(resource_name: []const u8, writer: anytype) !void {
 // ---------------------------------------------------------------------------
 
 /// メッセージチャネル名から TypeScript 型定義を生成する。
+/// 公式 LWC LS と同様、モジュールパスに __c サフィックスを付与する。
 pub fn renderMessageChannel(channel_name: []const u8, writer: anytype) !void {
     try writer.print(
-        \\declare module "@salesforce/messageChannel/{s}" {{
+        \\declare module "@salesforce/messageChannel/{s}__c" {{
         \\    var {s}: string;
         \\    export default {s};
         \\}}
-        \\
     , .{ channel_name, channel_name, channel_name });
+}
+
+// ---------------------------------------------------------------------------
+// @salesforce/contentAssetUrl 型定義生成
+// ---------------------------------------------------------------------------
+
+/// コンテンツアセット名から TypeScript 型定義を生成する。
+pub fn renderContentAssetUrl(asset_name: []const u8, writer: anytype) !void {
+    try writer.print(
+        \\declare module "@salesforce/contentAssetUrl/{s}" {{
+        \\    var {s}: string;
+        \\    export default {s};
+        \\}}
+    , .{ asset_name, asset_name, asset_name });
 }
 
 // ---------------------------------------------------------------------------
@@ -352,25 +364,56 @@ test "renderSchemaField generates correct .d.ts" {
     try std.testing.expectEqualStrings(expected, buf.items);
 }
 
-test "renderLabel generates correct .d.ts" {
+test "renderLabel matches official format" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try renderLabel("MyLabel", buf.writer(std.testing.allocator));
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "@salesforce/label/c.MyLabel") != null);
+    try renderLabel("Github_username", buf.writer(std.testing.allocator));
+    const expected =
+        \\declare module "@salesforce/label/c.Github_username" {
+        \\    var Github_username: string;
+        \\    export default Github_username;
+        \\}
+    ;
+    try std.testing.expectEqualStrings(expected, buf.items);
 }
 
-test "renderResourceUrl generates correct .d.ts" {
+test "renderResourceUrl matches official format" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try renderResourceUrl("logo", buf.writer(std.testing.allocator));
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "@salesforce/resourceUrl/logo") != null);
+    try renderResourceUrl("leafletjs", buf.writer(std.testing.allocator));
+    const expected =
+        \\declare module "@salesforce/resourceUrl/leafletjs" {
+        \\    var leafletjs: string;
+        \\    export default leafletjs;
+        \\}
+    ;
+    try std.testing.expectEqualStrings(expected, buf.items);
 }
 
-test "renderMessageChannel generates correct .d.ts" {
+test "renderMessageChannel adds __c suffix (official format)" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try renderMessageChannel("MyChannel__c", buf.writer(std.testing.allocator));
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "@salesforce/messageChannel/MyChannel__c") != null);
+    try renderMessageChannel("PropertySelected", buf.writer(std.testing.allocator));
+    const expected =
+        \\declare module "@salesforce/messageChannel/PropertySelected__c" {
+        \\    var PropertySelected: string;
+        \\    export default PropertySelected;
+        \\}
+    ;
+    try std.testing.expectEqualStrings(expected, buf.items);
+}
+
+test "renderContentAssetUrl matches official format" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try renderContentAssetUrl("dreamhouselogosquare", buf.writer(std.testing.allocator));
+    const expected =
+        \\declare module "@salesforce/contentAssetUrl/dreamhouselogosquare" {
+        \\    var dreamhouselogosquare: string;
+        \\    export default dreamhouselogosquare;
+        \\}
+    ;
+    try std.testing.expectEqualStrings(expected, buf.items);
 }
 
 test "findAuraEnabledMethods detects @AuraEnabled static method" {

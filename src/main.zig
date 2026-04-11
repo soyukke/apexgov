@@ -356,9 +356,9 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 
             const names = try typegen.parseLabelNames(xml, gpa);
             defer gpa.free(names);
-            for (names) |name| {
+            for (names, 0..) |name, idx| {
+                if (idx > 0) try writer.writeByte('\n');
                 try typegen.renderLabel(name, writer);
-                try writer.writeByte('\n');
                 label_count += 1;
             }
         }
@@ -372,55 +372,31 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         }
     }
 
-    // --- @salesforce/resourceUrl ---
+    // --- @salesforce/resourceUrl, messageChannel, contentAssetUrl ---
+    // 公式と同じ: 1 リソースにつき 1 ファイル（{name}.{type}.d.ts）
     {
-        buf.clearRetainingCapacity();
-        var res_count: u32 = 0;
         const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return 2;
         var walker = try root_dir.walk(gpa);
         defer walker.deinit();
         while (try walker.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".resource-meta.xml")) continue;
-            // リソース名: ファイル名から .resource-meta.xml を除去
-            const name = entry.basename[0 .. entry.basename.len - ".resource-meta.xml".len];
-            if (name.len == 0) continue;
-            try typegen.renderResourceUrl(name, writer);
-            try writer.writeByte('\n');
-            res_count += 1;
-        }
+            const basename = entry.basename;
 
-        if (res_count > 0) {
+            const meta = parseMetaFilename(basename) orelse continue;
+
+            buf.clearRetainingCapacity();
+            if (std.mem.eql(u8, meta.meta_type, "resource")) {
+                try typegen.renderResourceUrl(meta.name, writer);
+            } else if (std.mem.eql(u8, meta.meta_type, "messageChannel")) {
+                try typegen.renderMessageChannel(meta.name, writer);
+            } else if (std.mem.eql(u8, meta.meta_type, "asset")) {
+                try typegen.renderContentAssetUrl(meta.name, writer);
+            } else continue;
+
+            // ファイル名: {name}.{type}.d.ts（公式と同一）
             var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/staticresources.d.ts", .{out_dir}) catch unreachable;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}.d.ts", .{ out_dir, meta.name, meta.meta_type }) catch continue;
             try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-            std.debug.print("  staticresources.d.ts: {d} resources\n", .{res_count});
-            total_files += 1;
-        }
-    }
-
-    // --- @salesforce/messageChannel ---
-    {
-        buf.clearRetainingCapacity();
-        var ch_count: u32 = 0;
-        const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return 2;
-        var walker = try root_dir.walk(gpa);
-        defer walker.deinit();
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".messageChannel-meta.xml")) continue;
-            const name = entry.basename[0 .. entry.basename.len - ".messageChannel-meta.xml".len];
-            if (name.len == 0) continue;
-            try typegen.renderMessageChannel(name, writer);
-            try writer.writeByte('\n');
-            ch_count += 1;
-        }
-
-        if (ch_count > 0) {
-            var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/messagechannels.d.ts", .{out_dir}) catch unreachable;
-            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-            std.debug.print("  messagechannels.d.ts: {d} channels\n", .{ch_count});
             total_files += 1;
         }
     }
@@ -465,6 +441,26 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 
     std.debug.print("typegen: generated {d} type definition file(s) in {s}\n", .{ total_files, out_dir });
     return 0;
+}
+
+/// メタファイル名をパースする。例: "leafletjs.resource-meta.xml" → { .name = "leafletjs", .meta_type = "resource" }
+fn parseMetaFilename(basename: []const u8) ?struct { name: []const u8, meta_type: []const u8 } {
+    const suffix = "-meta.xml";
+    if (!std.mem.endsWith(u8, basename, suffix)) return null;
+    const without_suffix = basename[0 .. basename.len - suffix.len];
+    // 最後の '.' で name と type を分割
+    const dot_pos = std.mem.lastIndexOfScalar(u8, without_suffix, '.') orelse return null;
+    const name = without_suffix[0..dot_pos];
+    const meta_type = without_suffix[dot_pos + 1 ..];
+    if (name.len == 0) return null;
+    // resource, messageChannel, asset のみ対応
+    if (std.mem.eql(u8, meta_type, "resource") or
+        std.mem.eql(u8, meta_type, "messageChannel") or
+        std.mem.eql(u8, meta_type, "asset"))
+    {
+        return .{ .name = name, .meta_type = meta_type };
+    }
+    return null;
 }
 
 /// パスから SObject 名を抽出する。
