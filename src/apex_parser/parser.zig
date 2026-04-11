@@ -2632,3 +2632,158 @@ test "no diagnostics: double literal with d suffix" {
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
+
+test "no diagnostics: multiline method call args" {
+    const source =
+        \\public class MultiLine {
+        \\    public void run() {
+        \\        Describe.Hoge(
+        \\            fuga,
+        \\            hoge
+        \\        );
+        \\        SomeClass.method(
+        \\            arg1,
+        \\            arg2,
+        \\            arg3
+        \\        );
+        \\        Map<String, Object> result = Service.execute(
+        \\            param1,
+        \\            param2
+        \\        );
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: extreme multiline formatting" {
+    const source =
+        \\public class Extreme {
+        \\    public void run() {
+        \\        Describe
+        \\            .Hoge(
+        \\                fuga
+        \\                ,
+        \\                hoge
+        \\            );
+        \\        String
+        \\            result
+        \\            =
+        \\            SomeService
+        \\                .getInstance()
+        \\                .execute(
+        \\                    param1
+        \\                    ,
+        \\                    param2
+        \\                );
+        \\        if (
+        \\            a
+        \\            ==
+        \\            b
+        \\        ) {
+        \\            System.debug(
+        \\                'hello'
+        \\            );
+        \\        }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: Schema describe patterns" {
+    const source =
+        \\public class SchemaDescribe {
+        \\    public void run() {
+        \\        Schema.DescribeSObjectResult result = Account.SObjectType.getDescribe();
+        \\        Map<String, Schema.SObjectField> fields = result.fields.getMap();
+        \\        Schema.DescribeFieldResult dfr = Schema.SObjectType.Account.fields.Name.getDescribe();
+        \\        List<Schema.PicklistEntry> entries = dfr.getPicklistValues();
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: class literal in various positions" {
+    const source =
+        \\public class ClassLiteralPos {
+        \\    public void run() {
+        \\        Type t1 = Account.class;
+        \\        String name1 = Account.class.getName();
+        \\        String name2 = Schema.SObjectType.class.getName();
+        \\        Type t2 = Foo.Bar.class;
+        \\        System.assertEquals(
+        \\            Account.class,
+        \\            Argument.getType(acc)
+        \\        );
+        \\        mocks.verify(
+        \\            SObject.class,
+        \\            Schema.SObjectField.class
+        \\        );
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "no diagnostics: method call with class literal arg and newlines" {
+    const source =
+        \\public class ClassArgNewline {
+        \\    public void run() {
+        \\        Describer.describe(
+        \\            Account.class,
+        \\            new List<String>{'Name'}
+        \\        );
+        \\        Describer.describe(
+        \\            Hoge__c.SObjectType,
+        \\            new List<Schema.DescribeFieldResult>()
+        \\        );
+        \\        mocks.mockVoidMethod(
+        \\            this,
+        \\            'methodName',
+        \\            new List<Type> {
+        \\                SObject.class,
+        \\                Schema.SObjectField.class,
+        \\                SObject.class
+        \\            },
+        \\            new List<Object> {
+        \\                record,
+        \\                field,
+        \\                parent
+        \\            }
+        \\        );
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
