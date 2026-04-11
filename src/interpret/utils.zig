@@ -99,7 +99,7 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .null_val => "null",
         .boolean => |b| if (b) "true" else "false",
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
-        .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
+        .double => |d| try formatApexDouble(arena, d),
         .string => |s| s,
         .void_val => "void",
         .list => |l| try std.fmt.allocPrint(arena, "List[{d}]", .{l.items.items.len}),
@@ -294,6 +294,17 @@ pub fn sobjectPut(fields: *std.StringArrayHashMapUnmanaged(Value), arena: std.me
     }
 }
 
+/// Apex の Double/Decimal を文字列化する。
+/// Salesforce は 10.0 → "10.0", 3.14 → "3.14" のように常に小数点を含む。
+pub fn formatApexDouble(arena: std.mem.Allocator, d: f64) ![]const u8 {
+    const s = try std.fmt.allocPrint(arena, "{d}", .{d});
+    // 既に小数点があればそのまま
+    if (std.mem.indexOf(u8, s, ".") != null) return s;
+    // 無ければ ".0" を付加
+    arena.free(s);
+    return try std.fmt.allocPrint(arena, "{d}.0", .{d});
+}
+
 test "coerceToString" {
     try std.testing.expectEqualStrings("null", try coerceToString(Value.null_val, std.testing.allocator));
     try std.testing.expectEqualStrings("true", try coerceToString(Value{ .boolean = true }, std.testing.allocator));
@@ -302,4 +313,24 @@ test "coerceToString" {
     const s = try coerceToString(Value{ .integer = 42 }, std.testing.allocator);
     defer std.testing.allocator.free(s);
     try std.testing.expectEqualStrings("42", s);
+}
+
+test "formatApexDouble" {
+    const alloc = std.testing.allocator;
+
+    const s1 = try formatApexDouble(alloc, 10.0);
+    defer alloc.free(s1);
+    try std.testing.expectEqualStrings("10.0", s1);
+
+    const s2 = try formatApexDouble(alloc, 3.14);
+    defer alloc.free(s2);
+    try std.testing.expectEqualStrings("3.14", s2);
+
+    const s3 = try formatApexDouble(alloc, 0.0);
+    defer alloc.free(s3);
+    try std.testing.expectEqualStrings("0.0", s3);
+
+    const s4 = try formatApexDouble(alloc, 86.0);
+    defer alloc.free(s4);
+    try std.testing.expectEqualStrings("86.0", s4);
 }

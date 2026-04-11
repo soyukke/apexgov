@@ -1079,3 +1079,39 @@ test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
     defer result.deinit();
     try std.testing.expectEqualStrings("true", result.value.string);
 }
+
+test "E2E: Decimal.valueOf().setScale().doubleValue() chain" {
+    const source =
+        \\public class DecimalTest {
+        \\    public static String test() {
+        \\        Double celsius = 10.0;
+        \\        Decimal value = Decimal.valueOf(celsius * 9 / 5 + 32).setScale(1);
+        \\        Double result = value.doubleValue();
+        \\        return String.valueOf(result);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DecimalTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("50.0", result.value.string);
+}
+
+test "E2E: Double string concatenation format" {
+    const source =
+        \\public class DoubleStrTest {
+        \\    public static String test() {
+        \\        Double d = 10.0;
+        \\        return d + '°C';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DoubleStrTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("10.0°C", result.value.string);
+}

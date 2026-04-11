@@ -3607,7 +3607,7 @@ pub const Evaluator = struct {
                 break :blk Value.null_val;
             };
             switch (resolved_var) {
-                .list, .map, .set, .sobject, .object, .string => {
+                .list, .map, .set, .sobject, .object, .string, .double, .integer => {
                     return self.evalInstanceMethod(resolved_var, mc.method, args.items, current_env);
                 },
                 else => {},
