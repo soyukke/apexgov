@@ -82,7 +82,7 @@ pub fn valueEql(a: Value, b: Value) bool {
             if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType") and
                 std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectType")) or
                 (std.ascii.eqlIgnoreCase(av.class_name, "Type") and
-                std.ascii.eqlIgnoreCase(b.object.class_name, "Type")))
+                    std.ascii.eqlIgnoreCase(b.object.class_name, "Type")))
             {
                 const a_name = av.fields.get("name") orelse return false;
                 const b_name = b.object.fields.get("name") orelse return false;

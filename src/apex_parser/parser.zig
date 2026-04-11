@@ -474,8 +474,16 @@ const Parser = struct {
         if (kind == .while_kw) return self.parseWhileStmt();
         if (kind == .do_kw) return self.parseDoWhileStmt();
         if (kind == .return_kw) return self.parseReturnStmt();
-        if (kind == .break_kw) { self.pos += 1; _ = self.matchKind(.semicolon); return .break_stmt; }
-        if (kind == .continue_kw) { self.pos += 1; _ = self.matchKind(.semicolon); return .continue_stmt; }
+        if (kind == .break_kw) {
+            self.pos += 1;
+            _ = self.matchKind(.semicolon);
+            return .break_stmt;
+        }
+        if (kind == .continue_kw) {
+            self.pos += 1;
+            _ = self.matchKind(.semicolon);
+            return .continue_stmt;
+        }
         if (kind == .switch_kw) return self.parseSwitchStmt();
         if (kind == .try_kw) return self.parseTryStmt();
         if (kind == .throw_kw) return self.parseThrowStmt();
@@ -1332,7 +1340,10 @@ const Parser = struct {
                     } else if (self.check(.gt)) {
                         depth -= 1;
                         try full_name_buf.append(self.arena, '>');
-                        if (depth == 0) { self.pos += 1; break; }
+                        if (depth == 0) {
+                            self.pos += 1;
+                            break;
+                        }
                     } else {
                         try full_name_buf.appendSlice(self.arena, lex);
                     }
@@ -1534,7 +1545,10 @@ const Parser = struct {
                 if (self.check(.lt)) depth += 1;
                 if (self.check(.gt)) {
                     depth -= 1;
-                    if (depth == 0) { self.pos += 1; break; }
+                    if (depth == 0) {
+                        self.pos += 1;
+                        break;
+                    }
                 }
                 self.pos += 1;
             }
@@ -1625,7 +1639,10 @@ const Parser = struct {
                 if (self.check(.lt)) depth += 1;
                 if (self.check(.gt)) {
                     depth -= 1;
-                    if (depth == 0) { self.pos += 1; break; }
+                    if (depth == 0) {
+                        self.pos += 1;
+                        break;
+                    }
                 }
                 self.pos += 1;
             }

@@ -41,7 +41,9 @@ const parser = @import("../apex_parser/parser.zig");
 const TestHoverCtx = struct {
     arena: std.heap.ArenaAllocator,
     result: ?lsp_types.HoverResult,
-    fn deinit(self: *TestHoverCtx) void { self.arena.deinit(); }
+    fn deinit(self: *TestHoverCtx) void {
+        self.arena.deinit();
+    }
 };
 
 fn hoverAt(source: []const u8, name: []const u8) !TestHoverCtx {

@@ -30,7 +30,7 @@ pub fn currentDateTimeString(arena: std.mem.Allocator) ![]const u8 {
     const md = day.calculateMonthDay();
     const day_secs = es.getDaySeconds();
     return std.fmt.allocPrint(arena, "{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-        day.year, md.month.numeric(), md.day_index + 1,
+        day.year,                   md.month.numeric(),            md.day_index + 1,
         day_secs.getHoursIntoDay(), day_secs.getMinutesIntoHour(), day_secs.getSecondsIntoMinute(),
     });
 }
@@ -231,12 +231,36 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
             // DateTime.newInstance(year, month, day, hour, minute, second)
             if (args.len >= 6) {
-                const y = switch (args[0]) { .integer => |i| i, .double => |d| @as(i64, @intFromFloat(d)), else => 2026 };
-                const mo = switch (args[1]) { .integer => |i| i, .double => |d| @as(i64, @intFromFloat(d)), else => 1 };
-                const d = switch (args[2]) { .integer => |i| i, .double => |d2| @as(i64, @intFromFloat(d2)), else => 1 };
-                const h = switch (args[3]) { .integer => |i| i, .double => |d3| @as(i64, @intFromFloat(d3)), else => 0 };
-                const mi = switch (args[4]) { .integer => |i| i, .double => |d4| @as(i64, @intFromFloat(d4)), else => 0 };
-                const s = switch (args[5]) { .integer => |i| i, .double => |d5| @as(i64, @intFromFloat(d5)), else => 0 };
+                const y = switch (args[0]) {
+                    .integer => |i| i,
+                    .double => |d| @as(i64, @intFromFloat(d)),
+                    else => 2026,
+                };
+                const mo = switch (args[1]) {
+                    .integer => |i| i,
+                    .double => |d| @as(i64, @intFromFloat(d)),
+                    else => 1,
+                };
+                const d = switch (args[2]) {
+                    .integer => |i| i,
+                    .double => |d2| @as(i64, @intFromFloat(d2)),
+                    else => 1,
+                };
+                const h = switch (args[3]) {
+                    .integer => |i| i,
+                    .double => |d3| @as(i64, @intFromFloat(d3)),
+                    else => 0,
+                };
+                const mi = switch (args[4]) {
+                    .integer => |i| i,
+                    .double => |d4| @as(i64, @intFromFloat(d4)),
+                    else => 0,
+                };
+                const s = switch (args[5]) {
+                    .integer => |i| i,
+                    .double => |d5| @as(i64, @intFromFloat(d5)),
+                    else => 0,
+                };
                 return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
                     @as(u32, @intCast(if (y < 0) 1 else y)),
                     @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
@@ -602,7 +626,10 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                     if (fv == .list) continue;
                                     var is_std = false;
                                     for (standard_fields) |sf| {
-                                        if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
+                                        if (std.ascii.eqlIgnoreCase(k, sf)) {
+                                            is_std = true;
+                                            break;
+                                        }
                                     }
                                     // Check if any PermissionSet name hints at this field being allowed
                                     if (!is_std and ctx.eval.is_min_access_user and has_permset) {
@@ -661,7 +688,10 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                                         }
                                         var is_std = false;
                                         for (standard_fields2) |sf| {
-                                            if (std.ascii.eqlIgnoreCase(k, sf)) { is_std = true; break; }
+                                            if (std.ascii.eqlIgnoreCase(k, sf)) {
+                                                is_std = true;
+                                                break;
+                                            }
                                         }
                                         if (!is_std and isFieldAllowedByPermSets(ctx.eval, k)) is_std = true;
                                         if (!is_std) {
@@ -1466,13 +1496,12 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
             // Check if it's a well-known system exception
             const system_exceptions = [_][]const u8{
-                "DMLException", "DmlException", "NullPointerException", "TypeException",
-                "QueryException", "JSONException", "ListException", "MathException",
-                "SecurityException", "NoAccessException", "InvalidParameterValueException",
-                "CalloutException", "StringException", "NoSuchElementException",
-                "NoDataFoundException", "SearchException", "SObjectException",
-                "HandledException", "IllegalArgumentException", "LimitException",
-                "AsyncException", "SerializationException",
+                "DMLException",      "DmlException",           "NullPointerException",           "TypeException",
+                "QueryException",    "JSONException",          "ListException",                  "MathException",
+                "SecurityException", "NoAccessException",      "InvalidParameterValueException", "CalloutException",
+                "StringException",   "NoSuchElementException", "NoDataFoundException",           "SearchException",
+                "SObjectException",  "HandledException",       "IllegalArgumentException",       "LimitException",
+                "AsyncException",    "SerializationException",
             };
             for (system_exceptions) |se| {
                 if (std.ascii.eqlIgnoreCase(cn, se)) {
@@ -2180,24 +2209,24 @@ fn handleReservedKeywords(ctx: *BuiltinContext, args: []const Value) ![]const u8
 
     // Replace Apex reserved keywords with _x suffix
     const reserved = [_][]const u8{
-        "abstract",  "activate",  "and",       "any",       "array",    "as",
-        "asc",       "break",     "bulk",      "by",        "byte",     "case",
-        "cast",      "catch",     "char",      "class",     "collect",  "commit",
-        "const",     "continue",  "currency",  "decimal",   "default",  "delete",
-        "desc",      "do",        "double",    "else",      "end",      "enum",
-        "exception", "exit",      "export",    "extends",   "false",    "final",
-        "finally",   "float",     "for",       "from",      "global",   "goto",
-        "group",     "having",    "hint",      "if",        "implements", "import",
-        "in",        "inner",     "insert",    "instanceof", "int",     "interface",
-        "into",      "join",      "like",      "limit",     "list",     "long",
-        "loop",      "map",       "merge",     "new",       "not",      "null",
-        "nulls",     "number",    "object",    "of",        "on",       "or",
-        "outer",     "override",  "package",   "parallel",  "private",  "protected",
-        "public",    "retrieve",  "return",    "rollback",  "select",   "set",
-        "short",     "sort",      "static",    "super",     "switch",   "synchronized",
-        "system",    "testmethod", "then",     "this",      "throw",    "transaction",
-        "trigger",   "true",      "try",       "undelete",  "update",   "upsert",
-        "using",     "virtual",   "void",      "webservice", "when",    "where",
+        "abstract",  "activate",   "and",      "any",        "array",      "as",
+        "asc",       "break",      "bulk",     "by",         "byte",       "case",
+        "cast",      "catch",      "char",     "class",      "collect",    "commit",
+        "const",     "continue",   "currency", "decimal",    "default",    "delete",
+        "desc",      "do",         "double",   "else",       "end",        "enum",
+        "exception", "exit",       "export",   "extends",    "false",      "final",
+        "finally",   "float",      "for",      "from",       "global",     "goto",
+        "group",     "having",     "hint",     "if",         "implements", "import",
+        "in",        "inner",      "insert",   "instanceof", "int",        "interface",
+        "into",      "join",       "like",     "limit",      "list",       "long",
+        "loop",      "map",        "merge",    "new",        "not",        "null",
+        "nulls",     "number",     "object",   "of",         "on",         "or",
+        "outer",     "override",   "package",  "parallel",   "private",    "protected",
+        "public",    "retrieve",   "return",   "rollback",   "select",     "set",
+        "short",     "sort",       "static",   "super",      "switch",     "synchronized",
+        "system",    "testmethod", "then",     "this",       "throw",      "transaction",
+        "trigger",   "true",       "try",      "undelete",   "update",     "upsert",
+        "using",     "virtual",    "void",     "webservice", "when",       "where",
         "while",
     };
 

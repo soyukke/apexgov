@@ -312,10 +312,10 @@ pub const Evaluator = struct {
                     }
                 }
                 // Fire after insert triggers for the event type
-                const event_type = if (args[0] == .sobject) args[0].sobject.type_name
-                    else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
-                        args[0].list.items.items[0].sobject.type_name
-                    else null;
+                const event_type = if (args[0] == .sobject) args[0].sobject.type_name else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
+                    args[0].list.items.items[0].sobject.type_name
+                else
+                    null;
                 if (event_type) |et| {
                     var record_list = try self.buildRecordList(args[0]);
                     self.fireTrigger(et, .after_insert, &record_list, null) catch {};
@@ -768,10 +768,10 @@ pub const Evaluator = struct {
                 // Check USER_MODE access for min-access users without permission sets
                 const has_permset_dml = if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
                 if (dml.is_user_mode and self.is_min_access_user and !has_permset_dml) {
-                    const from_type = if (target == .sobject) target.sobject.type_name
-                        else if (target == .list and target.list.items.items.len > 0 and target.list.items.items[0] == .sobject)
-                            target.list.items.items[0].sobject.type_name
-                        else "SObject";
+                    const from_type = if (target == .sobject) target.sobject.type_name else if (target == .list and target.list.items.items.len > 0 and target.list.items.items[0] == .sobject)
+                        target.list.items.items[0].sobject.type_name
+                    else
+                        "SObject";
                     const msg = try std.fmt.allocPrint(self.arena, "No Access: Access to entity '{s}' denied", .{from_type});
                     const exc = try self.arena.create(types.ObjectInstance);
                     exc.* = .{ .class_name = "System.NoAccessException" };
@@ -1276,15 +1276,7 @@ pub const Evaluator = struct {
                 try cd.fields.put(self.arena, "Title", utils.sobjectGet(&obj.fields, "Title") orelse Value{ .string = "Untitled" });
                 // Derive FileType from PathOnClient extension
                 const path_on_client = if (utils.sobjectGet(&obj.fields, "PathOnClient")) |poc| (if (poc == .string) poc.string else "") else "";
-                const file_type: []const u8 = if (std.mem.endsWith(u8, path_on_client, ".png") or std.mem.endsWith(u8, path_on_client, ".PNG")) "PNG"
-                    else if (std.mem.endsWith(u8, path_on_client, ".jpg") or std.mem.endsWith(u8, path_on_client, ".jpeg")) "JPG"
-                    else if (std.mem.endsWith(u8, path_on_client, ".gif")) "GIF"
-                    else if (std.mem.endsWith(u8, path_on_client, ".pdf")) "PDF"
-                    else if (std.mem.endsWith(u8, path_on_client, ".docx")) "WORD_X"
-                    else if (std.mem.endsWith(u8, path_on_client, ".xlsx")) "EXCEL_X"
-                    else if (std.mem.endsWith(u8, path_on_client, ".pptx")) "POWER_POINT_X"
-                    else if (std.mem.endsWith(u8, path_on_client, ".m4a")) "M4A"
-                    else "UNKNOWN";
+                const file_type: []const u8 = if (std.mem.endsWith(u8, path_on_client, ".png") or std.mem.endsWith(u8, path_on_client, ".PNG")) "PNG" else if (std.mem.endsWith(u8, path_on_client, ".jpg") or std.mem.endsWith(u8, path_on_client, ".jpeg")) "JPG" else if (std.mem.endsWith(u8, path_on_client, ".gif")) "GIF" else if (std.mem.endsWith(u8, path_on_client, ".pdf")) "PDF" else if (std.mem.endsWith(u8, path_on_client, ".docx")) "WORD_X" else if (std.mem.endsWith(u8, path_on_client, ".xlsx")) "EXCEL_X" else if (std.mem.endsWith(u8, path_on_client, ".pptx")) "POWER_POINT_X" else if (std.mem.endsWith(u8, path_on_client, ".m4a")) "M4A" else "UNKNOWN";
                 try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
                 const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
                 if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
@@ -1560,8 +1552,7 @@ pub const Evaluator = struct {
                 std.ascii.indexOfIgnoreCase(soql, "USER_MODE") != null)
             {
                 const from_type_name = extractFromType(soql) orelse "SObject";
-                const msg = try std.fmt.allocPrint(self.arena,
-                    "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
+                const msg = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.QueryException" };
                 try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -1608,8 +1599,8 @@ pub const Evaluator = struct {
         if (std.ascii.indexOfIgnoreCase(soql, "SUM(") orelse
             std.ascii.indexOfIgnoreCase(soql, "AVG(") orelse
             std.ascii.indexOfIgnoreCase(soql, "MIN(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "MAX("))
-        |_| {
+            std.ascii.indexOfIgnoreCase(soql, "MAX(")) |_|
+        {
             const from_type_agg = extractFromType(soql) orelse return self.makeEmptyList();
             // Parse alias: SUM(Amount) total → field = Amount, alias = total
             const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
@@ -1641,8 +1632,7 @@ pub const Evaluator = struct {
                         if (record == .sobject) {
                             if (utils.sobjectGet(&record.sobject.fields, agg_field)) |fv| {
                                 count += 1;
-                                if (fv == .double) sum += fv.double
-                                else if (fv == .integer) sum += @floatFromInt(fv.integer);
+                                if (fv == .double) sum += fv.double else if (fv == .integer) sum += @floatFromInt(fv.integer);
                             }
                         }
                     }
@@ -1851,7 +1841,7 @@ pub const Evaluator = struct {
                     }
                     if (name_val) |nv| {
                         // Use a temporary soql for the stub generator with a single WHERE
-                        const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Name, Body FROM {s} WHERE Name = '{s}'", .{from_type, nv});
+                        const tmp_soql = try std.fmt.allocPrint(self.arena, "SELECT Name, Body FROM {s} WHERE Name = '{s}'", .{ from_type, nv });
                         if (try self.generateMetadataStub(from_type, tmp_soql, current_env)) |stub| {
                             try records.append(self.arena, stub);
                         }
@@ -1870,17 +1860,18 @@ pub const Evaluator = struct {
             if (!in_store) {
                 // Check if it's a common/known SObject type
                 const known_types = [_][]const u8{
-                    "Account", "Contact", "Opportunity", "Case", "Lead", "Task", "Event",
-                    "Campaign", "User", "ContentVersion", "ContentDocument", "ContentDocumentLink",
-                    "ContentDistribution", "PermissionSet", "PermissionSetAssignment",
-                    "ObjectPermissions", "Profile", "Organization", "ApexClass", "StaticResource",
-                    "FieldPermissions", "PermissionSetGroup", "PlatformCachePartition",
-                    "Metadata_Driven_Trigger__mdt", "CronTrigger", "AsyncApexJob",
-                    "EntityDefinition", "FieldDefinition", "AggregateResult",
+                    "Account",                 "Contact",                "Opportunity",                  "Case",            "Lead",                "Task",                "Event",
+                    "Campaign",                "User",                   "ContentVersion",               "ContentDocument", "ContentDocumentLink", "ContentDistribution", "PermissionSet",
+                    "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",    "ApexClass",           "StaticResource",      "FieldPermissions",
+                    "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",     "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
+                    "AggregateResult",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
-                    if (std.ascii.eqlIgnoreCase(from_type, kt)) { is_known = true; break; }
+                    if (std.ascii.eqlIgnoreCase(from_type, kt)) {
+                        is_known = true;
+                        break;
+                    }
                 }
                 // Also known if it ends with __c (custom object), __e (platform event), __mdt (custom metadata)
                 if (std.mem.endsWith(u8, from_type, "__c") or std.mem.endsWith(u8, from_type, "__e") or std.mem.endsWith(u8, from_type, "__mdt")) {
@@ -2035,11 +2026,9 @@ pub const Evaluator = struct {
                 }
                 // Fallback: generate mock body
                 if (std.mem.endsWith(u8, name_val, "_Tests"))
-                    break :blk try std.fmt.allocPrint(self.arena,
-                        "/**\n * @description Mock test class\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val})
+                    break :blk try std.fmt.allocPrint(self.arena, "/**\n * @description Mock test class\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val})
                 else
-                    break :blk try std.fmt.allocPrint(self.arena,
-                        "/**\n * @description Mock class\n * @group Shared Code\n * @see RelatedClass1\n * @see RelatedClass2\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val});
+                    break :blk try std.fmt.allocPrint(self.arena, "/**\n * @description Mock class\n * @group Shared Code\n * @see RelatedClass1\n * @see RelatedClass2\n */\npublic class {s} {{\n    // mock body\n}}", .{name_val});
             };
             try sob.fields.put(self.arena, "Body", Value{ .string = body });
             // Store in the store so SOSL can find it later
@@ -3143,7 +3132,7 @@ pub const Evaluator = struct {
                         // System.AccessType/AccessLevel
                         if (std.ascii.eqlIgnoreCase(outer_name, "System") and
                             (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                            std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
+                                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
                         {
                             return Value{ .string = fa.field };
                         }
@@ -3502,10 +3491,10 @@ pub const Evaluator = struct {
                         const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
                         if (trimmed_json.len == 0 or
                             (trimmed_json[0] != '{' and trimmed_json[0] != '[' and trimmed_json[0] != '"' and
-                            !std.ascii.isDigit(trimmed_json[0]) and
-                            !std.mem.startsWith(u8, trimmed_json, "null") and
-                            !std.mem.startsWith(u8, trimmed_json, "true") and
-                            !std.mem.startsWith(u8, trimmed_json, "false")))
+                                !std.ascii.isDigit(trimmed_json[0]) and
+                                !std.mem.startsWith(u8, trimmed_json, "null") and
+                                !std.mem.startsWith(u8, trimmed_json, "true") and
+                                !std.mem.startsWith(u8, trimmed_json, "false")))
                         {
                             const exc = try self.arena.create(types.ObjectInstance);
                             exc.* = .{ .class_name = "JSONException" };
@@ -3536,11 +3525,7 @@ pub const Evaluator = struct {
                                         // skip next char (handled by for loop advance)
                                     } else if (jc == '"') in_str = false;
                                 } else {
-                                    if (jc == '"') in_str = true
-                                    else if (jc == '{') brace_depth += 1
-                                    else if (jc == '}') brace_depth -= 1
-                                    else if (jc == '[') bracket_depth += 1
-                                    else if (jc == ']') bracket_depth -= 1;
+                                    if (jc == '"') in_str = true else if (jc == '{') brace_depth += 1 else if (jc == '}') brace_depth -= 1 else if (jc == '[') bracket_depth += 1 else if (jc == ']') bracket_depth -= 1;
                                 }
                             }
                             if (brace_depth != 0 or bracket_depth != 0 or in_str) {
@@ -3734,7 +3719,7 @@ pub const Evaluator = struct {
         // Http.send() mock interception
         if (obj == .object and std.ascii.eqlIgnoreCase(method, "send") and
             (std.ascii.eqlIgnoreCase(obj.object.class_name, "Http") or
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
+                std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
         {
             if (self.callout_mock) |mock| {
                 // Call mock.respond(request) method
@@ -4629,10 +4614,10 @@ pub const Evaluator = struct {
 
         // Known non-SObject types: create ObjectInstance instead
         const non_sobject_types = [_][]const u8{
-            "RestRequest",  "RestResponse",  "HttpRequest",    "HttpResponse",
-            "Http",         "PageReference",  "SelectOption",   "Messaging.SingleEmailMessage",
-            "Messaging.InboundEmail",         "QueryException", "DmlException",
-            "AuraHandledException",           "CalloutException",
+            "RestRequest",            "RestResponse",   "HttpRequest",  "HttpResponse",
+            "Http",                   "PageReference",  "SelectOption", "Messaging.SingleEmailMessage",
+            "Messaging.InboundEmail", "QueryException", "DmlException", "AuraHandledException",
+            "CalloutException",
         };
         for (non_sobject_types) |nst| {
             if (std.ascii.eqlIgnoreCase(type_name, nst)) {
@@ -5042,7 +5027,7 @@ pub const Evaluator = struct {
                 // System.AccessType.CREATABLE / System.AccessLevel.SYSTEM_MODE etc.
                 if (std.ascii.eqlIgnoreCase(outer_name, "System") and
                     (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                    std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
+                        std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
                 {
                     return Value{ .string = fa.field };
                 }
@@ -5206,20 +5191,17 @@ pub const Evaluator = struct {
             if (self.is_min_access_user and !has_permset_db and args.len >= 2) {
                 const is_user_mode = if (args[1] == .string)
                     std.ascii.eqlIgnoreCase(args[1].string, "USER_MODE")
-                else if (args[1] == .object)
-                    blk: {
-                        if (args[1].object.fields.get("name")) |n| {
-                            if (n == .string) break :blk std.ascii.eqlIgnoreCase(n.string, "USER_MODE");
-                        }
-                        break :blk false;
+                else if (args[1] == .object) blk: {
+                    if (args[1].object.fields.get("name")) |n| {
+                        if (n == .string) break :blk std.ascii.eqlIgnoreCase(n.string, "USER_MODE");
                     }
-                else
-                    false;
+                    break :blk false;
+                } else false;
                 if (is_user_mode) {
-                    const from_type = if (args[0] == .sobject) args[0].sobject.type_name
-                        else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
-                            args[0].list.items.items[0].sobject.type_name
-                        else "SObject";
+                    const from_type = if (args[0] == .sobject) args[0].sobject.type_name else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
+                        args[0].list.items.items[0].sobject.type_name
+                    else
+                        "SObject";
                     const msg = try std.fmt.allocPrint(self.arena, "Access to entity '{s}' denied", .{from_type});
                     const exc = try self.arena.create(types.ObjectInstance);
                     exc.* = .{ .class_name = "System.SecurityException" };
@@ -5266,7 +5248,7 @@ pub const Evaluator = struct {
                             const sr = try self.arena.create(types.ObjectInstance);
                             sr.* = .{ .class_name = result_class };
                             try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = false });
-                                try sr.fields.put(self.arena, "success", Value{ .boolean = false });
+                            try sr.fields.put(self.arena, "success", Value{ .boolean = false });
                             return Value{ .object = sr };
                         }
                         const list = try self.arena.create(types.ListValue);
@@ -5532,11 +5514,7 @@ pub const Evaluator = struct {
                             if (in_s) {
                                 if (jc == '"') in_s = false;
                             } else {
-                                if (jc == '"') in_s = true
-                                else if (jc == '{') brace_d += 1
-                                else if (jc == '}') brace_d -= 1
-                                else if (jc == '[') bracket_d += 1
-                                else if (jc == ']') bracket_d -= 1;
+                                if (jc == '"') in_s = true else if (jc == '{') brace_d += 1 else if (jc == '}') brace_d -= 1 else if (jc == '[') bracket_d += 1 else if (jc == ']') bracket_d -= 1;
                             }
                         }
                         if (brace_d != 0 or bracket_d != 0) {
@@ -6643,8 +6621,14 @@ fn extractFromType(soql: []const u8) ?[]const u8 {
     var i: usize = 0;
     var depth: u32 = 0;
     while (i + 5 < lower.len) : (i += 1) {
-        if (lower[i] == '(') { depth += 1; continue; }
-        if (lower[i] == ')') { if (depth > 0) depth -= 1; continue; }
+        if (lower[i] == '(') {
+            depth += 1;
+            continue;
+        }
+        if (lower[i] == ')') {
+            if (depth > 0) depth -= 1;
+            continue;
+        }
         if (depth > 0) continue; // Skip content inside parentheses
         if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and (lower[i + 4] == ' ' or lower[i + 4] == '\n')) {
             var start = i + 5;
@@ -6663,8 +6647,14 @@ fn extractWhereClause(soql: []const u8) ?[]const u8 {
     var i: usize = 0;
     var paren_depth: u32 = 0;
     while (i + 5 < soql.len) : (i += 1) {
-        if (soql[i] == '(') { paren_depth += 1; continue; }
-        if (soql[i] == ')') { if (paren_depth > 0) paren_depth -= 1; continue; }
+        if (soql[i] == '(') {
+            paren_depth += 1;
+            continue;
+        }
+        if (soql[i] == ')') {
+            if (paren_depth > 0) paren_depth -= 1;
+            continue;
+        }
         if (paren_depth > 0) continue;
         if (std.ascii.eqlIgnoreCase(soql[i .. i + 5], "where") and
             (i == 0 or soql[i - 1] == ' ' or soql[i - 1] == '\n') and
@@ -6725,8 +6715,14 @@ fn findLogicalOp(clause: []const u8, keyword: []const u8) ?usize {
     var depth: u32 = 0;
     var i: usize = 0;
     while (i < clause.len) : (i += 1) {
-        if (clause[i] == '(') { depth += 1; continue; }
-        if (clause[i] == ')') { if (depth > 0) depth -= 1; continue; }
+        if (clause[i] == '(') {
+            depth += 1;
+            continue;
+        }
+        if (clause[i] == ')') {
+            if (depth > 0) depth -= 1;
+            continue;
+        }
         if (clause[i] == '\'') {
             // Skip string literal
             i += 1;

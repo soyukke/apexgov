@@ -11,19 +11,20 @@ const apex_stdlib = @import("apex_stdlib.zig");
 
 /// Apex キーワード一覧。
 const apex_keywords = [_][]const u8{
-    "abstract",    "break",     "catch",      "class",     "continue",
-    "delete",      "do",        "else",       "enum",      "extends",
-    "final",       "finally",   "for",        "global",    "if",
-    "implements",  "insert",    "interface",  "merge",     "new",
-    "null",        "override",  "private",    "protected", "public",
-    "return",      "static",    "super",      "switch",    "this",
-    "throw",       "transient", "trigger",    "try",       "undelete",
-    "update",      "upsert",    "virtual",    "void",      "when",
-    "while",       "with",      "without",
+    "abstract",   "break",     "catch",     "class",     "continue",
+    "delete",     "do",        "else",      "enum",      "extends",
+    "final",      "finally",   "for",       "global",    "if",
+    "implements", "insert",    "interface", "merge",     "new",
+    "null",       "override",  "private",   "protected", "public",
+    "return",     "static",    "super",     "switch",    "this",
+    "throw",      "transient", "trigger",   "try",       "undelete",
+    "update",     "upsert",    "virtual",   "void",      "when",
+    "while",      "with",      "without",
     // 組み込み型
-    "Boolean",     "Date",      "Datetime",   "Decimal",   "Double",
-    "Id",          "Integer",   "Long",       "Object",    "String",
-    "Blob",        "Time",      "List",       "Map",       "Set",
+      "Boolean",   "Date",
+    "Datetime",   "Decimal",   "Double",    "Id",        "Integer",
+    "Long",       "Object",    "String",    "Blob",      "Time",
+    "List",       "Map",       "Set",
 };
 
 pub fn getCompletions(
@@ -191,7 +192,9 @@ const parser = @import("../apex_parser/parser.zig");
 const TestComplCtx = struct {
     items: []lsp_types.CompletionItem,
     arena: std.heap.ArenaAllocator,
-    fn deinit(self: *TestComplCtx) void { self.arena.deinit(); }
+    fn deinit(self: *TestComplCtx) void {
+        self.arena.deinit();
+    }
 };
 
 fn completeAt(source: []const u8, offset: u32) !TestComplCtx {
