@@ -4358,12 +4358,33 @@ pub const Evaluator = struct {
                 }
                 return Value{ .string = result.items };
             }
+            // Datetime.format(pattern) — 文字列引数の場合は日付フォーマット
+            if (args.len > 0 and args[0] == .string) {
+                return self.formatDateTimePattern(s, args[0].string);
+            }
             return Value{ .string = s };
         }
         if (std.ascii.eqlIgnoreCase(method, "escapeHtml4") or
             std.ascii.eqlIgnoreCase(method, "escapeJava") or std.ascii.eqlIgnoreCase(method, "escapeSingleQuotes"))
         {
             return Value{ .string = s };
+        }
+        // year() / month() / day() — ISO 日付文字列からコンポーネント抽出
+        if (std.ascii.eqlIgnoreCase(method, "year") or
+            std.ascii.eqlIgnoreCase(method, "month") or
+            std.ascii.eqlIgnoreCase(method, "day"))
+        {
+            const dt = parseIsoDate(s) orelse return Value.null_val;
+            if (std.ascii.eqlIgnoreCase(method, "year")) return Value{ .integer = dt.y };
+            if (std.ascii.eqlIgnoreCase(method, "month")) return Value{ .integer = dt.m };
+            return Value{ .integer = dt.d };
+        }
+        // addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
+        if (std.ascii.eqlIgnoreCase(method, "addYears") or
+            std.ascii.eqlIgnoreCase(method, "addMonths") or
+            std.ascii.eqlIgnoreCase(method, "addDays"))
+        {
+            return self.dateTimeAdd(s, method, args);
         }
         // formatGMT — format a DateTime string according to a pattern
         if (std.ascii.eqlIgnoreCase(method, "formatGMT") or std.ascii.eqlIgnoreCase(method, "formatGmt")) {
@@ -5051,6 +5072,196 @@ pub const Evaluator = struct {
         }
 
         return Value.null_val;
+    }
+
+    // -----------------------------------------------------------------------
+    // Datetime ヘルパー
+    // -----------------------------------------------------------------------
+
+    /// ISO 日付文字列 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ) をパースする。
+    fn parseIsoDate(s: []const u8) ?struct { y: i32, m: u8, d: u8, h: u8, mi: u8, sec: u8, has_time: bool } {
+        if (s.len < 10 or s[4] != '-' or s[7] != '-') return null;
+        const y = std.fmt.parseInt(i32, s[0..4], 10) catch return null;
+        const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
+        const day = std.fmt.parseInt(u8, s[8..10], 10) catch return null;
+        if (s.len >= 19 and s[10] == 'T') {
+            const h = std.fmt.parseInt(u8, s[11..13], 10) catch 0;
+            const mi = std.fmt.parseInt(u8, s[14..16], 10) catch 0;
+            const sec = std.fmt.parseInt(u8, s[17..19], 10) catch 0;
+            return .{ .y = y, .m = m, .d = day, .h = h, .mi = mi, .sec = sec, .has_time = true };
+        }
+        return .{ .y = y, .m = m, .d = day, .h = 0, .mi = 0, .sec = 0, .has_time = false };
+    }
+
+    /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
+    fn formatDateTimePattern(self: *Evaluator, s: []const u8, pattern: []const u8) !Value {
+        const dt = parseIsoDate(s) orelse return Value{ .string = s };
+        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+        const month_abbr = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+        const month_name = if (dt.m >= 1 and dt.m <= 12) month_names[dt.m - 1] else "January";
+        const month_short = if (dt.m >= 1 and dt.m <= 12) month_abbr[dt.m - 1] else "Jan";
+
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        var i: usize = 0;
+        while (i < pattern.len) {
+            const c = pattern[i];
+            // Count consecutive same characters
+            var count: usize = 1;
+            while (i + count < pattern.len and pattern[i + count] == c) : (count += 1) {}
+
+            switch (c) {
+                'y' => {
+                    if (count <= 2) {
+                        const short_y: u32 = @intCast(@mod(dt.y, 100));
+                        const ys = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{short_y});
+                        try result.appendSlice(self.arena, ys);
+                    } else {
+                        const ys = try std.fmt.allocPrint(self.arena, "{d:0>4}", .{@as(u32, @intCast(dt.y))});
+                        try result.appendSlice(self.arena, ys);
+                    }
+                },
+                'M' => {
+                    if (count >= 4) {
+                        try result.appendSlice(self.arena, month_name);
+                    } else if (count == 3) {
+                        try result.appendSlice(self.arena, month_short);
+                    } else if (count == 2) {
+                        const ms = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.m});
+                        try result.appendSlice(self.arena, ms);
+                    } else {
+                        const ms = try std.fmt.allocPrint(self.arena, "{d}", .{dt.m});
+                        try result.appendSlice(self.arena, ms);
+                    }
+                },
+                'd' => {
+                    if (count >= 2) {
+                        const ds = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.d});
+                        try result.appendSlice(self.arena, ds);
+                    } else {
+                        const ds = try std.fmt.allocPrint(self.arena, "{d}", .{dt.d});
+                        try result.appendSlice(self.arena, ds);
+                    }
+                },
+                'H' => {
+                    if (count >= 2) {
+                        const hs = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.h});
+                        try result.appendSlice(self.arena, hs);
+                    } else {
+                        const hs = try std.fmt.allocPrint(self.arena, "{d}", .{dt.h});
+                        try result.appendSlice(self.arena, hs);
+                    }
+                },
+                'h' => {
+                    const h12: u8 = if (dt.h == 0) 12 else if (dt.h > 12) dt.h - 12 else dt.h;
+                    if (count >= 2) {
+                        const hs = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{h12});
+                        try result.appendSlice(self.arena, hs);
+                    } else {
+                        const hs = try std.fmt.allocPrint(self.arena, "{d}", .{h12});
+                        try result.appendSlice(self.arena, hs);
+                    }
+                },
+                'm' => {
+                    if (count >= 2) {
+                        const ms = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.mi});
+                        try result.appendSlice(self.arena, ms);
+                    } else {
+                        const ms = try std.fmt.allocPrint(self.arena, "{d}", .{dt.mi});
+                        try result.appendSlice(self.arena, ms);
+                    }
+                },
+                's' => {
+                    if (count >= 2) {
+                        const ss = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.sec});
+                        try result.appendSlice(self.arena, ss);
+                    } else {
+                        const ss = try std.fmt.allocPrint(self.arena, "{d}", .{dt.sec});
+                        try result.appendSlice(self.arena, ss);
+                    }
+                },
+                'a' => {
+                    try result.appendSlice(self.arena, if (dt.h < 12) "AM" else "PM");
+                },
+                '\'' => {
+                    // Quoted literal text
+                    i += 1; // skip opening quote
+                    while (i < pattern.len and pattern[i] != '\'') : (i += 1) {
+                        try result.append(self.arena, pattern[i]);
+                    }
+                    if (i < pattern.len) i += 1; // skip closing quote
+                    continue;
+                },
+                else => {
+                    for (0..count) |_| try result.append(self.arena, c);
+                },
+            }
+            i += count;
+        }
+        return Value{ .string = result.items };
+    }
+
+    /// addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
+    fn dateTimeAdd(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !Value {
+        const dt = parseIsoDate(s) orelse return Value{ .string = s };
+        const delta: i32 = if (args.len > 0) switch (args[0]) {
+            .integer => |i| @intCast(i),
+            .double => |d| @intFromFloat(d),
+            else => 0,
+        } else 0;
+
+        var y = dt.y;
+        var m: i32 = dt.m;
+        var d: i32 = dt.d;
+
+        if (std.ascii.eqlIgnoreCase(method, "addYears")) {
+            y += delta;
+        } else if (std.ascii.eqlIgnoreCase(method, "addMonths")) {
+            m += delta;
+            while (m < 1) {
+                m += 12;
+                y -= 1;
+            }
+            while (m > 12) {
+                m -= 12;
+                y += 1;
+            }
+        } else if (std.ascii.eqlIgnoreCase(method, "addDays")) {
+            d += delta;
+            // 簡易実装: 各月の日数でオーバーフロー/アンダーフローを処理
+            const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+            while (d > days_in_month[@intCast(m - 1)]) {
+                d -= days_in_month[@intCast(m - 1)];
+                m += 1;
+                if (m > 12) {
+                    m = 1;
+                    y += 1;
+                }
+            }
+            while (d < 1) {
+                m -= 1;
+                if (m < 1) {
+                    m = 12;
+                    y -= 1;
+                }
+                d += days_in_month[@intCast(m - 1)];
+            }
+        }
+
+        if (dt.has_time) {
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                @as(u32, @intCast(y)),
+                @as(u32, @intCast(m)),
+                @as(u32, @intCast(d)),
+                dt.h,
+                dt.mi,
+                dt.sec,
+            }) };
+        }
+        return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            @as(u32, @intCast(y)),
+            @as(u32, @intCast(m)),
+            @as(u32, @intCast(d)),
+        }) };
     }
 
     // -----------------------------------------------------------------------
