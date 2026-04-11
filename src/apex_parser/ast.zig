@@ -301,6 +301,7 @@ pub const Modifiers = struct {
     is_virtual: bool = false,
     is_override: bool = false,
     is_transient: bool = false,
+    is_test_method: bool = false,
 };
 
 pub const SharingMode = enum {

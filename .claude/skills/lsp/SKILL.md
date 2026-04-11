@@ -1,6 +1,6 @@
 ---
 name: lsp
-description: apexgov の Language Server Protocol (LSP) サーバーのセットアップ・機能・トラブルシューティング。Neovim、VS Code での設定方法。「lsp」「language server」「補完」「定義ジャンプ」「Neovim」「VS Code」「エディタ設定」などの話題で自動トリガー。
+description: apexgov の Language Server Protocol (LSP) サーバーのセットアップ・機能・トラブルシューティング。Neovim、VS Code での設定方法。「lsp」「language server」「補完」「定義ジャンプ」「Neovim」「VS Code」「エディタ設定」「CodeLens」「Run Test」などの話題で自動トリガー。
 ---
 
 # apexgov lsp — Language Server
@@ -29,6 +29,7 @@ apexgov lsp   # stdio で JSON-RPC サーバー起動
 | ドキュメントシンボル | クラス、メソッド、フィールドの階層一覧 |
 | ワークスペースシンボル | 全ファイル横断のシンボル検索 |
 | ドキュメントハイライト | カーソル下シンボルの読み/書き箇所を強調 |
+| CodeLens | `@IsTest` / `testMethod` メソッドに「Run Test」ボタン表示。クリックで Zig インタプリタによるローカルテスト実行（保存済みファイル対象）。クラスレベルの「Run All Tests」も対応 |
 | Incremental Sync | 差分テキスト更新に対応 |
 
 ## Neovim + lazy.nvim セットアップ

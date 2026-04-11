@@ -23,6 +23,7 @@ const signature_help_mod = @import("signature_help.zig");
 const rename_mod = @import("rename.zig");
 const document_highlight_mod = @import("document_highlight.zig");
 const code_action_mod = @import("code_action.zig");
+const code_lens_mod = @import("code_lens.zig");
 const JsonValue = std.json.Value;
 const JsonObjectMap = std.json.ObjectMap;
 
@@ -33,6 +34,7 @@ pub const Server = struct {
     transport: Transport,
     store: DocumentStore,
     custom_fields: sobject_schema.CustomFieldRegistry,
+    workspace_root: ?[]const u8 = null,
     initialized: bool = false,
     shutdown_requested: bool = false,
 
@@ -46,6 +48,7 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        if (self.workspace_root) |wr| self.allocator.free(wr);
         self.custom_fields.deinit();
         self.store.deinit();
         self.transport.deinit();
@@ -119,6 +122,10 @@ pub const Server = struct {
             try self.handleDocumentHighlight(id, obj);
         } else if (std.mem.eql(u8, method, "textDocument/codeAction")) {
             try self.handleCodeAction(id, obj);
+        } else if (std.mem.eql(u8, method, "textDocument/codeLens")) {
+            try self.handleCodeLens(id, obj);
+        } else if (std.mem.eql(u8, method, "workspace/executeCommand")) {
+            try self.handleExecuteCommand(id, obj);
         }
 
         return false;
@@ -136,6 +143,7 @@ pub const Server = struct {
                 };
                 if (root_uri) |uri| {
                     if (uriToPath(uri)) |ws_path| {
+                        self.workspace_root = self.allocator.dupe(u8, ws_path) catch null;
                         self.custom_fields.loadFromWorkspace(ws_path) catch {};
                     }
                 }
@@ -490,6 +498,182 @@ pub const Server = struct {
         defer self.allocator.free(actions);
 
         try self.transport.sendResponse(self.allocator, id, actions);
+    }
+
+    fn handleCodeLens(self: *Server, id: types.RequestId, obj: JsonObjectMap) !void {
+        const params = objGet(obj, "params") orelse return;
+        const td = valGetObj(params, "textDocument") orelse return;
+        const uri = objGetStr(td, "uri") orelse return;
+
+        const cached = try self.store.ensureParsed(uri) orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        };
+        const doc = self.store.get(uri) orelse return;
+
+        const lenses = try code_lens_mod.getCodeLenses(cached.decls, doc.text, uri, self.allocator);
+        defer self.allocator.free(lenses);
+
+        try self.transport.sendResponse(self.allocator, id, lenses);
+    }
+
+    fn handleExecuteCommand(self: *Server, id: types.RequestId, obj: JsonObjectMap) !void {
+        const params = objGet(obj, "params") orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        };
+        const command = switch (valGet(params, "command") orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        }) {
+            .string => |s| s,
+            else => {
+                try self.transport.sendResponse(self.allocator, id, null);
+                return;
+            },
+        };
+        const args = switch (valGet(params, "arguments") orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        }) {
+            .array => |a| a.items,
+            else => {
+                try self.transport.sendResponse(self.allocator, id, null);
+                return;
+            },
+        };
+
+        if (std.mem.eql(u8, command, "apexgov.runTest")) {
+            try self.executeRunTest(id, args);
+        } else if (std.mem.eql(u8, command, "apexgov.runAllTests")) {
+            try self.executeRunAllTests(id, args);
+        } else {
+            try self.transport.sendResponse(self.allocator, id, null);
+        }
+    }
+
+    fn executeRunTest(self: *Server, id: types.RequestId, args: []const JsonValue) !void {
+        // args: [uri, className, methodName]
+        if (args.len < 3) {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        }
+        const class_name = switch (args[1]) {
+            .string => |s| s,
+            else => {
+                try self.transport.sendResponse(self.allocator, id, null);
+                return;
+            },
+        };
+        const method_name = switch (args[2]) {
+            .string => |s| s,
+            else => {
+                try self.transport.sendResponse(self.allocator, id, null);
+                return;
+            },
+        };
+
+        const ws_root = self.workspace_root orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        };
+
+        try self.transport.sendResponse(self.allocator, id, null);
+        try self.runTestAndNotify(ws_root, class_name, method_name);
+    }
+
+    fn executeRunAllTests(self: *Server, id: types.RequestId, args: []const JsonValue) !void {
+        // args: [uri, className]
+        if (args.len < 2) {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        }
+        const class_name = switch (args[1]) {
+            .string => |s| s,
+            else => {
+                try self.transport.sendResponse(self.allocator, id, null);
+                return;
+            },
+        };
+
+        const ws_root = self.workspace_root orelse {
+            try self.transport.sendResponse(self.allocator, id, null);
+            return;
+        };
+
+        try self.transport.sendResponse(self.allocator, id, null);
+        try self.runTestAndNotify(ws_root, class_name, null);
+    }
+
+    fn runTestAndNotify(self: *Server, ws_root: []const u8, class_name: []const u8, method_name: ?[]const u8) !void {
+        const interpret = @import("../interpret/root.zig");
+
+        // SFDX ソースルート解決
+        const search_dirs = [_][]const u8{
+            "force-app/main/default/classes",
+            "src/main/default/classes",
+            "force-app",
+        };
+
+        var test_paths: std.ArrayList([]const u8) = .empty;
+        defer test_paths.deinit(self.allocator);
+
+        for (&search_dirs) |rel_dir| {
+            const full_path = try std.fs.path.join(self.allocator, &.{ ws_root, rel_dir });
+            defer self.allocator.free(full_path);
+            if (std.fs.openDirAbsolute(full_path, .{})) |dir| {
+                var d = dir;
+                d.close();
+                try test_paths.append(self.allocator, try self.allocator.dupe(u8, full_path));
+            } else |_| {}
+        }
+
+        // フォールバック: ソースルートが見つからなければ workspace_root 自体を使用
+        if (test_paths.items.len == 0) {
+            try test_paths.append(self.allocator, try self.allocator.dupe(u8, ws_root));
+        }
+        defer {
+            for (test_paths.items) |p| self.allocator.free(p);
+        }
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+
+        const suite = interpret.runSingleTest(
+            self.allocator,
+            test_paths.items,
+            class_name,
+            method_name,
+            buf.writer(self.allocator),
+        ) catch {
+            try self.transport.sendNotification(self.allocator, "window/showMessage", types.ShowMessageParams{
+                .type = .@"error",
+                .message = "Test execution failed",
+            });
+            return;
+        };
+
+        // 結果メッセージを構築
+        const msg = if (method_name) |mn|
+            try std.fmt.allocPrint(self.allocator, "{s}#{s}: {s} ({d}/{d} passed)", .{
+                class_name,
+                mn,
+                if (suite.passed == suite.total) "PASS" else "FAIL",
+                suite.passed,
+                suite.total,
+            })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed", .{
+                class_name,
+                suite.passed,
+                suite.total,
+            });
+        defer self.allocator.free(msg);
+
+        try self.transport.sendNotification(self.allocator, "window/showMessage", types.ShowMessageParams{
+            .type = if (suite.passed == suite.total) .info else .@"error",
+            .message = msg,
+        });
     }
 };
 

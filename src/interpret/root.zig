@@ -85,6 +85,29 @@ const SourceFile = struct { path: []const u8, content: []const u8 };
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
 pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: anytype) !TestSuiteResult {
+    return runTestsFiltered(gpa, paths, null, null, writer);
+}
+
+/// 指定クラス（+ オプションでメソッド）のテストのみ実行する。
+/// method_name が null の場合はクラス内全テストメソッドを実行。
+pub fn runSingleTest(
+    gpa: std.mem.Allocator,
+    paths: []const []const u8,
+    class_name: []const u8,
+    method_name: ?[]const u8,
+    writer: anytype,
+) !TestSuiteResult {
+    return runTestsFiltered(gpa, paths, class_name, method_name, writer);
+}
+
+/// テスト実行の共通内部関数。filter_class / filter_method が null なら全テスト実行。
+fn runTestsFiltered(
+    gpa: std.mem.Allocator,
+    paths: []const []const u8,
+    filter_class: ?[]const u8,
+    filter_method: ?[]const u8,
+    writer: anytype,
+) !TestSuiteResult {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -118,8 +141,8 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
         // Extract class name from file path (basename without .cls)
         const basename = std.fs.path.basename(file.path);
         if (std.mem.endsWith(u8, basename, ".cls")) {
-            const class_name = basename[0 .. basename.len - 4];
-            eval.registerClassSource(class_name, file.content) catch {};
+            const cls_name = basename[0 .. basename.len - 4];
+            eval.registerClassSource(cls_name, file.content) catch {};
         }
     }
 
@@ -160,6 +183,11 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
         const class_name = entry.key_ptr.*;
         const class_decl = entry.value_ptr.*;
 
+        // クラスフィルタ: 指定されていれば一致するクラスのみ
+        if (filter_class) |fc| {
+            if (!std.ascii.eqlIgnoreCase(class_name, fc)) continue;
+        }
+
         // Find @TestSetup method if any
         var test_setup_method: ?*ast.MethodDecl = null;
         for (class_decl.members) |m| {
@@ -180,6 +208,11 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
             switch (member) {
                 .method_decl => |md| {
                     if (!isTestMethod(md)) continue;
+
+                    // メソッドフィルタ: 指定されていれば一致するメソッドのみ
+                    if (filter_method) |fm| {
+                        if (!std.ascii.eqlIgnoreCase(md.name, fm)) continue;
+                    }
 
                     suite.total += 1;
 
@@ -265,6 +298,7 @@ pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: a
 }
 
 fn isTestMethod(md: *ast.MethodDecl) bool {
+    if (md.modifiers.is_test_method) return true;
     for (md.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or std.ascii.eqlIgnoreCase(ann, "@test")) {
             return true;
@@ -318,6 +352,34 @@ test {
     _ = evaluator;
     _ = builtins;
     _ = utils;
+}
+
+test "isTestMethod detects testMethod modifier" {
+    const source =
+        \\@IsTest
+        \\public class LegacyTestDemo {
+        \\    static testMethod void legacyTest() {
+        \\        System.assert(true);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    try std.testing.expectEqual(@as(usize, 1), decls.len);
+
+    const cd = decls[0].class_decl;
+    try std.testing.expectEqual(@as(usize, 1), cd.members.len);
+
+    const md = cd.members[0].method_decl;
+    try std.testing.expectEqualStrings("legacyTest", md.name);
+    // is_test_method should be set by parser
+    try std.testing.expect(md.modifiers.is_test_method);
+    // isTestMethod should detect it
+    try std.testing.expect(isTestMethod(md));
 }
 
 // ---------------------------------------------------------------------------
