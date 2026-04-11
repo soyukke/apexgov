@@ -19,6 +19,8 @@ zig build run -- <subcommand>    # ビルド & 実行
 - `profile <path> [--format json|text]` — デバッグログプロファイル
 - `emulate transpile <path>` — Apex→Java トランスパイル
 - `emulate test [--nix]` — Java エミュレーションテスト実行
+- `typegen <sfdx-project-root> [--out DIR]` — LWC 用 TypeScript 型定義生成
+- `lsp` — Language Server Protocol サーバー起動（stdio）
 
 Java エミュレーションテストの直接実行:
 ```bash
@@ -83,6 +85,27 @@ Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
 | `query.zig` | SOQL/SOSL クエリ変換 |
 | `misc.zig` | その他の互換変換 |
 | `sobject.zig` | SObject フィールドアクセス変換 |
+
+#### src/typegen/ — LWC 用 TypeScript 型定義ジェネレータ
+
+`typegen/root.zig` がエントリポイント。SFDX メタデータ XML から `.d.ts` ファイルを生成する。
+
+| 生成対象 | 入力 | 出力ファイル |
+|---|---|---|
+| `@salesforce/schema/Obj.Field` | `*.field-meta.xml` | `schema.d.ts` |
+| `@salesforce/label/c.XXX` | `CustomLabels.labels-meta.xml` | `customlabels.d.ts` |
+| `@salesforce/resourceUrl/XXX` | `*.resource-meta.xml` | `{name}.resource.d.ts` |
+| `@salesforce/messageChannel/XXX` | `*.messageChannel-meta.xml` | `{name}.messageChannel.d.ts` |
+| `@salesforce/contentAssetUrl/XXX` | `*.asset-meta.xml` | `{name}.asset.d.ts` |
+| `@salesforce/apex/Class.method` | `*.cls` の `@AuraEnabled` | `apex.d.ts` |
+
+resource/messageChannel/asset は公式 LWC Language Server と同一フォーマット（diff 0 検証済み）。ファイル走査はパスのアルファベット順で決定的。
+
+#### src/lsp/ — Language Server Protocol サーバー
+
+`lsp/server.zig` がメインループ。JSON-RPC over stdio。
+
+主要機能: 補完、ホバー、定義ジャンプ（クロスファイル対応）、参照検索（クロスファイル対応）、リネーム、コードアクション（Governor 制限クイックフィックス）、セマンティックトークン、フォーマット、折りたたみ、シグネチャヘルプ、Incremental Document Sync。
 
 ### tools/ — Java エミュレーション環境
 

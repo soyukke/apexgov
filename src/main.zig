@@ -106,6 +106,9 @@ fn run(gpa: std.mem.Allocator, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "lsp")) {
         return runLsp(gpa);
     }
+    if (std.mem.eql(u8, cmd, "typegen")) {
+        return runTypegen(gpa, argv[2..]);
+    }
 
     return error.UnknownCommand;
 }
@@ -252,6 +255,222 @@ fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 fn runLsp(gpa: std.mem.Allocator) !u8 {
     try apexgov.lsp.serve(gpa);
     return 0;
+}
+
+fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+    var project_root: ?[]const u8 = null;
+    var out_dir: []const u8 = ".sfdx/typings/lwc";
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--out") and i + 1 < args.len) {
+            i += 1;
+            out_dir = args[i];
+        } else if (std.mem.eql(u8, args[i], "-h") or std.mem.eql(u8, args[i], "--help")) {
+            std.debug.print(
+                \\Usage: apexgov typegen <sfdx-project-root> [--out DIR]
+                \\
+                \\Generate LWC TypeScript type definitions from SFDX metadata.
+                \\
+                \\Options:
+                \\  --out DIR   Output directory (default: .sfdx/typings/lwc)
+                \\
+            , .{});
+            return 0;
+        } else {
+            project_root = args[i];
+        }
+    }
+
+    const root = project_root orelse {
+        std.debug.print("error: project root path is required\n", .{});
+        return 2;
+    };
+
+    const typegen = apexgov.typegen;
+
+    // 出力ディレクトリを作成
+    std.fs.cwd().makePath(out_dir) catch |err| {
+        std.debug.print("error: cannot create output directory '{s}': {s}\n", .{ out_dir, @errorName(err) });
+        return 2;
+    };
+
+    var total_files: u32 = 0;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    const writer = buf.writer(gpa);
+
+    // ファイルパスをソート済みで収集する（出力を決定的にするため）
+    const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
+        std.debug.print("error: cannot open '{s}': {s}\n", .{ root, @errorName(err) });
+        return 2;
+    };
+    var all_paths: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (all_paths.items) |p| gpa.free(p);
+        all_paths.deinit(gpa);
+    }
+    {
+        var walker = try root_dir.walk(gpa);
+        defer walker.deinit();
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            try all_paths.append(gpa, try gpa.dupe(u8, entry.path));
+        }
+    }
+    std.mem.sort([]const u8, all_paths.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    // --- @salesforce/schema ---
+    {
+        buf.clearRetainingCapacity();
+        var schema_count: u32 = 0;
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".field-meta.xml")) continue;
+
+            const object_name = extractObjectName(entry_path) orelse continue;
+            const field_xml = root_dir.readFileAlloc(gpa, entry_path, 64 * 1024) catch continue;
+            defer gpa.free(field_xml);
+
+            if (typegen.parseFieldMeta(field_xml, object_name)) |field| {
+                try typegen.renderSchemaField(field, writer);
+                try writer.writeByte('\n');
+                schema_count += 1;
+            }
+        }
+
+        if (schema_count > 0) {
+            var path_buf: [4096]u8 = undefined;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/schema.d.ts", .{out_dir}) catch unreachable;
+            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
+            std.debug.print("  schema.d.ts: {d} fields\n", .{schema_count});
+            total_files += 1;
+        }
+    }
+
+    // --- @salesforce/label ---
+    {
+        buf.clearRetainingCapacity();
+        var label_count: u32 = 0;
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".labels-meta.xml")) continue;
+
+            const xml = root_dir.readFileAlloc(gpa, entry_path, 4 * 1024 * 1024) catch continue;
+            defer gpa.free(xml);
+
+            const names = try typegen.parseLabelNames(xml, gpa);
+            defer gpa.free(names);
+            for (names) |name| {
+                if (label_count > 0) try writer.writeByte('\n');
+                try typegen.renderLabel(name, writer);
+                label_count += 1;
+            }
+        }
+
+        if (label_count > 0) {
+            var path_buf: [4096]u8 = undefined;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/customlabels.d.ts", .{out_dir}) catch unreachable;
+            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
+            std.debug.print("  customlabels.d.ts: {d} labels\n", .{label_count});
+            total_files += 1;
+        }
+    }
+
+    // --- @salesforce/resourceUrl, messageChannel, contentAssetUrl ---
+    // 公式と同じ: 1 リソースにつき 1 ファイル（{name}.{type}.d.ts）
+    {
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            const meta = parseMetaFilename(basename) orelse continue;
+
+            buf.clearRetainingCapacity();
+            if (std.mem.eql(u8, meta.meta_type, "resource")) {
+                try typegen.renderResourceUrl(meta.name, writer);
+            } else if (std.mem.eql(u8, meta.meta_type, "messageChannel")) {
+                try typegen.renderMessageChannel(meta.name, writer);
+            } else if (std.mem.eql(u8, meta.meta_type, "asset")) {
+                try typegen.renderContentAssetUrl(meta.name, writer);
+            } else continue;
+
+            var path_buf: [4096]u8 = undefined;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}.d.ts", .{ out_dir, meta.name, meta.meta_type }) catch continue;
+            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
+            total_files += 1;
+        }
+    }
+
+    // --- @salesforce/apex ---
+    {
+        buf.clearRetainingCapacity();
+        var method_count: u32 = 0;
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".cls")) continue;
+            const class_name = basename[0 .. basename.len - ".cls".len];
+            if (class_name.len == 0) continue;
+
+            const source = root_dir.readFileAlloc(gpa, entry_path, 1024 * 1024) catch continue;
+            defer gpa.free(source);
+
+            if (std.ascii.indexOfIgnoreCase(source, "@AuraEnabled") == null) continue;
+
+            const methods = try typegen.findAuraEnabledMethods(source, class_name, gpa);
+            defer gpa.free(methods);
+            for (methods) |method| {
+                try typegen.renderApexMethod(method, writer);
+                try writer.writeByte('\n');
+                method_count += 1;
+            }
+        }
+
+        if (method_count > 0) {
+            var path_buf: [4096]u8 = undefined;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/apex.d.ts", .{out_dir}) catch unreachable;
+            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
+            std.debug.print("  apex.d.ts: {d} @AuraEnabled methods\n", .{method_count});
+            total_files += 1;
+        }
+    }
+
+    std.debug.print("typegen: generated {d} type definition file(s) in {s}\n", .{ total_files, out_dir });
+    return 0;
+}
+
+/// メタファイル名をパースする。例: "leafletjs.resource-meta.xml" → { .name = "leafletjs", .meta_type = "resource" }
+fn parseMetaFilename(basename: []const u8) ?struct { name: []const u8, meta_type: []const u8 } {
+    const suffix = "-meta.xml";
+    if (!std.mem.endsWith(u8, basename, suffix)) return null;
+    const without_suffix = basename[0 .. basename.len - suffix.len];
+    // 最後の '.' で name と type を分割
+    const dot_pos = std.mem.lastIndexOfScalar(u8, without_suffix, '.') orelse return null;
+    const name = without_suffix[0..dot_pos];
+    const meta_type = without_suffix[dot_pos + 1 ..];
+    if (name.len == 0) return null;
+    // resource, messageChannel, asset のみ対応
+    if (std.mem.eql(u8, meta_type, "resource") or
+        std.mem.eql(u8, meta_type, "messageChannel") or
+        std.mem.eql(u8, meta_type, "asset"))
+    {
+        return .{ .name = name, .meta_type = meta_type };
+    }
+    return null;
+}
+
+/// パスから SObject 名を抽出する。
+/// 例: "force-app/main/default/objects/Account/fields/Name.field-meta.xml" → "Account"
+fn extractObjectName(path: []const u8) ?[]const u8 {
+    // "/fields/" の直前のディレクトリ名がオブジェクト名
+    const fields_marker = "/fields/";
+    const fields_pos = std.mem.indexOf(u8, path, fields_marker) orelse return null;
+    const before = path[0..fields_pos];
+    // 最後の "/" の直後がオブジェクト名
+    const last_sep = std.mem.lastIndexOfScalar(u8, before, '/') orelse return null;
+    return before[last_sep + 1 ..];
 }
 
 fn runInterpret(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
@@ -772,6 +991,7 @@ fn printUsage() void {
         \\  apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
         \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--best-effort] [--nix]
         \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
+        \\  apexgov typegen <sfdx-project-root> [--out DIR]
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
@@ -780,6 +1000,7 @@ fn printUsage() void {
         \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
         \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --best-effort --nix
         \\  apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
+        \\  apexgov typegen my-sfdx-project --out .sfdx/typings/lwc
         \\  apexgov lsp                 Start the Language Server Protocol server (stdio)
         \\
     , .{});
