@@ -5061,47 +5061,63 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "areEqual") or std.ascii.eqlIgnoreCase(method, "assertEquals")) {
             if (args.len >= 2) {
                 if (!utils.valueEql(args[0], args[1])) {
-                    // debug removed
-                    const msg = if (args.len >= 3 and args[2] == .string)
-                        args[2].string
+                    const expected_str = try utils.coerceToString(args[0], self.arena);
+                    const actual_str = try utils.coerceToString(args[1], self.arena);
+                    self.assertion_failure = if (args.len >= 3 and args[2] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Expected: {s}, Actual: {s}", .{ args[2].string, expected_str, actual_str })
                     else
-                        try std.fmt.allocPrint(self.arena, "Expected {s} but got {s}", .{
-                            try utils.coerceToString(args[0], self.arena),
-                            try utils.coerceToString(args[1], self.arena),
-                        });
-                    self.assertion_failure = msg;
+                        try std.fmt.allocPrint(self.arena, "Expected: {s}, Actual: {s}", .{ expected_str, actual_str });
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "areNotEqual") or std.ascii.eqlIgnoreCase(method, "assertNotEquals")) {
             if (args.len >= 2) {
                 if (utils.valueEql(args[0], args[1])) {
-                    self.assertion_failure = if (args.len >= 3 and args[2] == .string) args[2].string else "Values should not be equal";
+                    const val_str = try utils.coerceToString(args[0], self.arena);
+                    self.assertion_failure = if (args.len >= 3 and args[2] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Both values: {s}", .{ args[2].string, val_str })
+                    else
+                        try std.fmt.allocPrint(self.arena, "Values should not be equal: {s}", .{val_str});
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isTrue") or std.ascii.eqlIgnoreCase(method, "assertTrue")) {
             if (args.len >= 1) {
                 const val = utils.coerceToBool(args[0]) catch false;
                 if (!val) {
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string) args[1].string else "Expected true";
+                    const actual_str = try utils.coerceToString(args[0], self.arena);
+                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Expected: true, Actual: {s}", .{ args[1].string, actual_str })
+                    else
+                        try std.fmt.allocPrint(self.arena, "Expected: true, Actual: {s}", .{actual_str});
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isFalse") or std.ascii.eqlIgnoreCase(method, "assertFalse")) {
             if (args.len >= 1) {
                 const val = utils.coerceToBool(args[0]) catch false;
                 if (val) {
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string) args[1].string else "Expected false";
+                    const actual_str = try utils.coerceToString(args[0], self.arena);
+                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Expected: false, Actual: {s}", .{ args[1].string, actual_str })
+                    else
+                        try std.fmt.allocPrint(self.arena, "Expected: false, Actual: {s}", .{actual_str});
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isNotNull") or std.ascii.eqlIgnoreCase(method, "assertNotNull")) {
             if (args.len >= 1) {
                 if (args[0] == .null_val) {
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string) args[1].string else "Expected non-null";
+                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Expected: non-null, Actual: null", .{args[1].string})
+                    else
+                        "Expected: non-null, Actual: null";
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isNull")) {
             if (args.len >= 1) {
                 if (args[0] != .null_val) {
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string) args[1].string else "Expected null";
+                    const actual_str = try utils.coerceToString(args[0], self.arena);
+                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+                        try std.fmt.allocPrint(self.arena, "{s} | Expected: null, Actual: {s}", .{ args[1].string, actual_str })
+                    else
+                        try std.fmt.allocPrint(self.arena, "Expected: null, Actual: {s}", .{actual_str});
                 }
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isInstanceOfType")) {
