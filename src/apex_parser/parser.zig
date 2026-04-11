@@ -1702,8 +1702,12 @@ const Parser = struct {
                 .identifier => {
                     // Apex 追加修飾子: webservice, testMethod, inherited (sharing)
                     const lex = self.current().lexeme;
+                    if (std.ascii.eqlIgnoreCase(lex, "testmethod")) {
+                        mods.is_test_method = true;
+                        self.pos += 1;
+                        continue;
+                    }
                     if (std.ascii.eqlIgnoreCase(lex, "webservice") or
-                        std.ascii.eqlIgnoreCase(lex, "testmethod") or
                         std.ascii.eqlIgnoreCase(lex, "inherited"))
                     {
                         self.pos += 1;
@@ -2133,6 +2137,35 @@ test "no diagnostics: testMethod modifier" {
 
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "testMethod modifier sets is_test_method in Modifiers" {
+    const source =
+        \\@IsTest
+        \\public class MyTest {
+        \\    static testMethod void myTest() {
+        \\        System.assert(true);
+        \\    }
+        \\    public static void helper() {}
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 1), result.decls.len);
+
+    const class_decl = result.decls[0].class_decl;
+    // First member: testMethod → is_test_method = true
+    const test_method = class_decl.members[0].method_decl;
+    try std.testing.expect(test_method.modifiers.is_test_method);
+    // Second member: helper → is_test_method = false
+    const helper = class_decl.members[1].method_decl;
+    try std.testing.expect(!helper.modifiers.is_test_method);
 }
 
 test "no diagnostics: final local variable" {

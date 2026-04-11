@@ -22,6 +22,7 @@ pub const signature_help = @import("signature_help.zig");
 pub const rename = @import("rename.zig");
 pub const document_highlight = @import("document_highlight.zig");
 pub const code_action = @import("code_action.zig");
+pub const code_lens = @import("code_lens.zig");
 pub const sobject_schema = @import("sobject_schema.zig");
 pub const apex_stdlib = @import("apex_stdlib.zig");
 
@@ -59,6 +60,7 @@ test {
     _ = rename;
     _ = document_highlight;
     _ = code_action;
+    _ = code_lens;
     _ = sobject_schema;
     _ = apex_stdlib;
 }

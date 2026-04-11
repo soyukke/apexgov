@@ -157,6 +157,8 @@ pub const ServerCapabilities = struct {
     renameProvider: bool = true,
     documentHighlightProvider: bool = true,
     codeActionProvider: bool = true,
+    codeLensProvider: CodeLensOptions = .{},
+    executeCommandProvider: ExecuteCommandOptions = .{},
 };
 
 pub const ServerInfo = struct {
@@ -370,6 +372,53 @@ pub const DocumentHighlight = struct {
 pub const CodeAction = struct {
     title: []const u8 = "",
     kind: []const u8 = "quickfix",
+};
+
+// ---------------------------------------------------------------------------
+// CodeLens
+// ---------------------------------------------------------------------------
+
+pub const Command = struct {
+    title: []const u8 = "",
+    command: []const u8 = "",
+    arguments: ?[]const []const u8 = null,
+};
+
+pub const CodeLens = struct {
+    range: Range = .{},
+    command: ?Command = null,
+};
+
+pub const CodeLensOptions = struct {
+    resolveProvider: bool = false,
+};
+
+// ---------------------------------------------------------------------------
+// ExecuteCommand
+// ---------------------------------------------------------------------------
+
+pub const ExecuteCommandOptions = struct {
+    commands: []const []const u8 = &.{ "apexgov.runTest", "apexgov.runAllTests" },
+};
+
+// ---------------------------------------------------------------------------
+// window/showMessage
+// ---------------------------------------------------------------------------
+
+pub const MessageType = enum(u32) {
+    @"error" = 1,
+    warning = 2,
+    info = 3,
+    log = 4,
+
+    pub fn jsonStringify(self: MessageType, jw: anytype) !void {
+        try jw.write(@intFromEnum(self));
+    }
+};
+
+pub const ShowMessageParams = struct {
+    type: MessageType = .info,
+    message: []const u8 = "",
 };
 
 /// サポートするトークンタイプ（LSP 仕様準拠のインデックス順）。
