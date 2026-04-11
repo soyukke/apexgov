@@ -31,8 +31,7 @@ const updateBraceDepth = utils.updateBraceDepth;
 const satAdd = utils.satAdd;
 const satMul = utils.satMul;
 
-const stripCommentsPreserveLines = preprocessor.stripCommentsPreserveLines;
-const collectDoWhileStartConditions = preprocessor.collectDoWhileStartConditions;
+const collectDoWhileStartConditionsFromStripped = preprocessor.collectDoWhileStartConditionsFromStripped;
 const isDoLoopStart = preprocessor.isDoLoopStart;
 
 const popClosedScopes = scope_mod.popClosedScopes;
@@ -239,9 +238,10 @@ fn checkMethodScopeEnd(
 pub fn scanContent(
     gpa: std.mem.Allocator,
     path: []const u8,
-    content: []const u8,
+    stripped_content: []const u8,
     cfg: config.Config,
     method_summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const types.MethodNameIndex,
     type_relations: *const TypeRelations,
     findings: *std.ArrayList(model.Finding),
 ) !void {
@@ -252,8 +252,7 @@ pub fn scanContent(
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
     var current_method: ?MethodScope = null;
-    var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
-    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
+    var do_while_conditions = try collectDoWhileStartConditionsFromStripped(arena_allocator, stripped_content);
 
     // @isTest クラスの findings をスキップ（method_summaries 登録は維持）
     const is_test_class = !cfg.include_tests and isTestClass(stripped_content);
@@ -353,7 +352,7 @@ pub fn scanContent(
         // AG002–AG011: テーブル駆動ルール検出
         if (!is_test_class and in_loop) {
             const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
-            const call_metrics = inferCalledMethodMetrics(trimmed, current_owner, &type_env, method_summaries, type_relations);
+            const call_metrics = inferCalledMethodMetrics(trimmed, current_owner, &type_env, name_index, type_relations);
             var direct = runDetectors(trimmed, &type_env);
 
             // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では

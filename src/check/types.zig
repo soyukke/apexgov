@@ -147,4 +147,12 @@ pub const TypeDecl = struct {
 pub const ApexFile = struct {
     path: []const u8,
     content: []const u8,
+    stripped_content: []const u8 = "",
 };
+
+pub const MethodIndexEntry = struct {
+    key: []const u8,
+    summary: *MethodSummary,
+};
+
+pub const MethodNameIndex = std.StringHashMap(std.ArrayListUnmanaged(MethodIndexEntry));

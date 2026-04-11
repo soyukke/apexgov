@@ -6,6 +6,7 @@ const model = @import("../model.zig");
 const config = @import("../config.zig");
 const check_scanner = @import("../check/scanner.zig");
 const check_types = @import("../check/types.zig");
+const preprocessor = @import("../check/preprocessor.zig");
 
 /// 単一ファイルの Governor 制限違反を検出し、LSP Diagnostic に変換する。
 pub fn collect(
@@ -23,9 +24,11 @@ pub fn collect(
         findings.deinit(allocator);
     }
 
-    // 単一ファイルモード: 空の method_summaries / type_relations
+    // 単一ファイルモード: 空の method_summaries / type_relations / name_index
     var method_summaries = std.StringHashMap(check_types.MethodSummary).init(allocator);
     defer method_summaries.deinit();
+    var name_index = check_types.MethodNameIndex.init(allocator);
+    defer name_index.deinit();
 
     var extends = std.StringHashMap([]const u8).init(allocator);
     defer extends.deinit();
@@ -36,12 +39,16 @@ pub fn collect(
         .interfaces_by_type = interfaces,
     };
 
+    const stripped_content = try preprocessor.stripCommentsPreserveLines(allocator, content);
+    defer allocator.free(stripped_content);
+
     try check_scanner.scanContent(
         allocator,
         path,
-        content,
+        stripped_content,
         config.Config.defaults(),
         &method_summaries,
+        &name_index,
         &type_relations,
         &findings,
     );

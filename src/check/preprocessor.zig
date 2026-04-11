@@ -57,6 +57,13 @@ pub fn collectDoWhileStartConditions(
     content: []const u8,
 ) !std.AutoHashMap(usize, []const u8) {
     const stripped_content = try stripCommentsPreserveLines(allocator, content);
+    return collectDoWhileStartConditionsFromStripped(allocator, stripped_content);
+}
+
+pub fn collectDoWhileStartConditionsFromStripped(
+    allocator: std.mem.Allocator,
+    stripped_content: []const u8,
+) !std.AutoHashMap(usize, []const u8) {
     var out = std.AutoHashMap(usize, []const u8).init(allocator);
     errdefer out.deinit();
 
