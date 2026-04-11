@@ -25,13 +25,14 @@ const LoopScope = types.LoopScope;
 const PendingLoopScopeStart = types.PendingLoopScopeStart;
 const Bound = types.Bound;
 const ApexFile = types.ApexFile;
+const MethodIndexEntry = types.MethodIndexEntry;
+const MethodNameIndex = types.MethodNameIndex;
 const isIdentChar = utils.isIdentChar;
 const isIdentStart = utils.isIdentStart;
 const satAdd = utils.satAdd;
 const satAddU16 = utils.satAddU16;
 const equalsCanonicalType = utils.equalsCanonicalType;
 const extractTypeFromNewExpression = utils.extractTypeFromNewExpression;
-const stripCommentsPreserveLines = preprocessor.stripCommentsPreserveLines;
 const parseMethodStart = parser.parseMethodStart;
 const buildParamTypeSignature = parser.buildParamTypeSignature;
 const countSignatureParams = parser.countSignatureParams;
@@ -47,21 +48,34 @@ const applyBoundUpdates = bounds_mod.applyBoundUpdates;
 const inferLoopInfoAtLine = bounds_mod.inferLoopInfoAtLine;
 const effectiveLoopUpperBound = bounds_mod.effectiveLoopUpperBound;
 const collectDoWhileStartConditions = preprocessor.collectDoWhileStartConditions;
+const collectDoWhileStartConditionsFromStripped = preprocessor.collectDoWhileStartConditionsFromStripped;
 const isDoLoopStart = preprocessor.isDoLoopStart;
+
+pub const BuildResult = struct {
+    summaries: std.StringHashMap(MethodSummary),
+    name_index: MethodNameIndex,
+};
 
 pub fn buildMethodSummaries(
     arena_allocator: std.mem.Allocator,
     files: []const ApexFile,
     type_relations: *const TypeRelations,
-) !std.StringHashMap(MethodSummary) {
+) !BuildResult {
     var summaries = std.StringHashMap(MethodSummary).init(arena_allocator);
 
     for (files) |file| {
-        try collectMethodNames(arena_allocator, file.content, &summaries);
+        try collectMethodNames(arena_allocator, file.stripped_content, &summaries);
     }
+
+    // Phase 3a 完了後にインデックス構築（Phase 3b で使用）
+    var name_index = try buildMethodNameIndex(arena_allocator, &summaries);
+
     for (files) |file| {
-        try collectMethodDirectMetricsAndCalls(arena_allocator, file.content, &summaries, type_relations);
+        try collectMethodDirectMetricsAndCalls(arena_allocator, file.stripped_content, &summaries, &name_index, type_relations);
     }
+
+    // Phase 3b で新たに追加されたサマリーがあればインデックスを再構築
+    name_index = try buildMethodNameIndex(arena_allocator, &summaries);
 
     var keys: std.ArrayList([]const u8) = .empty;
     var it = summaries.iterator();
@@ -72,7 +86,27 @@ pub fn buildMethodSummaries(
         _ = resolveMethodTotal(&summaries, name);
     }
 
-    return summaries;
+    return .{ .summaries = summaries, .name_index = name_index };
+}
+
+fn buildMethodNameIndex(
+    arena_allocator: std.mem.Allocator,
+    summaries: *std.StringHashMap(MethodSummary),
+) !MethodNameIndex {
+    var index = MethodNameIndex.init(arena_allocator);
+    var it = summaries.iterator();
+    while (it.next()) |entry| {
+        const name = entry.value_ptr.name;
+        const gop = try index.getOrPut(name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+        try gop.value_ptr.append(arena_allocator, .{
+            .key = entry.key_ptr.*,
+            .summary = entry.value_ptr,
+        });
+    }
+    return index;
 }
 
 pub fn collectTypeRelations(
@@ -85,7 +119,7 @@ pub fn collectTypeRelations(
     };
 
     for (files) |file| {
-        try collectTypeRelationsFromContent(arena_allocator, file.content, &relations);
+        try collectTypeRelationsFromContent(arena_allocator, file.stripped_content, &relations);
     }
 
     return relations;
@@ -93,10 +127,9 @@ pub fn collectTypeRelations(
 
 fn collectTypeRelationsFromContent(
     arena_allocator: std.mem.Allocator,
-    content: []const u8,
+    stripped_content: []const u8,
     relations: *TypeRelations,
 ) !void {
-    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var lines = std.mem.splitScalar(u8, stripped_content, '\n');
     while (lines.next()) |raw| {
         const trimmed = std.mem.trim(u8, raw, " \t\r");
@@ -108,10 +141,9 @@ fn collectTypeRelationsFromContent(
 
 fn collectMethodNames(
     arena_allocator: std.mem.Allocator,
-    content: []const u8,
+    stripped_content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
 ) !void {
-    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(arena_allocator);
 
@@ -139,11 +171,11 @@ fn collectMethodNames(
 
 fn collectMethodDirectMetricsAndCalls(
     arena_allocator: std.mem.Allocator,
-    content: []const u8,
+    stripped_content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const MethodNameIndex,
     type_relations: *const TypeRelations,
 ) !void {
-    const stripped_content = try stripCommentsPreserveLines(arena_allocator, content);
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(arena_allocator);
 
@@ -153,7 +185,7 @@ fn collectMethodDirectMetricsAndCalls(
 
     var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
-    var do_while_conditions = try collectDoWhileStartConditions(arena_allocator, content);
+    var do_while_conditions = try collectDoWhileStartConditionsFromStripped(arena_allocator, stripped_content);
 
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
@@ -229,7 +261,7 @@ fn collectMethodDirectMetricsAndCalls(
                     try recordCalledMethods(
                         arena_allocator,
                         &summary.calls,
-                        summaries,
+                        name_index,
                         scope.owner,
                         scope.name,
                         trimmed,
@@ -302,14 +334,9 @@ fn findMethodSummaryByOwnerNameSignature(
     name: []const u8,
     param_signature: []const u8,
 ) ?*MethodSummary {
-    var it = summaries.iterator();
-    while (it.next()) |entry| {
-        if (!std.mem.eql(u8, entry.value_ptr.owner, owner)) continue;
-        if (!std.mem.eql(u8, entry.value_ptr.name, name)) continue;
-        if (!std.mem.eql(u8, entry.value_ptr.param_signature, param_signature)) continue;
-        return entry.value_ptr;
-    }
-    return null;
+    var buf: [512]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "{s}.{s}/{s}", .{ owner, name, param_signature }) catch return null;
+    return summaries.getPtr(key);
 }
 
 fn formatMethodKey(
@@ -361,7 +388,7 @@ fn applyDirectLineMetrics(
 fn recordCalledMethods(
     arena_allocator: std.mem.Allocator,
     calls: *std.ArrayListUnmanaged(MethodCall),
-    summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const MethodNameIndex,
     caller_owner: []const u8,
     caller_name: []const u8,
     line: []const u8,
@@ -369,22 +396,28 @@ fn recordCalledMethods(
     type_relations: *const TypeRelations,
     multiplier: u64,
 ) !void {
-    var it = summaries.iterator();
-    while (it.next()) |entry| {
-        const callee_key = entry.key_ptr.*;
-        const callee = entry.value_ptr.*;
-        if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
-        if (!lineCallsMethod(
-            line,
-            caller_owner,
-            callee.owner,
-            callee.name,
-            callee.param_count,
-            callee.param_signature,
-            type_env,
-            type_relations,
-        )) continue;
-        try appendOrAccumulateCall(arena_allocator, calls, callee_key, multiplier);
+    // 早期リターン: '(' がなければメソッド呼び出しは不可能
+    if (std.mem.indexOfScalar(u8, line, '(') == null) return;
+
+    // 行内の識別子候補を抽出し、逆引きインデックスで候補を絞る
+    var candidates = extractCallCandidates(line);
+    for (candidates.slice()) |candidate_name| {
+        const entries = name_index.get(candidate_name) orelse continue;
+        for (entries.items) |ie| {
+            const callee = ie.summary.*;
+            if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
+            if (!lineCallsMethod(
+                line,
+                caller_owner,
+                callee.owner,
+                callee.name,
+                callee.param_count,
+                callee.param_signature,
+                type_env,
+                type_relations,
+            )) continue;
+            try appendOrAccumulateCall(arena_allocator, calls, ie.key, multiplier);
+        }
     }
 }
 
@@ -410,26 +443,86 @@ pub fn inferCalledMethodMetrics(
     line: []const u8,
     current_owner: ?[]const u8,
     type_env: *std.StringHashMap([]const u8),
-    summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const MethodNameIndex,
     type_relations: *const TypeRelations,
 ) MethodMetrics {
     var metrics: MethodMetrics = .{};
-    var it = summaries.iterator();
-    while (it.next()) |entry| {
-        const callee = entry.value_ptr.*;
-        if (!lineCallsMethod(
-            line,
-            current_owner orelse "",
-            callee.owner,
-            callee.name,
-            callee.param_count,
-            callee.param_signature,
-            type_env,
-            type_relations,
-        )) continue;
-        metrics.add(entry.value_ptr.total);
+    // 早期リターン: '(' がなければメソッド呼び出しは不可能
+    if (std.mem.indexOfScalar(u8, line, '(') == null) return metrics;
+
+    var candidates = extractCallCandidates(line);
+    for (candidates.slice()) |candidate_name| {
+        const entries = name_index.get(candidate_name) orelse continue;
+        for (entries.items) |ie| {
+            const callee = ie.summary.*;
+            if (!lineCallsMethod(
+                line,
+                current_owner orelse "",
+                callee.owner,
+                callee.name,
+                callee.param_count,
+                callee.param_signature,
+                type_env,
+                type_relations,
+            )) continue;
+            metrics.add(ie.summary.total);
+        }
     }
     return metrics;
+}
+
+const MAX_CANDIDATES = 24;
+
+const CallCandidates = struct {
+    items: [MAX_CANDIDATES][]const u8 = undefined,
+    len: usize = 0,
+
+    fn slice(self: *CallCandidates) []const []const u8 {
+        return self.items[0..self.len];
+    }
+
+    fn add(self: *CallCandidates, name: []const u8) void {
+        // 重複チェック
+        for (self.items[0..self.len]) |existing| {
+            if (std.mem.eql(u8, existing, name)) return;
+        }
+        if (self.len < MAX_CANDIDATES) {
+            self.items[self.len] = name;
+            self.len += 1;
+        }
+    }
+};
+
+/// 行内の `ident(` パターンからメソッド呼び出し候補名を抽出する。
+/// ドット付きの `receiver.method(` の場合は method 部分を返す。
+fn extractCallCandidates(line: []const u8) CallCandidates {
+    var result = CallCandidates{};
+    var i: usize = 0;
+    while (i < line.len) {
+        // 識別子の開始を探す
+        if (!isIdentStart(line[i])) {
+            i += 1;
+            continue;
+        }
+        const start = i;
+        i += 1;
+        while (i < line.len and isIdentChar(line[i])) : (i += 1) {}
+        const ident = line[start..i];
+
+        // 空白をスキップ
+        var j = i;
+        while (j < line.len and (line[j] == ' ' or line[j] == '\t')) : (j += 1) {}
+
+        if (j < line.len and line[j] == '(') {
+            // ident( パターン → メソッド呼び出し候補
+            result.add(ident);
+        } else if (j < line.len and line[j] == '.') {
+            // ident. パターン → 次の識別子がメソッド名かもしれない
+            // ident 自体はスキップ（receiver）
+            i = j + 1;
+        }
+    }
+    return result;
 }
 
 fn lineCallsMethod(

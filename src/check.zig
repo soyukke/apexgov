@@ -36,6 +36,7 @@ const deinitApexFiles = file_collector.deinitApexFiles;
 const collectTypeRelations = call_graph_mod.collectTypeRelations;
 const buildMethodSummaries = call_graph_mod.buildMethodSummaries;
 const scanContent = scanner_mod.scanContent;
+const stripCommentsPreserveLines = preprocessor_mod.stripCommentsPreserveLines;
 
 pub fn run(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(model.Finding) {
     return runWithConfig(gpa, roots, config.Config.defaults());
@@ -52,16 +53,22 @@ pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: con
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
+    // 各ファイルの stripped_content を事前計算（1回だけ strip）
+    for (files.items) |*file| {
+        file.stripped_content = try stripCommentsPreserveLines(arena_allocator, file.content);
+    }
+
     var type_relations = try collectTypeRelations(arena_allocator, files.items);
-    var method_summaries = try buildMethodSummaries(arena_allocator, files.items, &type_relations);
+    var build_result = try buildMethodSummaries(arena_allocator, files.items, &type_relations);
 
     for (files.items) |file| {
         try scanContent(
             gpa,
             file.path,
-            file.content,
+            file.stripped_content,
             cfg,
-            &method_summaries,
+            &build_result.summaries,
+            &build_result.name_index,
             &type_relations,
             &findings,
         );
@@ -110,11 +117,15 @@ fn runCheckOnTempSources(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
+    for (files.items) |*file| {
+        file.stripped_content = try stripCommentsPreserveLines(arena_alloc, file.content);
+    }
+
     var type_relations = try collectTypeRelations(arena_alloc, files.items);
-    var method_summaries = try buildMethodSummaries(arena_alloc, files.items, &type_relations);
+    var build_result = try buildMethodSummaries(arena_alloc, files.items, &type_relations);
 
     for (files.items) |file| {
-        try scanContent(gpa, file.path, file.content, cfg, &method_summaries, &type_relations, &findings);
+        try scanContent(gpa, file.path, file.stripped_content, cfg, &build_result.summaries, &build_result.name_index, &type_relations, &findings);
     }
 
     return findings;
