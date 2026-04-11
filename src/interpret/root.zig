@@ -1187,3 +1187,72 @@ test "areNotEqual with custom message includes values" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "values differ") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "42") != null);
 }
+
+test "E2E: Datetime.format('MMMM d') returns month name and day" {
+    const source =
+        \\public class DtFmtTest {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2024, 7, 14, 0, 0, 0);
+        \\        return dt.format('MMMM d');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtFmtTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("July 14", result.value.string);
+}
+
+test "E2E: Datetime.format('yyyy-MM-dd') returns ISO date" {
+    const source =
+        \\public class DtFmtIso {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2024, 7, 14, 10, 30, 0);
+        \\        return dt.format('yyyy-MM-dd');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtFmtIso",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2024-07-14", result.value.string);
+}
+
+test "E2E: Date.today().year() returns current year" {
+    const source =
+        \\public class DtYearTest {
+        \\    public static String test() {
+        \\        Integer y = Date.today().year();
+        \\        return String.valueOf(y);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtYearTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2026", result.value.string);
+}
+
+test "E2E: Datetime.addYears changes year" {
+    const source =
+        \\public class DtAddYears {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2024, 7, 14, 0, 0, 0);
+        \\        dt = dt.addYears(2);
+        \\        return dt.format('yyyy-MM-dd');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtAddYears",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2026-07-14", result.value.string);
+}

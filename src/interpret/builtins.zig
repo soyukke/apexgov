@@ -270,6 +270,29 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
                 }) };
             }
+            // DateTime.newInstance(year, month, day) — 3 引数
+            if (args.len >= 3) {
+                const y = switch (args[0]) {
+                    .integer => |i| i,
+                    .double => |d6| @as(i64, @intFromFloat(d6)),
+                    else => 2026,
+                };
+                const mo = switch (args[1]) {
+                    .integer => |i| i,
+                    .double => |d7| @as(i64, @intFromFloat(d7)),
+                    else => 1,
+                };
+                const d8 = switch (args[2]) {
+                    .integer => |i| i,
+                    .double => |d9| @as(i64, @intFromFloat(d9)),
+                    else => 1,
+                };
+                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
+                    @as(u32, @intCast(if (y < 0) 1 else y)),
+                    @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                    @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
+                }) };
+            }
             // DateTime.newInstance(milliseconds) or fewer args
             return Value{ .string = "2026-04-06T00:00:00Z" };
         }
