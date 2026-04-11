@@ -143,7 +143,7 @@ pub const SemanticTokensOptions = struct {
 };
 
 pub const ServerCapabilities = struct {
-    textDocumentSync: TextDocumentSyncKind = .full,
+    textDocumentSync: TextDocumentSyncKind = .incremental,
     documentSymbolProvider: bool = true,
     semanticTokensProvider: SemanticTokensOptions = .{},
     foldingRangeProvider: bool = true,

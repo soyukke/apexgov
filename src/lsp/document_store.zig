@@ -6,6 +6,8 @@
 const std = @import("std");
 const apex_parser = @import("../apex_parser/root.zig");
 const binder_mod = @import("binder.zig");
+const position_mod = @import("position.zig");
+const lsp_types = @import("types.zig");
 
 pub const Document = struct {
     uri: []const u8,
@@ -64,16 +66,41 @@ pub const DocumentStore = struct {
     /// ドキュメントを更新する（didChange, Full sync）。
     pub fn update(self: *DocumentStore, uri: []const u8, version: i64, text: []const u8) !void {
         if (self.documents.getPtr(uri)) |doc| {
-            // 古い arena を破棄
-            if (doc.arena) |*a| a.deinit();
-            doc.arena = null;
-            doc.parse_result = null;
+            self.invalidateCache(doc);
 
             // 古いテキストを解放して新しいテキストに差し替え
             self.allocator.free(doc.text);
             doc.text = try self.allocator.dupe(u8, text);
             doc.version = version;
         }
+    }
+
+    /// インクリメンタル更新: range で指定された部分を text で置換する。
+    pub fn applyIncrementalChange(self: *DocumentStore, uri: []const u8, version: i64, range: lsp_types.Range, text: []const u8) !void {
+        const doc = self.documents.getPtr(uri) orelse return;
+        self.invalidateCache(doc);
+
+        const start_offset = position_mod.positionToOffset(doc.text, range.start.line, range.start.character) orelse return;
+        const end_offset = position_mod.positionToOffset(doc.text, range.end.line, range.end.character) orelse return;
+
+        // 新しいテキストを構築: [0..start_offset] + text + [end_offset..]
+        const old = doc.text;
+        const new_len = start_offset + text.len + (old.len - end_offset);
+        const new_text = try self.allocator.alloc(u8, new_len);
+        @memcpy(new_text[0..start_offset], old[0..start_offset]);
+        @memcpy(new_text[start_offset..][0..text.len], text);
+        @memcpy(new_text[start_offset + text.len ..], old[end_offset..]);
+
+        self.allocator.free(old);
+        doc.text = new_text;
+        doc.version = version;
+    }
+
+    fn invalidateCache(self: *DocumentStore, doc: *Document) void {
+        _ = self;
+        if (doc.arena) |*a| a.deinit();
+        doc.arena = null;
+        doc.parse_result = null;
     }
 
     /// ドキュメントを閉じる（didClose）。
@@ -123,6 +150,41 @@ pub const DocumentStore = struct {
         return &cached.bind_result.?;
     }
 
+    /// 指定名のトップレベルシンボルをワークスペース全体から検索する。
+    /// exclude_uri のドキュメントはスキップする。
+    pub const SymbolMatch = struct {
+        uri: []const u8,
+        symbol: binder_mod.Symbol,
+        source: []const u8,
+    };
+
+    pub fn resolveSymbolAcrossFiles(self: *DocumentStore, name: []const u8, exclude_uri: []const u8) ?SymbolMatch {
+        var it = self.documents.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, exclude_uri)) continue;
+            const doc = entry.value_ptr;
+            const pr = doc.parse_result orelse continue;
+            const br = pr.bind_result orelse continue;
+            for (br.symbols) |sym| {
+                if (isTopLevelType(sym.kind) and std.mem.eql(u8, sym.name, name)) {
+                    return .{
+                        .uri = entry.key_ptr.*,
+                        .symbol = sym,
+                        .source = doc.text,
+                    };
+                }
+            }
+        }
+        return null;
+    }
+
+    fn isTopLevelType(kind: binder_mod.SymbolKind) bool {
+        return switch (kind) {
+            .class, .interface, .enum_type, .trigger => true,
+            else => false,
+        };
+    }
+
     fn freeDocument(self: *DocumentStore, doc: *Document) void {
         if (doc.arena) |*a| a.deinit();
         self.allocator.free(doc.text);
@@ -160,4 +222,125 @@ test "ensureParsed caches parse result" {
     const parsed = try store.ensureParsed("file:///test.cls");
     try std.testing.expect(parsed != null);
     try std.testing.expect(parsed.?.decls.len > 0);
+}
+
+test "resolveSymbolAcrossFiles finds class in other file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///Helper.cls", 1, "public class Helper { public void doWork() {} }");
+    try store.open("file:///Main.cls", 1, "public class Main { }");
+
+    // 両方をパース+バインド
+    _ = try store.ensureBound("file:///Helper.cls");
+    _ = try store.ensureBound("file:///Main.cls");
+
+    // Main.cls から Helper を検索 → Helper.cls で見つかるはず
+    const match = store.resolveSymbolAcrossFiles("Helper", "file:///Main.cls");
+    try std.testing.expect(match != null);
+    try std.testing.expectEqualStrings("file:///Helper.cls", match.?.uri);
+    try std.testing.expectEqualStrings("Helper", match.?.symbol.name);
+}
+
+test "resolveSymbolAcrossFiles excludes current file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///Foo.cls", 1, "public class Foo {}");
+    _ = try store.ensureBound("file:///Foo.cls");
+
+    // 同じファイルを exclude → null
+    const match = store.resolveSymbolAcrossFiles("Foo", "file:///Foo.cls");
+    try std.testing.expect(match == null);
+}
+
+test "resolveSymbolAcrossFiles returns null for unknown symbol" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///A.cls", 1, "public class A {}");
+    _ = try store.ensureBound("file:///A.cls");
+
+    const match = store.resolveSymbolAcrossFiles("NonExistent", "file:///B.cls");
+    try std.testing.expect(match == null);
+}
+
+// -- Incremental sync テスト --
+
+test "applyIncrementalChange: replace single word" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///t.cls", 1, "public class Foo {}");
+    // "Foo" → "Bar" (line 0, char 13..16)
+    try store.applyIncrementalChange("file:///t.cls", 2, .{
+        .start = .{ .line = 0, .character = 13 },
+        .end = .{ .line = 0, .character = 16 },
+    }, "Bar");
+
+    const doc = store.get("file:///t.cls").?;
+    try std.testing.expectEqualStrings("public class Bar {}", doc.text);
+    try std.testing.expectEqual(@as(i64, 2), doc.version);
+}
+
+test "applyIncrementalChange: insert text" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///t.cls", 1, "AB");
+    // "AB" の A と B の間に "XY" を挿入 (range start == end → 挿入)
+    try store.applyIncrementalChange("file:///t.cls", 2, .{
+        .start = .{ .line = 0, .character = 1 },
+        .end = .{ .line = 0, .character = 1 },
+    }, "XY");
+
+    const doc = store.get("file:///t.cls").?;
+    try std.testing.expectEqualStrings("AXYB", doc.text);
+}
+
+test "applyIncrementalChange: delete text" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///t.cls", 1, "ABCDEF");
+    // "BCD" を削除 (char 1..4, text="")
+    try store.applyIncrementalChange("file:///t.cls", 2, .{
+        .start = .{ .line = 0, .character = 1 },
+        .end = .{ .line = 0, .character = 4 },
+    }, "");
+
+    const doc = store.get("file:///t.cls").?;
+    try std.testing.expectEqualStrings("AEF", doc.text);
+}
+
+test "applyIncrementalChange: multi-line edit" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///t.cls", 1, "line0\nline1\nline2");
+    // line1 全体を "replaced" に置換 (line 1, char 0 → line 1, char 5)
+    try store.applyIncrementalChange("file:///t.cls", 2, .{
+        .start = .{ .line = 1, .character = 0 },
+        .end = .{ .line = 1, .character = 5 },
+    }, "replaced");
+
+    const doc = store.get("file:///t.cls").?;
+    try std.testing.expectEqualStrings("line0\nreplaced\nline2", doc.text);
+}
+
+test "applyIncrementalChange: invalidates parse cache" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///t.cls", 1, "public class Foo {}");
+    _ = try store.ensureParsed("file:///t.cls");
+    try std.testing.expect(store.get("file:///t.cls").?.parse_result != null);
+
+    try store.applyIncrementalChange("file:///t.cls", 2, .{
+        .start = .{ .line = 0, .character = 13 },
+        .end = .{ .line = 0, .character = 16 },
+    }, "Bar");
+
+    // キャッシュがクリアされている
+    try std.testing.expect(store.get("file:///t.cls").?.parse_result == null);
 }

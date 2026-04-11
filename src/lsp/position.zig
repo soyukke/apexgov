@@ -7,6 +7,19 @@ const std = @import("std");
 const lsp_types = @import("types.zig");
 const parser_types = @import("../apex_parser/types.zig");
 
+/// トークンリストから指定オフセット位置の identifier 名を返す。
+pub fn identifierAtOffset(tokens: []const parser_types.Token, offset: u32) ?[]const u8 {
+    for (tokens) |tok| {
+        if (tok.kind == .identifier and
+            offset >= tok.loc.offset and
+            offset < tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
+        {
+            return tok.lexeme;
+        }
+    }
+    return null;
+}
+
 /// SourceLoc → LSP Range（開始位置のみ、終了位置は同一点）。
 /// symbols.zig, workspace_symbol.zig, server.zig 等の共通ヘルパー。
 pub fn locToRange(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
@@ -120,4 +133,36 @@ test "offsetToPosition: roundtrip" {
     // roundtrip
     const offset = positionToOffset(source, pos.line, pos.character);
     try std.testing.expectEqual(@as(?u32, 23), offset);
+}
+
+// -- identifierAtOffset テスト --
+
+const lexer = @import("../apex_parser/lexer.zig");
+
+test "identifierAtOffset finds class name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "public class Foo {}";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    // 'Foo' starts at offset 13
+    try std.testing.expectEqualStrings("Foo", identifierAtOffset(tokens, 13).?);
+    try std.testing.expectEqualStrings("Foo", identifierAtOffset(tokens, 14).?); // middle of 'Foo'
+}
+
+test "identifierAtOffset returns null on keyword" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "public class Foo {}";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    // offset 0 = 'public' (keyword, not identifier)
+    try std.testing.expect(identifierAtOffset(tokens, 0) == null);
+}
+
+test "identifierAtOffset returns null between tokens" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "public class Foo {}";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    // offset 6 = space
+    try std.testing.expect(identifierAtOffset(tokens, 6) == null);
 }
