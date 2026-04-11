@@ -300,29 +300,40 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     defer buf.deinit(gpa);
     const writer = buf.writer(gpa);
 
-    // --- @salesforce/schema ---
+    // ファイルパスをソート済みで収集する（出力を決定的にするため）
+    const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
+        std.debug.print("error: cannot open '{s}': {s}\n", .{ root, @errorName(err) });
+        return 2;
+    };
+    var all_paths: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (all_paths.items) |p| gpa.free(p);
+        all_paths.deinit(gpa);
+    }
     {
-        buf.clearRetainingCapacity();
-        var schema_count: u32 = 0;
-        // objects/ ディレクトリを走査
-        var objects_path_buf: [4096]u8 = undefined;
-        const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
-            std.debug.print("error: cannot open '{s}': {s}\n", .{ root, @errorName(err) });
-            return 2;
-        };
-
-        // 再帰的に field-meta.xml を探す
         var walker = try root_dir.walk(gpa);
         defer walker.deinit();
         while (try walker.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
+            try all_paths.append(gpa, try gpa.dupe(u8, entry.path));
+        }
+    }
+    std.mem.sort([]const u8, all_paths.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
 
-            // オブジェクト名をパスから抽出: objects/<ObjName>/fields/<field>.field-meta.xml
-            const object_name = extractObjectName(entry.path) orelse continue;
+    // --- @salesforce/schema ---
+    {
+        buf.clearRetainingCapacity();
+        var schema_count: u32 = 0;
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".field-meta.xml")) continue;
 
-            // ファイルを読む
-            const field_xml = root_dir.readFileAlloc(gpa, entry.path, 64 * 1024) catch continue;
+            const object_name = extractObjectName(entry_path) orelse continue;
+            const field_xml = root_dir.readFileAlloc(gpa, entry_path, 64 * 1024) catch continue;
             defer gpa.free(field_xml);
 
             if (typegen.parseFieldMeta(field_xml, object_name)) |field| {
@@ -333,7 +344,8 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         }
 
         if (schema_count > 0) {
-            const out_path = std.fmt.bufPrint(&objects_path_buf, "{s}/schema.d.ts", .{out_dir}) catch unreachable;
+            var path_buf: [4096]u8 = undefined;
+            const out_path = std.fmt.bufPrint(&path_buf, "{s}/schema.d.ts", .{out_dir}) catch unreachable;
             try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
             std.debug.print("  schema.d.ts: {d} fields\n", .{schema_count});
             total_files += 1;
@@ -344,14 +356,11 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     {
         buf.clearRetainingCapacity();
         var label_count: u32 = 0;
-        const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return 2;
-        var walker = try root_dir.walk(gpa);
-        defer walker.deinit();
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".labels-meta.xml")) continue;
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".labels-meta.xml")) continue;
 
-            const xml = root_dir.readFileAlloc(gpa, entry.path, 4 * 1024 * 1024) catch continue;
+            const xml = root_dir.readFileAlloc(gpa, entry_path, 4 * 1024 * 1024) catch continue;
             defer gpa.free(xml);
 
             const names = try typegen.parseLabelNames(xml, gpa);
@@ -375,13 +384,8 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     // --- @salesforce/resourceUrl, messageChannel, contentAssetUrl ---
     // 公式と同じ: 1 リソースにつき 1 ファイル（{name}.{type}.d.ts）
     {
-        const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return 2;
-        var walker = try root_dir.walk(gpa);
-        defer walker.deinit();
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            const basename = entry.basename;
-
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
             const meta = parseMetaFilename(basename) orelse continue;
 
             buf.clearRetainingCapacity();
@@ -393,7 +397,6 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
                 try typegen.renderContentAssetUrl(meta.name, writer);
             } else continue;
 
-            // ファイル名: {name}.{type}.d.ts（公式と同一）
             var path_buf: [4096]u8 = undefined;
             const out_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}.d.ts", .{ out_dir, meta.name, meta.meta_type }) catch continue;
             try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
@@ -405,20 +408,15 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     {
         buf.clearRetainingCapacity();
         var method_count: u32 = 0;
-        const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return 2;
-        var walker = try root_dir.walk(gpa);
-        defer walker.deinit();
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".cls")) continue;
-            // クラス名: .cls を除去
-            const class_name = entry.basename[0 .. entry.basename.len - ".cls".len];
+        for (all_paths.items) |entry_path| {
+            const basename = std.fs.path.basename(entry_path);
+            if (!std.mem.endsWith(u8, basename, ".cls")) continue;
+            const class_name = basename[0 .. basename.len - ".cls".len];
             if (class_name.len == 0) continue;
 
-            const source = root_dir.readFileAlloc(gpa, entry.path, 1024 * 1024) catch continue;
+            const source = root_dir.readFileAlloc(gpa, entry_path, 1024 * 1024) catch continue;
             defer gpa.free(source);
 
-            // @AuraEnabled がなければスキップ（高速パス）
             if (std.ascii.indexOfIgnoreCase(source, "@AuraEnabled") == null) continue;
 
             const methods = try typegen.findAuraEnabledMethods(source, class_name, gpa);
