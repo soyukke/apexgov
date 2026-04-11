@@ -351,13 +351,13 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.basename, ".labels-meta.xml")) continue;
 
-            const xml = root_dir.readFileAlloc(gpa, entry.path, 256 * 1024) catch continue;
+            const xml = root_dir.readFileAlloc(gpa, entry.path, 4 * 1024 * 1024) catch continue;
             defer gpa.free(xml);
 
             const names = try typegen.parseLabelNames(xml, gpa);
             defer gpa.free(names);
-            for (names, 0..) |name, idx| {
-                if (idx > 0) try writer.writeByte('\n');
+            for (names) |name| {
+                if (label_count > 0) try writer.writeByte('\n');
                 try typegen.renderLabel(name, writer);
                 label_count += 1;
             }
