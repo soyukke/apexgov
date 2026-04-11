@@ -1115,3 +1115,75 @@ test "E2E: Double string concatenation format" {
     defer result.deinit();
     try std.testing.expectEqualStrings("10.0°C", result.value.string);
 }
+
+test "areEqual with custom message includes expected and actual" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const source =
+        \\public class T {
+        \\    public static void test() {
+        \\        Assert.areEqual(10, 20, 'counts should match');
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+    _ = eval.callMethod("T", "test", &.{}) catch {};
+
+    const msg = eval.assertion_failure orelse "";
+    // カスタムメッセージと expected/actual の両方が含まれること
+    try std.testing.expect(std.mem.indexOf(u8, msg, "counts should match") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "20") != null);
+}
+
+test "isTrue with custom message includes expected and actual" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const source =
+        \\public class T2 {
+        \\    public static void test() {
+        \\        Assert.isTrue(false, 'should be true');
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+    _ = eval.callMethod("T2", "test", &.{}) catch {};
+
+    const msg = eval.assertion_failure orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, msg, "should be true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Expected: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Actual: false") != null);
+}
+
+test "areNotEqual with custom message includes values" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const source =
+        \\public class T3 {
+        \\    public static void test() {
+        \\        Assert.areNotEqual(42, 42, 'values differ');
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+    _ = eval.callMethod("T3", "test", &.{}) catch {};
+
+    const msg = eval.assertion_failure orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, msg, "values differ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "42") != null);
+}

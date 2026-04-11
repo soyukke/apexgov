@@ -644,21 +644,58 @@ pub const Server = struct {
             return;
         };
 
+        // 失敗時は buf から [FAIL] 行を抽出して詳細メッセージを構築
+        var failure_detail: []const u8 = "";
+        if (suite.passed < suite.total) {
+            // buf から [FAIL] 行を探す
+            var lines = std.mem.splitScalar(u8, buf.items, '\n');
+            while (lines.next()) |line| {
+                if (std.mem.startsWith(u8, line, "[FAIL] ")) {
+                    // "[FAIL] Class#method: message" → "message" 部分を抽出
+                    if (std.mem.indexOf(u8, line[7..], ": ")) |colon_pos| {
+                        failure_detail = line[7 + colon_pos + 2 ..];
+                    } else {
+                        failure_detail = line[7..];
+                    }
+                    break;
+                }
+                if (std.mem.startsWith(u8, line, "[ERROR] ")) {
+                    if (std.mem.indexOf(u8, line[8..], ": ")) |colon_pos| {
+                        failure_detail = line[8 + colon_pos + 2 ..];
+                    } else {
+                        failure_detail = line[8..];
+                    }
+                    break;
+                }
+            }
+        }
+
         // 結果メッセージを構築
-        const msg = if (method_name) |mn|
-            try std.fmt.allocPrint(self.allocator, "{s}#{s}: {s} ({d}/{d} passed)", .{
+        const msg = if (method_name) |mn| blk: {
+            if (suite.passed < suite.total and failure_detail.len > 0) {
+                break :blk try std.fmt.allocPrint(self.allocator, "{s}#{s}: FAIL ({d}/{d} passed)\n{s}", .{
+                    class_name, mn, suite.passed, suite.total, failure_detail,
+                });
+            }
+            break :blk try std.fmt.allocPrint(self.allocator, "{s}#{s}: {s} ({d}/{d} passed)", .{
                 class_name,
                 mn,
                 if (suite.passed == suite.total) "PASS" else "FAIL",
                 suite.passed,
                 suite.total,
-            })
-        else
-            try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed", .{
+            });
+        } else blk: {
+            if (suite.passed < suite.total and failure_detail.len > 0) {
+                break :blk try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed\n{s}", .{
+                    class_name, suite.passed, suite.total, failure_detail,
+                });
+            }
+            break :blk try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed", .{
                 class_name,
                 suite.passed,
                 suite.total,
             });
+        };
         defer self.allocator.free(msg);
 
         try self.transport.sendNotification(self.allocator, "window/showMessage", types.ShowMessageParams{
