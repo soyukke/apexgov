@@ -97,6 +97,27 @@ zig build run -- emulate transpile examples/apex-validation/force-app/main/defau
 zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated --strict
 ```
 
+### `typegen`
+
+Generate LWC TypeScript type definitions from SFDX metadata. Org connection not required — fully offline.
+
+```bash
+zig build run -- typegen my-sfdx-project --out .sfdx/typings/lwc
+```
+
+Generated files:
+
+| Module | Source | Output |
+|---|---|---|
+| `@salesforce/schema/Obj.Field` | `*.field-meta.xml` | `schema.d.ts` |
+| `@salesforce/label/c.XXX` | `CustomLabels.labels-meta.xml` | `customlabels.d.ts` |
+| `@salesforce/resourceUrl/XXX` | `*.resource-meta.xml` | `{name}.resource.d.ts` |
+| `@salesforce/messageChannel/XXX__c` | `*.messageChannel-meta.xml` | `{name}.messageChannel.d.ts` |
+| `@salesforce/contentAssetUrl/XXX` | `*.asset-meta.xml` | `{name}.asset.d.ts` |
+| `@salesforce/apex/Class.method` | `*.cls` (`@AuraEnabled`) | `apex.d.ts` |
+
+Output for `resource`, `messageChannel`, `asset`, and `customlabels` is byte-identical with the official `@salesforce/lwc-language-server`. Files are processed in alphabetical path order for deterministic output.
+
 ## Configuration
 
 Copy `apexgov.toml.example` to `apexgov.toml` and tune budgets.
