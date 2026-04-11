@@ -1264,6 +1264,8 @@ pub fn dispatchInstance(ctx: *BuiltinContext, receiver: Value, method_name: []co
         .set => |set| return dispatchSetInstance(ctx, set, method_name, args),
         .object => |obj| return dispatchObjectInstance(ctx, obj, method_name, args),
         .sobject => |sob| return dispatchSObjectInstance(ctx, sob, method_name, args),
+        .double => |d| return dispatchDoubleInstance(ctx, d, method_name, args),
+        .integer => |i| return dispatchDoubleInstance(ctx, @floatFromInt(i), method_name, args),
         else => return null,
     }
 }
@@ -1273,6 +1275,50 @@ fn dispatchStringInstance(ctx: *BuiltinContext, s: []const u8, method_name: []co
     _ = args;
     if (std.ascii.eqlIgnoreCase(method_name, "length")) return Value{ .integer = @intCast(s.len) };
     return null; // Let evaluator handle more string methods
+}
+
+/// Double / Decimal インスタンスメソッド: setScale, doubleValue, intValue, round, abs 等
+fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8, args: []const Value) !?Value {
+    // setScale(scale) — 小数点以下桁数を丸める (Decimal)
+    if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
+        if (args.len > 0) {
+            const scale: i64 = switch (args[0]) {
+                .integer => |i| i,
+                .double => |dv| @intFromFloat(dv),
+                else => 0,
+            };
+            if (scale >= 0 and scale <= 18) {
+                const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
+                return Value{ .double = @round(d * factor) / factor };
+            }
+        }
+        return Value{ .double = d };
+    }
+    // doubleValue()
+    if (std.ascii.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
+    // intValue()
+    if (std.ascii.eqlIgnoreCase(method_name, "intValue")) return Value{ .integer = @intFromFloat(d) };
+    // longValue()
+    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .integer = @intFromFloat(d) };
+    // round()
+    if (std.ascii.eqlIgnoreCase(method_name, "round")) return Value{ .integer = @intFromFloat(@round(d)) };
+    // abs()
+    if (std.ascii.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
+    // format()
+    if (std.ascii.eqlIgnoreCase(method_name, "format")) {
+        return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d}", .{d}) };
+    }
+    // stripTrailingZeros() — 値自体は変わらない（文字列変換時に効く）
+    if (std.ascii.eqlIgnoreCase(method_name, "stripTrailingZeros")) return Value{ .double = d };
+    // scale() — 小数点以下の桁数を返す
+    if (std.ascii.eqlIgnoreCase(method_name, "scale")) {
+        const s = try std.fmt.allocPrint(ctx.arena, "{d}", .{d});
+        if (std.mem.indexOf(u8, s, ".")) |dot| {
+            return Value{ .integer = @intCast(s.len - dot - 1) };
+        }
+        return Value{ .integer = 0 };
+    }
+    return null;
 }
 
 fn dispatchListInstance(ctx: *BuiltinContext, list: *types.ListValue, method_name: []const u8, args: []const Value) !?Value {

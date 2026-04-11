@@ -166,15 +166,15 @@ pub const CustomFieldRegistry = struct {
     /// ワークスペースの objects/ ディレクトリからカスタムフィールドを読み込む。
     pub fn loadFromWorkspace(self: *CustomFieldRegistry, workspace_path: []const u8) !void {
         const alloc = self.arena.allocator();
+        const sfdx_project = @import("sfdx_project.zig");
 
-        // sfdx-project.json と同階層の force-app/main/default/objects を探す
-        const search_dirs = [_][]const u8{
-            "force-app/main/default/objects",
-            "src/main/default/objects",
-        };
+        // sfdx-project.json の packageDirectories からソースルートを動的に解決
+        const pkg_dirs = try sfdx_project.resolvePackageDirs(alloc, workspace_path);
+        // arena で確保しているため個別 free は不要
 
-        for (&search_dirs) |rel_dir| {
-            const objects_path = try std.fs.path.join(alloc, &.{ workspace_path, rel_dir });
+        const objects_dirs = try sfdx_project.resolveSubDirs(alloc, pkg_dirs, "main/default/objects");
+
+        for (objects_dirs) |objects_path| {
             var dir = std.fs.openDirAbsolute(objects_path, .{ .iterate = true }) catch continue;
             defer dir.close();
 

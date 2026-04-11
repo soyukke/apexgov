@@ -607,41 +607,32 @@ pub const Server = struct {
 
     fn runTestAndNotify(self: *Server, ws_root: []const u8, class_name: []const u8, method_name: ?[]const u8) !void {
         const interpret = @import("../interpret/root.zig");
+        const sfdx_project = @import("sfdx_project.zig");
 
-        // SFDX ソースルート解決
-        const search_dirs = [_][]const u8{
-            "force-app/main/default/classes",
-            "src/main/default/classes",
-            "force-app",
-        };
-
-        var test_paths: std.ArrayList([]const u8) = .empty;
-        defer test_paths.deinit(self.allocator);
-
-        for (&search_dirs) |rel_dir| {
-            const full_path = try std.fs.path.join(self.allocator, &.{ ws_root, rel_dir });
-            defer self.allocator.free(full_path);
-            if (std.fs.openDirAbsolute(full_path, .{})) |dir| {
-                var d = dir;
-                d.close();
-                try test_paths.append(self.allocator, try self.allocator.dupe(u8, full_path));
-            } else |_| {}
-        }
-
-        // フォールバック: ソースルートが見つからなければ workspace_root 自体を使用
-        if (test_paths.items.len == 0) {
-            try test_paths.append(self.allocator, try self.allocator.dupe(u8, ws_root));
-        }
+        // sfdx-project.json から packageDirectories を解決
+        const pkg_dirs = try sfdx_project.resolvePackageDirs(self.allocator, ws_root);
         defer {
-            for (test_paths.items) |p| self.allocator.free(p);
+            for (pkg_dirs) |p| self.allocator.free(p);
+            self.allocator.free(pkg_dirs);
         }
+
+        // 各パッケージディレクトリ配下の classes/ サブディレクトリを探索
+        const classes_dirs = try sfdx_project.resolveSubDirs(self.allocator, pkg_dirs, "main/default/classes");
+        defer {
+            for (classes_dirs) |p| self.allocator.free(p);
+            self.allocator.free(classes_dirs);
+        }
+
+        // classes/ が見つかればそれを使い、無ければパッケージディレクトリ自体を使用
+        const test_paths = if (classes_dirs.len > 0) classes_dirs else pkg_dirs;
+        // NOTE: test_paths は classes_dirs か pkg_dirs のどちらかを参照するだけなので別途解放不要
 
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
         const suite = interpret.runSingleTest(
             self.allocator,
-            test_paths.items,
+            test_paths,
             class_name,
             method_name,
             buf.writer(self.allocator),
