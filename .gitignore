@@ -30,4 +30,6 @@ result
 .local-fixtures/
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/local-fixtures/
