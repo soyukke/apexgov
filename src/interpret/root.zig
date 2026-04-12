@@ -2158,6 +2158,32 @@ test "AuraHandledException is caught in try-catch" {
     try std.testing.expect(eval.assertion_failure == null);
 }
 
+test "Type.forName returns null for non-existent class" {
+    const source =
+        \\public class TypeForNameTest {
+        \\    public static void testForName() {
+        \\        System.assertEquals(null, Type.forName('NonExistentClass'));
+        \\        System.assertEquals(null, Type.forName('Outer.NonExistentInner'));
+        \\        System.assertNotEquals(null, Type.forName('Map<Id,Account>'));
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("TypeForNameTest", "testForName", &.{}) catch |e| {
+        std.debug.print("Type.forName test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
 test "Trigger recursion does not StackOverflow" {
     const source =
         \\trigger AccountTrigger on Account (after insert, after update) {

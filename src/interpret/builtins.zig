@@ -842,10 +842,67 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // Type.forName → return a type object stub
     if (std.ascii.eqlIgnoreCase(class_name, "Type") and std.ascii.eqlIgnoreCase(method_name, "forName")) {
         if (args.len > 0 and args[0] == .string) {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Type" };
-            try obj.fields.put(ctx.arena, "name", args[0]);
-            return Value{ .object = obj };
+            const requested = args[0].string;
+            // Collection types (Map<...>, List<...>, Set<...>) always resolve
+            if (std.ascii.startsWithIgnoreCase(requested, "Map") or
+                std.ascii.startsWithIgnoreCase(requested, "List") or
+                std.ascii.startsWithIgnoreCase(requested, "Set"))
+            {
+                const obj = try ctx.arena.create(types.ObjectInstance);
+                obj.* = .{ .class_name = "Type" };
+                try obj.fields.put(ctx.arena, "name", args[0]);
+                return Value{ .object = obj };
+            }
+            // Check if the class actually exists in the evaluator's class registry
+            // Support dotted names like "TestFactoryDefaults.AccountDefaults" → check outer class "TestFactoryDefaults"
+            const lookup_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+                requested[0..dot]
+            else
+                requested;
+            // Check inner class name (after dot)
+            const inner_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+                requested[dot + 1 ..]
+            else
+                "";
+            const cd_opt: ?*ast.ClassDecl = blk: {
+                // Try exact match first
+                if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
+                // Try case-insensitive match
+                var it = ctx.eval.classes.iterator();
+                while (it.next()) |e| {
+                    if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
+                }
+                break :blk null;
+            };
+            if (cd_opt) |cd| {
+                // If there's an inner class name, verify it exists as a nested class/interface
+                if (inner_name.len > 0) {
+                    var found_inner = false;
+                    for (cd.members) |member| {
+                        switch (member) {
+                            .class_decl => |inner_cd| {
+                                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
+                                    found_inner = true;
+                                    break;
+                                }
+                            },
+                            .interface_decl => |iface| {
+                                if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) {
+                                    found_inner = true;
+                                    break;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    if (!found_inner) return Value.null_val;
+                }
+                const obj = try ctx.arena.create(types.ObjectInstance);
+                obj.* = .{ .class_name = "Type" };
+                try obj.fields.put(ctx.arena, "name", args[0]);
+                return Value{ .object = obj };
+            }
+            return Value.null_val;
         }
         return Value.null_val;
     }
