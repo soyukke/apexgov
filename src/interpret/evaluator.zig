@@ -39,6 +39,8 @@ pub const Evaluator = struct {
     callout_mock: ?Value = null,
     // Current class name for static field resolution
     current_class: ?[]const u8 = null,
+    // Property getter currently being evaluated (to prevent infinite recursion in self-referencing getters)
+    evaluating_getter: ?[]const u8 = null,
     // JSON round-trip: store last serialized value for deserialize
     last_json_value: ?Value = null,
     // SOSL fixed search results (set by Test.setFixedSearchResults)
@@ -194,6 +196,48 @@ pub const Evaluator = struct {
         try profile.fields.put(self.arena, "Id", Value{ .string = "00e000000000001" });
         try profile.fields.put(self.arena, "Name", Value{ .string = "System Administrator" });
         return Value{ .sobject = profile };
+    }
+
+    /// Seed synthetic RecordType records into the store for all known SObject types.
+    /// IDs are kept in sync with createRecordTypeInfo/createDescribeResult in builtins.zig.
+    fn seedRecordTypeStore(self: *Evaluator) !void {
+        const gop = try self.store.getOrPut(self.arena, "RecordType");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        if (gop.value_ptr.items.len > 0) return; // already seeded
+
+        // Each SObject type gets a Master RecordType with a unique ID based on index.
+        // Account additionally gets a "Default" record type.
+        const known_types = [_][]const u8{
+            "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
+            "Solution", "Campaign", "Event",
+        };
+        for (known_types, 0..) |obj_name, idx| {
+            // Master RecordType — unique ID per SObject type
+            const master = try self.arena.create(types.SObject);
+            master.* = .{ .type_name = "RecordType" };
+            const master_id = try std.fmt.allocPrint(self.arena, "0120000000000{d:0>2}AAA", .{idx});
+            master.id = master_id;
+            try master.fields.put(self.arena, "Id", Value{ .string = master_id });
+            try master.fields.put(self.arena, "Name", Value{ .string = "Master" });
+            try master.fields.put(self.arena, "DeveloperName", Value{ .string = "Master" });
+            try master.fields.put(self.arena, "SobjectType", Value{ .string = obj_name });
+            try master.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+            try gop.value_ptr.append(self.arena, Value{ .sobject = master });
+
+            // Account gets an additional "Default" RecordType
+            if (std.ascii.eqlIgnoreCase(obj_name, "Account")) {
+                const default_rt = try self.arena.create(types.SObject);
+                default_rt.* = .{ .type_name = "RecordType" };
+                const def_id = "012000000000010AAA";
+                default_rt.id = def_id;
+                try default_rt.fields.put(self.arena, "Id", Value{ .string = def_id });
+                try default_rt.fields.put(self.arena, "Name", Value{ .string = "Default" });
+                try default_rt.fields.put(self.arena, "DeveloperName", Value{ .string = "Default" });
+                try default_rt.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
+                try default_rt.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+                try gop.value_ptr.append(self.arena, Value{ .sobject = default_rt });
+            }
+        }
     }
 
     /// Re-initialize static fields for a single class (test class reset)
@@ -2089,7 +2133,7 @@ pub const Evaluator = struct {
             }
         }
 
-        // Seed synthetic records for User/Profile if none exist in store
+        // Seed synthetic records for User/Profile/RecordType if none exist in store
         if (records.items.len == 0 and self.store.get(from_type) == null) {
             if (std.ascii.eqlIgnoreCase(from_type, "User")) {
                 const user_record = try self.createCurrentUserRecord();
@@ -2097,6 +2141,20 @@ pub const Evaluator = struct {
             } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
                 const profile_record = try self.createDefaultProfileRecord();
                 try records.append(self.arena, profile_record);
+            } else if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
+                // Seed RecordType records into the store, then filter by WHERE clause
+                try self.seedRecordTypeStore();
+                // Re-scan store for matching records
+                if (self.store.get("RecordType")) |rt_records| {
+                    for (rt_records.items) |record| {
+                        if (self.matchesWhere(record, soql, current_env)) {
+                            if (record == .sobject) {
+                                const copy = try self.cloneSObject(record.sobject);
+                                try records.append(self.arena, Value{ .sobject = copy });
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -3483,6 +3541,39 @@ pub const Evaluator = struct {
                 }
                 // Check current_class static fields (for static methods)
                 if (self.current_class) |cc| {
+                    // Check for static property getter (skip if we're already inside this getter to avoid recursion)
+                    const already_in_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
+                    if (!already_in_getter) {
+                        if (self.findClass(cc)) |cd| {
+                            for (cd.members) |member| {
+                                switch (member) {
+                                    .field_decl => |fd| {
+                                        if (fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, id.name) and fd.getter_body != null) {
+                                            // Execute static getter
+                                            const getter_env = self.global_env.child() catch return Value.null_val;
+                                            const saved_class = self.current_class;
+                                            const saved_getter = self.evaluating_getter;
+                                            self.current_class = cc;
+                                            self.evaluating_getter = id.name;
+                                            defer {
+                                                self.current_class = saved_class;
+                                                self.evaluating_getter = saved_getter;
+                                            }
+                                            const result = self.execBlock(fd.getter_body.?, getter_env) catch |err| {
+                                                if (err == error.StackOverflow) return Value.null_val;
+                                                return err;
+                                            };
+                                            return switch (result) {
+                                                .return_val => |v| v,
+                                                else => self.return_value,
+                                            };
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    }
                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch return .null_val;
                     if (self.global_env.get(key)) |val| return val;
                     // Check parent class too
@@ -4130,6 +4221,35 @@ pub const Evaluator = struct {
                 if (current_env.get(class_name)) |v| break :blk v;
                 // Also check current_class static fields (e.g., handler stored as ClassName.handler)
                 if (self.current_class) |cc| {
+                    // Check for static property getter first
+                    const already_in_getter2 = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, class_name) else false;
+                    if (!already_in_getter2) {
+                        if (self.findClass(cc)) |cd| {
+                            for (cd.members) |member| {
+                                switch (member) {
+                                    .field_decl => |fd| {
+                                        if (fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, class_name) and fd.getter_body != null) {
+                                            const getter_env2 = self.global_env.child() catch break :blk Value.null_val;
+                                            const saved_class2 = self.current_class;
+                                            const saved_getter2 = self.evaluating_getter;
+                                            self.current_class = cc;
+                                            self.evaluating_getter = class_name;
+                                            defer {
+                                                self.current_class = saved_class2;
+                                                self.evaluating_getter = saved_getter2;
+                                            }
+                                            const result2 = self.execBlock(fd.getter_body.?, getter_env2) catch break :blk Value.null_val;
+                                            break :blk switch (result2) {
+                                                .return_val => |v| v,
+                                                else => self.return_value,
+                                            };
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    }
                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch break :blk Value.null_val;
                     if (self.global_env.get(key)) |v| break :blk v;
                 }
@@ -5265,6 +5385,29 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(type_name, nst)) {
                 const instance = try self.arena.create(types.ObjectInstance);
                 instance.* = .{ .class_name = type_name };
+
+                // SelectOption constructor: (value, label) or (value, label, disabled)
+                if (std.ascii.eqlIgnoreCase(type_name, "SelectOption")) {
+                    if (ne.args.len >= 2) {
+                        var arg0_copy = ne.args[0];
+                        var arg1_copy = ne.args[1];
+                        const val = try self.evalExpr(&arg0_copy, current_env);
+                        const label = try self.evalExpr(&arg1_copy, current_env);
+                        const val_str = try utils.coerceToString(val, self.arena);
+                        const label_str = try utils.coerceToString(label, self.arena);
+                        try instance.fields.put(self.arena, "value", Value{ .string = val_str });
+                        try instance.fields.put(self.arena, "label", Value{ .string = label_str });
+                        if (ne.args.len >= 3) {
+                            var arg2_copy = ne.args[2];
+                            const disabled = try self.evalExpr(&arg2_copy, current_env);
+                            try instance.fields.put(self.arena, "disabled", disabled);
+                        } else {
+                            try instance.fields.put(self.arena, "disabled", Value{ .boolean = false });
+                        }
+                    }
+                    return Value{ .object = instance };
+                }
+
                 // If args contain a message (exception pattern)
                 if (ne.args.len > 0) {
                     var arg_copy = ne.args[0];
