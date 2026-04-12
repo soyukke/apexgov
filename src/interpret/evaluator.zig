@@ -208,7 +208,7 @@ pub const Evaluator = struct {
         // Each SObject type gets a Master RecordType with a unique ID based on index.
         // Account additionally gets a "Default" record type.
         const known_types = [_][]const u8{
-            "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User",
+            "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
             "Solution", "Campaign", "Event",
         };
         for (known_types, 0..) |obj_name, idx| {

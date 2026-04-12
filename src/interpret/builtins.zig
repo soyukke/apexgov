@@ -610,8 +610,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             map.* = .{};
             // Populate common SObject types as Schema.SObjectType values
             const known_types = [_][]const u8{
-                "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User",
-                "Solution", "Campaign", "Event", "ContentDocument", "ContentVersion",
+                "Account",  "Contact",  "Opportunity", "Task",            "Lead",           "Case", "User",
+                "Solution", "Campaign", "Event",       "ContentDocument", "ContentVersion",
             };
             for (known_types) |obj_name| {
                 const sot = try ctx.arena.create(types.ObjectInstance);
@@ -626,8 +626,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
             // Returns a list of DescribeSObjectResult
             const known_types = [_][]const u8{
-                "account", "contact", "opportunity", "task", "lead", "case", "user",
-                "solution", "campaign", "event", "contentdocument", "contentversion",
+                "account",  "contact",  "opportunity", "task",            "lead",           "case", "user",
+                "solution", "campaign", "event",       "contentdocument", "contentversion",
             };
             const list = try ctx.arena.create(types.ListValue);
             list.* = .{};
@@ -1359,7 +1359,7 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
 
     // Determine index for this object type to generate stable, unique IDs
     const known_types = [_][]const u8{
-        "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User",
+        "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
         "Solution", "Campaign", "Event",
     };
     var obj_idx: usize = 99; // fallback for unknown types
