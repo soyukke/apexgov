@@ -1299,6 +1299,11 @@ pub const Evaluator = struct {
             }
         }
 
+        // Auto-set OwnerId to current user if not specified (Salesforce default)
+        if (utils.sobjectGet(&obj.fields, "OwnerId") == null) {
+            try obj.fields.put(self.arena, "OwnerId", Value{ .string = "005000000000001" });
+        }
+
         // Resolve relationship fields → set foreign key Ids
         // e.g., Contact.Account = accountRef → Contact.AccountId = accountRef.Id
         {
@@ -1375,10 +1380,10 @@ pub const Evaluator = struct {
             }
         }
 
-        // Auto-create ContentDocumentLink when ContentVersion is inserted
+        // Auto-create ContentDocument when ContentVersion is inserted (Salesforce always creates one)
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
             const first_pub_loc = utils.sobjectGet(&obj.fields, "FirstPublishLocationId");
-            if (first_pub_loc != null and first_pub_loc.? != .null_val) {
+            {
                 // Create ContentDocument
                 const cd_id = try self.allocId();
                 const cd = try self.arena.create(types.SObject);
@@ -1396,23 +1401,25 @@ pub const Evaluator = struct {
                 // Store ContentDocumentId on the ContentVersion
                 try obj.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
                 try snapshot.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
-                // Create ContentDocumentLink
-                const cdl_id = try self.allocId();
-                const cdl = try self.arena.create(types.SObject);
-                cdl.* = .{ .type_name = "ContentDocumentLink", .id = cdl_id };
-                try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
-                try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
-                try cdl.fields.put(self.arena, "LinkedEntityId", first_pub_loc.?);
-                // Nested ContentDocument reference for SOQL
-                const cd_ref = try self.arena.create(types.SObject);
-                cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
-                try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
-                try cd_ref.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
-                try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
-                try cdl.fields.put(self.arena, "ContentDocument", Value{ .sobject = cd_ref });
-                const cdl_gop = try self.store.getOrPut(self.arena, "ContentDocumentLink");
-                if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
-                try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
+                // Create ContentDocumentLink only if FirstPublishLocationId is set
+                if (first_pub_loc != null and first_pub_loc.? != .null_val) {
+                    const cdl_id = try self.allocId();
+                    const cdl = try self.arena.create(types.SObject);
+                    cdl.* = .{ .type_name = "ContentDocumentLink", .id = cdl_id };
+                    try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
+                    try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+                    try cdl.fields.put(self.arena, "LinkedEntityId", first_pub_loc.?);
+                    // Nested ContentDocument reference for SOQL
+                    const cd_ref = try self.arena.create(types.SObject);
+                    cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
+                    try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
+                    try cd_ref.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
+                    try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
+                    try cdl.fields.put(self.arena, "ContentDocument", Value{ .sobject = cd_ref });
+                    const cdl_gop = try self.store.getOrPut(self.arena, "ContentDocumentLink");
+                    if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
+                    try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
+                }
             }
         }
     }
@@ -3084,7 +3091,13 @@ pub const Evaluator = struct {
             }
             return null;
         }
-        // Standard: Account → Account, Contact → Contact
+        // Standard relationship → SObject type mapping
+        if (std.ascii.eqlIgnoreCase(ref, "Owner") or
+            std.ascii.eqlIgnoreCase(ref, "CreatedBy") or
+            std.ascii.eqlIgnoreCase(ref, "LastModifiedBy"))
+        {
+            return "User";
+        }
         return ref;
     }
 
@@ -3102,6 +3115,10 @@ pub const Evaluator = struct {
                 }
                 return null;
             }
+        }
+        // Fallback: for User type, return synthetic user if id matches UserInfo.getUserId()
+        if (std.ascii.eqlIgnoreCase(type_name, "User") and std.ascii.eqlIgnoreCase(id, "005000000000001")) {
+            return self.createCurrentUserRecord() catch null;
         }
         return null;
     }
