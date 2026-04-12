@@ -1934,6 +1934,9 @@ pub const Evaluator = struct {
         // Apply parent field lookups: Account.Name, parent__r.Name
         try self.applyParentFieldLookups(soql, from_type, &records);
 
+        // Resolve formula-like fields: <Relationship>_Name__c → parent.Name
+        try self.resolveFormulaFields(soql, &records);
+
         // Apply ORDER BY
         if (extractOrderByField(soql)) |order_info| {
             const field_name = order_info.field;
@@ -2823,6 +2826,50 @@ pub const Evaluator = struct {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// SOQL SELECT 内の数式フィールド（<Relationship>_<Field>__c）を FK 経由で親から解決する。
+    /// 例: Experience_Name__c → Experience__c FK → 親の Name
+    fn resolveFormulaFields(self: *Evaluator, soql: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
+        const select_clause = extractParentFields(soql) orelse return;
+        var iter = std.mem.splitScalar(u8, select_clause, ',');
+        while (iter.next()) |field_part| {
+            const trimmed = std.mem.trim(u8, field_part, " \t\n\r");
+            // Skip dotted fields (already handled) and sub-queries
+            if (std.mem.indexOf(u8, trimmed, ".") != null) continue;
+            if (trimmed.len > 0 and trimmed[0] == '(') continue;
+            // Pattern: <Prefix>_<Suffix>__c where <Prefix>__c is a FK and <Suffix> is a parent field
+            // e.g. Experience_Name__c → FK=Experience__c, parent field=Name
+            if (!std.mem.endsWith(u8, trimmed, "__c")) continue;
+            const base = trimmed[0 .. trimmed.len - 3]; // strip __c
+            // Find underscore separator (last one before __c)
+            const sep_pos = std.mem.lastIndexOfScalar(u8, base, '_') orelse continue;
+            if (sep_pos == 0) continue;
+            const parent_prefix = base[0..sep_pos]; // "Experience"
+            const field_suffix = base[sep_pos + 1 ..]; // "Name"
+            // Construct FK field: Experience__c
+            const fk_field = try std.fmt.allocPrint(self.arena, "{s}__c", .{parent_prefix});
+
+            for (records.items) |*rec| {
+                if (rec.* != .sobject) continue;
+                // Skip if field already has a non-null value
+                if (utils.sobjectGet(&rec.sobject.fields, trimmed)) |existing| {
+                    if (existing != .null_val) continue;
+                }
+                // Look up FK
+                const fk_val = utils.sobjectGet(&rec.sobject.fields, fk_field) orelse continue;
+                if (fk_val != .string) continue;
+                // Find parent type
+                const parent_type = self.findRecordTypeById(fk_val.string) orelse continue;
+                // Find parent record
+                const parent_rec = self.findRecordById(parent_type, fk_val.string) orelse continue;
+                if (parent_rec != .sobject) continue;
+                // Copy the field from parent
+                if (utils.sobjectGet(&parent_rec.sobject.fields, field_suffix)) |val| {
+                    try rec.sobject.fields.put(self.arena, trimmed, val);
                 }
             }
         }

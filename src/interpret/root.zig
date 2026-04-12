@@ -1351,6 +1351,57 @@ test "E2E: Database.query resolves local bind variables" {
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
+test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
+    const source =
+        \\public class FormulaFieldTest {
+        \\    public static String test() {
+        \\        Experience__c exp = new Experience__c(Name = 'Hiking');
+        \\        insert exp;
+        \\        Session__c sess = new Session__c(Experience__c = exp.Id);
+        \\        insert sess;
+        \\        List<Session__c> results = [
+        \\            SELECT Experience_Name__c FROM Session__c
+        \\        ];
+        \\        if (results.size() == 0) return 'empty';
+        \\        Session__c s = results[0];
+        \\        Object val = s.get('Experience_Name__c');
+        \\        return val != null ? String.valueOf(val) : 'null';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FormulaFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: SOQL parent relationship field in WHERE" {
+    const source =
+        \\public class SoqlParentRefTest {
+        \\    public static String test() {
+        \\        Experience__c exp = new Experience__c(Name = 'Hiking', Type__c = 'Adventure');
+        \\        insert exp;
+        \\        Session__c sess = new Session__c(Experience__c = exp.Id);
+        \\        insert sess;
+        \\        String interest = 'Adventure';
+        \\        List<Session__c> results = [
+        \\            SELECT Id FROM Session__c
+        \\            WHERE Experience__r.Type__c = :interest
+        \\        ];
+        \\        return String.valueOf(results.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SoqlParentRefTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
 test "E2E: null != empty string is true" {
     const source =
         \\public class NullNeqTest {
