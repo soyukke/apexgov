@@ -1299,6 +1299,11 @@ pub const Evaluator = struct {
             }
         }
 
+        // Auto-set OwnerId to current user if not specified (Salesforce default)
+        if (utils.sobjectGet(&obj.fields, "OwnerId") == null) {
+            try obj.fields.put(self.arena, "OwnerId", Value{ .string = "005000000000001" });
+        }
+
         // Resolve relationship fields → set foreign key Ids
         // e.g., Contact.Account = accountRef → Contact.AccountId = accountRef.Id
         {
@@ -3086,7 +3091,13 @@ pub const Evaluator = struct {
             }
             return null;
         }
-        // Standard: Account → Account, Contact → Contact
+        // Standard relationship → SObject type mapping
+        if (std.ascii.eqlIgnoreCase(ref, "Owner") or
+            std.ascii.eqlIgnoreCase(ref, "CreatedBy") or
+            std.ascii.eqlIgnoreCase(ref, "LastModifiedBy"))
+        {
+            return "User";
+        }
         return ref;
     }
 
@@ -3104,6 +3115,10 @@ pub const Evaluator = struct {
                 }
                 return null;
             }
+        }
+        // Fallback: for User type, return synthetic user if id matches UserInfo.getUserId()
+        if (std.ascii.eqlIgnoreCase(type_name, "User") and std.ascii.eqlIgnoreCase(id, "005000000000001")) {
+            return self.createCurrentUserRecord() catch null;
         }
         return null;
     }
