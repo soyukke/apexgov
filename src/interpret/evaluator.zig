@@ -4423,8 +4423,14 @@ pub const Evaluator = struct {
             } else 0;
             var h: i32 = @as(i32, dt.h) + delta;
             var day_offset: i32 = 0;
-            while (h >= 24) { h -= 24; day_offset += 1; }
-            while (h < 0) { h += 24; day_offset -= 1; }
+            while (h >= 24) {
+                h -= 24;
+                day_offset += 1;
+            }
+            while (h < 0) {
+                h += 24;
+                day_offset -= 1;
+            }
             // 日のオーバーフローは簡易的に addDays で処理
             if (day_offset != 0) {
                 const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
