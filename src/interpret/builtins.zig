@@ -608,25 +608,68 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "getGlobalDescribe")) {
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
-            // Populate common SObject types
-            for ([_][]const u8{ "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User" }) |obj_name| {
-                const desc = try createDescribeResult(ctx, obj_name);
-                try map.entries.put(ctx.arena, obj_name, desc);
+            // Populate common SObject types as Schema.SObjectType values
+            const known_types = [_][]const u8{
+                "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User",
+                "Solution", "Campaign", "Event", "ContentDocument", "ContentVersion",
+            };
+            for (known_types) |obj_name| {
+                const sot = try ctx.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
+                // Use lowercase key for case-insensitive lookup compatibility
+                const lower_key = try std.ascii.allocLowerString(ctx.arena, obj_name);
+                try map.entries.put(ctx.arena, lower_key, Value{ .object = sot });
             }
             return Value{ .map = map };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
             // Returns a list of DescribeSObjectResult
+            const known_types = [_][]const u8{
+                "account", "contact", "opportunity", "task", "lead", "case", "user",
+                "solution", "campaign", "event", "contentdocument", "contentversion",
+            };
             const list = try ctx.arena.create(types.ListValue);
             list.* = .{};
             if (args.len > 0 and args[0] == .list) {
                 for (args[0].list.items.items) |item| {
                     const obj_name = if (item == .string) item.string else "Object";
+                    // Validate that the object exists
+                    const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
+                    var found = false;
+                    for (known_types) |kt| {
+                        if (std.mem.eql(u8, lower, kt)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    // Also check custom objects (ending in __c, __e, __mdt)
+                    if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
+                        !std.mem.endsWith(u8, obj_name, "__e") and
+                        !std.mem.endsWith(u8, obj_name, "__mdt"))
+                    {
+                        return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
+                    }
                     const desc = try createDescribeResult(ctx, obj_name);
                     try list.items.append(ctx.arena, desc);
                 }
             } else if (args.len > 0 and args[0] == .string) {
-                const desc = try createDescribeResult(ctx, args[0].string);
+                const obj_name = args[0].string;
+                const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
+                var found = false;
+                for (known_types) |kt| {
+                    if (std.mem.eql(u8, lower, kt)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
+                    !std.mem.endsWith(u8, obj_name, "__e") and
+                    !std.mem.endsWith(u8, obj_name, "__mdt"))
+                {
+                    return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
+                }
+                const desc = try createDescribeResult(ctx, obj_name);
                 try list.items.append(ctx.arena, desc);
             }
             return Value{ .list = list };
@@ -1300,7 +1343,64 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
+    // Label: use the name as label (real Apex returns a human-readable label)
+    try desc.fields.put(ctx.arena, "label", Value{ .string = obj_name });
+
+    // isCustom: objects ending with __c or __e are custom
+    const is_custom = std.mem.endsWith(u8, obj_name, "__c") or std.mem.endsWith(u8, obj_name, "__e") or std.mem.endsWith(u8, obj_name, "__mdt");
+    try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
+
+    // RecordTypeInfos: Every SObject has at least a Master RecordType.
+    // IDs must be kept in sync with seedRecordTypeStore in evaluator.zig.
+    const rt_list = try ctx.arena.create(types.ListValue);
+    rt_list.* = .{};
+    const rt_by_id_map = try ctx.arena.create(types.MapValue);
+    rt_by_id_map.* = .{};
+
+    // Determine index for this object type to generate stable, unique IDs
+    const known_types = [_][]const u8{
+        "Account", "Contact", "Opportunity", "Task", "Lead", "Case", "User",
+        "Solution", "Campaign", "Event",
+    };
+    var obj_idx: usize = 99; // fallback for unknown types
+    for (known_types, 0..) |kt, i| {
+        if (std.ascii.eqlIgnoreCase(obj_name, kt)) {
+            obj_idx = i;
+            break;
+        }
+    }
+    const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
+
+    // Master RecordType (always present)
+    const master_rt = try createRecordTypeInfo(ctx, "Master", "Master", master_rt_id, true, true, true, true);
+    try rt_list.items.append(ctx.arena, master_rt);
+    try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
+
+    // Account gets an additional "Default" record type for testing
+    if (std.ascii.eqlIgnoreCase(obj_name, "Account")) {
+        const def_rt_id = "012000000000010AAA";
+        const default_rt = try createRecordTypeInfo(ctx, "Default", "Default", def_rt_id, false, true, true, false);
+        try rt_list.items.append(ctx.arena, default_rt);
+        try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
+    }
+
+    try desc.fields.put(ctx.arena, "recordTypeInfos", Value{ .list = rt_list });
+    try desc.fields.put(ctx.arena, "recordTypeInfosById", Value{ .map = rt_by_id_map });
+
     return Value{ .object = desc };
+}
+
+fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []const u8, rt_id: []const u8, is_master: bool, is_active: bool, is_available: bool, is_default: bool) !Value {
+    const rti = try ctx.arena.create(types.ObjectInstance);
+    rti.* = .{ .class_name = "Schema.RecordTypeInfo" };
+    try rti.fields.put(ctx.arena, "name", Value{ .string = name });
+    try rti.fields.put(ctx.arena, "developerName", Value{ .string = dev_name });
+    try rti.fields.put(ctx.arena, "recordTypeId", Value{ .string = rt_id });
+    try rti.fields.put(ctx.arena, "master", Value{ .boolean = is_master });
+    try rti.fields.put(ctx.arena, "active", Value{ .boolean = is_active });
+    try rti.fields.put(ctx.arena, "available", Value{ .boolean = is_available });
+    try rti.fields.put(ctx.arena, "defaultRecordTypeMapping", Value{ .boolean = is_default });
+    return Value{ .object = rti };
 }
 
 fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Value {
@@ -1993,6 +2093,97 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
             return obj.fields.get("name") orelse Value{ .string = "Object" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
+            return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
+            return obj.fields.get("recordTypeInfos") orelse blk: {
+                const empty = try ctx.arena.create(types.ListValue);
+                empty.* = .{};
+                break :blk Value{ .list = empty };
+            };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById")) {
+            return obj.fields.get("recordTypeInfosById") orelse blk: {
+                const empty = try ctx.arena.create(types.MapValue);
+                empty.* = .{};
+                break :blk Value{ .map = empty };
+            };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName")) {
+            // Build Map<String, RecordTypeInfo> from the list
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            if (obj.fields.get("recordTypeInfos")) |rti_list_val| {
+                if (rti_list_val == .list) {
+                    for (rti_list_val.list.items.items) |rti_val| {
+                        if (rti_val == .object) {
+                            if (rti_val.object.fields.get("developerName")) |dn| {
+                                if (dn == .string) {
+                                    try map.entries.put(ctx.arena, dn.string, rti_val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Value{ .map = map };
+        }
+    }
+
+    // Schema.RecordTypeInfo methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.RecordTypeInfo") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "RecordTypeInfo"))
+    {
+        if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+            return obj.fields.get("name") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getDeveloperName")) {
+            return obj.fields.get("developerName") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeId")) {
+            return obj.fields.get("recordTypeId") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isMaster")) {
+            return obj.fields.get("master") orelse Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isActive")) {
+            return obj.fields.get("active") orelse Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isAvailable")) {
+            return obj.fields.get("available") orelse Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isDefaultRecordTypeMapping")) {
+            return obj.fields.get("defaultRecordTypeMapping") orelse Value{ .boolean = false };
+        }
+    }
+
+    // SelectOption methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "SelectOption")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getValue")) {
+            return obj.fields.get("value") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            return obj.fields.get("label") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isDisabled")) {
+            return obj.fields.get("disabled") orelse Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "setValue")) {
+            if (args.len > 0) try obj.fields.put(ctx.arena, "value", args[0]);
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "setLabel")) {
+            if (args.len > 0) try obj.fields.put(ctx.arena, "label", args[0]);
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "setDisabled")) {
+            if (args.len > 0) try obj.fields.put(ctx.arena, "disabled", args[0]);
+            return Value.null_val;
         }
     }
 
