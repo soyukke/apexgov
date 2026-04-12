@@ -1607,8 +1607,7 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         .entry_method = "test",
     });
     defer result.deinit();
-    // With inner class: expected "10" but returns "0" due to parser/runtime issue
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try std.testing.expectEqualStrings("10", result.value.string);
 }
 
 test "parser: class with inner class preserves parent methods" {
@@ -1645,6 +1644,66 @@ test "parser: class with inner class preserves parent methods" {
     try eval.loadDecls(decls);
     const val = try eval.callMethod("Outer", "myMethod", &.{});
     try std.testing.expectEqualStrings("hello", val.string);
+}
+
+test "loadDecls: Controller class with inner class has getItems method" {
+    var arena_alloc3 = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc3.deinit();
+    const alloc3 = arena_alloc3.allocator();
+
+    const source3 =
+        \\public class Controller {
+        \\    public static Integer getItems(String type) {
+        \\        return Database.countQuery(
+        \\            'SELECT count() FROM Account WHERE Type = :type'
+        \\        );
+        \\    }
+        \\    public class PagedResult {
+        \\        public Integer pageSize { get; set; }
+        \\    }
+        \\}
+    ;
+    const tokens3 = try lexer.tokenize(source3, alloc3);
+    const decls3 = try parser.parse(tokens3, alloc3);
+    var eval3 = try evaluator.Evaluator.init(alloc3);
+    try eval3.loadDecls(decls3);
+
+    // Verify classes map contents
+    // Classes should be: Controller, PagedResult, Controller.PagedResult
+    try std.testing.expectEqual(@as(usize, 3), eval3.classes.count());
+    const cd3 = eval3.classes.get("Controller") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Controller", cd3.name);
+    // Check it has getItems method
+    var found = false;
+    for (cd3.members) |member| {
+        switch (member) {
+            .method_decl => |md| {
+                if (std.ascii.eqlIgnoreCase(md.name, "getItems")) found = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(found);
+
+    // Verify callMethod handles Database.countQuery correctly without inner class interaction
+    // First test: call without WHERE clause
+    try eval3.executeDml(.insert, Value{ .sobject = blk: {
+        const sob = try alloc3.create(types.SObject);
+        sob.* = .{ .type_name = "Account" };
+        try sob.fields.put(alloc3, "Name", Value{ .string = "Test" });
+        break :blk sob;
+    } });
+    const val3 = try eval3.callMethod("Controller", "getItems", &.{Value.null_val});
+    // getItems returns String.valueOf(count) which is a string
+    // But if Database.countQuery fails, it may return integer 0 directly
+    if (val3 == .string) {
+        try std.testing.expectEqualStrings("1", val3.string);
+    } else if (val3 == .integer) {
+        try std.testing.expectEqual(@as(i64, 1), val3.integer);
+    } else {
+        // null or other → the method didn't execute properly
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "parser: method body preserved with inner class having get-set" {
