@@ -2543,12 +2543,29 @@ pub const Evaluator = struct {
         if (!field_found) return if (is_neq) true else false;
 
         if (is_like) {
-            // Simple LIKE support: '%xxx%' → contains
+            // LIKE support: '%xxx%' → contains, 'xxx%' → startsWith, '%xxx' → endsWith
             if (field_val != .string) return false;
-            var pattern = value_str;
-            if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1 .. pattern.len - 1];
-            if (pattern.len >= 2 and pattern[0] == '%' and pattern[pattern.len - 1] == '%') {
-                return std.ascii.indexOfIgnoreCase(field_val.string, pattern[1 .. pattern.len - 1]) != null;
+            var pattern = std.mem.trim(u8, value_str, " \t\n\r");
+            // バインド変数 :type → 環境から値を解決
+            if (pattern.len > 0 and pattern[0] == ':') {
+                const var_name = pattern[1..];
+                if (current_env.get(var_name)) |bind_val| {
+                    if (bind_val == .string) {
+                        pattern = bind_val.string;
+                    } else return false;
+                } else return false;
+            }
+            if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
+            if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'') pattern = pattern[0 .. pattern.len - 1];
+            const starts_wild = pattern.len > 0 and pattern[0] == '%';
+            const ends_wild = pattern.len > 0 and pattern[pattern.len - 1] == '%';
+            const inner = pattern[@intFromBool(starts_wild) .. pattern.len - @intFromBool(ends_wild)];
+            if (starts_wild and ends_wild) {
+                return std.ascii.indexOfIgnoreCase(field_val.string, inner) != null;
+            } else if (starts_wild) {
+                return std.ascii.endsWithIgnoreCase(field_val.string, inner);
+            } else if (ends_wild) {
+                return std.ascii.startsWithIgnoreCase(field_val.string, inner);
             }
             return std.ascii.eqlIgnoreCase(field_val.string, pattern);
         }
@@ -4369,6 +4386,62 @@ pub const Evaluator = struct {
         {
             return Value{ .string = s };
         }
+        // date() — Datetime から Date 部分を返す (YYYY-MM-DD)
+        if (std.ascii.eqlIgnoreCase(method, "date")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = s };
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                @as(u32, @intCast(dt.y)), dt.m, dt.d,
+            }) };
+        }
+        // time() — Datetime から Time 部分を返す (HH:MM:SS)
+        if (std.ascii.eqlIgnoreCase(method, "time")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = "00:00:00" };
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>2}:{d:0>2}:{d:0>2}.000Z", .{
+                dt.h, dt.mi, dt.sec,
+            }) };
+        }
+        // getTime() — Datetime からエポックミリ秒を返す
+        if (std.ascii.eqlIgnoreCase(method, "getTime")) {
+            const dt = parseIsoDate(s) orelse return Value{ .integer = 0 };
+            // エポック日数を計算（グレゴリオ暦）
+            const y = @as(i64, dt.y);
+            const doy = @as(i64, dayOfYear(dt.m, dt.d));
+            // 閏年補正: 3月以降かつ閏年なら +1
+            const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
+            const leap_adj: i64 = if (dt.m > 2) is_leap else 0;
+            const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+            const secs = days_from_epoch * 86400 + @as(i64, dt.h) * 3600 + @as(i64, dt.mi) * 60 + @as(i64, dt.sec);
+            return Value{ .integer = secs * 1000 };
+        }
+        // addHours — Datetime に時間を加算
+        if (std.ascii.eqlIgnoreCase(method, "addHours")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = s };
+            const delta: i32 = if (args.len > 0) switch (args[0]) {
+                .integer => |iv| @intCast(iv),
+                .double => |dv| @intFromFloat(dv),
+                else => 0,
+            } else 0;
+            var h: i32 = @as(i32, dt.h) + delta;
+            var day_offset: i32 = 0;
+            while (h >= 24) {
+                h -= 24;
+                day_offset += 1;
+            }
+            while (h < 0) {
+                h += 24;
+                day_offset -= 1;
+            }
+            // 日のオーバーフローは簡易的に addDays で処理
+            if (day_offset != 0) {
+                const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                    @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec,
+                });
+                return self.dateTimeAdd(base, "addDays", &.{Value{ .integer = day_offset }});
+            }
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec,
+            }) };
+        }
         // year() / month() / day() — ISO 日付文字列からコンポーネント抽出
         if (std.ascii.eqlIgnoreCase(method, "year") or
             std.ascii.eqlIgnoreCase(method, "month") or
@@ -5091,6 +5164,12 @@ pub const Evaluator = struct {
             return .{ .y = y, .m = m, .d = day, .h = h, .mi = mi, .sec = sec, .has_time = true };
         }
         return .{ .y = y, .m = m, .d = day, .h = 0, .mi = 0, .sec = 0, .has_time = false };
+    }
+
+    /// 月と日から年内通算日を返す (1-indexed)
+    fn dayOfYear(m: u8, d: u8) u16 {
+        const cumulative = [_]u16{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+        return cumulative[m - 1] + d;
     }
 
     /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
