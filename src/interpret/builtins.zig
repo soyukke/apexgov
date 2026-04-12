@@ -1641,6 +1641,10 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
                     }
                 }
             }
+            // Fallback: read from SFDX metadata XML if no records in store
+            if (list.items.items.len == 0 and obj_type == .string and field_name == .string) {
+                try loadPicklistFromMetadata(ctx, list, obj_type.string, field_name.string);
+            }
             return Value{ .list = list };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
@@ -2781,4 +2785,76 @@ test "String.length instance method" {
     const result = try dispatchInstance(&ctx, Value{ .string = "test" }, "length", &.{});
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(i64, 4), result.?.integer);
+}
+
+/// SFDX メタデータ XML からピックリスト値を読み取る。
+/// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
+fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !void {
+    for (ctx.eval.source_paths) |path| {
+        // path = ".../main/default/classes" → try "../../objects/<obj>/fields/<field>.field-meta.xml"
+        // Navigate up from classes/ to main/default/
+        const parent = std.fs.path.dirname(path) orelse continue; // main/default
+        const meta_path = try std.fs.path.join(ctx.arena, &.{ parent, "objects", obj_type, "fields", field_name });
+        const xml_path = try std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path});
+
+        const content = std.fs.cwd().readFileAlloc(ctx.arena, xml_path, 512 * 1024) catch continue;
+
+        // Simple XML parsing: find <label>...</label> inside <value>...</value> blocks
+        var pos: usize = 0;
+        while (pos < content.len) {
+            // Find <value> block (inside <valueSetDefinition>)
+            const label_start_tag = "<label>";
+            const label_end_tag = "</label>";
+            const label_start = std.mem.indexOfPos(u8, content, pos, label_start_tag) orelse break;
+            const label_content_start = label_start + label_start_tag.len;
+            const label_end = std.mem.indexOfPos(u8, content, label_content_start, label_end_tag) orelse break;
+            const label = content[label_content_start..label_end];
+
+            // Decode XML entities: &amp; → &, &apos; → ', &quot; → "
+            const decoded = try decodeXmlEntities(ctx.arena, label);
+
+            const pe = try ctx.arena.create(types.ObjectInstance);
+            pe.* = .{ .class_name = "Schema.PicklistEntry" };
+            try pe.fields.put(ctx.arena, "label", Value{ .string = decoded });
+            try pe.fields.put(ctx.arena, "value", Value{ .string = decoded });
+            try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+            try list.items.append(ctx.arena, Value{ .object = pe });
+
+            pos = label_end + label_end_tag.len;
+        }
+        if (list.items.items.len > 0) return; // Found values, stop searching
+    }
+}
+
+fn decodeXmlEntities(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, s, "&") == null) return s;
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '&') {
+            if (std.mem.startsWith(u8, s[i..], "&amp;")) {
+                try result.append(arena, '&');
+                i += 5;
+            } else if (std.mem.startsWith(u8, s[i..], "&apos;")) {
+                try result.append(arena, '\'');
+                i += 6;
+            } else if (std.mem.startsWith(u8, s[i..], "&quot;")) {
+                try result.append(arena, '"');
+                i += 6;
+            } else if (std.mem.startsWith(u8, s[i..], "&lt;")) {
+                try result.append(arena, '<');
+                i += 4;
+            } else if (std.mem.startsWith(u8, s[i..], "&gt;")) {
+                try result.append(arena, '>');
+                i += 4;
+            } else {
+                try result.append(arena, s[i]);
+                i += 1;
+            }
+        } else {
+            try result.append(arena, s[i]);
+            i += 1;
+        }
+    }
+    return result.items;
 }

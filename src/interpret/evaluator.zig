@@ -60,6 +60,8 @@ pub const Evaluator = struct {
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
     trigger_context: ?TriggerContext = null,
+    // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
+    source_paths: []const []const u8 = &.{},
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
         callback: *types.ObjectInstance,

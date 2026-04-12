@@ -122,6 +122,7 @@ fn runTestsFiltered(
 
     // 2. 全ファイルをパース
     var eval = try evaluator.Evaluator.init(alloc);
+    eval.source_paths = paths;
     var parse_errors: u32 = 0;
 
     for (files.items) |file| {
