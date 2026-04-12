@@ -3279,9 +3279,15 @@ pub const Evaluator = struct {
 
             .call => |call| {
                 var args: std.ArrayListUnmanaged(Value) = .empty;
+                var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
                 for (call.args) |*arg| {
                     try args.append(self.arena, try self.evalExpr(arg, current_env));
+                    const hint: ?[]const u8 = if (arg.* == .cast_expr) arg.cast_expr.target_type.name else null;
+                    try call_type_hints.append(self.arena, hint);
                 }
+                const prev_hints = self.cast_type_hints;
+                self.cast_type_hints = call_type_hints.items;
+                defer self.cast_type_hints = prev_hints;
                 // super(args) → call parent class constructor
                 if (std.mem.eql(u8, call.callee, "super")) {
                     if (current_env.get("this")) |this_val| {
