@@ -293,7 +293,29 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
                 }) };
             }
-            // DateTime.newInstance(milliseconds) or fewer args
+            // DateTime.newInstance(milliseconds) — 1 引数
+            if (args.len >= 1) {
+                const ms: i64 = switch (args[0]) {
+                    .integer => |i| i,
+                    .double => |d10| @as(i64, @intFromFloat(d10)),
+                    else => 0,
+                };
+                const total_secs = @divTrunc(ms, 1000);
+                const epoch_secs: u64 = @intCast(if (total_secs > 0) total_secs else 0);
+                const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+                const epoch_day = es.getEpochDay();
+                const yd = epoch_day.calculateYearDay();
+                const md = yd.calculateMonthDay();
+                const ds = es.getDaySeconds();
+                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                    yd.year,
+                    md.month.numeric(),
+                    md.day_index + 1,
+                    ds.getHoursIntoDay(),
+                    ds.getMinutesIntoHour(),
+                    ds.getSecondsIntoMinute(),
+                }) };
+            }
             return Value{ .string = "2026-04-06T00:00:00Z" };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {

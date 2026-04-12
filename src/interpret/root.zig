@@ -1256,3 +1256,75 @@ test "E2E: Datetime.addYears changes year" {
     defer result.deinit();
     try std.testing.expectEqualStrings("2026-07-14", result.value.string);
 }
+
+test "E2E: Datetime.date() returns date portion" {
+    const source =
+        \\public class DtDateTest {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2024, 7, 19, 11, 0, 0);
+        \\        Date d = dt.date();
+        \\        return d.format();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtDateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+}
+
+test "E2E: Datetime.newInstance(milliseconds) single arg" {
+    const source =
+        \\public class DtMillisTest {
+        \\    public static String test() {
+        \\        // 2024-07-19 11:00:00 UTC in millis = 1721386800000
+        \\        Datetime dt = Datetime.newInstance(1721386800000L);
+        \\        return dt.format('yyyy-MM-dd');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtMillisTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+}
+
+test "E2E: Datetime.getTime() returns epoch millis" {
+    const source =
+        \\public class DtGetTimeTest {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2024, 7, 19, 11, 0, 0);
+        \\        Long ms = dt.getTime();
+        \\        Datetime dt2 = Datetime.newInstance(ms);
+        \\        return dt2.format('yyyy-MM-dd');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtGetTimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+}
+
+test "E2E: String.toLowerCase and trim" {
+    const source =
+        \\public class StrLowerTest {
+        \\    public static String test() {
+        \\        String s = '  Adventure  ';
+        \\        return '%' + s.toLowerCase().trim() + '%';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StrLowerTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("%adventure%", result.value.string);
+}
