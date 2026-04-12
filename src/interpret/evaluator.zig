@@ -1053,31 +1053,29 @@ pub const Evaluator = struct {
                 old_list_val = olv;
             }
 
-            // Build newMap/oldMap
+            // Build newMap/oldMap as MapValue (Id → SObject)
             var new_map_val: ?Value = null;
             if (event != .before_insert) {
-                // newMap available for everything except before insert (where records don't have IDs yet)
-                // Actually in before insert, Salesforce does provide Trigger.new but not Trigger.newMap
-                const map_obj = try self.arena.create(types.ObjectInstance);
-                map_obj.* = .{ .class_name = "Map" };
+                const map = try self.arena.create(types.MapValue);
+                map.* = .{};
                 for (new_records.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
-                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                        try map.entries.put(self.arena, item.sobject.id.?, item);
                     }
                 }
-                new_map_val = Value{ .object = map_obj };
+                new_map_val = Value{ .map = map };
             }
 
             var old_map_val: ?Value = null;
             if (old_records) |ors| {
-                const map_obj = try self.arena.create(types.ObjectInstance);
-                map_obj.* = .{ .class_name = "Map" };
+                const map = try self.arena.create(types.MapValue);
+                map.* = .{};
                 for (ors.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
-                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                        try map.entries.put(self.arena, item.sobject.id.?, item);
                     }
                 }
-                old_map_val = Value{ .object = map_obj };
+                old_map_val = Value{ .map = map };
             }
 
             const is_before = (event == .before_insert or event == .before_update or event == .before_delete);
