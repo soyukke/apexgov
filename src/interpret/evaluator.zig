@@ -3546,6 +3546,14 @@ pub const Evaluator = struct {
                 return self.handleAssert(mc.method, args.items);
             }
 
+            // System.assertEquals / System.assert / System.assertNotEquals
+            if (std.ascii.eqlIgnoreCase(class_name, "System") and
+                (std.ascii.startsWithIgnoreCase(mc.method, "assert") or
+                    std.ascii.eqlIgnoreCase(mc.method, "assert")))
+            {
+                return self.handleAssert(mc.method, args.items);
+            }
+
             // Test methods
             if (std.ascii.eqlIgnoreCase(class_name, "Test")) {
                 return self.handleTest(mc.method, args.items);
