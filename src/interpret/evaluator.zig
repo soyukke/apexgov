@@ -356,7 +356,7 @@ pub const Evaluator = struct {
 
         // Database methods that need store access (must be before builtins to avoid dead-code fallback)
         if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-            return self.handleDatabaseMethod(method_name, args);
+            return self.handleDatabaseMethod(method_name, args, self.global_env);
         }
 
         // Builtin class stubs (before user-defined classes)
@@ -1956,8 +1956,18 @@ pub const Evaluator = struct {
             }
         }
 
-        // Apply OFFSET
-        if (extractOffset(soql)) |offset_val| {
+        // Apply OFFSET (including :bindVar)
+        var offset_val_opt = extractOffset(soql);
+        if (offset_val_opt == null) {
+            if (extractOffsetBindVar(soql)) |bind_name| {
+                if (current_env.get(bind_name)) |bv| {
+                    if (bv == .integer and bv.integer >= 0) {
+                        offset_val_opt = @intCast(bv.integer);
+                    }
+                }
+            }
+        }
+        if (offset_val_opt) |offset_val| {
             if (offset_val < records.items.len) {
                 const remaining = records.items.len - offset_val;
                 std.mem.copyForwards(Value, records.items[0..remaining], records.items[offset_val..records.items.len]);
@@ -3488,7 +3498,7 @@ pub const Evaluator = struct {
 
             // Database methods that need store access
             if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-                return self.handleDatabaseMethod(mc.method, args.items);
+                return self.handleDatabaseMethod(mc.method, args.items, current_env);
             }
 
             // JSON.serialize/deserialize with round-trip support
@@ -5475,7 +5485,7 @@ pub const Evaluator = struct {
         return .void_val;
     }
 
-    fn handleDatabaseMethod(self: *Evaluator, method: []const u8, args: []const Value) anyerror!Value {
+    fn handleDatabaseMethod(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
         if (std.ascii.eqlIgnoreCase(method, "insert") or
             std.ascii.eqlIgnoreCase(method, "update") or
             std.ascii.eqlIgnoreCase(method, "upsert") or
@@ -5630,7 +5640,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "query")) {
             // Execute the SOQL string against the store
             if (args.len > 0 and args[0] == .string) {
-                return self.executeSoql(args[0].string, self.global_env);
+                return self.executeSoql(args[0].string, env);
             }
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
@@ -5668,7 +5678,7 @@ pub const Evaluator = struct {
                     }
                     soql_str = try result_buf.toOwnedSlice(self.arena);
                 }
-                return self.executeSoql(soql_str, self.global_env);
+                return self.executeSoql(soql_str, env);
             }
             return try self.makeEmptyList();
         }
@@ -5678,10 +5688,10 @@ pub const Evaluator = struct {
                 const soql = args[0].string;
                 // Execute as a count query
                 if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
-                    return self.executeSoql(soql, self.global_env);
+                    return self.executeSoql(soql, env);
                 }
                 // Wrap as COUNT query
-                const count_result = try self.executeSoql(soql, self.global_env);
+                const count_result = try self.executeSoql(soql, env);
                 if (count_result == .list) return Value{ .integer = @intCast(count_result.list.items.items.len) };
                 return count_result;
             }
@@ -7056,6 +7066,22 @@ fn extractOffset(soql: []const u8) ?usize {
             var end = start;
             while (end < soql.len and std.ascii.isDigit(soql[end])) end += 1;
             if (end > start) return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+        }
+    }
+    return null;
+}
+
+fn extractOffsetBindVar(soql: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + 7 < soql.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(soql[i .. i + 6], "offset") and (soql[i + 6] == ' ' or soql[i + 6] == '\n')) {
+            var start = i + 7;
+            while (start < soql.len and soql[start] == ' ') start += 1;
+            if (start < soql.len and soql[start] == ':') {
+                var end = start + 1;
+                while (end < soql.len and (std.ascii.isAlphanumeric(soql[end]) or soql[end] == '_')) end += 1;
+                if (end > start + 1) return soql[start + 1 .. end];
+            }
         }
     }
     return null;
