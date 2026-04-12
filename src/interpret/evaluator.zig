@@ -367,12 +367,7 @@ pub const Evaluator = struct {
             return result;
         }
 
-        // TestFactory / TestDataHelpers builtin stubs
-        if (try self.handleTestFactory(class_name, method_name, args)) |result| {
-            return result;
-        }
-
-        // Case-insensitive class lookup
+        // Case-insensitive class lookup (before TestFactory stubs so user-defined classes take priority)
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
@@ -403,6 +398,10 @@ pub const Evaluator = struct {
                 if (any_name_match) return Value.null_val;
                 return Value.null_val; // method not found in class, return null
             }
+        }
+        // TestFactory / TestDataHelpers builtin stubs (only when no user-defined class found)
+        if (try self.handleTestFactory(class_name, method_name, args)) |result| {
+            return result;
         }
         return Value.null_val; // class not found, return null instead of error
     }
@@ -3748,14 +3747,14 @@ pub const Evaluator = struct {
                 return result;
             }
 
-            // TestFactory / TestDataHelpers stubs
-            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // User-defined class method (check before getSObjectType fallback)
+            // User-defined class method (check before stubs/getSObjectType fallback)
             if (self.findClass(class_name) != null) {
                 return self.callMethod(class_name, mc.method, args.items);
+            }
+
+            // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
+            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
+                return result;
             }
 
             // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
@@ -6415,7 +6414,36 @@ pub const Evaluator = struct {
 
         if (count == 0) return if (best_any != null) best_any else null;
         if (count == 1) return candidates[0];
-        return candidates[0]; // Simple: return first match
+
+        // Multiple candidates: score each by type compatibility
+        var best: ?*ast.MethodDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |md| {
+            var score: i32 = 0;
+            for (md.params, 0..) |param, i| {
+                if (i >= args.len) break;
+                const pt = param.type_ref.name;
+                const arg = args[i];
+                if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                    score += 2;
+                } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
+                    score += 2;
+                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                    score += 2;
+                } else if (arg == .sobject and (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject"))) {
+                    score += 2;
+                } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
+                    score += 2;
+                } else if (arg == .object) {
+                    score += 1;
+                }
+            }
+            if (score > best_score) {
+                best_score = score;
+                best = md;
+            }
+        }
+        return best orelse candidates[0];
     }
 
     /// Type-aware method resolution for overloaded methods.
