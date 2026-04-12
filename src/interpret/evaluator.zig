@@ -3739,6 +3739,15 @@ pub const Evaluator = struct {
                     return self.handleSystemMethod(inner, mc.method, args.items, current_env);
                 }
 
+                // SObjectType.FieldToken.getDescribe() → Schema.DescribeFieldResult
+                if (std.ascii.eqlIgnoreCase(mc.method, "getDescribe")) {
+                    const dfr = try self.arena.create(types.ObjectInstance);
+                    dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
+                    try dfr.fields.put(self.arena, "objectType", Value{ .string = outer_class });
+                    try dfr.fields.put(self.arena, "fieldName", Value{ .string = inner });
+                    return Value{ .object = dfr };
+                }
+
                 // DataWeave.Script.createScript(scriptName)
                 if (std.ascii.eqlIgnoreCase(outer_class, "DataWeave") and std.ascii.eqlIgnoreCase(inner, "Script")) {
                     if (std.ascii.eqlIgnoreCase(mc.method, "createScript") and args.items.len > 0 and args.items[0] == .string) {

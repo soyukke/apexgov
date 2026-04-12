@@ -1477,18 +1477,21 @@ test "E2E: Database.countQuery resolves local bind variables" {
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
-test "E2E: @TestVisible private static Integer field initializer" {
+test "E2E: static field accessed from another class" {
     const source =
-        \\public class StaticFieldTest {
+        \\public class Controller {
         \\    @TestVisible
         \\    private static Integer PAGE_SIZE = 9;
+        \\    public static Integer getPageSize() { return PAGE_SIZE; }
+        \\}
+        \\public class Caller {
         \\    public static String test() {
-        \\        return String.valueOf(PAGE_SIZE);
+        \\        return String.valueOf(Controller.PAGE_SIZE);
         \\    }
         \\}
     ;
     const result = try run(std.testing.allocator, source, .{
-        .entry_class = "StaticFieldTest",
+        .entry_class = "Caller",
         .entry_method = "test",
     });
     defer result.deinit();
@@ -1499,9 +1502,15 @@ test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
     const source =
         \\public class SchemaPicklistTest {
         \\    public static String test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'A1', Type = 'Customer'),
+        \\            new Account(Name = 'A2', Type = 'Partner'),
+        \\            new Account(Name = 'A3', Type = 'Customer')
+        \\        };
         \\        Schema.DescribeFieldResult dfr = Account.Type.getDescribe();
         \\        List<Schema.PicklistEntry> entries = dfr.getPicklistValues();
-        \\        return String.valueOf(entries.size() > 0);
+        \\        // Should return unique values: Customer, Partner
+        \\        return String.valueOf(entries.size());
         \\    }
         \\}
     ;
@@ -1510,7 +1519,7 @@ test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try std.testing.expectEqualStrings("2", result.value.string);
 }
 
 test "E2E: ObjectInstance field access is case-insensitive" {
