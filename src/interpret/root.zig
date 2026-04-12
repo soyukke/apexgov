@@ -2381,3 +2381,55 @@ test "E2E: StaticResource loads body from actual JSON file on disk" {
     defer result.deinit();
     try std.testing.expectEqualStrings("2", result.value.string);
 }
+
+test "E2E: Custom metadata records loaded from .md-meta.xml files" {
+    const alloc = std.testing.allocator;
+    // Create a temporary customMetadata directory with a .md-meta.xml file
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("customMetadata");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "customMetadata/My_Config.Contact_Config.md-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <label>Contact Config</label>
+        \\    <values>
+        \\        <field>Status_Field__c</field>
+        \\        <value xsi:type="xsd:string">Reservation_Status__c</value>
+        \\    </values>
+        \\    <values>
+        \\        <field>Status_Value__c</field>
+        \\        <value xsi:type="xsd:string">Draft</value>
+        \\    </values>
+        \\    <values>
+        \\        <field>Object_Type__c</field>
+        \\        <value xsi:type="xsd:string">Contact</value>
+        \\    </values>
+        \\</CustomMetadata>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CMDTTest {
+        \\    public static String test() {
+        \\        My_Config__mdt cfg = [
+        \\            SELECT Status_Field__c, Status_Value__c, Object_Type__c
+        \\            FROM My_Config__mdt
+        \\            WHERE Object_Type__c = 'Contact'
+        \\            LIMIT 1
+        \\        ];
+        \\        return cfg.Status_Field__c + ':' + cfg.Status_Value__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "CMDTTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Reservation_Status__c:Draft", result.value.string);
+}

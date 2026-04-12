@@ -2043,6 +2043,11 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             const name = if (obj.fields.get("name")) |n| n.string else "SObject";
             const new_sob = try ctx.arena.create(types.SObject);
             new_sob.* = .{ .type_name = name };
+            // First arg: optional Id to set on the new SObject
+            if (args.len >= 1 and args[0] == .string) {
+                new_sob.id = args[0].string;
+                try new_sob.fields.put(ctx.arena, "Id", args[0]);
+            }
             // If second arg is true, populate system fields (e.g., EventUuid for platform events)
             if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
                 // Generate EventUuid for platform events

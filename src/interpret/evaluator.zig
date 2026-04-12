@@ -971,7 +971,7 @@ pub const Evaluator = struct {
                     // Pre-validate all records before inserting any (allOrNothing semantics)
                     for (target.list.items.items) |item| {
                         if (item == .sobject) {
-                            if (try self.validateRequiredFields(item.sobject)) |err_msg| {
+                            if (try self.validateRequiredFields(item.sobject, false)) |err_msg| {
                                 const exc = try self.arena.create(types.ObjectInstance);
                                 exc.* = .{ .class_name = "DmlException" };
                                 try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
@@ -1250,7 +1250,7 @@ pub const Evaluator = struct {
 
     fn insertRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
         // Validate required fields — throw DmlException on failure
-        if (try self.validateRequiredFields(obj)) |err_msg| {
+        if (try self.validateRequiredFields(obj, false)) |err_msg| {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
             try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
@@ -1465,28 +1465,37 @@ pub const Evaluator = struct {
         }
     }
 
-    fn validateRequiredFields(self: *Evaluator, obj: *types.SObject) !?[]const u8 {
+    /// Validate required fields on an SObject.
+    /// When `only_present` is true (for updates), only validate fields that are
+    /// explicitly present in the object's fields map — missing fields are not changed.
+    fn validateRequiredFields(self: *Evaluator, obj: *types.SObject, only_present: bool) !?[]const u8 {
         _ = self;
-        // Required field validation for common SObject types
         const type_name = obj.type_name;
         if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
             const name_val = utils.sobjectGet(&obj.fields, "Name");
-            if (name_val == null or name_val.? == .null_val) {
+            // Insert: field must exist and be non-null/non-empty
+            // Update: field must not be explicitly set to null/empty
+            if (name_val == null) {
+                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+            } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            }
-            if (name_val.? == .string and name_val.?.string.len == 0) {
+            } else if (name_val.? == .string and name_val.?.string.len == 0) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             }
         }
         if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
             const name_val = utils.sobjectGet(&obj.fields, "LastName");
-            if (name_val == null or name_val.? == .null_val) {
+            if (name_val == null) {
+                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
+            } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
             }
         }
         if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) {
             const name_val = utils.sobjectGet(&obj.fields, "Name");
-            if (name_val == null or name_val.? == .null_val) {
+            if (name_val == null) {
+                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+            } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             }
         }
@@ -1517,8 +1526,8 @@ pub const Evaluator = struct {
     }
 
     fn updateRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
-        // Validate required fields (e.g. Account.Name cannot be blank)
-        if (try self.validateRequiredFields(obj)) |err_msg| {
+        // Validate only fields explicitly present (Salesforce doesn't re-validate all required fields on update)
+        if (try self.validateRequiredFields(obj, true)) |err_msg| {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
             try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
@@ -1860,6 +1869,35 @@ pub const Evaluator = struct {
                     }
                 }
                 break;
+            }
+        }
+
+        // Load custom metadata records from .md-meta.xml files if store is empty
+        // Only load if generateMetadataStub doesn't handle this type (to avoid conflicting stubs)
+        if (records.items.len == 0 and std.mem.endsWith(u8, from_type, "__mdt") and
+            self.store.get(from_type) == null)
+        {
+            // Check if this type has a hardcoded stub
+            const has_hardcoded_stub = (try self.generateMetadataStub(from_type, soql, current_env)) != null;
+            if (!has_hardcoded_stub) {
+                try self.loadCustomMetadataFromFiles(from_type);
+                // Re-scan store after loading
+                var mdt_iter = self.store.iterator();
+                while (mdt_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
+                        for (entry.value_ptr.items) |record| {
+                            if (self.matchesWhere(record, soql, current_env)) {
+                                if (record == .sobject) {
+                                    const copy = try self.cloneSObject(record.sobject);
+                                    try records.append(self.arena, Value{ .sobject = copy });
+                                } else {
+                                    try records.append(self.arena, record);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -2564,6 +2602,114 @@ pub const Evaluator = struct {
             }
         }
         return null;
+    }
+
+    /// Load custom metadata records from .md-meta.xml files in source_paths.
+    /// Parses files matching `customMetadata/<TypeName>.<RecordName>.md-meta.xml` and
+    /// populates the store with SObject records containing the field values.
+    fn loadCustomMetadataFromFiles(self: *Evaluator, mdt_type: []const u8) !void {
+        // Strip __mdt suffix to get the base type name for file matching
+        const base_name = if (std.mem.endsWith(u8, mdt_type, "__mdt"))
+            mdt_type[0 .. mdt_type.len - 5]
+        else
+            mdt_type;
+
+        for (self.source_paths) |sp| {
+            var dir = std.fs.cwd().openDir(sp, .{ .iterate = true }) catch continue;
+            defer dir.close();
+            var walker = dir.walk(self.arena) catch continue;
+            defer walker.deinit();
+            while (walker.next() catch null) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.path, ".md-meta.xml")) continue;
+                // Check if filename matches: customMetadata/<BaseName>.<RecordName>.md-meta.xml
+                if (std.mem.indexOf(u8, entry.path, "customMetadata/")) |cm_pos| {
+                    const after_cm = entry.path[cm_pos + "customMetadata/".len ..];
+                    // after_cm should be like "Customer_Fields.Contact_Config.md-meta.xml"
+                    if (std.ascii.startsWithIgnoreCase(after_cm, base_name) and
+                        after_cm.len > base_name.len and after_cm[base_name.len] == '.')
+                    {
+                        // Extract DeveloperName from filename: <BaseName>.<RecordName>.md-meta.xml
+                        const after_dot = after_cm[base_name.len + 1 ..]; // "RecordName.md-meta.xml"
+                        const dev_name = if (std.mem.indexOf(u8, after_dot, ".")) |next_dot|
+                            after_dot[0..next_dot]
+                        else
+                            after_dot;
+
+                        const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ sp, entry.path }) catch continue;
+                        const content = std.fs.cwd().readFileAlloc(self.arena, full_path, 1024 * 1024) catch continue;
+                        if (try self.parseCustomMetadataXml(mdt_type, content)) |sob| {
+                            // Set DeveloperName from filename
+                            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = dev_name });
+                            const gop = try self.store.getOrPut(self.arena, mdt_type);
+                            if (!gop.found_existing) gop.value_ptr.* = .empty;
+                            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parse a single .md-meta.xml file and return an SObject with the field values.
+    fn parseCustomMetadataXml(self: *Evaluator, mdt_type: []const u8, xml: []const u8) !?*types.SObject {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = mdt_type };
+        const id = try self.allocId();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+
+        // Simple XML parser: find <values><field>...</field><value ...>...</value></values> pairs
+        var pos: usize = 0;
+        while (pos < xml.len) {
+            // Find <field>...</field>
+            const field_start_tag = std.mem.indexOfPos(u8, xml, pos, "<field>") orelse break;
+            const field_content_start = field_start_tag + "<field>".len;
+            const field_end_tag = std.mem.indexOfPos(u8, xml, field_content_start, "</field>") orelse break;
+            const field_name = std.mem.trim(u8, xml[field_content_start..field_end_tag], " \t\n\r");
+
+            // Find corresponding <value ...>...</value>
+            const value_search_start = field_end_tag + "</field>".len;
+            const values_end = std.mem.indexOfPos(u8, xml, value_search_start, "</values>") orelse break;
+
+            // Look for <value ...>content</value> within this <values> block
+            if (std.mem.indexOfPos(u8, xml, value_search_start, ">")) |val_tag_end| {
+                if (val_tag_end < values_end) {
+                    const val_content_start = val_tag_end + 1;
+                    if (std.mem.indexOfPos(u8, xml, val_content_start, "</value>")) |val_end| {
+                        if (val_end <= values_end) {
+                            const field_value = std.mem.trim(u8, xml[val_content_start..val_end], " \t\n\r");
+                            // Store the field with __c suffix on the SObject
+                            try sob.fields.put(self.arena, field_name, Value{ .string = field_value });
+                            // Also create __r relationship for fields that reference FieldDefinitions
+                            // Convention: Customer_Name__c → value is the API name of a field
+                            // Create Customer_Name__r as a FieldDefinition with QualifiedAPIName = value
+                            if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
+                                const base = field_name[0 .. field_name.len - 3];
+                                const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
+                                const fd = try self.arena.create(types.SObject);
+                                fd.* = .{ .type_name = "FieldDefinition" };
+                                try fd.fields.put(self.arena, "QualifiedAPIName", Value{ .string = field_value });
+                                try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+                            }
+                        }
+                    }
+                }
+            }
+
+            pos = values_end + "</values>".len;
+        }
+
+        // Extract label
+        if (std.mem.indexOf(u8, xml, "<label>")) |label_start| {
+            const label_content = label_start + "<label>".len;
+            if (std.mem.indexOfPos(u8, xml, label_content, "</label>")) |label_end| {
+                try sob.fields.put(self.arena, "Label", Value{ .string = std.mem.trim(u8, xml[label_content..label_end], " \t\n\r") });
+                try sob.fields.put(self.arena, "MasterLabel", Value{ .string = std.mem.trim(u8, xml[label_content..label_end], " \t\n\r") });
+            }
+        }
+
+        return sob;
     }
 
     /// Execute a SOSL query using fixed search results.
