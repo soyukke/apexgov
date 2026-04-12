@@ -1810,3 +1810,36 @@ test "E2E: Network.communitiesLanding() returns PageReference" {
     defer result.deinit();
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
+
+test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
+    const source =
+        \\public class Calculator {
+        \\    public static Integer multiply(Integer a, Integer b) {
+        \\        return a * b;
+        \\    }
+        \\}
+        \\@IsTest
+        \\private class CalculatorTest {
+        \\    @IsTest
+        \\    static void testMultiplyWrong() {
+        \\        Integer result = Calculator.multiply(2, 3);
+        \\        System.assertEquals(10, result);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+    _ = eval.callMethod("CalculatorTest", "testMultiplyWrong", &.{}) catch {};
+
+    // assertEquals(10, 6) should fail
+    const msg = eval.assertion_failure orelse "";
+    try std.testing.expect(msg.len > 0); // Must have a failure message
+    try std.testing.expect(std.mem.indexOf(u8, msg, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "6") != null);
+}
