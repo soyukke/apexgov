@@ -1576,10 +1576,10 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         \\public class Controller {
         \\    @TestVisible
         \\    private static Integer PAGE_SIZE = 9;
-        \\    public static PagedResult getItems(String typeFilter, Integer pageNumber) {
+        \\    public static String getItems(String type, Integer pageNumber) {
         \\        String whereClause = '';
-        \\        if (typeFilter != null || typeFilter != '') {
-        \\            whereClause = 'WHERE Type = :typeFilter';
+        \\        if (type != null || type != '') {
+        \\            whereClause = 'WHERE Type = :type';
         \\        }
         \\        Integer cnt = Database.countQuery(
         \\            'SELECT count() FROM Account ' + whereClause
@@ -1588,9 +1588,6 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         \\    }
         \\    public class PagedResult {
         \\        public Integer pageSize { get; set; }
-        \\        public Integer pageNumber { get; set; }
-        \\        public Integer totalItemCount { get; set; }
-        \\        public List<SObject> records { get; set; }
         \\    }
         \\}
         \\public class ControllerTest {
@@ -1610,9 +1607,75 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         .entry_method = "test",
     });
     defer result.deinit();
-    // Known limitation: inner class with members affects parent Database.query env.
-    // Expected "10" but returns "0". Root cause: TBD.
+    // With inner class: expected "10" but returns "0" due to parser/runtime issue
     try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "parser: class with inner class preserves parent methods" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const source =
+        \\public class Outer {
+        \\    public static String myMethod() { return 'hello'; }
+        \\    public class Inner {
+        \\        public Integer val { get; set; }
+        \\    }
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    try std.testing.expectEqual(@as(usize, 1), decls.len);
+
+    const cd = decls[0].class_decl;
+    try std.testing.expectEqualStrings("Outer", cd.name);
+
+    // Outer should have 2 members: myMethod + Inner class
+    try std.testing.expectEqual(@as(usize, 2), cd.members.len);
+
+    // First member should be the method
+    switch (cd.members[0]) {
+        .method_decl => |md| try std.testing.expectEqualStrings("myMethod", md.name),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Verify that callMethod finds and executes the method correctly
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+    const val = try eval.callMethod("Outer", "myMethod", &.{});
+    try std.testing.expectEqualStrings("hello", val.string);
+}
+
+test "parser: method body preserved with inner class having get-set" {
+    var arena_alloc2 = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc2.deinit();
+    const alloc2 = arena_alloc2.allocator();
+
+    const source2 =
+        \\public class C {
+        \\    public static Integer count() {
+        \\        Integer x = 1;
+        \\        Integer y = 2;
+        \\        return x + y;
+        \\    }
+        \\    public class Inner {
+        \\        public Integer val { get; set; }
+        \\    }
+        \\}
+    ;
+    const tokens2 = try lexer.tokenize(source2, alloc2);
+    const decls2 = try parser.parse(tokens2, alloc2);
+    try std.testing.expectEqual(@as(usize, 1), decls2.len);
+
+    const cd2 = decls2[0].class_decl;
+    // Should have 2 members: count() and Inner
+    try std.testing.expectEqual(@as(usize, 2), cd2.members.len);
+
+    // Method body should have 3 statements (2 var decls + return)
+    const md2 = cd2.members[0].method_decl;
+    try std.testing.expectEqualStrings("count", md2.name);
+    try std.testing.expectEqual(@as(usize, 3), md2.body.len);
 }
 
 test "E2E: cross-class Database.countQuery with dynamic WHERE and null bind" {
