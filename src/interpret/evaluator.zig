@@ -367,12 +367,7 @@ pub const Evaluator = struct {
             return result;
         }
 
-        // TestFactory / TestDataHelpers builtin stubs
-        if (try self.handleTestFactory(class_name, method_name, args)) |result| {
-            return result;
-        }
-
-        // Case-insensitive class lookup
+        // Case-insensitive class lookup (before TestFactory stubs so user-defined classes take priority)
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
@@ -403,6 +398,10 @@ pub const Evaluator = struct {
                 if (any_name_match) return Value.null_val;
                 return Value.null_val; // method not found in class, return null
             }
+        }
+        // TestFactory / TestDataHelpers builtin stubs (only when no user-defined class found)
+        if (try self.handleTestFactory(class_name, method_name, args)) |result| {
+            return result;
         }
         return Value.null_val; // class not found, return null instead of error
     }
@@ -1054,31 +1053,29 @@ pub const Evaluator = struct {
                 old_list_val = olv;
             }
 
-            // Build newMap/oldMap
+            // Build newMap/oldMap as MapValue (Id → SObject)
             var new_map_val: ?Value = null;
             if (event != .before_insert) {
-                // newMap available for everything except before insert (where records don't have IDs yet)
-                // Actually in before insert, Salesforce does provide Trigger.new but not Trigger.newMap
-                const map_obj = try self.arena.create(types.ObjectInstance);
-                map_obj.* = .{ .class_name = "Map" };
+                const map = try self.arena.create(types.MapValue);
+                map.* = .{};
                 for (new_records.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
-                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                        try map.entries.put(self.arena, item.sobject.id.?, item);
                     }
                 }
-                new_map_val = Value{ .object = map_obj };
+                new_map_val = Value{ .map = map };
             }
 
             var old_map_val: ?Value = null;
             if (old_records) |ors| {
-                const map_obj = try self.arena.create(types.ObjectInstance);
-                map_obj.* = .{ .class_name = "Map" };
+                const map = try self.arena.create(types.MapValue);
+                map.* = .{};
                 for (ors.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
-                        try map_obj.fields.put(self.arena, item.sobject.id.?, item);
+                        try map.entries.put(self.arena, item.sobject.id.?, item);
                     }
                 }
-                old_map_val = Value{ .object = map_obj };
+                old_map_val = Value{ .map = map };
             }
 
             const is_before = (event == .before_insert or event == .before_update or event == .before_delete);
@@ -1183,10 +1180,25 @@ pub const Evaluator = struct {
             }
         }
 
-        // Auto-generate Name if not set (simulates auto-number for custom objects)
+        // Synthesize Name for Person-name objects (Contact, Lead) from FirstName + LastName
         if (utils.sobjectGet(&obj.fields, "Name") == null) {
-            const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
-            try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+            if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or std.ascii.eqlIgnoreCase(obj.type_name, "Lead")) {
+                const first = if (utils.sobjectGet(&obj.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "";
+                const last = if (utils.sobjectGet(&obj.fields, "LastName")) |v| (if (v == .string) v.string else "") else "";
+                const name = if (first.len > 0 and last.len > 0)
+                    try std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last })
+                else if (last.len > 0)
+                    last
+                else if (first.len > 0)
+                    first
+                else
+                    try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
+                try obj.fields.put(self.arena, "Name", Value{ .string = name });
+            } else {
+                // Auto-generate Name for other objects (simulates auto-number for custom objects)
+                const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
+                try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+            }
         }
 
         // Resolve relationship fields → set foreign key Ids
@@ -1862,11 +1874,14 @@ pub const Evaluator = struct {
             if (!in_store) {
                 // Check if it's a common/known SObject type
                 const known_types = [_][]const u8{
-                    "Account",                 "Contact",                "Opportunity",                  "Case",            "Lead",                "Task",                "Event",
-                    "Campaign",                "User",                   "ContentVersion",               "ContentDocument", "ContentDocumentLink", "ContentDistribution", "PermissionSet",
-                    "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",    "ApexClass",           "StaticResource",      "FieldPermissions",
-                    "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",     "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
-                    "AggregateResult",
+                    "Account",                 "Contact",                "Opportunity",                  "Case",                "Lead",                "Task",                "Event",
+                    "Campaign",                "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink", "ContentDistribution", "PermissionSet",
+                    "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",           "StaticResource",      "FieldPermissions",
+                    "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
+                    "AggregateResult",         "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem", "UserRecordAccess",    "AuthSession",
+                    "LoginHistory",            "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",  "UserRole",            "GroupMember",
+                    "Group",                   "Attachment",             "Note",                         "EmailMessage",        "CaseComment",         "Solution",            "Contract",
+                    "Product2",                "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",               "QuoteLineItem",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
@@ -3674,6 +3689,15 @@ pub const Evaluator = struct {
                     }
                     return Value.null_val;
                 }
+                if (std.ascii.eqlIgnoreCase(mc.method, "createParser")) {
+                    if (args.items.len >= 1 and args.items[0] == .string) {
+                        const parser_obj = try self.arena.create(types.ObjectInstance);
+                        parser_obj.* = .{ .class_name = "JSONParser" };
+                        try parser_obj.fields.put(self.arena, "__json_body__", args.items[0]);
+                        return Value{ .object = parser_obj };
+                    }
+                    return Value.null_val;
+                }
             }
 
             // Integer.valueOf with invalid string → throw TypeException
@@ -3724,14 +3748,14 @@ pub const Evaluator = struct {
                 return result;
             }
 
-            // TestFactory / TestDataHelpers stubs
-            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // User-defined class method (check before getSObjectType fallback)
+            // User-defined class method (check before stubs/getSObjectType fallback)
             if (self.findClass(class_name) != null) {
                 return self.callMethod(class_name, mc.method, args.items);
+            }
+
+            // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
+            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
+                return result;
             }
 
             // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
@@ -3965,6 +3989,26 @@ pub const Evaluator = struct {
                 }
                 return Value{ .object = inst };
             }
+        }
+
+        // JSONParser.readValueAs(Type) → deserialize stored JSON body into typed object
+        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser") and
+            std.ascii.eqlIgnoreCase(method, "readValueAs"))
+        {
+            const json_body = if (obj.object.fields.get("__json_body__")) |jb| (if (jb == .string) jb.string else null) else null;
+            if (json_body) |body| {
+                // Extract the actual type name from Type object (e.g., Type { name: "MyData" })
+                const type_name: []const u8 = if (args.len >= 1 and args[0] == .object) blk: {
+                    if (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Type")) {
+                        if (args[0].object.fields.get("name")) |n| {
+                            if (n == .string) break :blk n.string;
+                        }
+                    }
+                    break :blk args[0].object.class_name;
+                } else "Object";
+                if (self.parseJsonValue(body, type_name)) |pv| return pv;
+            }
+            return Value.null_val;
         }
 
         // For ObjectInstance with a user-defined class, try class methods first
@@ -5931,8 +5975,25 @@ pub const Evaluator = struct {
                     // Delegate to builtins for actual parsing
                     var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
                     if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
-                    const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) args[1].object.class_name else "Object";
+                    const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) blk: {
+                        if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
+                            if (args[1].object.fields.get("name")) |n| {
+                                if (n == .string) break :blk n.string;
+                            }
+                        }
+                        break :blk args[1].object.class_name;
+                    } else "Object";
                     if (self.parseJsonValue(json_str, type_name)) |pv| return pv;
+                }
+                return Value.null_val;
+            }
+            // JSON.createParser → JSONParser instance with the JSON body stored
+            if (std.ascii.eqlIgnoreCase(method, "createParser")) {
+                if (args.len >= 1 and args[0] == .string) {
+                    const parser_obj = try self.arena.create(types.ObjectInstance);
+                    parser_obj.* = .{ .class_name = "JSONParser" };
+                    try parser_obj.fields.put(self.arena, "__json_body__", args[0]);
+                    return Value{ .object = parser_obj };
                 }
                 return Value.null_val;
             }
@@ -6354,7 +6415,36 @@ pub const Evaluator = struct {
 
         if (count == 0) return if (best_any != null) best_any else null;
         if (count == 1) return candidates[0];
-        return candidates[0]; // Simple: return first match
+
+        // Multiple candidates: score each by type compatibility
+        var best: ?*ast.MethodDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |md| {
+            var score: i32 = 0;
+            for (md.params, 0..) |param, i| {
+                if (i >= args.len) break;
+                const pt = param.type_ref.name;
+                const arg = args[i];
+                if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                    score += 2;
+                } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
+                    score += 2;
+                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                    score += 2;
+                } else if (arg == .sobject and (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject"))) {
+                    score += 2;
+                } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
+                    score += 2;
+                } else if (arg == .object) {
+                    score += 1;
+                }
+            }
+            if (score > best_score) {
+                best_score = score;
+                best = md;
+            }
+        }
+        return best orelse candidates[0];
     }
 
     /// Type-aware method resolution for overloaded methods.
@@ -7009,12 +7099,9 @@ fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std
 }
 
 fn defaultValue(type_ref: types.TypeRef) Value {
-    if (std.ascii.eqlIgnoreCase(type_ref.name, "Integer") or std.ascii.eqlIgnoreCase(type_ref.name, "Long"))
-        return .{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(type_ref.name, "Double") or std.ascii.eqlIgnoreCase(type_ref.name, "Decimal"))
-        return .{ .double = 0.0 };
-    if (std.ascii.eqlIgnoreCase(type_ref.name, "Boolean"))
-        return .{ .boolean = false };
+    // Apex treats all types (including Integer, Double, Decimal, Boolean) as
+    // reference types whose uninitialized value is null.
+    _ = type_ref;
     return .null_val;
 }
 
