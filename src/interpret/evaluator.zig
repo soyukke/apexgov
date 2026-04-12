@@ -1881,14 +1881,16 @@ pub const Evaluator = struct {
             if (!in_store) {
                 // Check if it's a common/known SObject type
                 const known_types = [_][]const u8{
-                    "Account",                 "Contact",                "Opportunity",                  "Case",                "Lead",                "Task",                "Event",
-                    "Campaign",                "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink", "ContentDistribution", "PermissionSet",
-                    "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",           "StaticResource",      "FieldPermissions",
-                    "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
-                    "AggregateResult",         "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem", "UserRecordAccess",    "AuthSession",
-                    "LoginHistory",            "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",  "UserRole",            "GroupMember",
-                    "Group",                   "Attachment",             "Note",                         "EmailMessage",        "CaseComment",         "Solution",            "Contract",
-                    "Product2",                "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",               "QuoteLineItem",
+                    "Account",                    "Contact",                "Opportunity",                  "Case",                "Lead",                   "Task",                 "Event",
+                    "Campaign",                   "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink",    "ContentDistribution",  "PermissionSet",
+                    "PermissionSetAssignment",    "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",              "StaticResource",       "FieldPermissions",
+                    "PermissionSetGroup",         "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",
+                    "AggregateResult",            "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",
+                    "LoginHistory",               "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",
+                    "Group",                      "Attachment",             "Note",                         "EmailMessage",        "CaseComment",            "Solution",             "Contract",
+                    "Product2",                   "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense",
+                    "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
+                    "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
