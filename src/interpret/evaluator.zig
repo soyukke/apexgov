@@ -140,6 +140,52 @@ pub const Evaluator = struct {
         return Value{ .sobject = user };
     }
 
+    /// Resolve picklist API name to label using field-meta.xml
+    fn resolvePicklistLabel(self: *Evaluator, obj_type: []const u8, field_name: []const u8, api_name: []const u8) ?[]const u8 {
+        const suffix = std.fmt.allocPrint(self.arena, "objects/{s}/fields/{s}.field-meta.xml", .{ obj_type, field_name }) catch return null;
+        for (self.source_paths) |base_path| {
+            // Try to find the field-meta.xml by walking common SFDX paths
+            const candidates = [_][]const u8{
+                "force-app/main/default",
+                ".",
+                "src/main/default",
+            };
+            for (candidates) |sub| {
+                const xml_path = std.fs.path.join(self.arena, &.{ base_path, sub, suffix }) catch continue;
+                const content = std.fs.cwd().readFileAlloc(self.arena, xml_path, 512 * 1024) catch continue;
+
+                // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
+                var pos: usize = 0;
+                while (pos < content.len) {
+                    const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
+                    const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse break;
+                    const block = content[value_start..value_end];
+
+                    const fn_tag = "<fullName>";
+                    const fn_end_tag = "</fullName>";
+                    if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
+                        const fn_content_start = fn_start + fn_tag.len;
+                        if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
+                            const full_name = block[fn_content_start..fn_end];
+                            if (std.mem.eql(u8, full_name, api_name)) {
+                                const lbl_tag = "<label>";
+                                const lbl_end_tag = "</label>";
+                                if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
+                                    const lbl_content_start = lbl_start + lbl_tag.len;
+                                    if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
+                                        return block[lbl_content_start..lbl_end];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pos = value_end + 8;
+                }
+            }
+        }
+        return null;
+    }
+
     /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
     pub fn createDefaultProfileRecord(self: *Evaluator) !Value {
         const profile = try self.arena.create(types.SObject);
@@ -1782,16 +1828,32 @@ pub const Evaluator = struct {
                 {
                     var field_iter = std.mem.splitScalar(u8, select_clause2, ',');
                     while (field_iter.next()) |raw_field| {
-                        const field_name = std.mem.trim(u8, raw_field, " \t\n\r");
+                        var field_name = std.mem.trim(u8, raw_field, " \t\n\r");
                         if (field_name.len == 0) continue;
                         // Skip subqueries (SELECT ... FROM ...)
                         if (field_name[0] == '(') continue;
+                        // Handle toLabel(FieldName) — extract inner field name and apply label conversion
+                        var is_to_label = false;
+                        if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and std.mem.endsWith(u8, field_name, ")")) {
+                            field_name = field_name[8 .. field_name.len - 1];
+                            is_to_label = true;
+                        }
                         // Skip parent references (Account.Name → skip)
                         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
                         for (records.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobjectGet(&item.sobject.fields, field_name) == null) {
                                     try item.sobject.fields.put(self.arena, field_name, Value.null_val);
+                                }
+                                // toLabel: convert API name to picklist label using field-meta.xml
+                                if (is_to_label) {
+                                    if (utils.sobjectGet(&item.sobject.fields, field_name)) |fv| {
+                                        if (fv == .string) {
+                                            if (self.resolvePicklistLabel(item.sobject.type_name, field_name, fv.string)) |label| {
+                                                try utils.sobjectPut(&item.sobject.fields, self.arena, field_name, Value{ .string = label });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
