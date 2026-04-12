@@ -58,6 +58,8 @@ pub const Evaluator = struct {
     is_restricted_user: bool = false,
     // Whether running as a minimum-access user specifically (stricter than is_restricted_user)
     is_min_access_user: bool = false,
+    // ApexPages message store (for ApexPages.addMessages / hasMessages / getMessages)
+    apex_pages_messages: std.ArrayListUnmanaged(Value) = .empty,
     // Trigger declarations (object name → list of triggers)
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
@@ -113,10 +115,12 @@ pub const Evaluator = struct {
         self.is_restricted_user = false;
         self.is_min_access_user = false;
         self.pending_event_callback = null;
+        self.apex_pages_messages = .empty;
 
-        // Clear cache partitions
+        // Clear cache partitions and ApexPages state
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
         _ = self.global_env.bindings.orderedRemove("Cache.Org.partition");
+        _ = self.global_env.bindings.orderedRemove("ApexPages.currentPageRef");
     }
 
     /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
@@ -5372,6 +5376,35 @@ pub const Evaluator = struct {
                 }
             }
             return Value{ .set = set };
+        }
+
+        // ApexPages.StandardController constructor
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardController") or
+            std.ascii.eqlIgnoreCase(type_name, "StandardController"))
+        {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = "ApexPages.StandardController" };
+            if (ne.args.len > 0) {
+                var arg_copy = ne.args[0];
+                const record = try self.evalExpr(&arg_copy, current_env);
+                try instance.fields.put(self.arena, "record", record);
+            }
+            return Value{ .object = instance };
+        }
+
+        // ApexPages.StandardSetController constructor
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardSetController") or
+            std.ascii.eqlIgnoreCase(type_name, "StandardSetController"))
+        {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = "ApexPages.StandardSetController" };
+            if (ne.args.len > 0) {
+                var arg_copy = ne.args[0];
+                const records = try self.evalExpr(&arg_copy, current_env);
+                try instance.fields.put(self.arena, "records", records);
+            }
+            try instance.fields.put(self.arena, "pageSize", Value{ .integer = 20 }); // default page size
+            return Value{ .object = instance };
         }
 
         // Known non-SObject types: create ObjectInstance instead
