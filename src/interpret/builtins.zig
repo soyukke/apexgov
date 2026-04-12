@@ -138,6 +138,20 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
         return Value{ .boolean = false };
     }
+    if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "isEmpty")) {
+        if (args.len > 0) {
+            if (args[0] == .null_val) return Value{ .boolean = true };
+            if (args[0] == .string) return Value{ .boolean = args[0].string.len == 0 };
+        }
+        return Value{ .boolean = true };
+    }
+    if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "isNotEmpty")) {
+        if (args.len > 0) {
+            if (args[0] == .null_val) return Value{ .boolean = false };
+            if (args[0] == .string) return Value{ .boolean = args[0].string.len > 0 };
+        }
+        return Value{ .boolean = false };
+    }
 
     // Integer.valueOf
     if (std.ascii.eqlIgnoreCase(class_name, "Integer") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
@@ -1136,7 +1150,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "communitiesLanding")) {
             const pr = try ctx.arena.create(types.ObjectInstance);
             pr.* = .{ .class_name = "PageReference" };
-            try pr.fields.put(ctx.arena, "url", Value{ .string = "/" });
+            try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
             return Value{ .object = pr };
         }
         return Value.null_val;
@@ -1728,6 +1742,26 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             try resp.fields.put(ctx.arena, "body", Value{ .string = "{\"id\":\"001000000000001\"}" });
             return Value{ .object = resp };
         }
+    }
+
+    // PageReference methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "PageReference")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getUrl")) {
+            return obj.fields.get("url") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "setRedirect") and args.len > 0) {
+            try obj.fields.put(ctx.arena, "redirect", args[0]);
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getParameters")) {
+            // Return empty Map if not set
+            if (obj.fields.get("parameters")) |p| return p;
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            try obj.fields.put(ctx.arena, "parameters", Value{ .map = map });
+            return Value{ .map = map };
+        }
+        return null;
     }
 
     // Date methods (stored as string)

@@ -2009,6 +2009,35 @@ test "JSON.createParser + readValueAs deserializes into typed class" {
     try std.testing.expect(eval.assertion_failure == null);
 }
 
+test "PageReference.getUrl returns stored URL" {
+    const source =
+        \\@IsTest
+        \\public class PageRefTest {
+        \\    @IsTest
+        \\    static void testGetUrl() {
+        \\        PageReference ref = Network.communitiesLanding();
+        \\        System.assertNotEquals(null, ref);
+        \\        String url = ref.getUrl();
+        \\        System.assertNotEquals(null, url);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("PageRefTest", "testGetUrl", &.{}) catch |e| {
+        std.debug.print("testGetUrl error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
 test "SOQL LIKE with bind variable matches correctly" {
     const source =
         \\@IsTest
