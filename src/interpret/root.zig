@@ -1793,3 +1793,20 @@ test "E2E: cross-class Database.countQuery with bind variable" {
     defer result.deinit();
     try std.testing.expectEqualStrings("1", result.value.string);
 }
+
+test "E2E: Network.communitiesLanding() returns PageReference" {
+    const source =
+        \\public class NetTest {
+        \\    public static String test() {
+        \\        PageReference ref = Network.communitiesLanding();
+        \\        return ref != null ? 'ok' : 'null';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NetTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}

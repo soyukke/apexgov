@@ -1141,6 +1141,17 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return null;
     }
 
+    // Network.communitiesLanding() → PageReference stub
+    if (std.ascii.eqlIgnoreCase(class_name, "Network")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "communitiesLanding")) {
+            const pr = try ctx.arena.create(types.ObjectInstance);
+            pr.* = .{ .class_name = "PageReference" };
+            try pr.fields.put(ctx.arena, "url", Value{ .string = "/" });
+            return Value{ .object = pr };
+        }
+        return Value.null_val;
+    }
+
     // Url.getOrgDomainUrl / Url.getSalesforceBaseUrl
     if (std.ascii.eqlIgnoreCase(class_name, "Url") or std.ascii.eqlIgnoreCase(class_name, "URL")) {
         if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl")) {
