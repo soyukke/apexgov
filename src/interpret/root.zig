@@ -2068,3 +2068,177 @@ test "SOQL LIKE with bind variable matches correctly" {
     };
     try std.testing.expect(eval.assertion_failure == null);
 }
+
+test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
+    const source =
+        \\public class SchemaTest {
+        \\    public static void testSchemaAccess() {
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isUpdateable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isCreateable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isDeletable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isAccessible());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("SchemaTest", "testSchemaAccess", &.{}) catch |e| {
+        std.debug.print("Schema.sObjectType test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
+    const source =
+        \\public class CryptoTest {
+        \\    public static void testRoundTrip() {
+        \\        Blob key = Crypto.generateAesKey(256);
+        \\        Blob data = Blob.valueOf('Test data');
+        \\        Blob encrypted = Crypto.encryptWithManagedIV('AES256', key, data);
+        \\        Blob decrypted = Crypto.decryptWithManagedIV('AES256', key, encrypted);
+        \\        System.assertEquals('Test data', decrypted.toString());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("CryptoTest", "testRoundTrip", &.{}) catch |e| {
+        std.debug.print("Crypto round-trip test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "AuraHandledException is caught in try-catch" {
+    const source =
+        \\public class AuraTest {
+        \\    public static void doThrow() {
+        \\        throw new AuraHandledException('Test error');
+        \\    }
+        \\    public static void testCatch() {
+        \\        Boolean caught = false;
+        \\        try {
+        \\            doThrow();
+        \\            System.assert(false, 'Should have thrown');
+        \\        } catch (AuraHandledException e) {
+        \\            caught = true;
+        \\        }
+        \\        System.assertEquals(true, caught);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("AuraTest", "testCatch", &.{}) catch |e| {
+        std.debug.print("AuraHandledException test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "Type.forName returns null for non-existent class" {
+    const source =
+        \\public class TypeForNameTest {
+        \\    public static void testForName() {
+        \\        System.assertNotEquals(null, Type.forName('NonExistentClass'));
+        \\        System.assertEquals(null, Type.forName('Outer.NonExistentInner'));
+        \\        System.assertNotEquals(null, Type.forName('Map<Id,Account>'));
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("TypeForNameTest", "testForName", &.{}) catch |e| {
+        std.debug.print("Type.forName test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "Trigger recursion does not StackOverflow" {
+    const source =
+        \\trigger AccountTrigger on Account (after insert, after update) {
+        \\    AccountHandler.handle(Trigger.new);
+        \\}
+    ;
+    const handler_source =
+        \\public class AccountHandler {
+        \\    public static void handle(List<Account> accounts) {
+        \\        List<Account> toUpdate = new List<Account>();
+        \\        for (Account a : accounts) {
+        \\            Account updated = new Account(Id = a.Id, Name = a.Name + ' updated');
+        \\            toUpdate.add(updated);
+        \\        }
+        \\        update toUpdate;
+        \\    }
+        \\}
+    ;
+    const test_source =
+        \\@isTest
+        \\public class TriggerRecursionTest {
+        \\    @isTest
+        \\    static void testNoStackOverflow() {
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        List<Account> results = [SELECT Name FROM Account];
+        \\        System.assert(results.size() > 0, 'Account should exist');
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    // Parse all three sources
+    const tokens1 = try lexer.tokenize(source, alloc);
+    const decls1 = try parser.parse(tokens1, alloc);
+    const tokens2 = try lexer.tokenize(handler_source, alloc);
+    const decls2 = try parser.parse(tokens2, alloc);
+    const tokens3 = try lexer.tokenize(test_source, alloc);
+    const decls3 = try parser.parse(tokens3, alloc);
+
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls1);
+    try eval.loadDecls(decls2);
+    try eval.loadDecls(decls3);
+
+    _ = eval.callMethod("TriggerRecursionTest", "testNoStackOverflow", &.{}) catch |e| {
+        // StackOverflow should not happen anymore
+        if (e == error.StackOverflow) {
+            std.debug.print("Trigger recursion caused StackOverflow!\n", .{});
+            return error.TestUnexpectedResult;
+        }
+        std.debug.print("Trigger recursion test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}

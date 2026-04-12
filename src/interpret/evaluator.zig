@@ -62,6 +62,10 @@ pub const Evaluator = struct {
     trigger_context: ?TriggerContext = null,
     // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
     source_paths: []const []const u8 = &.{},
+    // Trigger recursion depth counter
+    trigger_depth: u32 = 0,
+    // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
+    cast_type_hints: ?[]const ?[]const u8 = null,
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
         callback: *types.ObjectInstance,
@@ -1020,6 +1024,11 @@ pub const Evaluator = struct {
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
+        // Trigger recursion guard — limit to 2 levels (same-object re-entrant triggers stop after 2 rounds)
+        if (self.trigger_depth >= 2) return;
+        self.trigger_depth += 1;
+        defer self.trigger_depth -= 1;
+
         // Lowercase object type for lookup
         const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, obj_type.len) catch return, obj_type);
 
@@ -1874,14 +1883,16 @@ pub const Evaluator = struct {
             if (!in_store) {
                 // Check if it's a common/known SObject type
                 const known_types = [_][]const u8{
-                    "Account",                 "Contact",                "Opportunity",                  "Case",                "Lead",                "Task",                "Event",
-                    "Campaign",                "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink", "ContentDistribution", "PermissionSet",
-                    "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",           "StaticResource",      "FieldPermissions",
-                    "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
-                    "AggregateResult",         "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem", "UserRecordAccess",    "AuthSession",
-                    "LoginHistory",            "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",  "UserRole",            "GroupMember",
-                    "Group",                   "Attachment",             "Note",                         "EmailMessage",        "CaseComment",         "Solution",            "Contract",
-                    "Product2",                "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",               "QuoteLineItem",
+                    "Account",                    "Contact",                "Opportunity",                  "Case",                "Lead",                   "Task",                 "Event",
+                    "Campaign",                   "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink",    "ContentDistribution",  "PermissionSet",
+                    "PermissionSetAssignment",    "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",              "StaticResource",       "FieldPermissions",
+                    "PermissionSetGroup",         "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",
+                    "AggregateResult",            "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",
+                    "LoginHistory",               "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",
+                    "Group",                      "Attachment",             "Note",                         "EmailMessage",        "CaseComment",            "Solution",             "Contract",
+                    "Product2",                   "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense",
+                    "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
+                    "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
@@ -3547,9 +3558,17 @@ pub const Evaluator = struct {
         }
 
         var args: std.ArrayListUnmanaged(Value) = .empty;
+        var arg_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
         for (mc.args) |*arg| {
             try args.append(self.arena, try self.evalExpr(arg, current_env));
+            // Extract cast type hints for overload resolution (e.g., (String)null → "String")
+            const hint: ?[]const u8 = if (arg.* == .cast_expr) arg.cast_expr.target_type.name else null;
+            try arg_type_hints.append(self.arena, hint);
         }
+        // Set cast type hints for method overload resolution
+        const prev_hints = self.cast_type_hints;
+        self.cast_type_hints = arg_type_hints.items;
+        defer self.cast_type_hints = prev_hints;
 
         // Handle chained calls: System.Assert.areEqual → object = System.Assert, method = areEqual
         // Also handle: Test.startTest, Test.stopTest, TriggerHandler.bypass
@@ -5068,6 +5087,13 @@ pub const Evaluator = struct {
                     cur_cd = if (ccd.super_class) |sc| self.findClass(sc.name) else null;
                 }
             }
+            // Schema.SObjectTypeNamespace.Contact → Schema.SObjectType { name: "Contact" }
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectTypeNamespace")) {
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
+                return Value{ .object = sot };
+            }
             // Case-insensitive field lookup (no custom getter found)
             for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
                 if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
@@ -5134,6 +5160,12 @@ pub const Evaluator = struct {
 
             // SObject.SObjectType
             if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                // Schema.sObjectType → return namespace proxy (fields resolve to per-object SObjectType)
+                if (std.ascii.eqlIgnoreCase(class_name, "Schema")) {
+                    const ns = try self.arena.create(types.ObjectInstance);
+                    ns.* = .{ .class_name = "Schema.SObjectTypeNamespace" };
+                    return Value{ .object = ns };
+                }
                 // e.g., Account.SObjectType
                 const sot = try self.arena.create(types.ObjectInstance);
                 sot.* = .{ .class_name = "Schema.SObjectType" };
@@ -6391,7 +6423,7 @@ pub const Evaluator = struct {
     }
 
     /// Type-aware method resolution filtered by static/instance.
-    fn findBestMethodInClassFiltered(_: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
+    fn findBestMethodInClassFiltered(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
         var candidates: [8]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
@@ -6416,6 +6448,8 @@ pub const Evaluator = struct {
         if (count == 0) return if (best_any != null) best_any else null;
         if (count == 1) return candidates[0];
 
+        const arg_type_hints = self.cast_type_hints;
+
         // Multiple candidates: score each by type compatibility
         var best: ?*ast.MethodDecl = null;
         var best_score: i32 = -1;
@@ -6425,6 +6459,15 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
+                // Check type hints from cast expressions (e.g., (String)null)
+                if (arg == .null_val and arg_type_hints != null and i < arg_type_hints.?.len) {
+                    if (arg_type_hints.?[i]) |hint| {
+                        if (std.ascii.eqlIgnoreCase(pt, hint)) {
+                            score += 3; // Strong match: cast type matches parameter type
+                            continue;
+                        }
+                    }
+                }
                 if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
                     score += 2;
                 } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {

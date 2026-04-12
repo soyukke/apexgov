@@ -120,8 +120,11 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     }
     // String.valueOf
     if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
-        if (args.len > 0) return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
-        return Value{ .string = "null" };
+        if (args.len > 0) {
+            if (args[0] == .null_val) return Value.null_val;
+            return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+        }
+        return Value.null_val;
     }
     // String.isBlank / isNotBlank
     if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "isBlank")) {
@@ -842,6 +845,63 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // Type.forName → return a type object stub
     if (std.ascii.eqlIgnoreCase(class_name, "Type") and std.ascii.eqlIgnoreCase(method_name, "forName")) {
         if (args.len > 0 and args[0] == .string) {
+            const requested = args[0].string;
+            // Collection types (Map<...>, List<...>, Set<...>) always resolve
+            if (std.ascii.startsWithIgnoreCase(requested, "Map") or
+                std.ascii.startsWithIgnoreCase(requested, "List") or
+                std.ascii.startsWithIgnoreCase(requested, "Set"))
+            {
+                const obj = try ctx.arena.create(types.ObjectInstance);
+                obj.* = .{ .class_name = "Type" };
+                try obj.fields.put(ctx.arena, "name", args[0]);
+                return Value{ .object = obj };
+            }
+            // Check if the class actually exists in the evaluator's class registry
+            // Support dotted names like "TestFactoryDefaults.AccountDefaults" → check outer class "TestFactoryDefaults"
+            const lookup_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+                requested[0..dot]
+            else
+                requested;
+            // Check inner class name (after dot)
+            const inner_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+                requested[dot + 1 ..]
+            else
+                "";
+            // For dotted names (e.g., "TestFactoryDefaults.AccountDefaults"), verify both outer and inner class exist
+            if (inner_name.len > 0) {
+                const cd_opt: ?*ast.ClassDecl = blk: {
+                    if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
+                    var it = ctx.eval.classes.iterator();
+                    while (it.next()) |e| {
+                        if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
+                    }
+                    break :blk null;
+                };
+                if (cd_opt) |cd| {
+                    var found_inner = false;
+                    for (cd.members) |member| {
+                        switch (member) {
+                            .class_decl => |inner_cd| {
+                                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
+                                    found_inner = true;
+                                    break;
+                                }
+                            },
+                            .interface_decl => |iface| {
+                                if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) {
+                                    found_inner = true;
+                                    break;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    if (!found_inner) return Value.null_val;
+                } else {
+                    return Value.null_val;
+                }
+            }
+            // For non-dotted names: always return Type (standard types, SObjects, user classes)
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Type" };
             try obj.fields.put(ctx.arena, "name", args[0]);
@@ -1957,6 +2017,19 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
             const name = if (obj.fields.get("name")) |n| n.string else "Object";
             return try createDescribeResult(ctx, name);
+        }
+        // Delegate CRUD checks — Schema.sObjectType.Contact.isUpdateable() etc.
+        if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
+        {
+            return Value{ .boolean = !ctx.eval.is_restricted_user };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or
+            std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
+        {
+            return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "newSObject")) {
             const name = if (obj.fields.get("name")) |n| n.string else "SObject";
