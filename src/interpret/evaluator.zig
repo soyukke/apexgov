@@ -1880,7 +1880,10 @@ pub const Evaluator = struct {
                     "Campaign",                "User",                   "ContentVersion",               "ContentDocument", "ContentDocumentLink", "ContentDistribution", "PermissionSet",
                     "PermissionSetAssignment", "ObjectPermissions",      "Profile",                      "Organization",    "ApexClass",           "StaticResource",      "FieldPermissions",
                     "PermissionSetGroup",      "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",     "AsyncApexJob",        "EntityDefinition",    "FieldDefinition",
-                    "AggregateResult",
+                    "AggregateResult",         "RecordType",             "DuplicateRule",                "DuplicateRecordSet", "DuplicateRecordItem", "UserRecordAccess",
+                    "AuthSession",             "LoginHistory",           "TaskStatus",                   "BusinessHours",   "FeedItem",            "CollaborationGroup",  "UserRole",
+                    "GroupMember",             "Group",                  "Attachment",                   "Note",            "EmailMessage",        "CaseComment",         "Solution",
+                    "Contract",                "Product2",               "Pricebook2",                   "PricebookEntry",  "OpportunityLineItem", "Quote",               "QuoteLineItem",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
