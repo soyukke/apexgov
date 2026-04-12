@@ -1020,6 +1020,14 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                 try blob.fields.put(ctx.arena, "value", args[0]);
                 return Value{ .object = blob };
             }
+            // Non-string argument: coerce to string representation
+            if (args.len > 0) {
+                const str = try utils.coerceToString(args[0], ctx.arena);
+                const blob = try ctx.arena.create(types.ObjectInstance);
+                blob.* = .{ .class_name = "Blob" };
+                try blob.fields.put(ctx.arena, "value", Value{ .string = str });
+                return Value{ .object = blob };
+            }
             const blob = try ctx.arena.create(types.ObjectInstance);
             blob.* = .{ .class_name = "Blob" };
             try blob.fields.put(ctx.arena, "value", Value{ .string = "" });
