@@ -2668,6 +2668,8 @@ pub const Evaluator = struct {
                 }
             } else {
                 cmp_val = current_env.get(var_name) orelse return true;
+                // Salesforce: WHERE field = :nullVar skips the condition (includes all records)
+                if (cmp_val == .null_val and !is_neq) return true;
             }
         } else if (std.fmt.parseInt(i64, std.mem.trim(u8, value_str, " \t\n\r"), 10)) |int_val| {
             cmp_val = Value{ .integer = int_val };

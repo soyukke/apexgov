@@ -1423,7 +1423,7 @@ test "E2E: null != empty string is true" {
     try std.testing.expectEqualStrings("where", result.value.string);
 }
 
-test "E2E: Database.query with null bind variable returns 0 records" {
+test "E2E: SOQL WHERE with null bind variable skips condition (Salesforce behavior)" {
     const source =
         \\public class DbNullBindTest {
         \\    public static String test() {
@@ -1432,13 +1432,11 @@ test "E2E: Database.query with null bind variable returns 0 records" {
         \\            new Account(Name = 'Beta', Type = 'B')
         \\        };
         \\        String type = null;
-        \\        String whereClause = '';
-        \\        if (type != null || type != '') {
-        \\            whereClause = 'WHERE Type = :type';
-        \\        }
+        \\        String whereClause = 'WHERE Type = :type';
         \\        Integer count = Database.countQuery(
         \\            'SELECT count() FROM Account ' + whereClause
         \\        );
+        \\        // Salesforce: WHERE field = :nullVar skips the condition → returns all records
         \\        return String.valueOf(count);
         \\    }
         \\}
@@ -1448,9 +1446,7 @@ test "E2E: Database.query with null bind variable returns 0 records" {
         .entry_method = "test",
     });
     defer result.deinit();
-    // type is null, type != null is false, type != '' is true → OR = true
-    // WHERE Type = :type → Type = null → no matches → count = 0
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try std.testing.expectEqualStrings("2", result.value.string);
 }
 
 test "E2E: Database.countQuery resolves local bind variables" {
