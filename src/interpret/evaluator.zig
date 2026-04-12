@@ -246,6 +246,9 @@ pub const Evaluator = struct {
 
     /// Re-initialize static fields for a single class (test class reset)
     pub fn reInitClassStaticFields(self: *Evaluator, cd: *ast.ClassDecl) void {
+        const saved_class = self.current_class;
+        self.current_class = cd.name;
+        defer self.current_class = saved_class;
         for (cd.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
@@ -310,35 +313,29 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn loadDecls(self: *Evaluator, decls: []const ast.Decl) anyerror!void {
+        // Pass 1: Register all classes, inner classes, enums, and static field placeholders
         for (decls) |decl| {
             switch (decl) {
                 .class_decl => |cd| {
                     try self.classes.put(self.arena, cd.name, cd);
-                    // Register inner classes and static fields
                     for (cd.members) |member| {
                         switch (member) {
                             .field_decl => |fd| {
                                 if (fd.modifiers.is_static) {
-                                    const val = if (fd.initializer) |init_expr|
-                                        self.evalExpr(init_expr, self.global_env) catch Value.null_val
-                                    else
-                                        defaultValue(fd.type_ref);
+                                    // Register with default value first (initializers run in pass 2)
                                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                    self.global_env.define(key, val) catch {};
+                                    self.global_env.define(key, defaultValue(fd.type_ref)) catch {};
                                 }
                             },
                             .class_decl => |inner_cd| {
-                                // Register inner class both by its short name and fully qualified name
                                 try self.classes.put(self.arena, inner_cd.name, inner_cd);
                                 const fq_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, inner_cd.name }) catch continue;
                                 try self.classes.put(self.arena, fq_name, inner_cd);
                             },
                             .enum_decl => |ed| {
-                                // Register enum values as static fields
                                 for (ed.values) |v| {
-                                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ ed.name, v }) catch continue;
-                                    self.global_env.define(key, Value{ .string = v }) catch {};
-                                    // Also register with outer class prefix
+                                    const ekey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ ed.name, v }) catch continue;
+                                    self.global_env.define(ekey, Value{ .string = v }) catch {};
                                     const fq_key = std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ cd.name, ed.name, v }) catch continue;
                                     self.global_env.define(fq_key, Value{ .string = v }) catch {};
                                 }
@@ -351,10 +348,31 @@ pub const Evaluator = struct {
                 .trigger_decl => |td| {
                     const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, td.object_name.len) catch continue, td.object_name);
                     const gop = self.triggers.getOrPut(self.arena, obj_lower) catch continue;
-                    if (!gop.found_existing) {
-                        gop.value_ptr.* = .empty;
-                    }
+                    if (!gop.found_existing) gop.value_ptr.* = .empty;
                     gop.value_ptr.append(self.arena, td) catch {};
+                },
+                else => {},
+            }
+        }
+        // Pass 2: Evaluate static field initializers (all class names and placeholders are now visible)
+        for (decls) |decl| {
+            switch (decl) {
+                .class_decl => |cd| {
+                    for (cd.members) |member| {
+                        switch (member) {
+                            .field_decl => |fd| {
+                                if (fd.modifiers.is_static and fd.initializer != null) {
+                                    const saved_class = self.current_class;
+                                    self.current_class = cd.name;
+                                    defer self.current_class = saved_class;
+                                    const val = self.evalExpr(fd.initializer.?, self.global_env) catch Value.null_val;
+                                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                    self.global_env.set(key, val) catch {};
+                                }
+                            },
+                            else => {},
+                        }
+                    }
                 },
                 else => {},
             }

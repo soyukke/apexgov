@@ -1941,6 +1941,15 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "getStatus")) {
             return obj.fields.get("status") orelse Value{ .string = "OK" };
         }
+        if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint")) {
+            return obj.fields.get("endpoint") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getMethod")) {
+            return obj.fields.get("method") orelse Value{ .string = "GET" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getHeader")) {
+            return obj.fields.get("header") orelse Value{ .string = "" };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or
             std.ascii.eqlIgnoreCase(method_name, "setEndpoint") or
             std.ascii.eqlIgnoreCase(method_name, "setHeader") or
