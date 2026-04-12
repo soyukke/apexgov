@@ -2543,12 +2543,29 @@ pub const Evaluator = struct {
         if (!field_found) return if (is_neq) true else false;
 
         if (is_like) {
-            // Simple LIKE support: '%xxx%' → contains
+            // LIKE support: '%xxx%' → contains, 'xxx%' → startsWith, '%xxx' → endsWith
             if (field_val != .string) return false;
-            var pattern = value_str;
-            if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1 .. pattern.len - 1];
-            if (pattern.len >= 2 and pattern[0] == '%' and pattern[pattern.len - 1] == '%') {
-                return std.ascii.indexOfIgnoreCase(field_val.string, pattern[1 .. pattern.len - 1]) != null;
+            var pattern = std.mem.trim(u8, value_str, " \t\n\r");
+            // バインド変数 :type → 環境から値を解決
+            if (pattern.len > 0 and pattern[0] == ':') {
+                const var_name = pattern[1..];
+                if (current_env.get(var_name)) |bind_val| {
+                    if (bind_val == .string) {
+                        pattern = bind_val.string;
+                    } else return false;
+                } else return false;
+            }
+            if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
+            if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'') pattern = pattern[0 .. pattern.len - 1];
+            const starts_wild = pattern.len > 0 and pattern[0] == '%';
+            const ends_wild = pattern.len > 0 and pattern[pattern.len - 1] == '%';
+            const inner = pattern[@intFromBool(starts_wild) .. pattern.len - @intFromBool(ends_wild)];
+            if (starts_wild and ends_wild) {
+                return std.ascii.indexOfIgnoreCase(field_val.string, inner) != null;
+            } else if (starts_wild) {
+                return std.ascii.endsWithIgnoreCase(field_val.string, inner);
+            } else if (ends_wild) {
+                return std.ascii.startsWithIgnoreCase(field_val.string, inner);
             }
             return std.ascii.eqlIgnoreCase(field_val.string, pattern);
         }
