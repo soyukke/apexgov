@@ -1476,3 +1476,60 @@ test "E2E: Database.countQuery resolves local bind variables" {
     defer result.deinit();
     try std.testing.expectEqualStrings("2", result.value.string);
 }
+
+test "E2E: @TestVisible private static Integer field initializer" {
+    const source =
+        \\public class StaticFieldTest {
+        \\    @TestVisible
+        \\    private static Integer PAGE_SIZE = 9;
+        \\    public static String test() {
+        \\        return String.valueOf(PAGE_SIZE);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("9", result.value.string);
+}
+
+test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
+    const source =
+        \\public class SchemaPicklistTest {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult dfr = Account.Type.getDescribe();
+        \\        List<Schema.PicklistEntry> entries = dfr.getPicklistValues();
+        \\        return String.valueOf(entries.size() > 0);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaPicklistTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: ObjectInstance field access is case-insensitive" {
+    const source =
+        \\public class CaseFieldTest {
+        \\    public class Response {
+        \\        public String Prompt;
+        \\    }
+        \\    public static String test() {
+        \\        Response r = new Response();
+        \\        r.prompt = 'hello';
+        \\        return r.Prompt;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CaseFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.string);
+}

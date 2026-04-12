@@ -3465,7 +3465,15 @@ pub const Evaluator = struct {
                         obj.sobject.id = if (final_val == .string) final_val.string else null;
                     }
                 } else if (obj == .object) {
-                    try obj.object.fields.put(self.arena, fa.field, final_val);
+                    // Case-insensitive put: use existing key if it matches
+                    var existing_key: ?[]const u8 = null;
+                    for (obj.object.fields.keys()) |k| {
+                        if (std.ascii.eqlIgnoreCase(k, fa.field)) {
+                            existing_key = k;
+                            break;
+                        }
+                    }
+                    try obj.object.fields.put(self.arena, existing_key orelse fa.field, final_val);
                     // Sync local env when assigning to this.field
                     // so that bare field references (without this.) see the updated value
                     if (fa.object.* == .this_expr) {
