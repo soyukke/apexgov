@@ -120,8 +120,11 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     }
     // String.valueOf
     if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
-        if (args.len > 0) return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
-        return Value{ .string = "null" };
+        if (args.len > 0) {
+            if (args[0] == .null_val) return Value.null_val;
+            return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+        }
+        return Value.null_val;
     }
     // String.isBlank / isNotBlank
     if (std.ascii.eqlIgnoreCase(class_name, "String") and std.ascii.eqlIgnoreCase(method_name, "isBlank")) {

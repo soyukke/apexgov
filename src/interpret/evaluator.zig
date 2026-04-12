@@ -1022,8 +1022,8 @@ pub const Evaluator = struct {
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
-        // Trigger recursion guard (Salesforce limits recursive triggers to ~16 levels)
-        if (self.trigger_depth >= 16) return;
+        // Trigger recursion guard — limit to 8 levels to prevent StackOverflow from deep trigger chains
+        if (self.trigger_depth >= 8) return;
         self.trigger_depth += 1;
         defer self.trigger_depth -= 1;
 
