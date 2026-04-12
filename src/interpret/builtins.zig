@@ -1256,6 +1256,58 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return null;
     }
 
+    // ApexPages static methods
+    if (std.ascii.eqlIgnoreCase(class_name, "ApexPages")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or std.ascii.eqlIgnoreCase(method_name, "addMessage")) {
+            // addMessages(Exception e) — create ApexPages.Message objects and store them
+            if (args.len > 0) {
+                const msg_text = blk: {
+                    if (args[0] == .object) {
+                        if (args[0].object.fields.get("message")) |msg| {
+                            if (msg == .string) break :blk msg.string;
+                        }
+                    }
+                    if (args[0] == .string) break :blk args[0].string;
+                    break :blk "Error";
+                };
+                // Create ApexPages.Message object
+                const msg_obj = try ctx.arena.create(types.ObjectInstance);
+                msg_obj.* = .{ .class_name = "ApexPages.Message" };
+                try msg_obj.fields.put(ctx.arena, "summary", Value{ .string = msg_text });
+                try msg_obj.fields.put(ctx.arena, "severity", Value{ .string = "ERROR" });
+                try ctx.eval.apex_pages_messages.append(ctx.arena, Value{ .object = msg_obj });
+            }
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "hasMessages")) {
+            return Value{ .boolean = ctx.eval.apex_pages_messages.items.len > 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getMessages")) {
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            for (ctx.eval.apex_pages_messages.items) |msg| {
+                try list.items.append(ctx.arena, msg);
+            }
+            return Value{ .list = list };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "currentPage")) {
+            // Return the same PageReference instance across calls within a test
+            if (ctx.eval.global_env.get("ApexPages.currentPageRef")) |existing| {
+                return existing;
+            }
+            const pr = try ctx.arena.create(types.ObjectInstance);
+            pr.* = .{ .class_name = "PageReference" };
+            try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
+            const params = try ctx.arena.create(types.MapValue);
+            params.* = .{};
+            try pr.fields.put(ctx.arena, "parameters", Value{ .map = params });
+            const val = Value{ .object = pr };
+            try ctx.eval.global_env.define("ApexPages.currentPageRef", val);
+            return val;
+        }
+        return Value.null_val;
+    }
+
     // Network.communitiesLanding() → PageReference stub
     if (std.ascii.eqlIgnoreCase(class_name, "Network")) {
         if (std.ascii.eqlIgnoreCase(method_name, "communitiesLanding")) {
@@ -1928,6 +1980,81 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             map.* = .{};
             try obj.fields.put(ctx.arena, "parameters", Value{ .map = map });
             return Value{ .map = map };
+        }
+        return null;
+    }
+
+    // ApexPages.Message methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "ApexPages.Message")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getSummary")) {
+            return obj.fields.get("summary") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getSeverity")) {
+            return obj.fields.get("severity") orelse Value{ .string = "ERROR" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getDetail")) {
+            return obj.fields.get("detail") orelse Value{ .string = "" };
+        }
+        return null;
+    }
+
+    // ApexPages.StandardController methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "ApexPages.StandardController") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "StandardController"))
+    {
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecord")) {
+            return obj.fields.get("record") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
+            if (obj.fields.get("record")) |rec| {
+                if (rec == .sobject and rec.sobject.id != null) return Value{ .string = rec.sobject.id.? };
+            }
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "save") or std.ascii.eqlIgnoreCase(method_name, "cancel")) {
+            const pr = try ctx.arena.create(types.ObjectInstance);
+            pr.* = .{ .class_name = "PageReference" };
+            try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
+            return Value{ .object = pr };
+        }
+        return null;
+    }
+
+    // ApexPages.StandardSetController methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "ApexPages.StandardSetController") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "StandardSetController"))
+    {
+        if (std.ascii.eqlIgnoreCase(method_name, "getPageSize")) {
+            return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "setPageSize") and args.len > 0) {
+            try obj.fields.put(ctx.arena, "pageSize", args[0]);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRecords")) {
+            return obj.fields.get("records") orelse blk: {
+                const empty = try ctx.arena.create(types.ListValue);
+                empty.* = .{};
+                break :blk Value{ .list = empty };
+            };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getResultSize")) {
+            if (obj.fields.get("records")) |recs| {
+                if (recs == .list) return Value{ .integer = @intCast(recs.list.items.items.len) };
+            }
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "first") or
+            std.ascii.eqlIgnoreCase(method_name, "last") or
+            std.ascii.eqlIgnoreCase(method_name, "next") or
+            std.ascii.eqlIgnoreCase(method_name, "previous"))
+        {
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getHasNext") or
+            std.ascii.eqlIgnoreCase(method_name, "getHasPrevious"))
+        {
+            return Value{ .boolean = false };
         }
         return null;
     }
