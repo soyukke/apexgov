@@ -60,6 +60,8 @@ pub const Evaluator = struct {
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
     trigger_context: ?TriggerContext = null,
+    // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
+    source_paths: []const []const u8 = &.{},
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
         callback: *types.ObjectInstance,
@@ -2553,7 +2555,18 @@ pub const Evaluator = struct {
                 }
             }
         }
-        if (!field_found) return if (is_neq) true else false;
+        if (!field_found) {
+            // Check if the comparison value is a null bind variable → skip condition
+            if (value_str.len > 0 and value_str[0] == ':') {
+                const bv_name = value_str[1..];
+                if (std.mem.indexOf(u8, bv_name, ".")) |_| {} else {
+                    if (current_env.get(bv_name)) |bv| {
+                        if (bv == .null_val) return true; // null bind → include record
+                    }
+                }
+            }
+            return if (is_neq) true else false;
+        }
 
         if (is_like) {
             // LIKE support: '%xxx%' → contains, 'xxx%' → startsWith, '%xxx' → endsWith
