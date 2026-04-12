@@ -7521,12 +7521,16 @@ pub const Evaluator = struct {
                     }
                     const nested = trimmed[val_start..i];
                     if (std.mem.eql(u8, key, "attributes")) {
-                        // Extract type from attributes
-                        if (std.mem.indexOf(u8, nested, "\"type\":\"")) |type_pos| {
-                            const ts = type_pos + 8;
-                            if (std.mem.indexOfPos(u8, nested, ts, "\"")) |te| {
-                                resolved_type = nested[ts..te];
-                                sob.type_name = resolved_type;
+                        // Extract type from attributes (handles both "type":"X" and "type": "X")
+                        const type_key_patterns = [_][]const u8{ "\"type\":\"", "\"type\": \"", "\"type\" : \"" };
+                        for (type_key_patterns) |pattern| {
+                            if (std.mem.indexOf(u8, nested, pattern)) |type_pos| {
+                                const ts = type_pos + pattern.len;
+                                if (std.mem.indexOfPos(u8, nested, ts, "\"")) |te| {
+                                    resolved_type = nested[ts..te];
+                                    sob.type_name = resolved_type;
+                                }
+                                break;
                             }
                         }
                     } else {

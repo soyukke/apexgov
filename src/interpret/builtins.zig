@@ -240,6 +240,68 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return Value{ .string = try currentDateString(ctx.arena) };
     }
 
+    // Math
+    if (std.ascii.eqlIgnoreCase(class_name, "Math")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "random")) {
+            // Return a pseudo-random double between 0.0 and 1.0
+            const ts: u64 = @intCast(if (std.time.timestamp() > 0) std.time.timestamp() else 1);
+            // Simple LCG-based random: use timestamp + a counter for variety
+            const seed = ts *% 6364136223846793005 +% 1442695040888963407;
+            const val: f64 = @as(f64, @floatFromInt(seed % 1000000)) / 1000000.0;
+            return Value{ .double = val };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "abs")) {
+            if (args.len > 0) {
+                if (args[0] == .integer) return Value{ .integer = if (args[0].integer < 0) -args[0].integer else args[0].integer };
+                if (args[0] == .double) return Value{ .double = @abs(args[0].double) };
+            }
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "floor") or std.ascii.eqlIgnoreCase(method_name, "ceil") or std.ascii.eqlIgnoreCase(method_name, "round")) {
+            if (args.len > 0) {
+                if (args[0] == .double) {
+                    if (std.ascii.eqlIgnoreCase(method_name, "floor")) return Value{ .double = @floor(args[0].double) };
+                    if (std.ascii.eqlIgnoreCase(method_name, "ceil")) return Value{ .double = @ceil(args[0].double) };
+                    return Value{ .integer = @intFromFloat(@round(args[0].double)) };
+                }
+                if (args[0] == .integer) return args[0];
+            }
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "max") or std.ascii.eqlIgnoreCase(method_name, "min")) {
+            if (args.len >= 2) {
+                const a = if (args[0] == .double) args[0].double else if (args[0] == .integer) @as(f64, @floatFromInt(args[0].integer)) else 0.0;
+                const b = if (args[1] == .double) args[1].double else if (args[1] == .integer) @as(f64, @floatFromInt(args[1].integer)) else 0.0;
+                const result = if (std.ascii.eqlIgnoreCase(method_name, "max")) @max(a, b) else @min(a, b);
+                // Return same type as input
+                if (args[0] == .integer and args[1] == .integer) return Value{ .integer = @intFromFloat(result) };
+                return Value{ .double = result };
+            }
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "mod")) {
+            if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
+                if (args[1].integer != 0) return Value{ .integer = @mod(args[0].integer, args[1].integer) };
+            }
+            return Value{ .integer = 0 };
+        }
+        return Value{ .double = 0 };
+    }
+
+    // Time
+    if (std.ascii.eqlIgnoreCase(class_name, "Time")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+            // Time.newInstance(hour, minute, second, millisecond)
+            const h = if (args.len > 0 and args[0] == .integer) args[0].integer else 0;
+            const m = if (args.len > 1 and args[1] == .integer) args[1].integer else 0;
+            const s = if (args.len > 2 and args[2] == .integer) args[2].integer else 0;
+            const ms = if (args.len > 3 and args[3] == .integer) args[3].integer else 0;
+            const time_str = try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ h, m, s, ms });
+            return Value{ .string = time_str };
+        }
+        return Value.null_val;
+    }
+
     // DateTime
     if (std.ascii.eqlIgnoreCase(class_name, "DateTime")) {
         if (std.ascii.eqlIgnoreCase(method_name, "now")) {
