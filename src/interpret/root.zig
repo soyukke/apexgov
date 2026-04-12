@@ -2351,27 +2351,33 @@ test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
 }
 
 test "E2E: StaticResource loads body from actual JSON file on disk" {
+    const alloc = std.testing.allocator;
+    // Create a temporary staticresources directory with a JSON file
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("staticresources");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "staticresources/test_data.json",
+        .data = "[{\"Name\":\"Alice\"},{\"Name\":\"Bob\"}]",
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
     const source =
         \\public class SRTest {
         \\    public static String test() {
-        \\        StaticResource sr = [SELECT Id, Body FROM StaticResource WHERE Name = 'sample_data_brokers'];
+        \\        StaticResource sr = [SELECT Id, Body FROM StaticResource WHERE Name = 'test_data'];
         \\        String body = sr.Body.toString();
         \\        List<Object> parsed = (List<Object>) JSON.deserializeUntyped(body);
         \\        return String.valueOf(parsed.size());
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, source, .{
+    const result = try run(alloc, source, .{
         .entry_class = "SRTest",
         .entry_method = "test",
-        .source_paths = &.{".local-fixtures/apex/repos/dreamhouse-lwc/force-app/main/default"},
+        .source_paths = &.{tmp_path},
     });
     defer result.deinit();
-    // The JSON should parse successfully (not "mock static resource body")
-    // We just check it returned a number > 0
-    const size = std.fmt.parseInt(i64, result.value.string, 10) catch {
-        std.debug.print("StaticResource body did not parse as valid JSON list, got: {s}\n", .{result.value.string});
-        return error.TestUnexpectedResult;
-    };
-    try std.testing.expect(size > 0);
+    try std.testing.expectEqualStrings("2", result.value.string);
 }
