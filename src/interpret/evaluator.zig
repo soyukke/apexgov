@@ -117,6 +117,39 @@ pub const Evaluator = struct {
         _ = self.global_env.bindings.orderedRemove("Cache.Org.partition");
     }
 
+    /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
+    pub fn createCurrentUserRecord(self: *Evaluator) !Value {
+        const user = try self.arena.create(types.SObject);
+        user.* = .{ .type_name = "User" };
+        user.id = "005000000000001";
+        try user.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+        try user.fields.put(self.arena, "FirstName", Value{ .string = "Test" });
+        try user.fields.put(self.arena, "LastName", Value{ .string = "User" });
+        try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        try user.fields.put(self.arena, "Email", Value{ .string = "testuser@example.com" });
+        try user.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
+        try user.fields.put(self.arena, "ProfileId", Value{ .string = "00e000000000001" });
+        try user.fields.put(self.arena, "UserType", Value{ .string = "Standard" });
+        try user.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+        try user.fields.put(self.arena, "Alias", Value{ .string = "tuser" });
+        try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+        try user.fields.put(self.arena, "LocaleSidKey", Value{ .string = "en_US" });
+        try user.fields.put(self.arena, "EmailEncodingKey", Value{ .string = "UTF-8" });
+        try user.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
+        try user.fields.put(self.arena, "CommunityNickname", Value{ .string = "testuser" });
+        return Value{ .sobject = user };
+    }
+
+    /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
+    pub fn createDefaultProfileRecord(self: *Evaluator) !Value {
+        const profile = try self.arena.create(types.SObject);
+        profile.* = .{ .type_name = "Profile" };
+        profile.id = "00e000000000001";
+        try profile.fields.put(self.arena, "Id", Value{ .string = "00e000000000001" });
+        try profile.fields.put(self.arena, "Name", Value{ .string = "System Administrator" });
+        return Value{ .sobject = profile };
+    }
+
     /// Re-initialize static fields for a single class (test class reset)
     pub fn reInitClassStaticFields(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
@@ -1872,6 +1905,17 @@ pub const Evaluator = struct {
                 }
             } else if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
                 try records.append(self.arena, stub_record);
+            }
+        }
+
+        // Seed synthetic records for User/Profile if none exist in store
+        if (records.items.len == 0 and self.store.get(from_type) == null) {
+            if (std.ascii.eqlIgnoreCase(from_type, "User")) {
+                const user_record = try self.createCurrentUserRecord();
+                try records.append(self.arena, user_record);
+            } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
+                const profile_record = try self.createDefaultProfileRecord();
+                try records.append(self.arena, profile_record);
             }
         }
 
