@@ -356,7 +356,7 @@ pub const Evaluator = struct {
 
         // Database methods that need store access (must be before builtins to avoid dead-code fallback)
         if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-            return self.handleDatabaseMethod(method_name, args);
+            return self.handleDatabaseMethod(method_name, args, self.global_env);
         }
 
         // Builtin class stubs (before user-defined classes)
@@ -1934,6 +1934,9 @@ pub const Evaluator = struct {
         // Apply parent field lookups: Account.Name, parent__r.Name
         try self.applyParentFieldLookups(soql, from_type, &records);
 
+        // Resolve formula-like fields: <Relationship>_Name__c → parent.Name
+        try self.resolveFormulaFields(soql, &records);
+
         // Apply ORDER BY
         if (extractOrderByField(soql)) |order_info| {
             const field_name = order_info.field;
@@ -1956,8 +1959,18 @@ pub const Evaluator = struct {
             }
         }
 
-        // Apply OFFSET
-        if (extractOffset(soql)) |offset_val| {
+        // Apply OFFSET (including :bindVar)
+        var offset_val_opt = extractOffset(soql);
+        if (offset_val_opt == null) {
+            if (extractOffsetBindVar(soql)) |bind_name| {
+                if (current_env.get(bind_name)) |bv| {
+                    if (bv == .integer and bv.integer >= 0) {
+                        offset_val_opt = @intCast(bv.integer);
+                    }
+                }
+            }
+        }
+        if (offset_val_opt) |offset_val| {
             if (offset_val < records.items.len) {
                 const remaining = records.items.len - offset_val;
                 std.mem.copyForwards(Value, records.items[0..remaining], records.items[offset_val..records.items.len]);
@@ -2818,6 +2831,50 @@ pub const Evaluator = struct {
         }
     }
 
+    /// SOQL SELECT 内の数式フィールド（<Relationship>_<Field>__c）を FK 経由で親から解決する。
+    /// 例: Experience_Name__c → Experience__c FK → 親の Name
+    fn resolveFormulaFields(self: *Evaluator, soql: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
+        const select_clause = extractParentFields(soql) orelse return;
+        var iter = std.mem.splitScalar(u8, select_clause, ',');
+        while (iter.next()) |field_part| {
+            const trimmed = std.mem.trim(u8, field_part, " \t\n\r");
+            // Skip dotted fields (already handled) and sub-queries
+            if (std.mem.indexOf(u8, trimmed, ".") != null) continue;
+            if (trimmed.len > 0 and trimmed[0] == '(') continue;
+            // Pattern: <Prefix>_<Suffix>__c where <Prefix>__c is a FK and <Suffix> is a parent field
+            // e.g. Experience_Name__c → FK=Experience__c, parent field=Name
+            if (!std.mem.endsWith(u8, trimmed, "__c")) continue;
+            const base = trimmed[0 .. trimmed.len - 3]; // strip __c
+            // Find underscore separator (last one before __c)
+            const sep_pos = std.mem.lastIndexOfScalar(u8, base, '_') orelse continue;
+            if (sep_pos == 0) continue;
+            const parent_prefix = base[0..sep_pos]; // "Experience"
+            const field_suffix = base[sep_pos + 1 ..]; // "Name"
+            // Construct FK field: Experience__c
+            const fk_field = try std.fmt.allocPrint(self.arena, "{s}__c", .{parent_prefix});
+
+            for (records.items) |*rec| {
+                if (rec.* != .sobject) continue;
+                // Skip if field already has a non-null value
+                if (utils.sobjectGet(&rec.sobject.fields, trimmed)) |existing| {
+                    if (existing != .null_val) continue;
+                }
+                // Look up FK
+                const fk_val = utils.sobjectGet(&rec.sobject.fields, fk_field) orelse continue;
+                if (fk_val != .string) continue;
+                // Find parent type
+                const parent_type = self.findRecordTypeById(fk_val.string) orelse continue;
+                // Find parent record
+                const parent_rec = self.findRecordById(parent_type, fk_val.string) orelse continue;
+                if (parent_rec != .sobject) continue;
+                // Copy the field from parent
+                if (utils.sobjectGet(&parent_rec.sobject.fields, field_suffix)) |val| {
+                    try rec.sobject.fields.put(self.arena, trimmed, val);
+                }
+            }
+        }
+    }
+
     /// Convert a parent reference to FK field name.
     /// Account → AccountId, parent__r → parent__c
     fn parentRefToFk(self: *Evaluator, ref: []const u8) []const u8 {
@@ -3488,7 +3545,7 @@ pub const Evaluator = struct {
 
             // Database methods that need store access
             if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-                return self.handleDatabaseMethod(mc.method, args.items);
+                return self.handleDatabaseMethod(mc.method, args.items, current_env);
             }
 
             // JSON.serialize/deserialize with round-trip support
@@ -5475,7 +5532,7 @@ pub const Evaluator = struct {
         return .void_val;
     }
 
-    fn handleDatabaseMethod(self: *Evaluator, method: []const u8, args: []const Value) anyerror!Value {
+    fn handleDatabaseMethod(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
         if (std.ascii.eqlIgnoreCase(method, "insert") or
             std.ascii.eqlIgnoreCase(method, "update") or
             std.ascii.eqlIgnoreCase(method, "upsert") or
@@ -5630,7 +5687,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "query")) {
             // Execute the SOQL string against the store
             if (args.len > 0 and args[0] == .string) {
-                return self.executeSoql(args[0].string, self.global_env);
+                return self.executeSoql(args[0].string, env);
             }
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
@@ -5668,7 +5725,7 @@ pub const Evaluator = struct {
                     }
                     soql_str = try result_buf.toOwnedSlice(self.arena);
                 }
-                return self.executeSoql(soql_str, self.global_env);
+                return self.executeSoql(soql_str, env);
             }
             return try self.makeEmptyList();
         }
@@ -5678,10 +5735,10 @@ pub const Evaluator = struct {
                 const soql = args[0].string;
                 // Execute as a count query
                 if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
-                    return self.executeSoql(soql, self.global_env);
+                    return self.executeSoql(soql, env);
                 }
                 // Wrap as COUNT query
-                const count_result = try self.executeSoql(soql, self.global_env);
+                const count_result = try self.executeSoql(soql, env);
                 if (count_result == .list) return Value{ .integer = @intCast(count_result.list.items.items.len) };
                 return count_result;
             }
@@ -7056,6 +7113,22 @@ fn extractOffset(soql: []const u8) ?usize {
             var end = start;
             while (end < soql.len and std.ascii.isDigit(soql[end])) end += 1;
             if (end > start) return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+        }
+    }
+    return null;
+}
+
+fn extractOffsetBindVar(soql: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + 7 < soql.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(soql[i .. i + 6], "offset") and (soql[i + 6] == ' ' or soql[i + 6] == '\n')) {
+            var start = i + 7;
+            while (start < soql.len and soql[start] == ' ') start += 1;
+            if (start < soql.len and soql[start] == ':') {
+                var end = start + 1;
+                while (end < soql.len and (std.ascii.isAlphanumeric(soql[end]) or soql[end] == '_')) end += 1;
+                if (end > start + 1) return soql[start + 1 .. end];
+            }
         }
     }
     return null;

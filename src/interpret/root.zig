@@ -1328,3 +1328,151 @@ test "E2E: String.toLowerCase and trim" {
     defer result.deinit();
     try std.testing.expectEqualStrings("%adventure%", result.value.string);
 }
+
+test "E2E: Database.query resolves local bind variables" {
+    const source =
+        \\public class DbQueryBindTest {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Acme');
+        \\        insert a;
+        \\        String name = 'Acme';
+        \\        List<Account> results = Database.query(
+        \\            'SELECT Id, Name FROM Account WHERE Name = :name'
+        \\        );
+        \\        return String.valueOf(results.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DbQueryBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
+    const source =
+        \\public class FormulaFieldTest {
+        \\    public static String test() {
+        \\        Experience__c exp = new Experience__c(Name = 'Hiking');
+        \\        insert exp;
+        \\        Session__c sess = new Session__c(Experience__c = exp.Id);
+        \\        insert sess;
+        \\        List<Session__c> results = [
+        \\            SELECT Experience_Name__c FROM Session__c
+        \\        ];
+        \\        if (results.size() == 0) return 'empty';
+        \\        Session__c s = results[0];
+        \\        Object val = s.get('Experience_Name__c');
+        \\        return val != null ? String.valueOf(val) : 'null';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FormulaFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: SOQL parent relationship field in WHERE" {
+    const source =
+        \\public class SoqlParentRefTest {
+        \\    public static String test() {
+        \\        Experience__c exp = new Experience__c(Name = 'Hiking', Type__c = 'Adventure');
+        \\        insert exp;
+        \\        Session__c sess = new Session__c(Experience__c = exp.Id);
+        \\        insert sess;
+        \\        String interest = 'Adventure';
+        \\        List<Session__c> results = [
+        \\            SELECT Id FROM Session__c
+        \\            WHERE Experience__r.Type__c = :interest
+        \\        ];
+        \\        return String.valueOf(results.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SoqlParentRefTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: null != empty string is true" {
+    const source =
+        \\public class NullNeqTest {
+        \\    public static String test() {
+        \\        String type = null;
+        \\        if (type != null || type != '') {
+        \\            return 'where';
+        \\        }
+        \\        return 'no-where';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullNeqTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // null != null → false, null != '' → true, false || true → true
+    try std.testing.expectEqualStrings("where", result.value.string);
+}
+
+test "E2E: Database.query with null bind variable returns 0 records" {
+    const source =
+        \\public class DbNullBindTest {
+        \\    public static String test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'Acme', Type = 'A'),
+        \\            new Account(Name = 'Beta', Type = 'B')
+        \\        };
+        \\        String type = null;
+        \\        String whereClause = '';
+        \\        if (type != null || type != '') {
+        \\            whereClause = 'WHERE Type = :type';
+        \\        }
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Account ' + whereClause
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DbNullBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // type is null, type != null is false, type != '' is true → OR = true
+    // WHERE Type = :type → Type = null → no matches → count = 0
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: Database.countQuery resolves local bind variables" {
+    const source =
+        \\public class DbCountBindTest {
+        \\    public static String test() {
+        \\        Account a1 = new Account(Name = 'Acme', Type = 'Customer');
+        \\        Account a2 = new Account(Name = 'Beta', Type = 'Customer');
+        \\        Account a3 = new Account(Name = 'Gamma', Type = 'Partner');
+        \\        insert new List<Account>{a1, a2, a3};
+        \\        String type = 'Customer';
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Account WHERE Type = :type'
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DbCountBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
