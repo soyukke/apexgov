@@ -889,9 +889,19 @@ pub const Evaluator = struct {
             old_records = .empty;
             for (record_list.items) |item| {
                 if (item == .sobject and item.sobject.id != null) {
-                    // Find current record in store
+                    // Find current record in store and deep-copy it (so DML mutations don't affect old snapshot)
                     if (self.findRecordInStore(item.sobject.type_name, item.sobject.id.?)) |stored| {
-                        try old_records.?.append(self.arena, stored);
+                        if (stored == .sobject) {
+                            const clone = try self.arena.create(types.SObject);
+                            clone.* = .{ .type_name = stored.sobject.type_name };
+                            clone.id = stored.sobject.id;
+                            for (stored.sobject.fields.keys(), stored.sobject.fields.values()) |k, v| {
+                                try clone.fields.put(self.arena, k, v);
+                            }
+                            try old_records.?.append(self.arena, Value{ .sobject = clone });
+                        } else {
+                            try old_records.?.append(self.arena, stored);
+                        }
                     } else {
                         try old_records.?.append(self.arena, item);
                     }
