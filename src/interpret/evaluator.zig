@@ -1380,6 +1380,47 @@ pub const Evaluator = struct {
             }
         }
 
+        // Auto-resolve ContentDocument reference on ContentDocumentLink insert
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentDocumentLink")) {
+            // Validate LinkedEntityId references an existing record
+            const linked_entity_id = utils.sobjectGet(&obj.fields, "LinkedEntityId");
+            if (linked_entity_id != null and linked_entity_id.? == .string) {
+                const lid = linked_entity_id.?.string;
+                // Check if the record exists in any store
+                var found_linked = false;
+                var store_iter = self.store.iterator();
+                while (store_iter.next()) |entry| {
+                    for (entry.value_ptr.items) |rec| {
+                        if (rec == .sobject and rec.sobject.id != null) {
+                            if (std.mem.eql(u8, rec.sobject.id.?, lid)) {
+                                found_linked = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (found_linked) break;
+                }
+                if (!found_linked) {
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "DmlException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_FIELD_FOR_INSERT_UPDATE: LinkedEntityId does not reference a valid record" });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
+            }
+            // Auto-attach ContentDocument nested reference from store
+            const cd_id_val = utils.sobjectGet(&obj.fields, "ContentDocumentId");
+            if (cd_id_val != null and cd_id_val.? == .string) {
+                const cd_id_str = cd_id_val.?.string;
+                if (self.findRecordById("ContentDocument", cd_id_str)) |cd_rec| {
+                    if (cd_rec == .sobject) {
+                        try obj.fields.put(self.arena, "ContentDocument", cd_rec);
+                        try snapshot.fields.put(self.arena, "ContentDocument", cd_rec);
+                    }
+                }
+            }
+        }
+
         // Auto-create ContentDocument when ContentVersion is inserted (Salesforce always creates one)
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
             const first_pub_loc = utils.sobjectGet(&obj.fields, "FirstPublishLocationId");
@@ -1447,6 +1488,29 @@ pub const Evaluator = struct {
             const name_val = utils.sobjectGet(&obj.fields, "Name");
             if (name_val == null or name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "ContentVersion")) {
+            // PathOnClient is required and must be non-empty
+            const poc_val = utils.sobjectGet(&obj.fields, "PathOnClient");
+            if (poc_val == null or poc_val.? == .null_val) {
+                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+            }
+            if (poc_val.? == .string and poc_val.?.string.len == 0) {
+                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+            }
+            // VersionData is required and must not be an empty Blob
+            const vd_val = utils.sobjectGet(&obj.fields, "VersionData");
+            if (vd_val == null or vd_val.? == .null_val) {
+                return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
+            }
+            if (vd_val.? == .object) {
+                // Check if Blob has empty value
+                if (utils.sobjectGet(&vd_val.?.object.fields, "value")) |inner| {
+                    if (inner == .string and inner.string.len == 0) {
+                        return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
+                    }
+                }
             }
         }
         return null;
@@ -2330,8 +2394,9 @@ pub const Evaluator = struct {
             sob.id = id;
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
             try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
-            // Body as Blob-like string
-            try sob.fields.put(self.arena, "Body", Value{ .string = "mock static resource body" });
+            // Try to load actual static resource from source_paths
+            const body = self.loadStaticResourceBody(name_val) orelse "mock static resource body";
+            try sob.fields.put(self.arena, "Body", Value{ .string = body });
             return Value{ .sobject = sob };
         }
 
@@ -2461,6 +2526,44 @@ pub const Evaluator = struct {
         const id = try std.fmt.allocPrint(self.arena, "{d:0>18}", .{self.next_id});
         self.next_id += 1;
         return id;
+    }
+
+    /// Load a StaticResource body from the file system.
+    /// Searches source_paths for staticresources/<name>.json, .csv, .xml, or .resource.
+    fn loadStaticResourceBody(self: *Evaluator, name: []const u8) ?[]const u8 {
+        const extensions = [_][]const u8{ ".json", ".csv", ".xml", ".txt", ".resource", "" };
+        for (self.source_paths) |sp| {
+            // Try walking the directory tree to find staticresources/<name>.<ext>
+            if (self.findStaticResourceInDir(sp, name, &extensions)) |content| return content;
+        }
+        return null;
+    }
+
+    fn findStaticResourceInDir(self: *Evaluator, base_path: []const u8, name: []const u8, extensions: []const []const u8) ?[]const u8 {
+        var dir = std.fs.cwd().openDir(base_path, .{ .iterate = true }) catch return null;
+        defer dir.close();
+        var walker = dir.walk(self.arena) catch return null;
+        defer walker.deinit();
+        while (walker.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+            // Check if the file is in a "staticresources" directory and matches name
+            const path_str = entry.path;
+            // Look for "/staticresources/<name>.<ext>" or "staticresources/<name>.<ext>"
+            if (std.mem.indexOf(u8, path_str, "staticresources/")) |sr_pos| {
+                const after_sr = path_str[sr_pos + "staticresources/".len ..];
+                // Check if the filename matches <name>.<ext>
+                for (extensions) |ext| {
+                    const expected = std.fmt.allocPrint(self.arena, "{s}{s}", .{ name, ext }) catch continue;
+                    if (std.mem.eql(u8, after_sr, expected)) {
+                        const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ base_path, path_str }) catch continue;
+                        if (std.fs.cwd().readFileAlloc(self.arena, full_path, 10 * 1024 * 1024)) |content| {
+                            return content;
+                        } else |_| {}
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /// Execute a SOSL query using fixed search results.

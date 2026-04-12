@@ -24,6 +24,7 @@ pub const Options = struct {
     entry_class: []const u8 = "",
     entry_method: []const u8 = "",
     args: []const Value = &.{},
+    source_paths: []const []const u8 = &.{},
 };
 
 pub const Result = struct {
@@ -48,6 +49,9 @@ pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
     const decls = try parser.parse(tokens, arena.allocator());
 
     var eval = try evaluator.Evaluator.init(arena.allocator());
+    if (opts.source_paths.len > 0) {
+        eval.source_paths = opts.source_paths;
+    }
     try eval.loadDecls(decls);
 
     const value = if (opts.entry_class.len > 0 and opts.entry_method.len > 0)
@@ -2269,4 +2273,111 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "E2E: ContentDocumentLink insert with invalid LinkedEntityId throws DmlException" {
+    const source =
+        \\public class CDLTest {
+        \\    public static String test() {
+        \\        ContentVersion cv = new ContentVersion();
+        \\        cv.Title = 'test.png';
+        \\        cv.PathOnClient = 'test.png';
+        \\        cv.VersionData = EncodingUtil.base64Decode('AAAA');
+        \\        insert cv;
+        \\        cv = [SELECT ContentDocumentId FROM ContentVersion WHERE Id = :cv.Id];
+        \\        ContentDocumentLink cdl = new ContentDocumentLink();
+        \\        cdl.ContentDocumentId = cv.ContentDocumentId;
+        \\        cdl.LinkedEntityId = 'INVALID_ID';
+        \\        cdl.ShareType = 'V';
+        \\        try {
+        \\            insert cdl;
+        \\            return 'NO_EXCEPTION';
+        \\        } catch (DmlException e) {
+        \\            return 'CAUGHT';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CDLTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("CAUGHT", result.value.string);
+}
+
+test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
+    const source =
+        \\public class CDLRefTest {
+        \\    public static String test() {
+        \\        Property__c property = new Property__c(Name = 'Test');
+        \\        insert property;
+        \\        ContentVersion cv = new ContentVersion();
+        \\        cv.Title = 'pic';
+        \\        cv.PathOnClient = 'pic.png';
+        \\        cv.VersionData = EncodingUtil.base64Decode('AAAA');
+        \\        insert cv;
+        \\        List<ContentDocument> docs = [SELECT Id, Title, LatestPublishedVersionId FROM ContentDocument LIMIT 1];
+        \\        ContentDocumentLink link = new ContentDocumentLink();
+        \\        link.LinkedEntityId = property.Id;
+        \\        link.ContentDocumentId = docs[0].Id;
+        \\        link.ShareType = 'V';
+        \\        insert link;
+        \\        List<ContentDocumentLink> links = [
+        \\            SELECT Id, LinkedEntityId, ContentDocument.Title
+        \\            FROM ContentDocumentLink
+        \\            WHERE LinkedEntityId = :property.Id
+        \\              AND ContentDocument.FileType IN ('PNG', 'JPG', 'GIF')
+        \\        ];
+        \\        if (links.isEmpty()) return 'EMPTY';
+        \\        Set<Id> contentIds = new Set<Id>();
+        \\        for (ContentDocumentLink l : links) {
+        \\            contentIds.add(l.ContentDocumentId);
+        \\        }
+        \\        List<ContentVersion> versions = [
+        \\            SELECT Id, Title FROM ContentVersion
+        \\            WHERE ContentDocumentId IN :contentIds AND IsLatest = TRUE
+        \\        ];
+        \\        return String.valueOf(versions.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CDLRefTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: StaticResource loads body from actual JSON file on disk" {
+    const alloc = std.testing.allocator;
+    // Create a temporary staticresources directory with a JSON file
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("staticresources");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "staticresources/test_data.json",
+        .data = "[{\"Name\":\"Alice\"},{\"Name\":\"Bob\"}]",
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class SRTest {
+        \\    public static String test() {
+        \\        StaticResource sr = [SELECT Id, Body FROM StaticResource WHERE Name = 'test_data'];
+        \\        String body = sr.Body.toString();
+        \\        List<Object> parsed = (List<Object>) JSON.deserializeUntyped(body);
+        \\        return String.valueOf(parsed.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "SRTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2", result.value.string);
 }
