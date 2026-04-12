@@ -1958,6 +1958,19 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             const name = if (obj.fields.get("name")) |n| n.string else "Object";
             return try createDescribeResult(ctx, name);
         }
+        // Delegate CRUD checks — Schema.sObjectType.Contact.isUpdateable() etc.
+        if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
+        {
+            return Value{ .boolean = !ctx.eval.is_restricted_user };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or
+            std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
+        {
+            return Value{ .boolean = true };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "newSObject")) {
             const name = if (obj.fields.get("name")) |n| n.string else "SObject";
             const new_sob = try ctx.arena.create(types.SObject);

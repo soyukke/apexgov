@@ -2068,3 +2068,92 @@ test "SOQL LIKE with bind variable matches correctly" {
     };
     try std.testing.expect(eval.assertion_failure == null);
 }
+
+test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
+    const source =
+        \\public class SchemaTest {
+        \\    public static void testSchemaAccess() {
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isUpdateable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isCreateable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isDeletable());
+        \\        System.assertEquals(true, Schema.sObjectType.Contact.isAccessible());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("SchemaTest", "testSchemaAccess", &.{}) catch |e| {
+        std.debug.print("Schema.sObjectType test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
+    const source =
+        \\public class CryptoTest {
+        \\    public static void testRoundTrip() {
+        \\        Blob key = Crypto.generateAesKey(256);
+        \\        Blob data = Blob.valueOf('Test data');
+        \\        Blob encrypted = Crypto.encryptWithManagedIV('AES256', key, data);
+        \\        Blob decrypted = Crypto.decryptWithManagedIV('AES256', key, encrypted);
+        \\        System.assertEquals('Test data', decrypted.toString());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("CryptoTest", "testRoundTrip", &.{}) catch |e| {
+        std.debug.print("Crypto round-trip test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "AuraHandledException is caught in try-catch" {
+    const source =
+        \\public class AuraTest {
+        \\    public static void doThrow() {
+        \\        throw new AuraHandledException('Test error');
+        \\    }
+        \\    public static void testCatch() {
+        \\        Boolean caught = false;
+        \\        try {
+        \\            doThrow();
+        \\            System.assert(false, 'Should have thrown');
+        \\        } catch (AuraHandledException e) {
+        \\            caught = true;
+        \\        }
+        \\        System.assertEquals(true, caught);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("AuraTest", "testCatch", &.{}) catch |e| {
+        std.debug.print("AuraHandledException test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}

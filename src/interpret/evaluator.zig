@@ -5068,6 +5068,13 @@ pub const Evaluator = struct {
                     cur_cd = if (ccd.super_class) |sc| self.findClass(sc.name) else null;
                 }
             }
+            // Schema.SObjectTypeNamespace.Contact → Schema.SObjectType { name: "Contact" }
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectTypeNamespace")) {
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
+                return Value{ .object = sot };
+            }
             // Case-insensitive field lookup (no custom getter found)
             for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
                 if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
@@ -5134,6 +5141,12 @@ pub const Evaluator = struct {
 
             // SObject.SObjectType
             if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                // Schema.sObjectType → return namespace proxy (fields resolve to per-object SObjectType)
+                if (std.ascii.eqlIgnoreCase(class_name, "Schema")) {
+                    const ns = try self.arena.create(types.ObjectInstance);
+                    ns.* = .{ .class_name = "Schema.SObjectTypeNamespace" };
+                    return Value{ .object = ns };
+                }
                 // e.g., Account.SObjectType
                 const sot = try self.arena.create(types.ObjectInstance);
                 sot.* = .{ .class_name = "Schema.SObjectType" };
