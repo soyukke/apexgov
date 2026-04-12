@@ -2242,3 +2242,31 @@ test "Trigger recursion does not StackOverflow" {
     };
     try std.testing.expect(eval.assertion_failure == null);
 }
+
+test "SOQL on User with UserInfo.getUserId returns seeded user" {
+    const source =
+        \\public class UserQueryTest {
+        \\    public static void testQuery() {
+        \\        User u = [SELECT Id, FirstName, LastName, Email FROM User WHERE Id = :UserInfo.getUserId()];
+        \\        System.assertNotEquals(null, u);
+        \\        System.assertEquals(UserInfo.getUserId(), u.Id);
+        \\        System.assertEquals('Test', u.FirstName);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    eval.resetForTest();
+    _ = eval.callMethod("UserQueryTest", "testQuery", &.{}) catch |e| {
+        std.debug.print("User query test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}

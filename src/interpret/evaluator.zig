@@ -117,6 +117,85 @@ pub const Evaluator = struct {
         _ = self.global_env.bindings.orderedRemove("Cache.Org.partition");
     }
 
+    /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
+    pub fn createCurrentUserRecord(self: *Evaluator) !Value {
+        const user = try self.arena.create(types.SObject);
+        user.* = .{ .type_name = "User" };
+        user.id = "005000000000001";
+        try user.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+        try user.fields.put(self.arena, "FirstName", Value{ .string = "Test" });
+        try user.fields.put(self.arena, "LastName", Value{ .string = "User" });
+        try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        try user.fields.put(self.arena, "Email", Value{ .string = "testuser@example.com" });
+        try user.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
+        try user.fields.put(self.arena, "ProfileId", Value{ .string = "00e000000000001" });
+        try user.fields.put(self.arena, "UserType", Value{ .string = "Standard" });
+        try user.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+        try user.fields.put(self.arena, "Alias", Value{ .string = "tuser" });
+        try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+        try user.fields.put(self.arena, "LocaleSidKey", Value{ .string = "en_US" });
+        try user.fields.put(self.arena, "EmailEncodingKey", Value{ .string = "UTF-8" });
+        try user.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
+        try user.fields.put(self.arena, "CommunityNickname", Value{ .string = "testuser" });
+        return Value{ .sobject = user };
+    }
+
+    /// Resolve picklist API name to label using field-meta.xml
+    fn resolvePicklistLabel(self: *Evaluator, obj_type: []const u8, field_name: []const u8, api_name: []const u8) ?[]const u8 {
+        const suffix = std.fmt.allocPrint(self.arena, "objects/{s}/fields/{s}.field-meta.xml", .{ obj_type, field_name }) catch return null;
+        for (self.source_paths) |base_path| {
+            // Try to find the field-meta.xml by walking common SFDX paths
+            const candidates = [_][]const u8{
+                "force-app/main/default",
+                ".",
+                "src/main/default",
+            };
+            for (candidates) |sub| {
+                const xml_path = std.fs.path.join(self.arena, &.{ base_path, sub, suffix }) catch continue;
+                const content = std.fs.cwd().readFileAlloc(self.arena, xml_path, 512 * 1024) catch continue;
+
+                // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
+                var pos: usize = 0;
+                while (pos < content.len) {
+                    const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
+                    const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse break;
+                    const block = content[value_start..value_end];
+
+                    const fn_tag = "<fullName>";
+                    const fn_end_tag = "</fullName>";
+                    if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
+                        const fn_content_start = fn_start + fn_tag.len;
+                        if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
+                            const full_name = block[fn_content_start..fn_end];
+                            if (std.mem.eql(u8, full_name, api_name)) {
+                                const lbl_tag = "<label>";
+                                const lbl_end_tag = "</label>";
+                                if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
+                                    const lbl_content_start = lbl_start + lbl_tag.len;
+                                    if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
+                                        return block[lbl_content_start..lbl_end];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pos = value_end + 8;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
+    pub fn createDefaultProfileRecord(self: *Evaluator) !Value {
+        const profile = try self.arena.create(types.SObject);
+        profile.* = .{ .type_name = "Profile" };
+        profile.id = "00e000000000001";
+        try profile.fields.put(self.arena, "Id", Value{ .string = "00e000000000001" });
+        try profile.fields.put(self.arena, "Name", Value{ .string = "System Administrator" });
+        return Value{ .sobject = profile };
+    }
+
     /// Re-initialize static fields for a single class (test class reset)
     pub fn reInitClassStaticFields(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
@@ -856,9 +935,19 @@ pub const Evaluator = struct {
             old_records = .empty;
             for (record_list.items) |item| {
                 if (item == .sobject and item.sobject.id != null) {
-                    // Find current record in store
+                    // Find current record in store and deep-copy it (so DML mutations don't affect old snapshot)
                     if (self.findRecordInStore(item.sobject.type_name, item.sobject.id.?)) |stored| {
-                        try old_records.?.append(self.arena, stored);
+                        if (stored == .sobject) {
+                            const clone = try self.arena.create(types.SObject);
+                            clone.* = .{ .type_name = stored.sobject.type_name };
+                            clone.id = stored.sobject.id;
+                            for (stored.sobject.fields.keys(), stored.sobject.fields.values()) |k, v| {
+                                try clone.fields.put(self.arena, k, v);
+                            }
+                            try old_records.?.append(self.arena, Value{ .sobject = clone });
+                        } else {
+                            try old_records.?.append(self.arena, stored);
+                        }
                     } else {
                         try old_records.?.append(self.arena, item);
                     }
@@ -1739,16 +1828,32 @@ pub const Evaluator = struct {
                 {
                     var field_iter = std.mem.splitScalar(u8, select_clause2, ',');
                     while (field_iter.next()) |raw_field| {
-                        const field_name = std.mem.trim(u8, raw_field, " \t\n\r");
+                        var field_name = std.mem.trim(u8, raw_field, " \t\n\r");
                         if (field_name.len == 0) continue;
                         // Skip subqueries (SELECT ... FROM ...)
                         if (field_name[0] == '(') continue;
+                        // Handle toLabel(FieldName) — extract inner field name and apply label conversion
+                        var is_to_label = false;
+                        if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and std.mem.endsWith(u8, field_name, ")")) {
+                            field_name = field_name[8 .. field_name.len - 1];
+                            is_to_label = true;
+                        }
                         // Skip parent references (Account.Name → skip)
                         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
                         for (records.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobjectGet(&item.sobject.fields, field_name) == null) {
                                     try item.sobject.fields.put(self.arena, field_name, Value.null_val);
+                                }
+                                // toLabel: convert API name to picklist label using field-meta.xml
+                                if (is_to_label) {
+                                    if (utils.sobjectGet(&item.sobject.fields, field_name)) |fv| {
+                                        if (fv == .string) {
+                                            if (self.resolvePicklistLabel(item.sobject.type_name, field_name, fv.string)) |label| {
+                                                try utils.sobjectPut(&item.sobject.fields, self.arena, field_name, Value{ .string = label });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1872,6 +1977,17 @@ pub const Evaluator = struct {
                 }
             } else if (try self.generateMetadataStub(from_type, soql, current_env)) |stub_record| {
                 try records.append(self.arena, stub_record);
+            }
+        }
+
+        // Seed synthetic records for User/Profile if none exist in store
+        if (records.items.len == 0 and self.store.get(from_type) == null) {
+            if (std.ascii.eqlIgnoreCase(from_type, "User")) {
+                const user_record = try self.createCurrentUserRecord();
+                try records.append(self.arena, user_record);
+            } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
+                const profile_record = try self.createDefaultProfileRecord();
+                try records.append(self.arena, profile_record);
             }
         }
 
