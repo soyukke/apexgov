@@ -1843,3 +1843,199 @@ test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "10") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "6") != null);
 }
+
+test "Contact Name is synthesized from FirstName + LastName" {
+    const source =
+        \\@IsTest
+        \\public class ContactNameTest {
+        \\    @IsTest
+        \\    static void testContactName() {
+        \\        Contact c = new Contact(FirstName = 'John', LastName = 'Doe');
+        \\        insert c;
+        \\        Contact fetched = [SELECT Name FROM Contact LIMIT 1];
+        \\        System.assertEquals('John Doe', fetched.Name);
+        \\    }
+        \\    @IsTest
+        \\    static void testContactNameLastOnly() {
+        \\        Contact c = new Contact(LastName = 'Smith');
+        \\        insert c;
+        \\        Contact fetched = [SELECT Name FROM Contact LIMIT 1];
+        \\        System.assertEquals('Smith', fetched.Name);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("ContactNameTest", "testContactName", &.{}) catch |e| {
+        std.debug.print("testContactName error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+
+    eval.resetForTest();
+    _ = eval.callMethod("ContactNameTest", "testContactNameLastOnly", &.{}) catch |e| {
+        std.debug.print("testContactNameLastOnly error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "Double/Decimal instance fields default to null" {
+    const source =
+        \\@IsTest
+        \\public class DoubleDefaultTest {
+        \\    public class Coords {
+        \\        public Decimal lat;
+        \\        public Decimal lon;
+        \\    }
+        \\    @IsTest
+        \\    static void testDecimalNull() {
+        \\        Coords c = new Coords();
+        \\        System.assertEquals(null, c.lat);
+        \\        System.assertEquals(null, c.lon);
+        \\    }
+        \\    @IsTest
+        \\    static void testDoubleNull() {
+        \\        Double d;
+        \\        System.assertEquals(null, d);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("DoubleDefaultTest", "testDecimalNull", &.{}) catch |e| {
+        std.debug.print("testDecimalNull error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+
+    eval.resetForTest();
+    _ = eval.callMethod("DoubleDefaultTest", "testDoubleNull", &.{}) catch |e| {
+        std.debug.print("testDoubleNull error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "JSON.deserialize maps fields to user-defined class" {
+    const source =
+        \\@IsTest
+        \\public class JsonDeserTest {
+        \\    public class MyData {
+        \\        public String name;
+        \\        public Integer id;
+        \\        public Boolean active;
+        \\    }
+        \\    @IsTest
+        \\    static void testDeserialize() {
+        \\        String json = '{"name":"Beach and Mountain","id":42,"active":true}';
+        \\        MyData d = (MyData)JSON.deserialize(json, MyData.class);
+        \\        System.assertEquals('Beach and Mountain', d.name);
+        \\        System.assertEquals(42, d.id);
+        \\        System.assertEquals(true, d.active);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("JsonDeserTest", "testDeserialize", &.{}) catch |e| {
+        std.debug.print("testDeserialize error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "JSON.createParser + readValueAs deserializes into typed class" {
+    const source =
+        \\@IsTest
+        \\public class JsonParserTest {
+        \\    public class MyData {
+        \\        public String name;
+        \\        public Integer id;
+        \\    }
+        \\    @IsTest
+        \\    static void testReadValueAs() {
+        \\        JSONParser parser = JSON.createParser('{"name":"Beach and Mountain","id":42}');
+        \\        MyData d = (MyData)parser.readValueAs(MyData.class);
+        \\        System.assertEquals('Beach and Mountain', d.name);
+        \\        System.assertEquals(42, d.id);
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("JsonParserTest", "testReadValueAs", &.{}) catch |e| {
+        std.debug.print("testReadValueAs error: {}\n", .{e});
+        if (eval.pending_exception) |pe| {
+            if (pe == .object) {
+                if (pe.object.fields.get("message")) |msg| {
+                    if (msg == .string) std.debug.print("exception: {s}\n", .{msg.string});
+                }
+            }
+        }
+        return error.TestUnexpectedResult;
+    };
+    if (eval.assertion_failure) |af| {
+        std.debug.print("assertion failure: {s}\n", .{af});
+    }
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "SOQL LIKE with bind variable matches correctly" {
+    const source =
+        \\@IsTest
+        \\public class LikeBindTest {
+        \\    @IsTest
+        \\    static void testLikeBind() {
+        \\        insert new Account(Name = 'Acme Corp');
+        \\        insert new Account(Name = 'Beta Inc');
+        \\        insert new Account(Name = 'Acme Labs');
+        \\        String key = '%Acme%';
+        \\        List<Account> results = [SELECT Name FROM Account WHERE Name LIKE :key];
+        \\        System.assertEquals(2, results.size());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("LikeBindTest", "testLikeBind", &.{}) catch |e| {
+        std.debug.print("testLikeBind error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}

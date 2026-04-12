@@ -505,17 +505,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             }
             return Value.null_val;
         }
-        if (std.ascii.eqlIgnoreCase(method_name, "deserialize")) {
-            // Return the deserialized value - simplified stub
-            // JSON.deserialize(jsonString, Type) → return appropriate object
-            if (args.len >= 2 and args[0] == .string) {
-                // For now, return an SObject stub if it looks like it should be one
-                const obj = try ctx.arena.create(types.SObject);
-                obj.* = .{ .type_name = "Object" };
-                return Value{ .sobject = obj };
-            }
-            return Value.null_val;
-        }
+        // JSON.deserialize is handled by evaluator (parseJsonValue) — do not intercept here
         return Value.null_val;
     }
 
