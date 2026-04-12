@@ -64,6 +64,8 @@ pub const Evaluator = struct {
     source_paths: []const []const u8 = &.{},
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
+    // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
+    cast_type_hints: ?[]const ?[]const u8 = null,
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
         callback: *types.ObjectInstance,
@@ -1022,8 +1024,8 @@ pub const Evaluator = struct {
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
-        // Trigger recursion guard — limit to 8 levels to prevent StackOverflow from deep trigger chains
-        if (self.trigger_depth >= 8) return;
+        // Trigger recursion guard — limit to 2 levels (same-object re-entrant triggers stop after 2 rounds)
+        if (self.trigger_depth >= 2) return;
         self.trigger_depth += 1;
         defer self.trigger_depth -= 1;
 
@@ -3556,9 +3558,17 @@ pub const Evaluator = struct {
         }
 
         var args: std.ArrayListUnmanaged(Value) = .empty;
+        var arg_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
         for (mc.args) |*arg| {
             try args.append(self.arena, try self.evalExpr(arg, current_env));
+            // Extract cast type hints for overload resolution (e.g., (String)null → "String")
+            const hint: ?[]const u8 = if (arg.* == .cast_expr) arg.cast_expr.target_type.name else null;
+            try arg_type_hints.append(self.arena, hint);
         }
+        // Set cast type hints for method overload resolution
+        const prev_hints = self.cast_type_hints;
+        self.cast_type_hints = arg_type_hints.items;
+        defer self.cast_type_hints = prev_hints;
 
         // Handle chained calls: System.Assert.areEqual → object = System.Assert, method = areEqual
         // Also handle: Test.startTest, Test.stopTest, TriggerHandler.bypass
@@ -6413,7 +6423,7 @@ pub const Evaluator = struct {
     }
 
     /// Type-aware method resolution filtered by static/instance.
-    fn findBestMethodInClassFiltered(_: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
+    fn findBestMethodInClassFiltered(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
         var candidates: [8]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
@@ -6438,6 +6448,8 @@ pub const Evaluator = struct {
         if (count == 0) return if (best_any != null) best_any else null;
         if (count == 1) return candidates[0];
 
+        const arg_type_hints = self.cast_type_hints;
+
         // Multiple candidates: score each by type compatibility
         var best: ?*ast.MethodDecl = null;
         var best_score: i32 = -1;
@@ -6447,6 +6459,15 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
+                // Check type hints from cast expressions (e.g., (String)null)
+                if (arg == .null_val and arg_type_hints != null and i < arg_type_hints.?.len) {
+                    if (arg_type_hints.?[i]) |hint| {
+                        if (std.ascii.eqlIgnoreCase(pt, hint)) {
+                            score += 3; // Strong match: cast type matches parameter type
+                            continue;
+                        }
+                    }
+                }
                 if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
                     score += 2;
                 } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {

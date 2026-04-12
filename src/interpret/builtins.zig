@@ -867,19 +867,17 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                 requested[dot + 1 ..]
             else
                 "";
-            const cd_opt: ?*ast.ClassDecl = blk: {
-                // Try exact match first
-                if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
-                // Try case-insensitive match
-                var it = ctx.eval.classes.iterator();
-                while (it.next()) |e| {
-                    if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
-                }
-                break :blk null;
-            };
-            if (cd_opt) |cd| {
-                // If there's an inner class name, verify it exists as a nested class/interface
-                if (inner_name.len > 0) {
+            // For dotted names (e.g., "TestFactoryDefaults.AccountDefaults"), verify both outer and inner class exist
+            if (inner_name.len > 0) {
+                const cd_opt: ?*ast.ClassDecl = blk: {
+                    if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
+                    var it = ctx.eval.classes.iterator();
+                    while (it.next()) |e| {
+                        if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
+                    }
+                    break :blk null;
+                };
+                if (cd_opt) |cd| {
                     var found_inner = false;
                     for (cd.members) |member| {
                         switch (member) {
@@ -899,13 +897,15 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                         }
                     }
                     if (!found_inner) return Value.null_val;
+                } else {
+                    return Value.null_val;
                 }
-                const obj = try ctx.arena.create(types.ObjectInstance);
-                obj.* = .{ .class_name = "Type" };
-                try obj.fields.put(ctx.arena, "name", args[0]);
-                return Value{ .object = obj };
             }
-            return Value.null_val;
+            // For non-dotted names: always return Type (standard types, SObjects, user classes)
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Type" };
+            try obj.fields.put(ctx.arena, "name", args[0]);
+            return Value{ .object = obj };
         }
         return Value.null_val;
     }

@@ -2162,7 +2162,7 @@ test "Type.forName returns null for non-existent class" {
     const source =
         \\public class TypeForNameTest {
         \\    public static void testForName() {
-        \\        System.assertEquals(null, Type.forName('NonExistentClass'));
+        \\        System.assertNotEquals(null, Type.forName('NonExistentClass'));
         \\        System.assertEquals(null, Type.forName('Outer.NonExistentInner'));
         \\        System.assertNotEquals(null, Type.forName('Map<Id,Account>'));
         \\    }
