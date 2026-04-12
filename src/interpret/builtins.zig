@@ -1607,6 +1607,65 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         return obj.fields.get("value") orelse Value{ .string = try utils.coerceToString(Value{ .object = obj }, ctx.arena) };
     }
 
+    // Schema.DescribeFieldResult methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.DescribeFieldResult")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
+            // Return picklist entries from the eval store
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            // Collect unique values from the store for this field
+            const obj_type = obj.fields.get("objectType") orelse Value{ .string = "" };
+            const field_name = obj.fields.get("fieldName") orelse Value{ .string = "" };
+            if (obj_type == .string and field_name == .string) {
+                var seen = std.StringHashMap(void).init(ctx.arena);
+                var store_iter = ctx.eval.store.iterator();
+                while (store_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_type.string)) {
+                        for (entry.value_ptr.items) |record| {
+                            if (record == .sobject) {
+                                if (utils.sobjectGet(&record.sobject.fields, field_name.string)) |val| {
+                                    if (val == .string) {
+                                        if (!seen.contains(val.string)) {
+                                            try seen.put(val.string, {});
+                                            const pe = try ctx.arena.create(types.ObjectInstance);
+                                            pe.* = .{ .class_name = "Schema.PicklistEntry" };
+                                            try pe.fields.put(ctx.arena, "label", val);
+                                            try pe.fields.put(ctx.arena, "value", val);
+                                            try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+                                            try list.items.append(ctx.arena, Value{ .object = pe });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Value{ .list = list };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
+            std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
+            std.ascii.eqlIgnoreCase(method_name, "isFilterable"))
+        {
+            return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+            return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
+        }
+    }
+
+    // Schema.PicklistEntry methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.PicklistEntry")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
+        if (std.ascii.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
+        if (std.ascii.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
+    }
+
     // SaveResult / UpsertResult methods
     if (std.ascii.eqlIgnoreCase(method_name, "isSuccess") or std.ascii.eqlIgnoreCase(method_name, "isCreated")) {
         return obj.fields.get("isSuccess") orelse Value{ .boolean = true };

@@ -3465,7 +3465,15 @@ pub const Evaluator = struct {
                         obj.sobject.id = if (final_val == .string) final_val.string else null;
                     }
                 } else if (obj == .object) {
-                    try obj.object.fields.put(self.arena, fa.field, final_val);
+                    // Case-insensitive put: use existing key if it matches
+                    var existing_key: ?[]const u8 = null;
+                    for (obj.object.fields.keys()) |k| {
+                        if (std.ascii.eqlIgnoreCase(k, fa.field)) {
+                            existing_key = k;
+                            break;
+                        }
+                    }
+                    try obj.object.fields.put(self.arena, existing_key orelse fa.field, final_val);
                     // Sync local env when assigning to this.field
                     // so that bare field references (without this.) see the updated value
                     if (fa.object.* == .this_expr) {
@@ -3729,6 +3737,15 @@ pub const Evaluator = struct {
                 // System.enqueueJob, System.runAs, etc.
                 if (std.ascii.eqlIgnoreCase(outer_class, "System")) {
                     return self.handleSystemMethod(inner, mc.method, args.items, current_env);
+                }
+
+                // SObjectType.FieldToken.getDescribe() → Schema.DescribeFieldResult
+                if (std.ascii.eqlIgnoreCase(mc.method, "getDescribe")) {
+                    const dfr = try self.arena.create(types.ObjectInstance);
+                    dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
+                    try dfr.fields.put(self.arena, "objectType", Value{ .string = outer_class });
+                    try dfr.fields.put(self.arena, "fieldName", Value{ .string = inner });
+                    return Value{ .object = dfr };
                 }
 
                 // DataWeave.Script.createScript(scriptName)
