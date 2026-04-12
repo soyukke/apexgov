@@ -2,7 +2,53 @@
 
 [日本語版 README はこちら](README_ja.md)
 
-`apexgov` is an offline static checker and debug-log profiler for Salesforce Apex, designed for CI/CD pipelines.
+`apexgov` is a lightweight LSP, static analyzer, and test runner for Salesforce Apex — built in Zig as a single binary with zero dependencies.
+
+The official Apex Language Server (Java/Jorje) consumes 270 MB+ just to start. apexgov uses **3–4 MB**. Static analysis on 1,044 files completes in **0.69 seconds**. Local test execution runs **1,000x faster** than `sf apex run test`.
+
+## Benchmarks
+
+### LSP Memory Usage
+
+![LSP Memory Usage](docs/images/lsp-memory.png)
+
+| Repository | Files | apexgov | Official LSP |
+|---|---|---|---|
+| dreamhouse-lwc | 9 | **3.5 MB** | 288 MB |
+| apex-recipes | 139 | **3.9 MB** | 264 MB |
+| NebulaLogger | 226 | **3.9 MB** | 289 MB |
+| NPSP | 1,044 | **4.3 MB** | 270 MB |
+
+### Memory Over Time (NPSP, 1,044 files)
+
+![LSP Memory Over Time](docs/images/lsp-memory-soak.png)
+
+### Binary Size & Startup Time
+
+![Binary Size & Startup Time](docs/images/lsp-size-startup.png)
+
+| | apexgov | Official Apex LSP |
+|---|---|---|
+| Binary size | **7.0 MB** (single binary) | 24 MB + JVM |
+| Startup time | **4.6s** | 9.1s |
+
+### Static Analysis Speed
+
+| Repository | Files | Time |
+|---|---|---|
+| dreamhouse-lwc | 9 | **0.01s** |
+| apex-recipes | 139 | **0.04s** |
+| NebulaLogger | 226 | **0.14s** |
+| NPSP | 1,044 | **0.69s** |
+
+### Test Execution (vs sf cli)
+
+| | sf apex run test | apexgov interpret test |
+|---|---|---|
+| Time | **15.2s** | **0.015s** |
+| Result | 8/8 Pass | 8/8 Pass |
+
+Measured on macOS Apple Silicon. LSP benchmarks send JSON-RPC requests via stdio and measure RSS with `ps`. See the [Zenn article](https://zenn.dev/soyukke/articles/apexgov-fast-apex-lsp-and-static-analyzer) for methodology.
 
 ## Why
 
@@ -62,6 +108,24 @@ end }
 See [docs/lsp-setup.md](docs/lsp-setup.md) for detailed VS Code and Neovim setup instructions.
 
 ## Commands
+
+### `interpret test`
+
+Run Apex `@IsTest` methods locally using the Zig-native interpreter. No Salesforce org or JVM required.
+
+```bash
+apexgov interpret test force-app/main/default/classes
+```
+
+```
+[PASS] CalculatorTest#testAdd
+[FAIL] CalculatorTest#testAddFail: 2 + 3 should not be 10 | Expected: 10, Actual: 5
+[ERROR] CalculatorTest#testDivideByZero: ApexException: Cannot divide by zero
+
+--- Results: 3 total, 1 passed, 2 failed ---
+```
+
+The interpreter emulates Salesforce's security model (`PermissionSet`, `ObjectPermissions`, field-level security) and in-memory Database CRUD with SOQL support.
 
 ### `check`
 
