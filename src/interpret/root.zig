@@ -2157,3 +2157,62 @@ test "AuraHandledException is caught in try-catch" {
     };
     try std.testing.expect(eval.assertion_failure == null);
 }
+
+test "Trigger recursion does not StackOverflow" {
+    const source =
+        \\trigger AccountTrigger on Account (after insert, after update) {
+        \\    AccountHandler.handle(Trigger.new);
+        \\}
+    ;
+    const handler_source =
+        \\public class AccountHandler {
+        \\    public static void handle(List<Account> accounts) {
+        \\        List<Account> toUpdate = new List<Account>();
+        \\        for (Account a : accounts) {
+        \\            Account updated = new Account(Id = a.Id, Name = a.Name + ' updated');
+        \\            toUpdate.add(updated);
+        \\        }
+        \\        update toUpdate;
+        \\    }
+        \\}
+    ;
+    const test_source =
+        \\@isTest
+        \\public class TriggerRecursionTest {
+        \\    @isTest
+        \\    static void testNoStackOverflow() {
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        List<Account> results = [SELECT Name FROM Account];
+        \\        System.assert(results.size() > 0, 'Account should exist');
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    // Parse all three sources
+    const tokens1 = try lexer.tokenize(source, alloc);
+    const decls1 = try parser.parse(tokens1, alloc);
+    const tokens2 = try lexer.tokenize(handler_source, alloc);
+    const decls2 = try parser.parse(tokens2, alloc);
+    const tokens3 = try lexer.tokenize(test_source, alloc);
+    const decls3 = try parser.parse(tokens3, alloc);
+
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls1);
+    try eval.loadDecls(decls2);
+    try eval.loadDecls(decls3);
+
+    _ = eval.callMethod("TriggerRecursionTest", "testNoStackOverflow", &.{}) catch |e| {
+        // StackOverflow should not happen anymore
+        if (e == error.StackOverflow) {
+            std.debug.print("Trigger recursion caused StackOverflow!\n", .{});
+            return error.TestUnexpectedResult;
+        }
+        std.debug.print("Trigger recursion test error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}

@@ -62,6 +62,8 @@ pub const Evaluator = struct {
     trigger_context: ?TriggerContext = null,
     // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
     source_paths: []const []const u8 = &.{},
+    // Trigger recursion depth counter
+    trigger_depth: u32 = 0,
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
         callback: *types.ObjectInstance,
@@ -1020,6 +1022,11 @@ pub const Evaluator = struct {
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
+        // Trigger recursion guard (Salesforce limits recursive triggers to ~16 levels)
+        if (self.trigger_depth >= 16) return;
+        self.trigger_depth += 1;
+        defer self.trigger_depth -= 1;
+
         // Lowercase object type for lookup
         const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, obj_type.len) catch return, obj_type);
 
