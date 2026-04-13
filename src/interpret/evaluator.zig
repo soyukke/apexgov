@@ -609,6 +609,26 @@ pub const Evaluator = struct {
             return Value{ .object = result };
         }
 
+        // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance()
+        if (std.mem.endsWith(u8, class_name, "__c") and
+            (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults") or
+                std.ascii.eqlIgnoreCase(method_name, "getInstance")))
+        {
+            // Look for an existing record in the store
+            var cs_store_iter = self.store.iterator();
+            while (cs_store_iter.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                    if (entry.value_ptr.items.len > 0) {
+                        return entry.value_ptr.items[0];
+                    }
+                }
+            }
+            // No record found → create an empty SObject
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = class_name };
+            return Value{ .sobject = sob };
+        }
+
         // Database methods that need store access (must be before builtins to avoid dead-code fallback)
         if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
             return self.handleDatabaseMethod(method_name, args, self.global_env);
@@ -2598,6 +2618,11 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "ContentVersion")) {
+            // Only generate a stub when no WHERE clause filters by specific fields.
+            // When a WHERE clause is present (e.g., WHERE Title='...'), the query
+            // should return empty if no matching records exist in the store, allowing
+            // QueryException to be raised for single-record assignments.
+            if (extractWhereClause(soql) != null) return null;
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = "ContentVersion" };
             const id = try self.allocId();
@@ -4551,6 +4576,26 @@ pub const Evaluator = struct {
                 return Value{ .object = sot };
             }
 
+            // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance()
+            if (std.mem.endsWith(u8, class_name, "__c") and
+                (std.ascii.eqlIgnoreCase(mc.method, "getOrgDefaults") or
+                    std.ascii.eqlIgnoreCase(mc.method, "getInstance")))
+            {
+                // Look for an existing record in the store
+                var cs_iter3 = self.store.iterator();
+                while (cs_iter3.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        if (entry.value_ptr.items.len > 0) {
+                            return entry.value_ptr.items[0];
+                        }
+                    }
+                }
+                // No record found → create an empty SObject
+                const cs_sob3 = try self.arena.create(types.SObject);
+                cs_sob3.* = .{ .type_name = class_name };
+                return Value{ .sobject = cs_sob3 };
+            }
+
             return self.callMethod(class_name, mc.method, args.items);
         }
 
@@ -5683,10 +5728,10 @@ pub const Evaluator = struct {
     fn evalNewExpr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
         const type_name = ne.type_name.name;
 
-        // Type literal: List<T>.class, Map<K,V>.class → return Type object
-        if (std.mem.indexOf(u8, type_name, "<") != null and ne.args.len == 0) {
+        // Type literal: List<T>.class, Map<K,V>.class, Type[].class → return Type object
+        if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(u8, type_name, "[]")) and ne.args.len == 0) {
             const type_obj = try self.arena.create(types.ObjectInstance);
-            type_obj.* = .{ .class_name = type_name };
+            type_obj.* = .{ .class_name = "Type" };
             try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
             return Value{ .object = type_obj };
         }
@@ -7802,6 +7847,54 @@ pub const Evaluator = struct {
         return 0;
     }
 
+    /// Find the element type of an array field by scanning the source code.
+    /// Looks for patterns like "TypeName[] fieldName" or "List<TypeName> fieldName".
+    fn findFieldArrayType(_: *Evaluator, source: []const u8, field_name: []const u8) ?[]const u8 {
+        // Search for "fieldName" in source and look backwards for the type
+        var pos: usize = 0;
+        while (pos < source.len) {
+            // Find field_name in source (case-insensitive)
+            const found = std.ascii.indexOfIgnoreCasePos(source, pos, field_name) orelse break;
+            // Ensure it's a whole-word match (not part of a larger identifier)
+            const is_word_start = found == 0 or (!std.ascii.isAlphanumeric(source[found - 1]) and source[found - 1] != '_');
+            const after_end = found + field_name.len;
+            const is_word_end = after_end >= source.len or (!std.ascii.isAlphanumeric(source[after_end]) and source[after_end] != '_');
+            if (!is_word_start or !is_word_end) {
+                pos = found + 1;
+                continue;
+            }
+            // Check that it's preceded by "[] " or "> " (array type indicators)
+            if (found >= 3) {
+                const before = source[0..found];
+                const trimmed_before = std.mem.trimRight(u8, before, " \t");
+                // Check for "[]" suffix → "TypeName[]"
+                if (std.mem.endsWith(u8, trimmed_before, "[]")) {
+                    // Find the start of the type name
+                    const type_end = trimmed_before.len - 2;
+                    var type_start = type_end;
+                    while (type_start > 0 and (std.ascii.isAlphanumeric(trimmed_before[type_start - 1]) or trimmed_before[type_start - 1] == '_')) {
+                        type_start -= 1;
+                    }
+                    if (type_start < type_end) {
+                        return trimmed_before[type_start..type_end];
+                    }
+                }
+                // Check for ">" suffix → "List<TypeName>"
+                if (std.mem.endsWith(u8, trimmed_before, ">")) {
+                    // Find the opening "<"
+                    if (std.mem.lastIndexOfScalar(u8, trimmed_before, '<')) |lt| {
+                        const inner = std.mem.trim(u8, trimmed_before[lt + 1 .. trimmed_before.len - 1], " \t");
+                        if (inner.len > 0) {
+                            return inner;
+                        }
+                    }
+                }
+            }
+            pos = found + field_name.len;
+        }
+        return null;
+    }
+
     /// Parse a JSON string into a Value.
     fn parseJsonValue(self: *Evaluator, json_str: []const u8, type_hint: []const u8) ?Value {
         const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
@@ -7895,7 +7988,37 @@ pub const Evaluator = struct {
                         }
                         const val_str = std.mem.trim(u8, trimmed[js..ji], " \t\r\n");
                         if (val_str.len > 0) {
-                            if (self.parseJsonValue(val_str, "Object")) |v| {
+                            // Resolve field type from class declaration for type-aware parsing.
+                            // For List fields (T[]), find the element type from the source code.
+                            const field_type_hint: []const u8 = blk: {
+                                if (self.findClass(type_hint)) |cd| {
+                                    for (cd.members) |member| {
+                                        switch (member) {
+                                            .field_decl => |fd| {
+                                                if (std.ascii.eqlIgnoreCase(fd.name, key_name)) {
+                                                    if (std.ascii.eqlIgnoreCase(fd.type_ref.name, "List")) {
+                                                        // Find the element type from source code
+                                                        for (self.class_sources.keys(), self.class_sources.values()) |k, src| {
+                                                            if (std.ascii.eqlIgnoreCase(k, type_hint)) {
+                                                                if (self.findFieldArrayType(src, key_name)) |elem| {
+                                                                    // elem is a slice into src which is stable (arena-allocated class source)
+                                                                    if (elem.len > 0 and elem.len < 200) {
+                                                                        break :blk std.fmt.allocPrint(self.arena, "{s}[]", .{elem}) catch "Object";
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    break :blk fd.type_ref.name;
+                                                }
+                                            },
+                                            else => {},
+                                        }
+                                    }
+                                }
+                                break :blk "Object";
+                            };
+                            if (self.parseJsonValue(val_str, field_type_hint)) |v| {
                                 obj.fields.put(self.arena, key_name, v) catch {};
                             }
                         }
