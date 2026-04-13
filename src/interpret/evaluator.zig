@@ -8008,6 +8008,12 @@ pub const Evaluator = struct {
     }
 
     fn initInstanceFields(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance) !void {
+        // Set current_class so that unqualified static field references (e.g. BASE_URL)
+        // resolve to ClassName.BASE_URL in the global environment.
+        const saved_class = self.current_class;
+        self.current_class = class_decl.name;
+        defer self.current_class = saved_class;
+
         for (class_decl.members) |member| {
             switch (member) {
                 .field_decl => |fd| {

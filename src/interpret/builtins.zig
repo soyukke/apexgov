@@ -3459,12 +3459,28 @@ fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_ty
             try std.fs.path.join(ctx.arena, &.{ path, "objects", obj_type, "fields", field_name }),
         };
         for (candidates) |meta_path| {
-            const xml_path = std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path}) catch continue;
-            const content = std.fs.cwd().readFileAlloc(ctx.arena, xml_path, 512 * 1024) catch continue;
-            try parsePicklistXml(ctx, list, content);
-            if (list.items.items.len > 0) return;
+            if (try tryLoadFieldMeta(ctx, list, meta_path)) return;
+        }
+
+        // Pattern 4: マルチパッケージ SFDX — サブディレクトリを走査
+        // path が "repo/" のようなルートの場合、"repo/cc-base-app/main/default/objects/..." を探す
+        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch continue;
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            const sub_path = std.fs.path.join(ctx.arena, &.{ path, entry.name, "main", "default", "objects", obj_type, "fields", field_name }) catch continue;
+            if (try tryLoadFieldMeta(ctx, list, sub_path)) return;
         }
     }
+}
+
+/// field-meta.xml を読み込んでパースする。成功したら true を返す。
+fn tryLoadFieldMeta(ctx: *BuiltinContext, list: *types.ListValue, meta_path: []const u8) !bool {
+    const xml_path = std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path}) catch return false;
+    const content = std.fs.cwd().readFileAlloc(ctx.arena, xml_path, 512 * 1024) catch return false;
+    try parsePicklistXml(ctx, list, content);
+    return list.items.items.len > 0;
 }
 
 fn parsePicklistXml(ctx: *BuiltinContext, list: *types.ListValue, content: []const u8) !void {
