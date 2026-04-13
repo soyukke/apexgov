@@ -6,6 +6,17 @@ const std = @import("std");
 const types = @import("types.zig");
 const Value = types.Value;
 
+/// Normalize DateTime string: strip ".000+0000" suffix → "Z"
+fn normalizeDateTimeStr(s: []const u8) []const u8 {
+    // "2016-09-15T16:51:41.000+0000" → "2016-09-15T16:51:41Z"
+    if (s.len > 10 and std.mem.indexOf(u8, s, "T") != null) {
+        if (std.mem.endsWith(u8, s, ".000+0000")) return s[0 .. s.len - 9];
+        if (std.mem.endsWith(u8, s, ".000Z")) return s[0 .. s.len - 4];
+        if (std.mem.endsWith(u8, s, "Z")) return s[0 .. s.len - 1];
+    }
+    return s;
+}
+
 /// Apex == セマンティクスで値を比較する。
 /// String は大文字小文字を区別しない。
 pub fn valueEql(a: Value, b: Value) bool {
@@ -31,7 +42,13 @@ pub fn valueEql(a: Value, b: Value) bool {
         .boolean => |av| av == b.boolean,
         .integer => |av| av == b.integer,
         .double => |av| av == b.double,
-        .string => |av| std.ascii.eqlIgnoreCase(av, b.string),
+        .string => |av| blk: {
+            if (std.ascii.eqlIgnoreCase(av, b.string)) break :blk true;
+            // Normalize DateTime strings: "2016-09-15T16:51:41.000+0000" == "2016-09-15T16:51:41Z"
+            const a_norm = normalizeDateTimeStr(av);
+            const b_norm = normalizeDateTimeStr(b.string);
+            break :blk std.ascii.eqlIgnoreCase(a_norm, b_norm);
+        },
         .void_val => true,
         .null_val => true,
         .sobject => |av| {
