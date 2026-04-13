@@ -53,6 +53,40 @@ pub const BuiltinContext = struct {
     }
 };
 
+/// Date 型のオブジェクトインスタンスを生成する。
+/// 内部の ISO 日付文字列 (YYYY-MM-DD) を "value" フィールドに保持する。
+pub fn makeDateValue(arena: std.mem.Allocator, date_str: []const u8) anyerror!Value {
+    const obj = try arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Date" };
+    try obj.fields.put(arena, "value", Value{ .string = date_str });
+    return Value{ .object = obj };
+}
+
+/// DateTime 型のオブジェクトインスタンスを生成する。
+/// 内部の ISO 日時文字列 (YYYY-MM-DDThh:mm:ssZ) を "value" フィールドに保持する。
+pub fn makeDatetimeValue(arena: std.mem.Allocator, dt_str: []const u8) anyerror!Value {
+    const obj = try arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Datetime" };
+    try obj.fields.put(arena, "value", Value{ .string = dt_str });
+    return Value{ .object = obj };
+}
+
+/// Value が Date/DateTime オブジェクトの場合、内部の日付文字列を返す。
+/// 通常の文字列の場合はそのまま返す。それ以外は null を返す。
+pub fn extractDateString(val: Value) ?[]const u8 {
+    if (val == .string) return val.string;
+    if (val == .object) {
+        if (std.ascii.eqlIgnoreCase(val.object.class_name, "Date") or
+            std.ascii.eqlIgnoreCase(val.object.class_name, "Datetime"))
+        {
+            if (val.object.fields.get("value")) |v| {
+                if (v == .string) return v.string;
+            }
+        }
+    }
+    return null;
+}
+
 /// 静的メソッド呼び出しを試行する。
 pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
     // System.debug
@@ -172,6 +206,35 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return Value.null_val;
     }
 
+    // Long.valueOf
+    if (std.ascii.eqlIgnoreCase(class_name, "Long") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+        if (args.len > 0) {
+            return switch (args[0]) {
+                .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch {
+                    return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}));
+                } },
+                .integer => args[0],
+                .double => |d| Value{ .integer = @intFromFloat(d) },
+                .null_val => Value{ .integer = 0 },
+                else => Value.null_val,
+            };
+        }
+        return Value.null_val;
+    }
+
+    // Boolean.valueOf
+    if (std.ascii.eqlIgnoreCase(class_name, "Boolean") and std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+        if (args.len > 0) {
+            return switch (args[0]) {
+                .string => |s| Value{ .boolean = std.ascii.eqlIgnoreCase(s, "true") },
+                .boolean => args[0],
+                .null_val => Value{ .boolean = false },
+                else => Value{ .boolean = false },
+            };
+        }
+        return Value{ .boolean = false };
+    }
+
     // Decimal.valueOf
     if (std.ascii.eqlIgnoreCase(class_name, "Decimal")) {
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
@@ -206,7 +269,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // Date.today / Date.newInstance
     if (std.ascii.eqlIgnoreCase(class_name, "Date")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = try currentDateString(ctx.arena) };
+        if (std.ascii.eqlIgnoreCase(method_name, "today")) return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
             // Date.newInstance(year, month, day) — format from args
             if (args.len >= 3) {
@@ -225,19 +288,22 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     .double => |d2| @as(i64, @intFromFloat(d2)),
                     else => 1,
                 };
-                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                const s = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
                     @as(u32, @intCast(if (y < 0) 1 else y)),
                     @as(u32, @intCast(if (m < 1) 1 else if (m > 12) 12 else m)),
                     @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
-                }) };
+                });
+                return try makeDateValue(ctx.arena, s);
             }
-            return Value{ .string = "2026-01-01" };
+            return try makeDateValue(ctx.arena, "2026-01-01");
         }
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
-            if (args.len > 0 and args[0] == .string) return args[0];
-            return Value{ .string = "2026-01-01" };
+            if (args.len > 0) {
+                if (extractDateString(args[0])) |s| return try makeDateValue(ctx.arena, s);
+            }
+            return try makeDateValue(ctx.arena, "2026-01-01");
         }
-        return Value{ .string = try currentDateString(ctx.arena) };
+        return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
     }
 
     // Math
@@ -305,7 +371,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // DateTime
     if (std.ascii.eqlIgnoreCase(class_name, "DateTime")) {
         if (std.ascii.eqlIgnoreCase(method_name, "now")) {
-            return Value{ .string = try currentDateTimeString(ctx.arena) };
+            return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
         }
         if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
             // DateTime.newInstance(year, month, day, hour, minute, second)
@@ -340,14 +406,14 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     .double => |d5| @as(i64, @intFromFloat(d5)),
                     else => 0,
                 };
-                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
                     @as(u32, @intCast(if (y < 0) 1 else y)),
                     @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
                     @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
                     @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
                     @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
                     @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
-                }) };
+                }));
             }
             // DateTime.newInstance(year, month, day) — 3 引数
             if (args.len >= 3) {
@@ -366,11 +432,11 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     .double => |d9| @as(i64, @intFromFloat(d9)),
                     else => 1,
                 };
-                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
+                return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
                     @as(u32, @intCast(if (y < 0) 1 else y)),
                     @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
                     @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
-                }) };
+                }));
             }
             // DateTime.newInstance(milliseconds) — 1 引数
             if (args.len >= 1) {
@@ -386,24 +452,26 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                 const yd = epoch_day.calculateYearDay();
                 const md = yd.calculateMonthDay();
                 const ds = es.getDaySeconds();
-                return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
                     yd.year,
                     md.month.numeric(),
                     md.day_index + 1,
                     ds.getHoursIntoDay(),
                     ds.getMinutesIntoHour(),
                     ds.getSecondsIntoMinute(),
-                }) };
+                }));
             }
-            return Value{ .string = "2026-04-06T00:00:00Z" };
+            return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
         }
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
-            // DateTime.valueOf(string) — return the input string
-            if (args.len > 0 and args[0] == .string) return args[0];
-            return Value{ .string = "2026-04-06T00:00:00Z" };
+            // DateTime.valueOf(string) — return as Datetime object
+            if (args.len > 0) {
+                if (extractDateString(args[0])) |s| return try makeDatetimeValue(ctx.arena, s);
+            }
+            return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
         }
         // Fallback for other DateTime static methods
-        return Value{ .string = "2026-04-06T00:00:00Z" };
+        return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
     }
 
     // JSON.serialize / deserialize
@@ -615,8 +683,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     // System.currentTimeMillis / System.now
     if (std.ascii.eqlIgnoreCase(class_name, "System")) {
         if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
-        if (std.ascii.eqlIgnoreCase(method_name, "now")) return Value{ .string = "2026-04-06T00:00:00Z" };
-        if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = try currentDateString(ctx.arena) };
+        if (std.ascii.eqlIgnoreCase(method_name, "now")) return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
+        if (std.ascii.eqlIgnoreCase(method_name, "today")) return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
         if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
             // Set restricted/standard user flags based on user's profile
             if (args.len > 0 and args[0] == .sobject) {

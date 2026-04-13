@@ -706,7 +706,9 @@ pub const Evaluator = struct {
                 else
                     defaultValue(vd.type_ref);
                 // Auto-unwrap SOQL list to single SObject when variable type is not List/Set/Iterable
-                if (val == .list and !std.ascii.eqlIgnoreCase(vd.type_ref.name, "List") and
+                // Only for SOQL results (e.g., Account a = [SELECT Id FROM Account])
+                if (val == .list and vd.initializer != null and vd.initializer.?.* == .soql and
+                    !std.ascii.eqlIgnoreCase(vd.type_ref.name, "List") and
                     !std.ascii.eqlIgnoreCase(vd.type_ref.name, "Iterable") and
                     !std.ascii.eqlIgnoreCase(vd.type_ref.name, "Set"))
                 {
@@ -4106,11 +4108,33 @@ pub const Evaluator = struct {
                     }
                     return Value{ .boolean = false };
                 }
-                if (val == .list) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "List") };
+                if (val == .list) {
+                    const tn = ie.type_name.name;
+                    if (!std.ascii.eqlIgnoreCase(tn, "List")) return Value{ .boolean = false };
+                    // If no element type params specified, match any list
+                    if (ie.type_name.params.len == 0) return Value{ .boolean = true };
+                    // Check element type against actual list items
+                    // Note: type params are validated to have non-empty names
+                    const elem_type = ie.type_name.params[0].name;
+                    if (elem_type.len > 0 and elem_type.len <= 128) {
+                        for (val.list.items.items) |item| {
+                            if (item == .null_val) continue;
+                            return Value{ .boolean = instanceofMatchesPrimitive(item, elem_type) };
+                        }
+                    }
+                    return Value{ .boolean = true }; // empty list or unknown element type matches any
+                }
                 if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
                 if (val == .set) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Set") };
-                if (val == .string) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "String") };
-                if (val == .integer) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Integer") };
+                if (val == .string) {
+                    return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "String") };
+                }
+                if (val == .integer) {
+                    return Value{ .boolean = instanceofMatchesNumericType(ie.type_name.name) };
+                }
+                if (val == .double) {
+                    return Value{ .boolean = instanceofMatchesNumericType(ie.type_name.name) };
+                }
                 if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
                 return Value{ .boolean = false };
             },
@@ -4846,6 +4870,36 @@ pub const Evaluator = struct {
             }
         }
 
+        // Date/DateTime objects: extract the inner date string and dispatch as string methods
+        if (obj == .object) {
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime"))
+            {
+                if (builtins.extractDateString(obj)) |date_str| {
+                    const result = try self.evalStringMethod(date_str, method, args);
+                    // Wrap date() result back into a Date object, and addDays etc. keep their type
+                    if (result == .string) {
+                        if (std.ascii.eqlIgnoreCase(method, "date") or std.ascii.eqlIgnoreCase(method, "dateGmt")) {
+                            return try builtins.makeDateValue(self.arena, result.string);
+                        }
+                        if (std.ascii.eqlIgnoreCase(method, "addDays") or
+                            std.ascii.eqlIgnoreCase(method, "addMonths") or
+                            std.ascii.eqlIgnoreCase(method, "addYears") or
+                            std.ascii.eqlIgnoreCase(method, "addHours") or
+                            std.ascii.eqlIgnoreCase(method, "addMinutes") or
+                            std.ascii.eqlIgnoreCase(method, "addSeconds"))
+                        {
+                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
+                                return try builtins.makeDateValue(self.arena, result.string);
+                            }
+                            return try builtins.makeDatetimeValue(self.arena, result.string);
+                        }
+                    }
+                    return result;
+                }
+            }
+        }
+
         // For ObjectInstance with a user-defined class, try class methods first
         if (obj == .object) {
             if (self.findClass(obj.object.class_name)) |class_decl| {
@@ -5282,6 +5336,27 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "isNotEmpty")) {
             return Value{ .boolean = s.len > 0 };
         }
+        if (std.ascii.eqlIgnoreCase(method, "isNumeric")) {
+            if (s.len == 0) return Value{ .boolean = false };
+            for (s) |ch| {
+                if (!std.ascii.isDigit(ch)) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isAlpha")) {
+            if (s.len == 0) return Value{ .boolean = false };
+            for (s) |ch| {
+                if (!std.ascii.isAlphabetic(ch)) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isAlphanumeric")) {
+            if (s.len == 0) return Value{ .boolean = false };
+            for (s) |ch| {
+                if (!std.ascii.isAlphanumeric(ch)) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
+        }
         if (std.ascii.eqlIgnoreCase(method, "capitalize")) {
             if (s.len == 0) return Value{ .string = s };
             const result = try self.arena.alloc(u8, s.len);
@@ -5575,6 +5650,28 @@ pub const Evaluator = struct {
         // ordinal() - for enum values, return 0 as stub
         if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
             return Value{ .integer = 0 };
+        }
+        // getOffset(DateTime) — TimeZone のオフセット (ミリ秒)。UTC を返す。
+        if (std.ascii.eqlIgnoreCase(method, "getOffset")) {
+            return Value{ .integer = 0 };
+        }
+        // getID() — TimeZone の ID 文字列
+        if (std.ascii.eqlIgnoreCase(method, "getID") or std.ascii.eqlIgnoreCase(method, "getId")) {
+            return Value{ .string = s };
+        }
+        // isSameDay(otherDate) — Date/DateTime が同じ日かどうか
+        if (std.ascii.eqlIgnoreCase(method, "isSameDay") and args.len > 0) {
+            const other_str = builtins.extractDateString(args[0]) orelse (if (args[0] == .string) args[0].string else "");
+            const dt = parseIsoDate(s) orelse return Value{ .boolean = false };
+            const odt = parseIsoDate(other_str) orelse return Value{ .boolean = false };
+            return Value{ .boolean = dt.y == odt.y and dt.m == odt.m and dt.d == odt.d };
+        }
+        // dateGmt() — DateTime から UTC Date 部分を返す (= date())
+        if (std.ascii.eqlIgnoreCase(method, "dateGmt") or std.ascii.eqlIgnoreCase(method, "dateGMT")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = s };
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                @as(u32, @intCast(dt.y)), dt.m, dt.d,
+            }) };
         }
         return Value.null_val;
     }
@@ -6025,7 +6122,7 @@ pub const Evaluator = struct {
 
             // Date.today()
             if (std.ascii.eqlIgnoreCase(class_name, "Date") and std.ascii.eqlIgnoreCase(fa.field, "today")) {
-                return Value{ .string = try builtins.currentDateString(self.arena) };
+                return try builtins.makeDateValue(self.arena, try builtins.currentDateString(self.arena));
             }
 
             // AccessLevel / AccessType enum
@@ -6222,6 +6319,54 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
     // Datetime ヘルパー
     // -----------------------------------------------------------------------
+
+    /// 文字列が Date 形式 (YYYY-MM-DD, 10文字ちょうど) かどうかを判定する。
+    fn isDateOnlyFormatString(s: []const u8) bool {
+        if (s.len != 10) return false;
+        if (s[4] != '-' or s[7] != '-') return false;
+        _ = std.fmt.parseInt(i32, s[0..4], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[5..7], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[8..10], 10) catch return false;
+        return true;
+    }
+
+    /// 文字列が DateTime 形式 (YYYY-MM-DDThh:mm:ss...) かどうかを判定する。
+    fn isDateTimeFormatString(s: []const u8) bool {
+        if (s.len < 19) return false;
+        if (s[4] != '-' or s[7] != '-' or s[10] != 'T') return false;
+        _ = std.fmt.parseInt(i32, s[0..4], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[5..7], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[8..10], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[11..13], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[14..16], 10) catch return false;
+        _ = std.fmt.parseInt(u8, s[17..19], 10) catch return false;
+        return true;
+    }
+
+    /// instanceof チェック: 数値型名 (Integer, Decimal, Long, Double, Number) にマッチするか。
+    fn instanceofMatchesNumericType(tn: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(tn, "Integer") or
+            std.ascii.eqlIgnoreCase(tn, "Decimal") or
+            std.ascii.eqlIgnoreCase(tn, "Long") or
+            std.ascii.eqlIgnoreCase(tn, "Double") or
+            std.ascii.eqlIgnoreCase(tn, "Number");
+    }
+
+    /// instanceof チェック: Value がプリミティブ型名にマッチするか。
+    fn instanceofMatchesPrimitive(val: Value, tn: []const u8) bool {
+        if (val == .integer or val == .double) return instanceofMatchesNumericType(tn);
+        if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
+        if (val == .string) return std.ascii.eqlIgnoreCase(tn, "String");
+        if (val == .sobject) return std.ascii.eqlIgnoreCase(tn, "SObject") or std.ascii.eqlIgnoreCase(tn, "Sobject") or std.ascii.eqlIgnoreCase(tn, "sObject");
+        if (val == .object) {
+            const cn = val.object.class_name;
+            if (cn.len > 0 and cn.len < 256) {
+                if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date");
+                if (std.ascii.eqlIgnoreCase(cn, "Datetime")) return std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
+            }
+        }
+        return false;
+    }
 
     /// ISO 日付文字列 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ) をパースする。
     fn parseIsoDate(s: []const u8) ?struct { y: i32, m: u8, d: u8, h: u8, mi: u8, sec: u8, has_time: bool } {
@@ -7367,19 +7512,7 @@ pub const Evaluator = struct {
                         }
                     }
                 }
-                if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
-                    score += 2;
-                } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
-                    score += 2;
-                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
-                    score += 2;
-                } else if (arg == .sobject and (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject"))) {
-                    score += 2;
-                } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
-                    score += 2;
-                } else if (arg == .object) {
-                    score += 1;
-                }
+                score += overloadScoreForArg(arg, pt);
             }
             if (score > best_score) {
                 best_score = score;
@@ -7426,30 +7559,15 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                // Score: higher is better match
-                if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
-                    score += 2;
-                } else if (arg == .sobject and (std.ascii.eqlIgnoreCase(pt, "SObject") or
-                    std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")))
-                {
-                    score += 2;
-                } else if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
+                // Score: higher is better match (with special cases for collection mismatches)
+                if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
                     // SObject passed where List expected = poor match
                     score -= 1;
                 } else if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
                     // List passed where non-List expected = poor match
                     score -= 1;
-                } else if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
-                    score += 2;
-                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
-                    score += 2;
-                } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
-                    score += 2;
-                } else if (arg == .object) {
-                    // Object matches any class type
-                    score += 1;
                 } else {
-                    score += 0; // neutral
+                    score += overloadScoreForArg(arg, pt);
                 }
             }
             if (best == null or score > best_score) {
@@ -7977,6 +8095,58 @@ pub const Evaluator = struct {
 // ---------------------------------------------------------------------------
 // 静的ヘルパー
 // ---------------------------------------------------------------------------
+
+/// メソッドオーバーロード解決用: 引数の Value とパラメータ型名のスコア計算。
+fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
+    if (arg == .string) {
+        if (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        // Date/DateTime-like strings should match Date/DateTime params
+        if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.isDateOnlyFormatString(arg.string)) return 2;
+        if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and Evaluator.isDateTimeFormatString(arg.string)) return 2;
+        return 0;
+    }
+    if (arg == .integer) {
+        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Long") or std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
+    if (arg == .double) {
+        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
+    if (arg == .boolean) {
+        if (std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
+    if (arg == .list) {
+        if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
+        return 0;
+    }
+    if (arg == .sobject) {
+        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")) return 2;
+        return 0;
+    }
+    if (arg == .object) {
+        // Date/DateTime objects should score well for their specific types
+        if (std.ascii.eqlIgnoreCase(arg.object.class_name, "Date")) {
+            if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
+            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+            return 0;
+        }
+        if (std.ascii.eqlIgnoreCase(arg.object.class_name, "Datetime")) {
+            if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
+            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
 
 fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Allocator) !Value {
     switch (op) {

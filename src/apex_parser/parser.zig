@@ -1513,7 +1513,9 @@ const Parser = struct {
         // Array notation: Type[] (only if followed immediately by ])
         if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
             self.pos += 2; // skip [ ]
-            return .{ .name = "List", .params = &.{.{ .name = full_name }} };
+            const params = try self.arena.alloc(TypeRef, 1);
+            params[0] = .{ .name = full_name };
+            return .{ .name = "List", .params = params };
         }
 
         return .{ .name = full_name };

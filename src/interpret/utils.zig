@@ -35,6 +35,33 @@ pub fn valueEql(a: Value, b: Value) bool {
         if (a_tag == .double and b_tag == .integer) {
             return a.double == @as(f64, @floatFromInt(b.integer));
         }
+        // Date/DateTime object vs string cross-comparison
+        if (a_tag == .object and b_tag == .string) {
+            if (std.ascii.eqlIgnoreCase(a.object.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(a.object.class_name, "Datetime"))
+            {
+                if (a.object.fields.get("value")) |v| {
+                    if (v == .string) {
+                        const a_norm = normalizeDateTimeStr(v.string);
+                        const b_norm = normalizeDateTimeStr(b.string);
+                        return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+                    }
+                }
+            }
+        }
+        if (a_tag == .string and b_tag == .object) {
+            if (std.ascii.eqlIgnoreCase(b.object.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(b.object.class_name, "Datetime"))
+            {
+                if (b.object.fields.get("value")) |v| {
+                    if (v == .string) {
+                        const a_norm = normalizeDateTimeStr(a.string);
+                        const b_norm = normalizeDateTimeStr(v.string);
+                        return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+                    }
+                }
+            }
+        }
         return false;
     }
 
@@ -105,6 +132,18 @@ pub fn valueEql(a: Value, b: Value) bool {
                 const b_name = b.object.fields.get("name") orelse return false;
                 if (a_name == .string and b_name == .string) return std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
             }
+            // Compare Date/DateTime objects by their inner value string
+            if ((std.ascii.eqlIgnoreCase(av.class_name, "Date") or std.ascii.eqlIgnoreCase(av.class_name, "Datetime")) and
+                (std.ascii.eqlIgnoreCase(b.object.class_name, "Date") or std.ascii.eqlIgnoreCase(b.object.class_name, "Datetime")))
+            {
+                const a_val = av.fields.get("value") orelse return false;
+                const b_val = b.object.fields.get("value") orelse return false;
+                if (a_val == .string and b_val == .string) {
+                    const a_norm = normalizeDateTimeStr(a_val.string);
+                    const b_norm = normalizeDateTimeStr(b_val.string);
+                    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+                }
+            }
             return false;
         },
     };
@@ -159,8 +198,11 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
                     if (n == .string) break :blk n.string;
                 }
             }
-            // Blob → return the stored value
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "Blob")) {
+            // Date/Datetime/Blob → return the stored value string
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+            {
                 if (obj.fields.get("value")) |bv| {
                     if (bv == .string) break :blk bv.string;
                 }
