@@ -2528,6 +2528,18 @@ pub const Evaluator = struct {
             return Value{ .sobject = sob };
         }
 
+        if (std.ascii.eqlIgnoreCase(from_type, "DuplicateRule")) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "DuplicateRule" };
+            const id = try self.allocId();
+            sob.id = id;
+            try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
+            try sob.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
+            try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+            return Value{ .sobject = sob };
+        }
+
         if (std.ascii.eqlIgnoreCase(from_type, "StaticResource")) {
             // This returns a single record; for IN clause with multiple names,
             // the caller should handle generating multiple stubs.
@@ -5509,6 +5521,22 @@ pub const Evaluator = struct {
                             try instance.fields.put(self.arena, "disabled", Value{ .boolean = false });
                         }
                     }
+                    return Value{ .object = instance };
+                }
+
+                // RestRequest: initialize params map
+                if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
+                    const params = try self.arena.create(types.MapValue);
+                    params.* = .{};
+                    try instance.fields.put(self.arena, "params", Value{ .map = params });
+                    return Value{ .object = instance };
+                }
+                // RestResponse: initialize responseBody as Blob
+                if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
+                    const blob = try self.arena.create(types.ObjectInstance);
+                    blob.* = .{ .class_name = "Blob" };
+                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
+                    try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
                     return Value{ .object = instance };
                 }
 
