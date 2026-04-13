@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-apexgov は Salesforce Apex コード向けのオフライン静的チェッカー & デバッグログプロファイラー。CI/CD パイプラインでの利用を想定し、Governor 制限リスク（ループ内 SOQL/DML/Callout 等）の検出、デバッグログからの CPU/Heap 解析、Apex→Java トランスパイルによるローカルテスト実行を提供する。
+apexgov は Salesforce Apex コード向けのオフライン静的チェッカー & デバッグログプロファイラー。CI/CD パイプラインでの利用を想定し、Governor 制限リスク（ループ内 SOQL/DML/Callout 等）の検出、デバッグログからの CPU/Heap 解析を提供する。
 
 ## ビルド & テスト
 
@@ -17,17 +17,11 @@ zig build run -- <subcommand>    # ビルド & 実行
 主なサブコマンド:
 - `check <path> [--format json|sarif|text]` — 静的解析
 - `profile <path> [--format json|text]` — デバッグログプロファイル
-- `emulate transpile <path>` — Apex→Java トランスパイル
-- `emulate test [--nix]` — Java エミュレーションテスト実行
+- `interpret test <paths...>` — Zig ネイティブ Apex テスト実行
 - `typegen <sfdx-project-root> [--out DIR]` — LWC 用 TypeScript 型定義生成
 - `lsp` — Language Server Protocol サーバー起動（stdio）
 
-Java エミュレーションテストの直接実行:
-```bash
-CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
-```
-
-Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
+Nix 開発環境: `nix develop` (Zig + ZLS)
 
 ## アーキテクチャ
 
@@ -58,34 +52,6 @@ Nix 開発環境: `nix develop` (Zig + ZLS + JDK 21)
 | `file_collector.zig` | ファイルシステムからの Apex ソース収集 |
 | `scanner.zig` | メイン解析ループ（scanContent） |
 
-#### src/transpile/ — Apex→Java トランスパイラー（ファサード + 8 サブモジュール + compat/）
-
-`transpile/root.zig` がエントリポイント。
-
-| サブモジュール | 役割 |
-|---|---|
-| `types.zig` | 共有データ型（Options, クラス/メソッド情報） |
-| `util.zig` | 文字列比較・トークン分割等の汎用ユーティリティ |
-| `parser.zig` | Apex クラス構造のパース |
-| `renderer.zig` | Java ソースコードのレンダリング |
-| `line_and_expr.zig` | 行単位の式変換エンジン |
-| `file_io.zig` | ファイル読み書き |
-| `trigger.zig` | Apex トリガーの Java 変換 |
-| `compat.zig` | Apex 互換変換ファサード（8 サブモジュール） |
-
-##### src/transpile/compat/ — Apex 固有構文の Java 互換変換
-
-| サブモジュール | 役割 |
-|---|---|
-| `operator.zig` | 演算子変換 |
-| `numeric.zig` | 数値型変換 |
-| `getas.zig` | SObject 型付きフィールド取得 |
-| `patterns.zig` | 構文パターン認識・変換 |
-| `helpers.zig` | 互換変換共通ヘルパー |
-| `query.zig` | SOQL/SOSL クエリ変換 |
-| `misc.zig` | その他の互換変換 |
-| `sobject.zig` | SObject フィールドアクセス変換 |
-
 #### src/typegen/ — LWC 用 TypeScript 型定義ジェネレータ
 
 `typegen/root.zig` がエントリポイント。SFDX メタデータ XML から `.d.ts` ファイルを生成する。
@@ -107,15 +73,6 @@ resource/messageChannel/asset は公式 LWC Language Server と同一フォー�
 
 主要機能: 補完、ホバー、定義ジャンプ（クロスファイル対応）、参照検索（クロスファイル対応）、リネーム、コードアクション（Governor 制限クイックフィックス）、セマンティックトークン、フォーマット、折りたたみ、シグネチャヘルプ、Incremental Document Sync。
 
-### tools/ — Java エミュレーション環境
-
-- **java-emulation/** — トランスパイル後の Java コードをローカル実行するテスト環境
-  - `runner/Runner.java` — リフレクションベースのテストランナー
-  - `runtime/` — Apex ランタイムのエミュレーション (Database, Limits, SObject, Schema 等)
-  - `run-tests.sh` — コンパイル & テスト実行スクリプト (best-effort モード対応)
-- **java-calibration/** — CPU 係数マイクロベンチマーク
-- **transpile-external.sh** — 外部リポジトリの transpile 検証
-
 ### 静的解析ルール (check/)
 
 | ID | 検出対象 |
@@ -134,12 +91,7 @@ resource/messageChannel/asset は公式 LWC Language Server と同一フォー�
 
 ## テスト構造
 
-テストは各ソースファイル内にインラインで記述 (Zig 標準の `test` ブロック)。check.zig (ファサード) に約 50+ 個、transpile 系に約 30+ 個、profile.zig に 7 個のテストがある。`zig build test` でモジュールテストと実行ファイルテストが並行実行される。
-
-Java エミュレーションテスト:
-```bash
-zig build run -- emulate test --nix   # 58 テスト
-```
+テストは各ソースファイル内にインラインで記述 (Zig 標準の `test` ブロック)。check.zig (ファサード) に約 50+ 個、profile.zig に 7 個のテストがある。`zig build test` でモジュールテストと実行ファイルテストが並行実行される。
 
 ## 設定ファイル
 
