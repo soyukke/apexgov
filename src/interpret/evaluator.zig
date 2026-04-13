@@ -4598,24 +4598,101 @@ pub const Evaluator = struct {
             }
         }
 
-        // JSONParser.readValueAs(Type) → deserialize stored JSON body into typed object
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser") and
-            std.ascii.eqlIgnoreCase(method, "readValueAs"))
-        {
+        // JSONParser methods: nextToken, getCurrentToken, getText, readValueAs
+        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser")) {
             const json_body = if (obj.object.fields.get("__json_body__")) |jb| (if (jb == .string) jb.string else null) else null;
-            if (json_body) |body| {
-                // Extract the actual type name from Type object (e.g., Type { name: "MyData" })
-                const type_name: []const u8 = if (args.len >= 1 and args[0] == .object) blk: {
-                    if (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Type")) {
-                        if (args[0].object.fields.get("name")) |n| {
-                            if (n == .string) break :blk n.string;
-                        }
+            if (std.ascii.eqlIgnoreCase(method, "nextToken")) {
+                if (json_body) |body| {
+                    var pos: usize = if (obj.object.fields.get("__pos__")) |p| (if (p == .integer) @intCast(@as(u64, @bitCast(p.integer))) else 0) else 0;
+                    // Skip whitespace
+                    while (pos < body.len and (body[pos] == ' ' or body[pos] == '\t' or body[pos] == '\n' or body[pos] == '\r' or body[pos] == ',')) pos += 1;
+                    if (pos >= body.len) {
+                        try obj.object.fields.put(self.arena, "__token__", Value.null_val);
+                        return Value.null_val;
                     }
-                    break :blk args[0].object.class_name;
-                } else "Object";
-                if (self.parseJsonValue(body, type_name)) |pv| return pv;
+                    const ch = body[pos];
+                    if (ch == '{') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_OBJECT" });
+                        pos += 1;
+                    } else if (ch == '}') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_OBJECT" });
+                        pos += 1;
+                    } else if (ch == '[') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_ARRAY" });
+                        pos += 1;
+                    } else if (ch == ']') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_ARRAY" });
+                        pos += 1;
+                    } else if (ch == '"') {
+                        // String or field name
+                        const start = pos + 1;
+                        pos += 1;
+                        while (pos < body.len and body[pos] != '"') : (pos += 1) {
+                            if (body[pos] == '\\') pos += 1;
+                        }
+                        const text = body[start..pos];
+                        if (pos < body.len) pos += 1; // skip closing quote
+                        // Check if followed by ':' → FIELD_NAME
+                        var peek = pos;
+                        while (peek < body.len and (body[peek] == ' ' or body[peek] == '\t')) peek += 1;
+                        if (peek < body.len and body[peek] == ':') {
+                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "FIELD_NAME" });
+                            pos = peek + 1;
+                        } else {
+                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_STRING" });
+                        }
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = text });
+                    } else if (ch == 't' or ch == 'f') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_BOOLEAN" });
+                        if (std.mem.startsWith(u8, body[pos..], "true")) {
+                            try obj.object.fields.put(self.arena, "__text__", Value{ .string = "true" });
+                            pos += 4;
+                        } else {
+                            try obj.object.fields.put(self.arena, "__text__", Value{ .string = "false" });
+                            pos += 5;
+                        }
+                    } else if (ch == 'n') {
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_NULL" });
+                        pos += 4;
+                    } else if (std.ascii.isDigit(ch) or ch == '-') {
+                        const start = pos;
+                        while (pos < body.len and (std.ascii.isDigit(body[pos]) or body[pos] == '.' or body[pos] == '-' or body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+')) pos += 1;
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_NUMBER" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = body[start..pos] });
+                    } else {
+                        pos += 1;
+                    }
+                    try obj.object.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
+                    return obj.object.fields.get("__token__") orelse Value.null_val;
+                }
+                return Value.null_val;
             }
-            return Value.null_val;
+            if (std.ascii.eqlIgnoreCase(method, "getCurrentToken")) {
+                return obj.object.fields.get("__token__") orelse Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getText")) {
+                return obj.object.fields.get("__text__") orelse Value{ .string = "" };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "readValueAs")) {
+                // Use current position (after nextToken navigation) or full body
+                const pos: usize = if (obj.object.fields.get("__pos__")) |p| (if (p == .integer and p.integer > 0) @intCast(@as(u64, @bitCast(p.integer))) else 0) else 0;
+                if (json_body) |body| {
+                    // Back up one position to include the current token ([ or {)
+                    const start = if (pos > 0) pos - 1 else 0;
+                    const remaining = body[start..];
+                    // Extract the actual type name from Type object (e.g., Type { name: "MyData" })
+                    const type_name: []const u8 = if (args.len >= 1 and args[0] == .object) blk: {
+                        if (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Type")) {
+                            if (args[0].object.fields.get("name")) |n| {
+                                if (n == .string) break :blk n.string;
+                            }
+                        }
+                        break :blk args[0].object.class_name;
+                    } else "Object";
+                    if (self.parseJsonValue(remaining, type_name)) |pv| return pv;
+                }
+                return Value.null_val;
+            }
         }
 
         // For ObjectInstance with a user-defined class, try class methods first
