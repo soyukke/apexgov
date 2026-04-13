@@ -3170,11 +3170,25 @@ pub const Evaluator = struct {
         } else if (value_str.len > 0 and value_str[0] == ':') {
             // Bind variable
             const var_name = value_str[1..];
-            // Handle dotted: :insertedAccount.Id
+            // Handle dotted: :insertedAccount.Id or :list[0].Id
             if (std.mem.indexOf(u8, var_name, ".")) |dot_pos| {
                 const base_name = var_name[0..dot_pos];
                 const prop_name = var_name[dot_pos + 1 ..];
-                const base_val = current_env.get(base_name) orelse return true;
+                // Resolve base value, handling array index access (e.g. "list[0]")
+                const base_val = blk: {
+                    if (std.mem.indexOf(u8, base_name, "[")) |bracket_pos| {
+                        const arr_name = base_name[0..bracket_pos];
+                        const idx_end = std.mem.indexOfPos(u8, base_name, bracket_pos, "]") orelse break :blk current_env.get(base_name);
+                        const idx_str = base_name[bracket_pos + 1 .. idx_end];
+                        const idx = std.fmt.parseInt(usize, idx_str, 10) catch break :blk current_env.get(base_name);
+                        const arr_val = current_env.get(arr_name) orelse break :blk @as(?Value, null);
+                        if (arr_val == .list and idx < arr_val.list.items.items.len) {
+                            break :blk @as(?Value, arr_val.list.items.items[idx]);
+                        }
+                        break :blk @as(?Value, null);
+                    }
+                    break :blk current_env.get(base_name);
+                } orelse return true;
                 if (base_val == .sobject) {
                     cmp_val = utils.sobjectGet(&base_val.sobject.fields, prop_name) orelse return true;
                 } else if (base_val == .object) {
@@ -3183,7 +3197,14 @@ pub const Evaluator = struct {
                     return true;
                 }
             } else {
-                cmp_val = current_env.get(var_name) orelse return true;
+                cmp_val = current_env.get(var_name) orelse blk: {
+                    // Try current_class static field
+                    if (self.current_class) |cc| {
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch break :blk @as(?Value, null);
+                        if (self.global_env.get(key)) |v| break :blk v;
+                    }
+                    break :blk @as(?Value, null);
+                } orelse return true;
                 // Salesforce: WHERE field = :nullVar skips the condition (includes all records)
                 if (cmp_val == .null_val and !is_neq) return true;
             }
