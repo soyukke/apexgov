@@ -4777,14 +4777,21 @@ pub const Evaluator = struct {
                     }
                 }
             } else {
-                // Default sort: sort by natural order (strings, integers, etc.)
+                // Default sort: for objects implementing Comparable, use compareTo.
+                // Otherwise, sort by natural order (strings, integers, etc.)
                 const items = list.items.items;
+                const use_comparable = items.len > 0 and items[0] == .object and
+                    self.hasComparableInterface(items[0].object.class_name);
                 var i_idx: usize = 1;
                 while (i_idx < items.len) : (i_idx += 1) {
                     const key = items[i_idx];
                     var j_idx: usize = i_idx;
                     while (j_idx > 0) {
-                        if (self.compareValues(items[j_idx - 1], key) > 0) {
+                        const cmp = if (use_comparable and items[j_idx - 1] == .object and key == .object)
+                            self.callCompareTo(items[j_idx - 1].object, key)
+                        else
+                            self.compareValues(items[j_idx - 1], key);
+                        if (cmp > 0) {
                             items[j_idx] = items[j_idx - 1];
                             j_idx -= 1;
                         } else break;
@@ -7385,6 +7392,26 @@ pub const Evaluator = struct {
             if (!a.boolean and b.boolean) return -1;
             if (a.boolean and !b.boolean) return 1;
             return 0;
+        }
+        return 0;
+    }
+
+    fn hasComparableInterface(self: *Evaluator, class_name: []const u8) bool {
+        const cd = self.findClass(class_name) orelse return false;
+        for (cd.interfaces) |iface| {
+            if (std.ascii.eqlIgnoreCase(iface.name, "Comparable")) return true;
+        }
+        // Check parent class
+        if (cd.super_class) |sc| {
+            return self.hasComparableInterface(sc.name);
+        }
+        return false;
+    }
+
+    fn callCompareTo(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) i32 {
+        if (self.findClass(a.class_name)) |cd| {
+            const result = self.callInstanceMethod(cd, a, "compareTo", &.{b_val}) catch return 0;
+            if (result == .integer) return @intCast(if (result.integer > 0) @as(i32, 1) else if (result.integer < 0) @as(i32, -1) else @as(i32, 0));
         }
         return 0;
     }
