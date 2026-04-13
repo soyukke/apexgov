@@ -307,7 +307,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "now")) {
             return Value{ .string = try currentDateTimeString(ctx.arena) };
         }
-        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
             // DateTime.newInstance(year, month, day, hour, minute, second)
             if (args.len >= 6) {
                 const y = switch (args[0]) {
