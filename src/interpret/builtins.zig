@@ -1872,6 +1872,10 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     }
 
     // Exception methods
+    if (std.ascii.eqlIgnoreCase(method_name, "setMessage") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "message", args[0]);
+        return .void_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) {
         return obj.fields.get("message") orelse Value{ .string = "" };
     }
@@ -1902,6 +1906,13 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     // toString() - return the value field if it's a Blob, otherwise class name
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
         return obj.fields.get("value") orelse Value{ .string = try utils.coerceToString(Value{ .object = obj }, ctx.arena) };
+    }
+
+    // RestResponse methods
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "RestResponse")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "addHeader")) {
+            return .void_val;
+        }
     }
 
     // Schema.DescribeFieldResult methods

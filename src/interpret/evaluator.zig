@@ -45,6 +45,8 @@ pub const Evaluator = struct {
     last_json_value: ?Value = null,
     // SOSL fixed search results (set by Test.setFixedSearchResults)
     fixed_search_results: ?Value = null,
+    // Class name of the currently executing constructor (for correct super() dispatch)
+    current_constructor_class: ?[]const u8 = null,
     // Call depth counter (stack overflow guard)
     call_depth: u32 = 0,
     max_call_depth: u32 = 500,
@@ -3732,7 +3734,13 @@ pub const Evaluator = struct {
                 if (std.mem.eql(u8, call.callee, "super")) {
                     if (current_env.get("this")) |this_val| {
                         if (this_val == .object) {
-                            if (self.findClass(this_val.object.class_name)) |cd| {
+                            // Use current_constructor_class to find the correct parent
+                            // (not the instance's actual class, which may be a child)
+                            const ctor_class = if (self.current_constructor_class) |cc|
+                                self.findClass(cc)
+                            else
+                                self.findClass(this_val.object.class_name);
+                            if (ctor_class) |cd| {
                                 if (cd.super_class) |sc| {
                                     if (self.findClass(sc.name)) |parent_decl| {
                                         self.runConstructor(parent_decl, this_val.object, args.items) catch {};
@@ -5657,25 +5665,33 @@ pub const Evaluator = struct {
             instance.* = .{ .class_name = type_name };
 
             // Check if it's an exception class (extends Exception)
-            if (class_decl.super_class) |sc| {
-                if (std.mem.endsWith(u8, sc.name, "Exception")) {
-                    // First arg is the message
-                    if (ne.args.len > 0) {
-                        var arg_copy = ne.args[0];
-                        const msg_val = try self.evalExpr(&arg_copy, current_env);
-                        try instance.fields.put(self.arena, "message", msg_val);
+            // If the class has its own constructor, fall through to run it
+            // (user-defined exceptions like RestRouteError.RestException may set extra fields)
+            {
+                const is_exc = if (class_decl.super_class) |sc| std.mem.endsWith(u8, sc.name, "Exception") else std.mem.endsWith(u8, type_name, "Exception");
+                if (is_exc) {
+                    // Check if class has a user-defined constructor
+                    var has_constructor = false;
+                    for (class_decl.members) |member| {
+                        switch (member) {
+                            .constructor_decl => {
+                                has_constructor = true;
+                                break;
+                            },
+                            else => {},
+                        }
                     }
-                    return Value{ .object = instance };
+                    if (!has_constructor) {
+                        // No constructor: use simple message extraction
+                        if (ne.args.len > 0) {
+                            var arg_copy = ne.args[0];
+                            const msg_val = try self.evalExpr(&arg_copy, current_env);
+                            try instance.fields.put(self.arena, "message", msg_val);
+                        }
+                        return Value{ .object = instance };
+                    }
+                    // Has constructor: fall through to normal constructor logic below
                 }
-            }
-            // Also check if the type_name itself ends with Exception
-            if (std.mem.endsWith(u8, type_name, "Exception")) {
-                if (ne.args.len > 0) {
-                    var arg_copy = ne.args[0];
-                    const msg_val = try self.evalExpr(&arg_copy, current_env);
-                    try instance.fields.put(self.arena, "message", msg_val);
-                }
-                return Value{ .object = instance };
             }
 
             // Initialize parent class fields first (so child fields can shadow)
@@ -7382,6 +7398,10 @@ pub const Evaluator = struct {
                 const pval = if (pi < args.len) args[pi] else Value.null_val;
                 try ctor_env.define(param.name, pval);
             }
+            // Track which class's constructor is running (for correct super() dispatch)
+            const saved_ctor_class = self.current_constructor_class;
+            self.current_constructor_class = class_decl.name;
+            defer self.current_constructor_class = saved_ctor_class;
             _ = try self.execBlock(cd.body, ctor_env);
         }
     }
