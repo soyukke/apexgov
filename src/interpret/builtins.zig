@@ -3301,38 +3301,64 @@ test "String.length instance method" {
 /// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
 fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !void {
     for (ctx.eval.source_paths) |path| {
-        // path = ".../main/default/classes" → try "../../objects/<obj>/fields/<field>.field-meta.xml"
-        // Navigate up from classes/ to main/default/
-        const parent = std.fs.path.dirname(path) orelse continue; // main/default
-        const meta_path = try std.fs.path.join(ctx.arena, &.{ parent, "objects", obj_type, "fields", field_name });
-        const xml_path = try std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path});
+        // Try multiple path patterns to find the field-meta.xml
+        const candidates = [_][]const u8{
+            // Pattern 1: path is "classes" dir → sibling "objects" dir
+            try std.fs.path.join(ctx.arena, &.{ std.fs.path.dirname(path) orelse ".", "objects", obj_type, "fields", field_name }),
+            // Pattern 2: path is package root (e.g. "cc-base-app") → "main/default/objects/..."
+            try std.fs.path.join(ctx.arena, &.{ path, "main", "default", "objects", obj_type, "fields", field_name }),
+            // Pattern 3: path itself contains objects
+            try std.fs.path.join(ctx.arena, &.{ path, "objects", obj_type, "fields", field_name }),
+        };
+        for (candidates) |meta_path| {
+            const xml_path = std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path}) catch continue;
+            const content = std.fs.cwd().readFileAlloc(ctx.arena, xml_path, 512 * 1024) catch continue;
+            try parsePicklistXml(ctx, list, content);
+            if (list.items.items.len > 0) return;
+        }
+    }
+}
 
-        const content = std.fs.cwd().readFileAlloc(ctx.arena, xml_path, 512 * 1024) catch continue;
+fn parsePicklistXml(ctx: *BuiltinContext, list: *types.ListValue, content: []const u8) !void {
+    // Simple XML parsing: find <label>...</label> inside <value>...</value> blocks
+    // Also extract <fullName> for API name (value) vs label distinction
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Find next <value> block
+        const value_tag = "<value>";
+        const value_end_tag = "</value>";
+        const value_start = std.mem.indexOfPos(u8, content, pos, value_tag) orelse break;
+        const value_end = std.mem.indexOfPos(u8, content, value_start, value_end_tag) orelse break;
+        const block = content[value_start .. value_end + value_end_tag.len];
 
-        // Simple XML parsing: find <label>...</label> inside <value>...</value> blocks
-        var pos: usize = 0;
-        while (pos < content.len) {
-            // Find <value> block (inside <valueSetDefinition>)
-            const label_start_tag = "<label>";
-            const label_end_tag = "</label>";
-            const label_start = std.mem.indexOfPos(u8, content, pos, label_start_tag) orelse break;
-            const label_content_start = label_start + label_start_tag.len;
-            const label_end = std.mem.indexOfPos(u8, content, label_content_start, label_end_tag) orelse break;
-            const label = content[label_content_start..label_end];
+        // Extract fullName (API name)
+        var api_name: ?[]const u8 = null;
+        if (std.mem.indexOf(u8, block, "<fullName>")) |fn_start| {
+            const fn_content_start = fn_start + "<fullName>".len;
+            if (std.mem.indexOfPos(u8, block, fn_content_start, "</fullName>")) |fn_end| {
+                api_name = try decodeXmlEntities(ctx.arena, block[fn_content_start..fn_end]);
+            }
+        }
 
-            // Decode XML entities: &amp; → &, &apos; → ', &quot; → "
-            const decoded = try decodeXmlEntities(ctx.arena, label);
+        // Extract label
+        var label: ?[]const u8 = null;
+        if (std.mem.indexOf(u8, block, "<label>")) |l_start| {
+            const l_content_start = l_start + "<label>".len;
+            if (std.mem.indexOfPos(u8, block, l_content_start, "</label>")) |l_end| {
+                label = try decodeXmlEntities(ctx.arena, block[l_content_start..l_end]);
+            }
+        }
 
+        if (label) |lbl| {
             const pe = try ctx.arena.create(types.ObjectInstance);
             pe.* = .{ .class_name = "Schema.PicklistEntry" };
-            try pe.fields.put(ctx.arena, "label", Value{ .string = decoded });
-            try pe.fields.put(ctx.arena, "value", Value{ .string = decoded });
+            try pe.fields.put(ctx.arena, "label", Value{ .string = lbl });
+            try pe.fields.put(ctx.arena, "value", Value{ .string = api_name orelse lbl });
             try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
             try list.items.append(ctx.arena, Value{ .object = pe });
-
-            pos = label_end + label_end_tag.len;
         }
-        if (list.items.items.len > 0) return; // Found values, stop searching
+
+        pos = value_end + value_end_tag.len;
     }
 }
 
