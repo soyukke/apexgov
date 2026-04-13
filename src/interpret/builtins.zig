@@ -912,10 +912,9 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return Value{ .string = method_name };
     }
 
-    // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
+    // ConnectApi → return null (simplified stub)
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or std.ascii.eqlIgnoreCase(class_name, "ConnectApi")) {
-        if (ctx.see_all_data) return Value.null_val;
-        return ctx.throwException("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
+        return Value.null_val;
     }
 
     // FeatureManagement
