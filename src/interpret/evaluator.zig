@@ -47,7 +47,7 @@ pub const Evaluator = struct {
     fixed_search_results: ?Value = null,
     // Call depth counter (stack overflow guard)
     call_depth: u32 = 0,
-    max_call_depth: u32 = 200,
+    max_call_depth: u32 = 500,
     // Scheduled jobs store (System.schedule → CronTrigger queries)
     scheduled_jobs: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // Class source code (class name → source text, for ApexClass.Body queries)
@@ -4412,17 +4412,9 @@ pub const Evaluator = struct {
                     }
                 }
 
-                // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
+                // ConnectApi → return null stub
                 if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-                    if (self.see_all_data) {
-                        // SeeAllData=true: ConnectApi works, return a stub result
-                        return Value.null_val;
-                    }
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "UnsupportedOperationException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
+                    return Value.null_val;
                 }
 
                 // Cache.Session.getPartition / Cache.Org.getPartition
