@@ -3921,6 +3921,22 @@ pub const Evaluator = struct {
                     }
                     return Value.void_val;
                 }
+                // this(args) → constructor delegation to another constructor in the same class
+                if (std.mem.eql(u8, call.callee, "this")) {
+                    if (current_env.get("this")) |this_val| {
+                        if (this_val == .object) {
+                            const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
+                            if (self.findClass(ctor_class_name)) |cd| {
+                                self.runConstructor(cd, this_val.object, args.items) catch {};
+                                // Sync back fields modified by the delegated constructor
+                                for (this_val.object.fields.keys(), this_val.object.fields.values()) |fk, fv| {
+                                    current_env.set(fk, fv) catch {};
+                                }
+                            }
+                        }
+                    }
+                    return Value.void_val;
+                }
                 // Try as instance method on `this` first
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
@@ -3928,7 +3944,12 @@ pub const Evaluator = struct {
                             // Look for method in class hierarchy
                             const md = self.findMethodInHierarchy(null, class_decl, call.callee, args.items.len);
                             if (md != null) {
-                                return self.callInstanceMethod(class_decl, this_val.object, call.callee, args.items);
+                                const result = try self.callInstanceMethod(class_decl, this_val.object, call.callee, args.items);
+                                // Sync back instance fields to local env (the called method may have modified them)
+                                for (this_val.object.fields.keys(), this_val.object.fields.values()) |fk, fv| {
+                                    current_env.set(fk, fv) catch {};
+                                }
+                                return result;
                             }
                         }
                     }
@@ -4113,6 +4134,10 @@ pub const Evaluator = struct {
                 if (val == .object) {
                     // Check class name and superclass/interface hierarchy
                     if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
+                    // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name is the simple name
+                    if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
+                        if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name[dot_pos + 1 ..])) return Value{ .boolean = true };
+                    }
                     // Walk superclass hierarchy
                     if (self.findClass(val.object.class_name)) |cd| {
                         var cur: ?*ast.ClassDecl = cd;
@@ -4120,6 +4145,10 @@ pub const Evaluator = struct {
                             // Check implemented interfaces
                             for (ccd.interfaces) |iface| {
                                 if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name)) return Value{ .boolean = true };
+                                // Also match when interface name has a prefix (e.g., "di_Binding.Provider" matches "Provider")
+                                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
+                                    if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
+                                }
                             }
                             if (ccd.super_class) |sc| {
                                 if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name)) return Value{ .boolean = true };
@@ -4695,6 +4724,16 @@ pub const Evaluator = struct {
                     }
                 }
             }
+        }
+
+        // Type.getName() / Type.toString() → return the type name
+        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
+            (std.ascii.eqlIgnoreCase(method, "getName") or std.ascii.eqlIgnoreCase(method, "toString") or std.ascii.eqlIgnoreCase(method, "getSimpleName")))
+        {
+            if (obj.object.fields.get("name")) |n| {
+                if (n == .string) return n;
+            }
+            return Value.null_val;
         }
 
         // Type.newInstance() → use evaluator to properly instantiate classes
@@ -5369,6 +5408,27 @@ pub const Evaluator = struct {
             if (max_width <= 3) return Value{ .string = s[0..max_width] };
             return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}...", .{s[0 .. max_width - 3]}) };
         }
+        // leftPad(length) or leftPad(length, padStr)
+        if (std.ascii.eqlIgnoreCase(method, "leftPad") and args.len > 0 and args[0] == .integer) {
+            const target_len: usize = @intCast(@max(args[0].integer, 0));
+            if (s.len >= target_len) return Value{ .string = s };
+            const pad_char: u8 = if (args.len > 1 and args[1] == .string and args[1].string.len > 0) args[1].string[0] else ' ';
+            const result = try self.arena.alloc(u8, target_len);
+            const pad_count = target_len - s.len;
+            @memset(result[0..pad_count], pad_char);
+            @memcpy(result[pad_count..], s);
+            return Value{ .string = result };
+        }
+        // rightPad(length) or rightPad(length, padStr)
+        if (std.ascii.eqlIgnoreCase(method, "rightPad") and args.len > 0 and args[0] == .integer) {
+            const target_len: usize = @intCast(@max(args[0].integer, 0));
+            if (s.len >= target_len) return Value{ .string = s };
+            const pad_char: u8 = if (args.len > 1 and args[1] == .string and args[1].string.len > 0) args[1].string[0] else ' ';
+            const result = try self.arena.alloc(u8, target_len);
+            @memcpy(result[0..s.len], s);
+            @memset(result[s.len..], pad_char);
+            return Value{ .string = result };
+        }
         if (std.ascii.eqlIgnoreCase(method, "isBlank")) {
             return Value{ .boolean = std.mem.trim(u8, s, " \t\r\n").len == 0 };
         }
@@ -5598,7 +5658,7 @@ pub const Evaluator = struct {
             if (std.mem.indexOf(u8, s, sep)) |idx| {
                 return Value{ .string = s[0..idx] };
             }
-            return Value{ .string = s };
+            return Value{ .string = "" };
         }
         if (std.ascii.eqlIgnoreCase(method, "substringAfterLast") and args.len > 0 and args[0] == .string) {
             const sep = args[0].string;
@@ -5691,6 +5751,27 @@ pub const Evaluator = struct {
         // name() - for enum values, returns the string itself
         if (std.ascii.eqlIgnoreCase(method, "name") or std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = s };
+        }
+        // values() - for enum type names, returns a list of all enum values
+        if (std.ascii.eqlIgnoreCase(method, "values")) {
+            var class_iter = self.classes.iterator();
+            while (class_iter.next()) |entry| {
+                for (entry.value_ptr.*.members) |member| {
+                    switch (member) {
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, s)) {
+                                const list = try self.arena.create(types.ListValue);
+                                list.* = .{};
+                                for (ed.values) |v| {
+                                    try list.items.append(self.arena, Value{ .string = v });
+                                }
+                                return Value{ .list = list };
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
         }
         // ordinal() - for enum values, return 0 as stub
         if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
@@ -6355,6 +6436,14 @@ pub const Evaluator = struct {
             const type_obj = try self.arena.create(types.ObjectInstance);
             type_obj.* = .{ .class_name = "Type" };
             try type_obj.fields.put(self.arena, "name", Value{ .string = fa.object.identifier.name });
+            return Value{ .object = type_obj };
+        }
+
+        // OuterClass.InnerClass.class → Type object (when obj is string class name)
+        if (obj == .string and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            const type_obj = try self.arena.create(types.ObjectInstance);
+            type_obj.* = .{ .class_name = "Type" };
+            try type_obj.fields.put(self.arena, "name", Value{ .string = obj.string });
             return Value{ .object = type_obj };
         }
 

@@ -29,3 +29,14 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test --summary all
+
+  vscode-ext:
+    name: VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build extension
+        run: cd editors/vscode && npm ci && npm run compile
