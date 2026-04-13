@@ -2088,7 +2088,7 @@ pub const Evaluator = struct {
         // Seed PermissionSet/PermissionSetLicense from IN clause (before metadata stubs)
         if (records.items.len == 0 and
             (std.ascii.eqlIgnoreCase(from_type, "PermissionSet") or
-            std.ascii.eqlIgnoreCase(from_type, "PermissionSetLicense")))
+                std.ascii.eqlIgnoreCase(from_type, "PermissionSetLicense")))
         {
             const where_check = extractWhereClause(soql);
             if (where_check) |wc| {
