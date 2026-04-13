@@ -87,6 +87,20 @@ pub fn extractDateString(val: Value) ?[]const u8 {
     return null;
 }
 
+/// Date/DateTime 文字列のバリデーション。
+/// yyyy-MM-dd または yyyy-MM-dd HH:mm:ss (+ タイムゾーン) 形式を最低限チェック。
+fn isValidDateString(s: []const u8) bool {
+    // 最低 "yyyy-MM-dd" (10文字) が必要
+    if (s.len < 10) return false;
+    // yyyy-MM-dd の基本パターンチェック: 4桁-2桁-2桁
+    if (!(std.ascii.isDigit(s[0]) and std.ascii.isDigit(s[1]) and
+        std.ascii.isDigit(s[2]) and std.ascii.isDigit(s[3]) and
+        s[4] == '-' and std.ascii.isDigit(s[5]) and std.ascii.isDigit(s[6]) and
+        s[7] == '-' and std.ascii.isDigit(s[8]) and std.ascii.isDigit(s[9])))
+        return false;
+    return true;
+}
+
 /// 静的メソッド呼び出しを試行する。
 pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
     // System.debug
@@ -299,7 +313,12 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
             if (args.len > 0) {
-                if (extractDateString(args[0])) |s| return try makeDateValue(ctx.arena, s);
+                if (extractDateString(args[0])) |s| {
+                    if (!isValidDateString(s)) return error.ApexException;
+                    // Truncate to yyyy-MM-dd (10 chars) — ignore time portion
+                    const date_part = if (s.len > 10) s[0..10] else s;
+                    return try makeDateValue(ctx.arena, date_part);
+                }
             }
             return try makeDateValue(ctx.arena, "2026-01-01");
         }
@@ -466,7 +485,10 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
             // DateTime.valueOf(string) — return as Datetime object
             if (args.len > 0) {
-                if (extractDateString(args[0])) |s| return try makeDatetimeValue(ctx.arena, s);
+                if (extractDateString(args[0])) |s| {
+                    if (!isValidDateString(s)) return error.ApexException;
+                    return try makeDatetimeValue(ctx.arena, s);
+                }
             }
             return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
         }
