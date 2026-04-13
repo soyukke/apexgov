@@ -585,7 +585,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             return Value.null_val;
         }
         // JSON.deserialize is handled by evaluator (parseJsonValue) — do not intercept here
-        return Value.null_val;
+        return null;
     }
 
     // UserInfo
