@@ -321,16 +321,16 @@ pub const Evaluator = struct {
             try master.fields.put(self.arena, "IsActive", Value{ .boolean = true });
             try gop.value_ptr.append(self.arena, Value{ .sobject = master });
 
-            // Account gets an additional "Default" RecordType
-            if (std.ascii.eqlIgnoreCase(obj_name, "Account")) {
+            // All known SObject types get an additional "Default" RecordType
+            {
                 const default_rt = try self.arena.create(types.SObject);
                 default_rt.* = .{ .type_name = "RecordType" };
-                const def_id = "012000000000010AAA";
+                const def_id = try std.fmt.allocPrint(self.arena, "0120000000001{d:0>2}AAA", .{idx});
                 default_rt.id = def_id;
                 try default_rt.fields.put(self.arena, "Id", Value{ .string = def_id });
                 try default_rt.fields.put(self.arena, "Name", Value{ .string = "Default" });
                 try default_rt.fields.put(self.arena, "DeveloperName", Value{ .string = "Default" });
-                try default_rt.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
+                try default_rt.fields.put(self.arena, "SobjectType", Value{ .string = obj_name });
                 try default_rt.fields.put(self.arena, "IsActive", Value{ .boolean = true });
                 try gop.value_ptr.append(self.arena, Value{ .sobject = default_rt });
             }
@@ -4039,6 +4039,17 @@ pub const Evaluator = struct {
                         std.ascii.eqlIgnoreCase(target, "Date") or
                         std.ascii.eqlIgnoreCase(target, "Time"))
                     {
+                        // Allow Date → Datetime cast (Apex converts Date to Datetime at midnight)
+                        if (std.ascii.eqlIgnoreCase(src_name, "Date") and std.ascii.eqlIgnoreCase(target, "DateTime")) {
+                            // Convert Date "YYYY-MM-DD" to Datetime "YYYY-MM-DDT00:00:00Z"
+                            if (val.object.fields.get("value")) |v| {
+                                if (v == .string) {
+                                    const dt_str = try std.fmt.allocPrint(self.arena, "{s}T00:00:00Z", .{v.string});
+                                    return try builtins.makeDatetimeValue(self.arena, dt_str);
+                                }
+                            }
+                            return val;
+                        }
                         // Only allow if the object is actually that type
                         if (!std.ascii.eqlIgnoreCase(src_name, target)) {
                             // Normalize type name to match Apex conventions (e.g., DateTime → Datetime)
@@ -8385,15 +8396,20 @@ fn extractFromType(soql: []const u8) ?[]const u8 {
             continue;
         }
         if (depth > 0) continue; // Skip content inside parentheses
-        if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and (lower[i + 4] == ' ' or lower[i + 4] == '\n')) {
+        if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and isSoqlWhitespace(lower[i + 4])) {
             var start = i + 5;
-            while (start < lower.len and lower[start] == ' ') start += 1;
+            while (start < lower.len and isSoqlWhitespace(lower[start])) start += 1;
             var end = start;
-            while (end < lower.len and lower[end] != ' ' and lower[end] != '\n' and lower[end] != ']' and lower[end] != ')') end += 1;
+            while (end < lower.len and !isSoqlWhitespace(lower[end]) and lower[end] != ']' and lower[end] != ')') end += 1;
             if (end > start) return lower[start..end];
         }
     }
     return null;
+}
+
+/// Check if a character is whitespace (space, tab, newline, carriage return)
+fn isSoqlWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
 fn extractWhereClause(soql: []const u8) ?[]const u8 {
@@ -8412,8 +8428,8 @@ fn extractWhereClause(soql: []const u8) ?[]const u8 {
         }
         if (paren_depth > 0) continue;
         if (std.ascii.eqlIgnoreCase(soql[i .. i + 5], "where") and
-            (i == 0 or soql[i - 1] == ' ' or soql[i - 1] == '\n') and
-            (soql[i + 5] == ' ' or soql[i + 5] == '\n'))
+            (i == 0 or isSoqlWhitespace(soql[i - 1])) and
+            isSoqlWhitespace(soql[i + 5]))
         {
             const start = i + 6;
             // Find end of WHERE clause
@@ -8423,37 +8439,37 @@ fn extractWhereClause(soql: []const u8) ?[]const u8 {
                 // Check for terminating keywords
                 const remaining = soql[j..];
                 if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "ORDER") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;
                 }
                 if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "GROUP") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;
                 }
                 if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "LIMIT") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;
                 }
                 if (remaining.len >= 6 and std.ascii.eqlIgnoreCase(remaining[0..6], "OFFSET") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;
                 }
                 if (remaining.len >= 4 and std.ascii.eqlIgnoreCase(remaining[0..4], "WITH") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;
                 }
                 if (remaining.len >= 3 and std.ascii.eqlIgnoreCase(remaining[0..3], "FOR") and
-                    (j == 0 or soql[j - 1] == ' ' or soql[j - 1] == '\n'))
+                    (j == 0 or isSoqlWhitespace(soql[j - 1])))
                 {
                     end = j;
                     break;

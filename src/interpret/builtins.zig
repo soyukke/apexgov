@@ -1570,9 +1570,10 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     try rt_list.items.append(ctx.arena, master_rt);
     try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
 
-    // Account gets an additional "Default" record type for testing
-    if (std.ascii.eqlIgnoreCase(obj_name, "Account")) {
-        const def_rt_id = "012000000000010AAA";
+    // All known SObject types get an additional "Default" record type for testing
+    // (Salesforce orgs typically have at least one non-Master RT per object)
+    {
+        const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
         const default_rt = try createRecordTypeInfo(ctx, "Default", "Default", def_rt_id, false, true, true, false);
         try rt_list.items.append(ctx.arena, default_rt);
         try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
