@@ -2,7 +2,7 @@
   "name": "apexgov",
   "displayName": "apexgov",
   "description": "Apex Governor Limit Checker & Language Server — offline static analysis for Salesforce Apex",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "soyukke",
   "license": "MIT",
   "repository": {
@@ -31,6 +31,18 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "apexgov.runTest",
+        "title": "Run Apex Test",
+        "category": "apexgov"
+      },
+      {
+        "command": "apexgov.runAllTests",
+        "title": "Run All Apex Tests",
+        "category": "apexgov"
+      }
+    ],
     "languages": [
       {
         "id": "apex",
@@ -58,6 +70,16 @@
           "type": "string",
           "default": "",
           "description": "Path to apexgov binary. If empty, the extension downloads it automatically."
+        },
+        "apexgov.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the apexgov language server."
         }
       }
     }
