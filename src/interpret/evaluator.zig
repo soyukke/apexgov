@@ -5524,6 +5524,22 @@ pub const Evaluator = struct {
                     return Value{ .object = instance };
                 }
 
+                // RestRequest: initialize params map
+                if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
+                    const params = try self.arena.create(types.MapValue);
+                    params.* = .{};
+                    try instance.fields.put(self.arena, "params", Value{ .map = params });
+                    return Value{ .object = instance };
+                }
+                // RestResponse: initialize responseBody as Blob
+                if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
+                    const blob = try self.arena.create(types.ObjectInstance);
+                    blob.* = .{ .class_name = "Blob" };
+                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
+                    try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
+                    return Value{ .object = instance };
+                }
+
                 // If args contain a message (exception pattern)
                 if (ne.args.len > 0) {
                     var arg_copy = ne.args[0];
