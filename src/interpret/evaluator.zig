@@ -1335,8 +1335,6 @@ pub const Evaluator = struct {
     }
 
     fn insertRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
-        // Convert picklist API names to labels for custom object fields
-        try self.convertPicklistValues(obj);
 
         // Validate required fields — throw DmlException on failure
         if (try self.validateRequiredFields(obj, false)) |err_msg| {
