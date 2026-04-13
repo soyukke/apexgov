@@ -4111,10 +4111,6 @@ pub const Evaluator = struct {
                             const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
                             if (self.findClass(ctor_class_name)) |cd| {
                                 self.runConstructor(cd, this_val.object, args.items) catch {};
-                                // Sync back fields modified by the delegated constructor
-                                for (this_val.object.fields.keys(), this_val.object.fields.values()) |fk, fv| {
-                                    current_env.set(fk, fv) catch {};
-                                }
                             }
                         }
                     }
@@ -4127,10 +4123,33 @@ pub const Evaluator = struct {
                             // Look for method in class hierarchy
                             const md = self.findMethodInHierarchy(null, class_decl, call.callee, args.items.len);
                             if (md != null) {
+                                // Snapshot field values before the call
+                                var pre_fields: [16]Value = undefined;
+                                const field_keys = this_val.object.fields.keys();
+                                const n_snap = @min(field_keys.len, pre_fields.len);
+                                for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
+                                    pre_fields[fi] = v;
+                                }
                                 const result = try self.callInstanceMethod(class_decl, this_val.object, call.callee, args.items);
-                                // Sync back instance fields to local env (the called method may have modified them)
-                                for (this_val.object.fields.keys(), this_val.object.fields.values()) |fk, fv| {
-                                    current_env.set(fk, fv) catch {};
+                                // Sync back only fields that were MODIFIED by the called method
+                                for (this_val.object.fields.keys(), this_val.object.fields.values(), 0..) |fk, fv, fi| {
+                                    if (fi < n_snap) {
+                                        // Compare by identity: if value changed, sync it
+                                        const pre = pre_fields[fi];
+                                        const changed = switch (fv) {
+                                            .null_val => pre != .null_val,
+                                            .string => |s| if (pre == .string) s.ptr != pre.string.ptr or s.len != pre.string.len else true,
+                                            .integer => |i| if (pre == .integer) i != pre.integer else true,
+                                            .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
+                                            else => true,
+                                        };
+                                        if (changed) {
+                                            current_env.set(fk, fv) catch {};
+                                        }
+                                    } else {
+                                        // New field added during call, sync it
+                                        current_env.set(fk, fv) catch {};
+                                    }
                                 }
                                 return result;
                             }
@@ -7769,10 +7788,21 @@ pub const Evaluator = struct {
                     }
                 }
             }
-            // Note: field sync-back is NOT needed here because:
-            // 1. `this.field = value` directly modifies instance fields via field_access assignment
-            // 2. `field = value` (bare) also updates instance fields via the assignment handler
-            //    (it checks if the field exists on `this` and updates it)
+            // Sync instance field values back to the method env so that bare
+            // identifier access sees updates made by the method body via this.field = ...
+            // Skip fields whose name matches a parameter to avoid overwriting parameters.
+            for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
+                var is_param = false;
+                for (method.params) |p| {
+                    if (std.ascii.eqlIgnoreCase(p.name, fk)) {
+                        is_param = true;
+                        break;
+                    }
+                }
+                if (!is_param) {
+                    method_env.set(fk, fv) catch {};
+                }
+            }
             return switch (result) {
                 .return_val => |v| v,
                 else => blk: {
