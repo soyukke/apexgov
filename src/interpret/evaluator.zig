@@ -2528,6 +2528,18 @@ pub const Evaluator = struct {
             return Value{ .sobject = sob };
         }
 
+        if (std.ascii.eqlIgnoreCase(from_type, "DuplicateRule")) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "DuplicateRule" };
+            const id = try self.allocId();
+            sob.id = id;
+            try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
+            try sob.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
+            try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+            return Value{ .sobject = sob };
+        }
+
         if (std.ascii.eqlIgnoreCase(from_type, "StaticResource")) {
             // This returns a single record; for IN clause with multiple names,
             // the caller should handle generating multiple stubs.
