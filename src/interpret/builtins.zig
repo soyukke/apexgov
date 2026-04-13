@@ -315,7 +315,9 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             if (args.len > 0) {
                 if (extractDateString(args[0])) |s| {
                     if (!isValidDateString(s)) return error.ApexException;
-                    return try makeDateValue(ctx.arena, s);
+                    // Truncate to yyyy-MM-dd (10 chars) — ignore time portion
+                    const date_part = if (s.len > 10) s[0..10] else s;
+                    return try makeDateValue(ctx.arena, date_part);
                 }
             }
             return try makeDateValue(ctx.arena, "2026-01-01");
