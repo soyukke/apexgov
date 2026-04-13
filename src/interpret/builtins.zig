@@ -685,6 +685,10 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
         if (std.ascii.eqlIgnoreCase(method_name, "now")) return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
         if (std.ascii.eqlIgnoreCase(method_name, "today")) return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
+        if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isScheduled")) return Value{ .boolean = false };
         if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
             // Set restricted/standard user flags based on user's profile
             if (args.len > 0 and args[0] == .sobject) {
@@ -851,7 +855,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     // Strip fields that restricted users (e.g. marketing) can't access
                     const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
                     if (input_records == .list and input_records.list.items.items.len > 0) {
-                        const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
+                        const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName", "CreatedBy", "LastModifiedBy" };
                         // Check PermissionSet names for field-level hints
                         // E.g., "provides_access_to_actual_cost_field_on_campaign" → "actual_cost" is allowed
                         for (input_records.list.items.items) |item| {
@@ -910,7 +914,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                     if (ctx.eval.is_min_access_user and has_permset) {
                         const input_records2 = if (args.len >= 2) args[1] else Value.null_val;
                         if (input_records2 == .list) {
-                            const standard_fields2 = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName" };
+                            const standard_fields2 = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName", "CreatedBy", "LastModifiedBy" };
                             for (input_records2.list.items.items) |item| {
                                 if (item == .sobject) {
                                     for (item.sobject.fields.keys(), item.sobject.fields.values()) |k, fv| {
@@ -1128,13 +1132,13 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
         if (std.ascii.eqlIgnoreCase(method_name, "generateAesKey")) {
             // Crypto.generateAesKey(keySize) → Blob (random key)
+            // Store raw bytes so that EncodingUtil.convertToHex produces correct hex.
             const key_size: usize = if (args.len > 0 and args[0] == .integer) @intCast(@divTrunc(args[0].integer, 8)) else 16;
             const buf = try ctx.arena.alloc(u8, key_size);
             std.crypto.random.bytes(buf);
-            const hex_str = try bytesToHexAlloc(ctx.arena, buf);
             const obj = try ctx.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Blob" };
-            try obj.fields.put(ctx.arena, "value", Value{ .string = hex_str });
+            try obj.fields.put(ctx.arena, "value", Value{ .string = buf });
             return Value{ .object = obj };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "sign")) {
@@ -1235,6 +1239,21 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
             const blob = try ctx.arena.create(types.ObjectInstance);
             blob.* = .{ .class_name = "Blob" };
             try blob.fields.put(ctx.arena, "value", args[0]);
+            return Value{ .object = blob };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "convertToHex") and args.len > 0) {
+            // EncodingUtil.convertToHex(Blob) → hex String
+            const raw_bytes = blobToBytes(args[0]);
+            const hex_str = try bytesToHexAlloc(ctx.arena, raw_bytes);
+            return Value{ .string = hex_str };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "convertFromHex") and args.len > 0 and args[0] == .string) {
+            // EncodingUtil.convertFromHex(hexString) → Blob
+            const hex = args[0].string;
+            const decoded = try hexToBytesAlloc(ctx.arena, hex);
+            const blob = try ctx.arena.create(types.ObjectInstance);
+            blob.* = .{ .class_name = "Blob" };
+            try blob.fields.put(ctx.arena, "value", Value{ .string = decoded });
             return Value{ .object = blob };
         }
         if (args.len > 0 and args[0] == .string) return args[0];
@@ -2702,6 +2721,28 @@ fn bytesToHexAlloc(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
         out[i * 2 + 1] = hex_chars[b & 0x0f];
     }
     return out;
+}
+
+/// Convert hex string to bytes, allocated on arena.
+fn hexToBytesAlloc(arena: std.mem.Allocator, hex: []const u8) ![]const u8 {
+    const byte_len = hex.len / 2;
+    const out = try arena.alloc(u8, byte_len);
+    var i: usize = 0;
+    while (i < byte_len) : (i += 1) {
+        const hi = hexDigitToValue(hex[i * 2]);
+        const lo = hexDigitToValue(hex[i * 2 + 1]);
+        out[i] = (hi << 4) | lo;
+    }
+    return out;
+}
+
+fn hexDigitToValue(c: u8) u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => 0,
+    };
 }
 
 /// Extract the byte content from a Blob Value (ObjectInstance with "value" field, or string).
