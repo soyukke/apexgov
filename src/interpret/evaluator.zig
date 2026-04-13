@@ -151,41 +151,50 @@ pub const Evaluator = struct {
         const suffix = std.fmt.allocPrint(self.arena, "objects/{s}/fields/{s}.field-meta.xml", .{ obj_type, field_name }) catch return null;
         for (self.source_paths) |base_path| {
             // Try to find the field-meta.xml by walking common SFDX paths
+            // Also try parent directories (e.g., "force-app/main/default/classes" → "force-app")
+            const parent1 = std.fs.path.dirname(base_path) orelse base_path; // strip "classes"
+            const parent2 = std.fs.path.dirname(parent1) orelse parent1; // strip "default"
+            const parent3 = std.fs.path.dirname(parent2) orelse parent2; // strip "main"
             const candidates = [_][]const u8{
-                "force-app/main/default",
+                "main/default",
                 ".",
+                "force-app/main/default",
                 "src/main/default",
             };
-            for (candidates) |sub| {
-                const xml_path = std.fs.path.join(self.arena, &.{ base_path, sub, suffix }) catch continue;
-                const content = std.fs.cwd().readFileAlloc(self.arena, xml_path, 512 * 1024) catch continue;
+            // Also try from parent directories
+            const base_paths = [_][]const u8{ base_path, parent1, parent2, parent3 };
+            for (base_paths) |bp| {
+                for (candidates) |sub| {
+                    const xml_path = std.fs.path.join(self.arena, &.{ bp, sub, suffix }) catch continue;
+                    const content = std.fs.cwd().readFileAlloc(self.arena, xml_path, 512 * 1024) catch continue;
 
-                // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
-                var pos: usize = 0;
-                while (pos < content.len) {
-                    const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
-                    const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse break;
-                    const block = content[value_start..value_end];
+                    // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
+                    var pos: usize = 0;
+                    while (pos < content.len) {
+                        const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
+                        const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse break;
+                        const block = content[value_start..value_end];
 
-                    const fn_tag = "<fullName>";
-                    const fn_end_tag = "</fullName>";
-                    if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
-                        const fn_content_start = fn_start + fn_tag.len;
-                        if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
-                            const full_name = block[fn_content_start..fn_end];
-                            if (std.mem.eql(u8, full_name, api_name)) {
-                                const lbl_tag = "<label>";
-                                const lbl_end_tag = "</label>";
-                                if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
-                                    const lbl_content_start = lbl_start + lbl_tag.len;
-                                    if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
-                                        return block[lbl_content_start..lbl_end];
+                        const fn_tag = "<fullName>";
+                        const fn_end_tag = "</fullName>";
+                        if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
+                            const fn_content_start = fn_start + fn_tag.len;
+                            if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
+                                const full_name = block[fn_content_start..fn_end];
+                                if (std.mem.eql(u8, full_name, api_name)) {
+                                    const lbl_tag = "<label>";
+                                    const lbl_end_tag = "</label>";
+                                    if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
+                                        const lbl_content_start = lbl_start + lbl_tag.len;
+                                        if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
+                                            return block[lbl_content_start..lbl_end];
+                                        }
                                     }
                                 }
                             }
                         }
+                        pos = value_end + 8;
                     }
-                    pos = value_end + 8;
                 }
             }
         }
@@ -240,6 +249,17 @@ pub const Evaluator = struct {
                 try default_rt.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
                 try default_rt.fields.put(self.arena, "IsActive", Value{ .boolean = true });
                 try gop.value_ptr.append(self.arena, Value{ .sobject = default_rt });
+            }
+        }
+    }
+
+    /// Convert picklist field values from API name (fullName) to label on custom objects.
+    fn convertPicklistValues(self: *Evaluator, obj: *types.SObject) !void {
+        if (!std.mem.endsWith(u8, obj.type_name, "__c")) return;
+        for (obj.fields.keys(), obj.fields.values()) |field_name, *field_val| {
+            if (field_val.* != .string or !std.mem.endsWith(u8, field_name, "__c")) continue;
+            if (self.resolvePicklistLabel(obj.type_name, field_name, field_val.string)) |label| {
+                field_val.* = Value{ .string = label };
             }
         }
     }
@@ -1315,6 +1335,9 @@ pub const Evaluator = struct {
     }
 
     fn insertRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        // Convert picklist API names to labels for custom object fields
+        try self.convertPicklistValues(obj);
+
         // Validate required fields — throw DmlException on failure
         if (try self.validateRequiredFields(obj, false)) |err_msg| {
             const exc = try self.arena.create(types.ObjectInstance);
