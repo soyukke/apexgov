@@ -3556,7 +3556,10 @@ pub const Evaluator = struct {
             },
 
             .identifier => |id| {
-                if (current_env.get(id.name)) |val| return val;
+                if (current_env.get(id.name)) |val| {
+                    // If value is null_val, still check for instance getter (property may override)
+                    if (val != .null_val) return val;
+                }
                 // Check if this is a property with a getter on `this`
                 // (bare identifier in getter body referencing another property)
                 if (current_env.get("this")) |this_check| {
