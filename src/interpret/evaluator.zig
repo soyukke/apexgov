@@ -4211,7 +4211,7 @@ pub const Evaluator = struct {
                             }
                             break :blk tobj.class_name;
                         } else "Object";
-                        const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List");
+                        const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List") or std.mem.endsWith(u8, type_name, "[]");
                         // Pre-validate: check for balanced braces/brackets (detect truncated JSON)
                         {
                             var brace_depth: i32 = 0;
@@ -4412,9 +4412,14 @@ pub const Evaluator = struct {
                     }
                 }
 
-                // ConnectApi → return null stub
+                // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
                 if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-                    return Value.null_val;
+                    if (self.see_all_data) return Value.null_val;
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "UnsupportedOperationException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
                 }
 
                 // Cache.Session.getPartition / Cache.Org.getPartition
@@ -7445,12 +7450,14 @@ pub const Evaluator = struct {
             // JSON array → List
             const list = self.arena.create(types.ListValue) catch return null;
             list.* = .{};
-            // Extract element type from "List<Contact>" etc.
+            // Extract element type from "List<Contact>", "Contact[]", etc.
             const elem_type = if (std.mem.indexOf(u8, type_hint, "<")) |lt|
                 if (std.mem.indexOf(u8, type_hint[lt + 1 ..], ">")) |gt|
                     type_hint[lt + 1 .. lt + 1 + gt]
                 else
                     "Object"
+            else if (std.mem.endsWith(u8, type_hint, "[]"))
+                type_hint[0 .. type_hint.len - 2]
             else
                 "Object";
             // Parse array elements
