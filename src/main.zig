@@ -616,4 +616,3 @@ fn printRegressions(regressions: []const apexgov.profile.Regression, threshold_p
         );
     }
 }
-
