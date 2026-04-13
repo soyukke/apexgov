@@ -1,6 +1,6 @@
 //! main — CLI エントリポイント。
 //!
-//! `check`, `profile`, `emulate` サブコマンドのルーティングと引数パースを行う。
+//! `check`, `profile` サブコマンドのルーティングと引数パースを行う。
 
 const std = @import("std");
 const apexgov = @import("apexgov");
@@ -27,37 +27,6 @@ const ProfileOptions = struct {
 
     fn deinit(self: *ProfileOptions, gpa: std.mem.Allocator) void {
         self.paths.deinit(gpa);
-    }
-};
-
-const EmulateOptions = struct {
-    out_dir: ?[]const u8 = null,
-    iterations: ?u64 = null,
-    anchor_soql_ms: ?u64 = null,
-    base_ms: ?u64 = null,
-    max_weight_ms: ?u64 = null,
-    use_nix: bool = false,
-};
-
-const EmulateTestOptions = struct {
-    tests_dir: ?[]const u8 = null,
-    out_dir: ?[]const u8 = null,
-    cpu_limit_ms: ?u64 = null,
-    heap_limit_bytes: ?u64 = null,
-    use_nix: bool = false,
-    best_effort: bool = false,
-    register_standard_schema: bool = false,
-};
-
-const EmulateTranspileOptions = struct {
-    out_dir: []const u8 = "reports/apex-transpile",
-    package_name: []const u8 = "generated",
-    overwrite: bool = false,
-    strict: bool = false,
-    input_paths: std.ArrayList([]const u8) = .empty,
-
-    fn deinit(self: *EmulateTranspileOptions, gpa: std.mem.Allocator) void {
-        self.input_paths.deinit(gpa);
     }
 };
 
@@ -96,9 +65,6 @@ fn run(gpa: std.mem.Allocator, argv: []const []const u8) !u8 {
     }
     if (std.mem.eql(u8, cmd, "profile")) {
         return runProfile(gpa, argv[2..]);
-    }
-    if (std.mem.eql(u8, cmd, "emulate")) {
-        return runEmulate(gpa, argv[2..]);
     }
     if (std.mem.eql(u8, cmd, "interpret")) {
         return runInterpret(gpa, argv[2..]);
@@ -166,90 +132,6 @@ fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 
     const fail_for_regression = cfg.ci.fail_on_regression and regressions.items.len > 0;
     return if (has_violation or fail_for_regression) 1 else 0;
-}
-
-fn runEmulate(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    if (args.len > 0 and std.mem.eql(u8, args[0], "test")) {
-        return runEmulateTest(gpa, args[1..]);
-    }
-    if (args.len > 0 and std.mem.eql(u8, args[0], "transpile")) {
-        return runEmulateTranspile(gpa, args[1..]);
-    }
-
-    return runEmulateCalibration(gpa, args);
-}
-
-fn runEmulateCalibration(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    const opts = try parseEmulateOptions(args);
-    const script_path = try resolveToolScript(gpa, "tools/java-calibration/run.sh", error.JavaCalibrationScriptNotFound);
-    defer gpa.free(script_path);
-
-    const EnvEntry = struct { []const u8, u64 };
-    var env_entries: [4]EnvEntry = undefined;
-    var env_count: usize = 0;
-
-    const optional_envs: []const struct { []const u8, ?u64 } = &.{
-        .{ "ITERATIONS", opts.iterations },
-        .{ "ANCHOR_SOQL_MS", opts.anchor_soql_ms },
-        .{ "BASE_MS", opts.base_ms },
-        .{ "MAX_WEIGHT_MS", opts.max_weight_ms },
-    };
-    for (optional_envs) |entry| {
-        if (entry[1]) |value| {
-            env_entries[env_count] = .{ entry[0], value };
-            env_count += 1;
-        }
-    }
-
-    const script_args: []const []const u8 = if (opts.out_dir) |d| &.{d} else &.{};
-
-    return spawnScript(gpa, script_path, opts.use_nix, script_args, env_entries[0..env_count], &.{});
-}
-
-fn runEmulateTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    const opts = try parseEmulateTestOptions(args);
-    const script_path = try resolveToolScript(gpa, "tools/java-emulation/run-tests.sh", error.JavaEmulationScriptNotFound);
-    defer gpa.free(script_path);
-
-    const EnvEntry = struct { []const u8, u64 };
-    var env_entries: [2]EnvEntry = undefined;
-    var env_count: usize = 0;
-
-    if (opts.cpu_limit_ms) |v| {
-        env_entries[env_count] = .{ "CPU_LIMIT_MS", v };
-        env_count += 1;
-    }
-    if (opts.heap_limit_bytes) |v| {
-        env_entries[env_count] = .{ "HEAP_LIMIT_BYTES", v };
-        env_count += 1;
-    }
-
-    var extra_args_buf: [6][]const u8 = undefined;
-    var extra_count: usize = 0;
-
-    if (opts.tests_dir) |d| {
-        extra_args_buf[extra_count] = "--tests-dir";
-        extra_count += 1;
-        extra_args_buf[extra_count] = d;
-        extra_count += 1;
-    }
-    if (opts.out_dir) |d| {
-        extra_args_buf[extra_count] = "--out-dir";
-        extra_count += 1;
-        extra_args_buf[extra_count] = d;
-        extra_count += 1;
-    }
-    if (opts.best_effort) {
-        extra_args_buf[extra_count] = "--best-effort";
-        extra_count += 1;
-    }
-
-    const str_env: []const struct { []const u8, []const u8 } = if (opts.register_standard_schema)
-        &.{.{ "REGISTER_STANDARD_SCHEMA", "true" }}
-    else
-        &.{};
-
-    return spawnScript(gpa, script_path, opts.use_nix, extra_args_buf[0..extra_count], env_entries[0..env_count], str_env);
 }
 
 fn runLsp(gpa: std.mem.Allocator) !u8 {
@@ -518,72 +400,6 @@ fn runInterpretTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     return if (suite.total > 0 and suite.passed == suite.total) 0 else 1;
 }
 
-fn runEmulateTranspile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    var opts = try parseEmulateTranspileOptions(gpa, args);
-    defer opts.deinit(gpa);
-
-    const effective_out_dir = if (opts.strict)
-        try std.fmt.allocPrint(gpa, "{s}.strict-staging", .{opts.out_dir})
-    else
-        try gpa.dupe(u8, opts.out_dir);
-    defer gpa.free(effective_out_dir);
-
-    if (opts.strict) {
-        if (!opts.overwrite and pathExists(opts.out_dir)) return error.OutputAlreadyExists;
-        try deleteTreeIfExists(effective_out_dir);
-    }
-
-    var summary = try apexgov.transpile.run(gpa, .{
-        .input_paths = opts.input_paths.items,
-        .out_dir = effective_out_dir,
-        .package_name = opts.package_name,
-        .overwrite = if (opts.strict) true else opts.overwrite,
-        .strict = false,
-    });
-    defer summary.deinit(gpa);
-
-    std.debug.print(
-        "transpile: generated {d} Java file(s) from {d} Apex class file(s) into {s} (methods: {d}, unsupported: {d})\n",
-        .{
-            summary.files_generated,
-            summary.files_scanned,
-            opts.out_dir,
-            summary.methods_generated,
-            summary.unsupported_statements,
-        },
-    );
-
-    if (summary.unsupported_examples.items.len > 0) {
-        std.debug.print("unsupported details (first {d}):\n", .{summary.unsupported_examples.items.len});
-        for (summary.unsupported_examples.items) |entry| {
-            std.debug.print(
-                "  - {s}:{d} [{s}] {s}: {s}\n",
-                .{
-                    entry.source_path,
-                    entry.line_no,
-                    entry.method_name,
-                    entry.reason,
-                    entry.statement,
-                },
-            );
-        }
-    }
-
-    if (opts.strict and summary.unsupported_statements > 0) {
-        try deleteTreeIfExists(effective_out_dir);
-        std.debug.print("transpile: strict mode failed due to unsupported statements.\n", .{});
-        return 1;
-    }
-
-    if (opts.strict) {
-        if (opts.overwrite) {
-            try deleteTreeIfExists(opts.out_dir);
-        }
-        try std.fs.cwd().rename(effective_out_dir, opts.out_dir);
-    }
-    return 0;
-}
-
 fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOptions {
     var opts = CheckOptions{};
     errdefer opts.deinit(gpa);
@@ -667,151 +483,6 @@ fn parseProfileOptions(gpa: std.mem.Allocator, args: []const []const u8) !Profil
     return opts;
 }
 
-fn parseEmulateOptions(args: []const []const u8) !EmulateOptions {
-    var opts = EmulateOptions{};
-    var seen_runtime = false;
-
-    var i: usize = 0;
-    while (i < args.len) {
-        if (isHelpFlag(args[i])) {
-            printEmulateHelp();
-            return error.HelpRequested;
-        }
-        if (consumeFlag(args, &i, "--nix")) {
-            opts.use_nix = true;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--out")) |v| {
-            opts.out_dir = v;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--iterations")) |v| {
-            opts.iterations = try parseUnsignedOption(v);
-            continue;
-        }
-        if (try consumeOption(args, &i, "--anchor-soql-ms")) |v| {
-            opts.anchor_soql_ms = try parseUnsignedOption(v);
-            continue;
-        }
-        if (try consumeOption(args, &i, "--base-ms")) |v| {
-            opts.base_ms = try parseUnsignedOption(v);
-            continue;
-        }
-        if (try consumeOption(args, &i, "--max-weight-ms")) |v| {
-            opts.max_weight_ms = try parseUnsignedOption(v);
-            continue;
-        }
-        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
-
-        if (!seen_runtime and std.mem.eql(u8, args[i], "java")) {
-            seen_runtime = true;
-            i += 1;
-            continue;
-        }
-        if (opts.out_dir != null) return error.TooManyInputPaths;
-
-        opts.out_dir = args[i];
-        i += 1;
-    }
-
-    return opts;
-}
-
-fn parseEmulateTestOptions(args: []const []const u8) !EmulateTestOptions {
-    var opts = EmulateTestOptions{};
-
-    var i: usize = 0;
-    while (i < args.len) {
-        if (isHelpFlag(args[i])) {
-            printEmulateHelp();
-            return error.HelpRequested;
-        }
-        if (consumeFlag(args, &i, "--nix")) {
-            opts.use_nix = true;
-            continue;
-        }
-        if (consumeFlag(args, &i, "--best-effort")) {
-            opts.best_effort = true;
-            continue;
-        }
-        if (consumeFlag(args, &i, "--register-standard-schema")) {
-            opts.register_standard_schema = true;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--out")) |v| {
-            opts.out_dir = v;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--cpu-limit-ms")) |v| {
-            opts.cpu_limit_ms = try parseUnsignedOption(v);
-            continue;
-        }
-        if (try consumeOption(args, &i, "--heap-limit-bytes")) |v| {
-            opts.heap_limit_bytes = try parseUnsignedOption(v);
-            continue;
-        }
-        if (try consumeOption(args, &i, "--tests-dir")) |v| {
-            opts.tests_dir = v;
-            continue;
-        }
-        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
-
-        if (opts.tests_dir != null) return error.TooManyInputPaths;
-        opts.tests_dir = args[i];
-        i += 1;
-    }
-
-    return opts;
-}
-
-fn parseEmulateTranspileOptions(gpa: std.mem.Allocator, args: []const []const u8) !EmulateTranspileOptions {
-    var opts = EmulateTranspileOptions{};
-    errdefer opts.deinit(gpa);
-
-    var i: usize = 0;
-    while (i < args.len) {
-        if (isHelpFlag(args[i])) {
-            printEmulateHelp();
-            return error.HelpRequested;
-        }
-        if (consumeFlag(args, &i, "--overwrite")) {
-            opts.overwrite = true;
-            continue;
-        }
-        if (consumeFlag(args, &i, "--strict")) {
-            opts.strict = true;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--out")) |v| {
-            opts.out_dir = v;
-            continue;
-        }
-        if (try consumeOption(args, &i, "--package")) |v| {
-            opts.package_name = v;
-            continue;
-        }
-        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
-
-        try opts.input_paths.append(gpa, args[i]);
-        i += 1;
-    }
-
-    if (opts.input_paths.items.len == 0) {
-        try opts.input_paths.append(gpa, defaultTranspileInputPath());
-    }
-    return opts;
-}
-
-fn defaultTranspileInputPath() []const u8 {
-    const preferred = "force-app/main/default/classes";
-    if (pathExists(preferred)) return preferred;
-
-    const fixture = "examples/apex-validation/force-app/main/default/classes";
-    if (pathExists(fixture)) return fixture;
-
-    return preferred;
-}
-
 // ---------------------------------------------------------------------------
 // 引数パース共通ヘルパー
 // ---------------------------------------------------------------------------
@@ -836,15 +507,6 @@ fn consumeOption(args: []const []const u8, i: *usize, name: []const u8) !?[]cons
     return null;
 }
 
-/// `--flag` 形式のブールフラグを消費する。マッチすればインデックスを進めて true を返す。
-fn consumeFlag(args: []const []const u8, i: *usize, name: []const u8) bool {
-    if (std.mem.eql(u8, args[i.*], name)) {
-        i.* += 1;
-        return true;
-    }
-    return false;
-}
-
 /// `--help` / `-h` フラグを検出する。
 fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
@@ -853,102 +515,6 @@ fn isHelpFlag(arg: []const u8) bool {
 fn parseThreshold(value: []const u8) !?apexgov.model.Severity {
     if (std.ascii.eqlIgnoreCase(value, "none")) return null;
     return apexgov.model.Severity.fromString(value) orelse error.InvalidSeverity;
-}
-
-fn parseUnsignedOption(value: []const u8) !u64 {
-    return try std.fmt.parseUnsigned(u64, value, 10);
-}
-
-fn setUnsignedEnv(gpa: std.mem.Allocator, env_map: *std.process.EnvMap, key: []const u8, value: u64) !void {
-    const as_text = try std.fmt.allocPrint(gpa, "{d}", .{value});
-    defer gpa.free(as_text);
-    try env_map.put(key, as_text);
-}
-
-fn ensureNixCacheEnv(gpa: std.mem.Allocator, env_map: *std.process.EnvMap) !void {
-    if (env_map.get("XDG_CACHE_HOME") != null) return;
-
-    const cache_dir = ".cache";
-    try std.fs.cwd().makePath(cache_dir);
-
-    const absolute_cache = try std.fs.cwd().realpathAlloc(gpa, cache_dir);
-    defer gpa.free(absolute_cache);
-    try env_map.put("XDG_CACHE_HOME", absolute_cache);
-}
-
-/// シェルスクリプトを子プロセスとして実行する共通ヘルパー。
-/// nix 対応、環境変数(u64)・環境変数(文字列)・スクリプト引数を受け取り、
-/// 終了コードを返す。
-fn spawnScript(
-    gpa: std.mem.Allocator,
-    script_path: []const u8,
-    use_nix: bool,
-    extra_args: []const []const u8,
-    uint_env: []const struct { []const u8, u64 },
-    str_env: []const struct { []const u8, []const u8 },
-) !u8 {
-    var env_map = try std.process.getEnvMap(gpa);
-    defer env_map.deinit();
-
-    if (use_nix) {
-        try ensureNixCacheEnv(gpa, &env_map);
-    }
-
-    for (uint_env) |entry| {
-        try setUnsignedEnv(gpa, &env_map, entry[0], entry[1]);
-    }
-    for (str_env) |entry| {
-        try env_map.put(entry[0], entry[1]);
-    }
-
-    var child_args: std.ArrayList([]const u8) = .empty;
-    defer child_args.deinit(gpa);
-
-    if (use_nix) {
-        try child_args.append(gpa, "nix");
-        try child_args.append(gpa, "develop");
-        try child_args.append(gpa, "-c");
-    }
-    try child_args.append(gpa, "/bin/bash");
-    try child_args.append(gpa, script_path);
-    try child_args.appendSlice(gpa, extra_args);
-
-    var child = std.process.Child.init(child_args.items, gpa);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    child.env_map = &env_map;
-
-    const term = try child.spawnAndWait();
-    return switch (term) {
-        .Exited => |code| code,
-        else => 1,
-    };
-}
-
-fn resolveToolScript(gpa: std.mem.Allocator, relative_path: []const u8, not_found_error: anyerror) ![]u8 {
-    const cwd_candidate = relative_path;
-    if (pathExists(cwd_candidate)) return try gpa.dupe(u8, cwd_candidate);
-
-    const exe_path = try std.fs.selfExePathAlloc(gpa);
-    defer gpa.free(exe_path);
-    const exe_dir = std.fs.path.dirname(exe_path) orelse return not_found_error;
-
-    const resolved = try std.fs.path.join(gpa, &.{ exe_dir, "..", "..", relative_path });
-    errdefer gpa.free(resolved);
-    if (pathExists(resolved)) return resolved;
-
-    return not_found_error;
-}
-
-fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
-    return true;
-}
-
-fn deleteTreeIfExists(path: []const u8) !void {
-    if (!pathExists(path)) return;
-    try std.fs.cwd().deleteTree(path);
 }
 
 fn countFindingsAtOrAbove(findings: []const apexgov.model.Finding, threshold: apexgov.model.Severity) usize {
@@ -988,18 +554,15 @@ fn printUsage() void {
         \\Usage:
         \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif] [--out FILE] [--severity-threshold info|warning|error|none]
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
-        \\  apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
-        \\  apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--best-effort] [--nix]
-        \\  apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
+        \\  apexgov interpret test <paths...>
         \\  apexgov typegen <sfdx-project-root> [--out DIR]
+        \\  apexgov lsp
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
         \\  apexgov profile artifacts/logs --config apexgov.toml --format json --out reports/profile.json
         \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
-        \\  apexgov emulate java reports/java-calibration-local --iterations 80000 --nix
-        \\  apexgov emulate test tools/java-emulation/examples --out reports/java-emulation --best-effort --nix
-        \\  apexgov emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
+        \\  apexgov interpret test force-app/main/default/classes
         \\  apexgov typegen my-sfdx-project --out .sfdx/typings/lwc
         \\  apexgov lsp                 Start the Language Server Protocol server (stdio)
         \\
@@ -1021,19 +584,6 @@ fn printProfileHelp() void {
         \\  Parse Apex debug logs and compare CPU/Heap usage against budgets.
         \\  Accepts log files or directories containing .log files.
         \\  Optional: --baseline profile.json for regression checks.
-        \\
-    , .{});
-}
-
-fn printEmulateHelp() void {
-    std.debug.print(
-        \\apexgov emulate
-        \\  Mode 1: CPU calibration
-        \\    apexgov emulate [java] [OUT_DIR] [--iterations N] [--anchor-soql-ms N] [--base-ms N] [--max-weight-ms N] [--nix]
-        \\  Mode 2: local @Test emulation
-        \\    apexgov emulate test [TESTS_DIR] [--out DIR] [--cpu-limit-ms N] [--heap-limit-bytes N] [--best-effort] [--nix]
-        \\  Mode 3: Apex -> Java test scaffold transpile (best-effort)
-        \\    apexgov emulate transpile [APEX_PATHS...] [--out DIR] [--package NAME] [--overwrite] [--strict]
         \\
     , .{});
 }
@@ -1067,125 +617,3 @@ fn printRegressions(regressions: []const apexgov.profile.Regression, threshold_p
     }
 }
 
-test "parseEmulateOptions parses flags and positional values" {
-    const args = [_][]const u8{
-        "java",
-        "reports/java-calibration-local",
-        "--iterations=80000",
-        "--anchor-soql-ms",
-        "30",
-        "--base-ms=450",
-        "--max-weight-ms",
-        "120",
-        "--nix",
-    };
-
-    const opts = try parseEmulateOptions(args[0..]);
-    try std.testing.expect(opts.out_dir != null);
-    try std.testing.expectEqualStrings("reports/java-calibration-local", opts.out_dir.?);
-    try std.testing.expectEqual(@as(?u64, 80000), opts.iterations);
-    try std.testing.expectEqual(@as(?u64, 30), opts.anchor_soql_ms);
-    try std.testing.expectEqual(@as(?u64, 450), opts.base_ms);
-    try std.testing.expectEqual(@as(?u64, 120), opts.max_weight_ms);
-    try std.testing.expectEqual(true, opts.use_nix);
-}
-
-test "parseEmulateOptions rejects extra positional paths" {
-    const args = [_][]const u8{ "java", "out-a", "out-b" };
-    try std.testing.expectError(error.TooManyInputPaths, parseEmulateOptions(args[0..]));
-}
-
-test "parseEmulateTestOptions parses flags and positional values" {
-    const args = [_][]const u8{
-        "tools/java-emulation/examples",
-        "--out=reports/java-emulation-local",
-        "--cpu-limit-ms",
-        "8500",
-        "--heap-limit-bytes=5500000",
-        "--best-effort",
-        "--nix",
-    };
-
-    const opts = try parseEmulateTestOptions(args[0..]);
-    try std.testing.expect(opts.tests_dir != null);
-    try std.testing.expectEqualStrings("tools/java-emulation/examples", opts.tests_dir.?);
-    try std.testing.expect(opts.out_dir != null);
-    try std.testing.expectEqualStrings("reports/java-emulation-local", opts.out_dir.?);
-    try std.testing.expectEqual(@as(?u64, 8500), opts.cpu_limit_ms);
-    try std.testing.expectEqual(@as(?u64, 5500000), opts.heap_limit_bytes);
-    try std.testing.expectEqual(true, opts.best_effort);
-    try std.testing.expectEqual(true, opts.use_nix);
-}
-
-test "parseEmulateTestOptions rejects extra positional paths" {
-    const args = [_][]const u8{ "tests-a", "tests-b" };
-    try std.testing.expectError(error.TooManyInputPaths, parseEmulateTestOptions(args[0..]));
-}
-
-test "parseEmulateTranspileOptions parses flags and defaults" {
-    const gpa = std.testing.allocator;
-    const args = [_][]const u8{
-        "force-app/main/default/classes",
-        "--out=reports/apex-transpile-local",
-        "--package",
-        "generated.demo",
-        "--overwrite",
-        "--strict",
-    };
-
-    var opts = try parseEmulateTranspileOptions(gpa, args[0..]);
-    defer opts.deinit(gpa);
-
-    try std.testing.expectEqualStrings("reports/apex-transpile-local", opts.out_dir);
-    try std.testing.expectEqualStrings("generated.demo", opts.package_name);
-    try std.testing.expectEqual(true, opts.overwrite);
-    try std.testing.expectEqual(true, opts.strict);
-    try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
-    try std.testing.expectEqualStrings("force-app/main/default/classes", opts.input_paths.items[0]);
-}
-
-test "parseEmulateTranspileOptions injects default input path" {
-    const gpa = std.testing.allocator;
-    var opts = try parseEmulateTranspileOptions(gpa, &.{});
-    defer opts.deinit(gpa);
-
-    try std.testing.expectEqual(false, opts.strict);
-    try std.testing.expectEqual(@as(usize, 1), opts.input_paths.items.len);
-    try std.testing.expectEqualStrings(defaultTranspileInputPath(), opts.input_paths.items[0]);
-}
-
-test "run emulate transpile forwards strict mode to transpiler" {
-    const gpa = std.testing.allocator;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const source =
-        \\public class UnsupportedStrictDemo {
-        \\  public static void run() {
-        \\    when Account acc {
-        \\      System.debug('x');
-        \\    }
-        \\  }
-        \\}
-    ;
-    try tmp.dir.writeFile(.{ .sub_path = "UnsupportedStrictDemo.cls", .data = source });
-
-    const root = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
-    defer gpa.free(root);
-    const out_dir = try std.fs.path.join(gpa, &.{ root, "strict-out" });
-    defer gpa.free(out_dir);
-
-    const argv = [_][]const u8{
-        "apexgov",
-        "emulate",
-        "transpile",
-        root,
-        "--out",
-        out_dir,
-        "--strict",
-        "--overwrite",
-    };
-    try std.testing.expectEqual(@as(u8, 1), try run(gpa, argv[0..]));
-    try std.testing.expect(!pathExists(out_dir));
-}

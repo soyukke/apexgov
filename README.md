@@ -62,7 +62,6 @@ Measured on macOS Apple Silicon. LSP benchmarks send JSON-RPC requests via stdio
 - Track CPU/Heap budgets from Apex Debug Logs in CI
 - Split multi-transaction debug logs per transaction and compare regressions transaction-by-transaction
 - Emit machine-readable reports (`json`, `sarif`) for pipelines
-- Transpile Apex to Java and run `@Test` methods locally with governor-limit emulation
 
 ## Static Analysis Rules
 
@@ -149,18 +148,6 @@ zig build run -- profile artifacts/logs --baseline reports/profile-baseline.json
 If budget is exceeded, the process exits with code `1`.
 When `[ci].fail_on_regression = true`, baseline regressions also exit with code `1`.
 
-### `emulate`
-
-Java-based auxiliary emulation features.
-
-```bash
-zig build run -- emulate java
-zig build run -- emulate java reports/java-calibration-local --iterations 80000 --nix
-zig build run -- emulate test tools/java-emulation/examples --out reports/java-emulation --nix
-zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
-zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated --strict
-```
-
 ### `typegen`
 
 Generate LWC TypeScript type definitions from SFDX metadata. Org connection not required — fully offline.
@@ -209,7 +196,7 @@ regression_percent = 15
 
 ## Build and Test
 
-Requires [Zig](https://ziglang.org/) (0.15+). Alternatively, use `nix develop` for a reproducible environment with Zig + ZLS + JDK 21.
+Requires [Zig](https://ziglang.org/) (0.15+). Alternatively, use `nix develop` for a reproducible environment with Zig + ZLS.
 
 ```bash
 zig build          # Build (zig-out/bin/apexgov)
@@ -217,163 +204,10 @@ zig build test     # Run all unit tests
 zig build run -- <subcommand>  # Build & run
 ```
 
-## Apex Language Coverage
-
-The transpiler's Apex language coverage is tracked in `docs/apex-language-coverage.md`.
-
-Non-best-effort snapshot (as of 2026-03-07):
-
-- `apex-recipes`: `322/322`
-- `fflib-apex-mocks`: `471/471`
-- `fflib-apex-common + fflib-apex-mocks`: `158/158`
-- `fflib-apex-common-samplecode + fflib-apex-common + fflib-apex-mocks`: `16/16`
-
-When adding features via PR, please update the coverage table alongside implementation and tests.
-
 ## Local Validation Fixtures
 
 `examples/apex-validation` contains sample Apex projects and logs for `check` / `profile` validation.
 See `examples/apex-validation/README.md` for instructions.
-
-## External Apex Validation (git-ignored)
-
-You can validate transpilation against real-world Apex codebases using git-ignored inputs.
-`./tools/transpile-external.sh` accepts a git URL or local path and runs `emulate transpile`.
-
-```bash
-# Clone a public repo and validate (cloned into .local-fixtures/)
-./tools/transpile-external.sh \
-  https://example.com/your-apex-repo.git \
-  --subpath force-app/main/default/classes
-
-# Validate a local SFDX project in strict mode
-./tools/transpile-external.sh \
-  /path/to/your/sfdx-project \
-  --subpath force-app/main/default/classes \
-  --strict
-
-# Transpile and then run local emulation tests
-./tools/transpile-external.sh \
-  /path/to/your/sfdx-project \
-  --subpath force-app/main/default/classes \
-  --run-tests --nix
-
-# Best-effort mode for projects with unresolved sources
-./tools/transpile-external.sh \
-  /path/to/your/sfdx-project \
-  --subpath force-app/main/default/classes \
-  --run-tests --best-effort --nix
-```
-
-- Cache / clone directory: `.local-fixtures/apex/repos/` (git-ignored)
-- Output directory: `reports/apex-transpile-external/<label>/`
-
-## Periodic Transpile Check (just)
-
-Periodic checks across multiple repositories are managed via a local targets file (git-ignored).
-
-```bash
-cp tools/periodic-targets.example.txt .local-fixtures/periodic-targets.txt
-# Edit .local-fixtures/periodic-targets.txt to configure targets
-just periodic-transpile
-just periodic-transpile-strict
-```
-
-- Default targets file: `.local-fixtures/periodic-targets.txt` (git-ignored)
-- Override via environment variable `APEXGOV_PERIODIC_TARGETS_FILE`
-- Output directory: `reports/apex-transpile-periodic/<timestamp>/`
-
-## Java Calibration
-
-`tools/java-calibration` contains a micro-benchmark for generating relative CPU cost coefficients.
-
-```bash
-nix develop
-./tools/java-calibration/run.sh
-# Or via CLI
-zig build run -- emulate java --nix
-```
-
-Merge the generated `cpu_model.toml`'s `[cpu.model]` section into `apexgov.toml` to use it for AG009 CPU estimates.
-
-## Java Test Emulation
-
-`tools/java-emulation` contains a lightweight runner that executes `@Test` methods locally and detects CPU/Heap limit violations.
-
-```bash
-zig build run -- emulate test --nix
-zig build run -- emulate test reports/apex-transpile-external/my-repo --nix
-# For projects with unresolved sources
-zig build run -- emulate test reports/apex-transpile-external/my-repo --best-effort --nix
-CPU_LIMIT_MS=8000 HEAP_LIMIT_BYTES=5000000 ./tools/java-emulation/run-tests.sh
-SOQL_NULL_ORDER_DEFAULT=DIRECTIONAL ./tools/java-emulation/run-tests.sh
-```
-
-- `--best-effort` incrementally replaces unresolvable sources with placeholder stubs so that compilable `@Test` methods run first (original sources are not modified).
-- Placeholder sources are listed in `OUT_DIR/compile-fallbacks.txt`.
-- Sources that still fail to compile are listed in `OUT_DIR/compile-failures.txt`.
-
-Key runtime capabilities:
-
-- `Limits` API (`get*`) and `Test.startTest/stopTest`
-- `Test.runAs(...)` / `UserInfo.getUserId()/getUsername()/getUserName()/getProfileId()` context switching (including `Schema` profile context)
-- `Test.loadData(sobjectType, csvPath)` for CSV fixture loading
-- `Test.setMock(...)` + `Http.send` / `WebServiceCallout.invoke` mock execution
-- `@Future` / Queueable / Batch / Schedulable simple flush on `stopTest()`
-- `QueryLocatorBatchable` scope splitting with `execute(List<ApexSObject>)`
-- Independent `Limits` context for `start/execute/finish`
-- `BatchContext.getJobId()/getScopeIndex()/getTotalScopes()/getScopeSize()/getScopeRecordCount()/getPhase()`
-- `Trigger` before/after context reproduction
-- `Database` + `ApexSObject` in-memory CRUD (including `merge`) / SOQL subset
-- `Database.queryWithBinds/countQueryWithBinds` (`:name` bind, `IN :names` collection bind)
-- `Database.getQueryLocator/getQueryLocatorWithBinds`
-- SOQL trailing `FOR UPDATE` / `FOR VIEW` / `FOR REFERENCE` / `ALL ROWS` ignored during evaluation
-- `GROUP BY` / `HAVING` / aggregate (`COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX`) / `OFFSET`
-- Date literals (`TODAY` / `LAST_N_DAYS:n` etc.) and unquoted ISO date/datetime literals
-- `WHERE` `IS NULL` / `IS NOT NULL`
-- Relationship paths (`Owner.Name`, `Parent__r.Name`) in `WHERE/ORDER BY/GROUP BY/HAVING`
-- `Database.setSavepoint()/rollback()`
-- `Database.*(records, allOrNone)` + `SaveResult`
-- `Database.merge(master, duplicates, allOrNone)` + `MergeResult` (including related reparent IDs)
-- `Schema` validation for custom objects: required/type/maxLength/restricted picklist/precision(scale)/lookup reference/unique/externalId
-- Auto-firing registered triggers on `Database` CRUD (`upsert` / `merge` included)
-- Related row reparenting on `merge` with auto-firing of `before/after update` triggers on related objects
-- SOQL semi-join (`WHERE Id IN (SELECT ...)` / `NOT IN`) and child subquery (`SELECT ..., (SELECT ... FROM Contacts)`) subset support (schema metadata relationship name resolution preferred)
-
-See `tools/java-emulation/README.md` for details.
-
-## Apex-to-Java Transpile (Scaffold)
-
-`apexgov emulate transpile` auto-generates Java class scaffolds from Apex `.cls` files.
-
-Key transformations:
-
-- `@IsTest` → `@Test`
-- Method signatures (return type / parameters / static), constructors, class fields / `{ get; set; }` property scaffolds
-- `System.assert*` → `SystemAssert.*`, `Assert.*` / `System.Assert.*` → `ApexAssert.*`, `System.debug(...)` → `System.out.println(...)`
-- `switch on / when` → Java `switch` / `case ... ->` / `default ->`
-- `when Account acc` → `switch (ApexSwitch.typeName(...))` + `case "Account"`
-- `record instanceof Account` → `"Account".equals(ApexSwitch.typeName(record))`
-- Negation/compound `instanceof` expressions (e.g. `!(record instanceof Contact)`, `record instanceof A || record instanceof B`); `instanceof SObject` → `instanceof ApexSObject`
-- `do { ... } while (...)` tail normalization to Java do-while form
-- `String.isBlank/isNotBlank/isEmpty/isNotEmpty/join/escapeSingleQuotes` → `ApexStrings.*`
-- `List/Map/Set` declarations, constructors, and literals (`new List<T>{...}`) → Java collections (`ArrayList/LinkedHashMap/LinkedHashSet`)
-- `new Map<Id, Account>(records)` / `new Map<Id, Account>(existingMap)` → `ApexCollections.toIdMap(...)`
-- Named-arg style SObject constructors (`new Task(Subject='x', WhatId=...)`) → `ApexSObject.of(...).set(...)`
-- `[SELECT ...]` (single/multi-line) → `Database.query(...)`; single SObject assignment → `ApexCollections.firstOrNull(Database.query(...))`
-- `[SELECT ...]` passed to `Database.getQueryLocator/countQuery/queryWithBinds` → normalized query strings
-- `insert/update/upsert/delete/undelete/merge` (including `upsert ... ExternalId__c`) → `Database.*` calls
-- `merge` handles `merge master dup` / `merge master dup1 dup2` / `merge master, dup1, dup2`
-- Unresolved types fall back to `ApexSObject`; SObject-style field access (`record.Id`) → `record.getAs("Id")`
-- Unconverted lines (comment fallback) output as `file:line [method] reason: statement`
-- `--strict` mode fails with exit code 1 if any unconverted lines remain
-
-```bash
-zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated
-zig build run -- emulate transpile examples/apex-validation/force-app/main/default/classes --out reports/apex-transpile --package generated --strict
-```
-
-If `[APEX_PATHS...]` is omitted, the tool uses `force-app/main/default/classes` if it exists, otherwise falls back to the bundled validation fixtures (`examples/apex-validation/...`).
 
 ## License
 
