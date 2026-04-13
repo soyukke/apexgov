@@ -1225,9 +1225,27 @@ pub const Evaluator = struct {
             .merge => {},
         }
 
-        // Rebuild record list after DML (records now have IDs for insert)
+        // Rebuild record list after DML (records now have IDs for insert, or from store for update)
         if (after_event != null) {
-            record_list = try self.buildRecordList(target);
+            if (op == .update) {
+                // For updates, rebuild Trigger.new from the store to include all fields
+                // (not just the fields passed to the DML target)
+                var new_list: std.ArrayListUnmanaged(Value) = .empty;
+                for (record_list.items) |item| {
+                    if (item == .sobject and item.sobject.id != null) {
+                        if (self.findRecordInStore(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                            try new_list.append(self.arena, stored);
+                        } else {
+                            try new_list.append(self.arena, item);
+                        }
+                    } else {
+                        try new_list.append(self.arena, item);
+                    }
+                }
+                record_list = new_list;
+            } else {
+                record_list = try self.buildRecordList(target);
+            }
         }
 
         // Fire AFTER trigger
@@ -1236,6 +1254,60 @@ pub const Evaluator = struct {
                 try self.fireTrigger(ot, evt, &record_list, old_records);
             }
         }
+
+        // Auto-cleanup orphaned DuplicateRecordSets after DRI delete/update triggers complete
+        if (op == .delete or op == .update) {
+            if (obj_type) |ot| {
+                if (std.ascii.eqlIgnoreCase(ot, "DuplicateRecordItem")) {
+                    self.cleanupOrphanedDuplicateRecordSets() catch {};
+                }
+            }
+        }
+    }
+
+    /// Return the 3-character Salesforce key prefix for known SObject types.
+    fn sobjectKeyPrefix(type_name: []const u8) []const u8 {
+        if (std.ascii.eqlIgnoreCase(type_name, "Account")) return "001";
+        if (std.ascii.eqlIgnoreCase(type_name, "Contact")) return "003";
+        if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) return "006";
+        if (std.ascii.eqlIgnoreCase(type_name, "Lead")) return "00Q";
+        if (std.ascii.eqlIgnoreCase(type_name, "Case")) return "500";
+        if (std.ascii.eqlIgnoreCase(type_name, "Task")) return "00T";
+        if (std.ascii.eqlIgnoreCase(type_name, "Event")) return "00U";
+        if (std.ascii.eqlIgnoreCase(type_name, "User")) return "005";
+        if (std.ascii.eqlIgnoreCase(type_name, "Campaign")) return "701";
+        if (std.ascii.eqlIgnoreCase(type_name, "CampaignMember")) return "00v";
+        if (std.ascii.eqlIgnoreCase(type_name, "Product2")) return "01t";
+        if (std.ascii.eqlIgnoreCase(type_name, "Pricebook2")) return "01s";
+        if (std.ascii.eqlIgnoreCase(type_name, "PricebookEntry")) return "01u";
+        if (std.ascii.eqlIgnoreCase(type_name, "Contract")) return "800";
+        if (std.ascii.eqlIgnoreCase(type_name, "Order")) return "801";
+        if (std.ascii.eqlIgnoreCase(type_name, "ContentDocument")) return "069";
+        if (std.ascii.eqlIgnoreCase(type_name, "ContentVersion")) return "068";
+        if (std.ascii.eqlIgnoreCase(type_name, "ContentDocumentLink")) return "06A";
+        if (std.ascii.eqlIgnoreCase(type_name, "EmailMessage")) return "02s";
+        if (std.ascii.eqlIgnoreCase(type_name, "EmailMessageRelation")) return "0JA";
+        if (std.ascii.eqlIgnoreCase(type_name, "DuplicateRecordSet")) return "0Dn";
+        if (std.ascii.eqlIgnoreCase(type_name, "DuplicateRecordItem")) return "0Do";
+        if (std.ascii.eqlIgnoreCase(type_name, "DuplicateRule")) return "0Bm";
+        if (std.ascii.eqlIgnoreCase(type_name, "Group")) return "00G";
+        if (std.ascii.eqlIgnoreCase(type_name, "Profile")) return "00e";
+        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSet")) return "0PS";
+        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment")) return "0Pa";
+        if (std.ascii.eqlIgnoreCase(type_name, "FieldPermissions")) return "0FP";
+        if (std.ascii.eqlIgnoreCase(type_name, "ObjectPermissions")) return "0OP";
+        if (std.ascii.eqlIgnoreCase(type_name, "Attachment")) return "00P";
+        if (std.ascii.eqlIgnoreCase(type_name, "Note")) return "002";
+        if (std.ascii.eqlIgnoreCase(type_name, "Solution")) return "501";
+        if (std.ascii.eqlIgnoreCase(type_name, "OpportunityLineItem")) return "00k";
+        if (std.ascii.eqlIgnoreCase(type_name, "Quote")) return "0Q0";
+        if (std.ascii.eqlIgnoreCase(type_name, "QuoteLineItem")) return "0QL";
+        // Custom objects & unknown types — use 'a' + first 2 chars
+        if (std.mem.endsWith(u8, type_name, "__c") or std.mem.endsWith(u8, type_name, "__e") or std.mem.endsWith(u8, type_name, "__mdt"))
+            return "a00";
+        // Default: use first 3 chars of type name (padded)
+        if (type_name.len >= 3) return type_name[0..3];
+        return "a00"; // fallback
     }
 
     fn getTargetObjectType(self: *Evaluator, target: Value) ?[]const u8 {
@@ -1347,8 +1419,8 @@ pub const Evaluator = struct {
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
-        // Trigger recursion guard — limit to 2 levels (same-object re-entrant triggers stop after 2 rounds)
-        if (self.trigger_depth >= 2) return;
+        // Trigger recursion guard — limit to 8 levels (Salesforce allows deep trigger chains)
+        if (self.trigger_depth >= 8) return;
         self.trigger_depth += 1;
         defer self.trigger_depth -= 1;
 
@@ -1493,8 +1565,9 @@ pub const Evaluator = struct {
             return error.ApexException;
         }
 
-        // Auto-assign Id
-        const id = try std.fmt.allocPrint(self.arena, "{s:0>15}{d:0>3}", .{ obj.type_name[0..@min(obj.type_name.len, 15)], self.next_id });
+        // Auto-assign Id using Salesforce-style key prefixes for known types
+        const key_prefix = sobjectKeyPrefix(obj.type_name);
+        const id = try std.fmt.allocPrint(self.arena, "{s}{d:0>15}", .{ key_prefix, self.next_id });
         self.next_id += 1;
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
@@ -1511,6 +1584,18 @@ pub const Evaluator = struct {
             if (utils.sobjectGet(&obj.fields, "SystemModstamp") == null) {
                 try obj.fields.put(self.arena, "SystemModstamp", Value{ .string = now_str });
             }
+        }
+
+        // Auto-set CreatedById and CreatedBy relationship
+        if (utils.sobjectGet(&obj.fields, "CreatedById") == null) {
+            try obj.fields.put(self.arena, "CreatedById", Value{ .string = "005000000000001" });
+        }
+        if (utils.sobjectGet(&obj.fields, "CreatedBy") == null) {
+            const created_by = try self.arena.create(types.SObject);
+            created_by.* = .{ .type_name = "User", .id = "005000000000001" };
+            try created_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+            try created_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+            try obj.fields.put(self.arena, "CreatedBy", Value{ .sobject = created_by });
         }
 
         // Synthesize Name for Person-name objects (Contact, Lead) from FirstName + LastName
@@ -1696,6 +1781,41 @@ pub const Evaluator = struct {
                     if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
                     try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
                 }
+            }
+        }
+
+        // Auto-create EmailMessageRelation for each toId when EmailMessage is inserted
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "EmailMessage")) {
+            if (utils.sobjectGet(&obj.fields, "toIds")) |to_ids_val| {
+                if (to_ids_val == .list) {
+                    for (to_ids_val.list.items.items) |to_id_item| {
+                        if (to_id_item == .string) {
+                            const emr_id = try self.allocId();
+                            const emr = try self.arena.create(types.SObject);
+                            emr.* = .{ .type_name = "EmailMessageRelation", .id = emr_id };
+                            try emr.fields.put(self.arena, "Id", Value{ .string = emr_id });
+                            try emr.fields.put(self.arena, "EmailMessageId", Value{ .string = id });
+                            try emr.fields.put(self.arena, "RelationId", to_id_item);
+                            try emr.fields.put(self.arena, "RelationType", Value{ .string = "ToAddress" });
+                            const emr_gop = try self.store.getOrPut(self.arena, "EmailMessageRelation");
+                            if (!emr_gop.found_existing) emr_gop.value_ptr.* = .empty;
+                            try emr_gop.value_ptr.append(self.arena, Value{ .sobject = emr });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is inserted
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordItem")) {
+            try self.updateDuplicateRecordSetCount(obj, 1);
+        }
+
+        // Auto-initialize RecordCount to 0 on DuplicateRecordSet insert
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordSet")) {
+            if (utils.sobjectGet(&obj.fields, "RecordCount") == null) {
+                try obj.fields.put(self.arena, "RecordCount", Value{ .integer = 0 });
+                try snapshot.fields.put(self.arena, "RecordCount", Value{ .integer = 0 });
             }
         }
     }
@@ -1926,6 +2046,10 @@ pub const Evaluator = struct {
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
+        // Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is deleted
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordItem")) {
+            try self.updateDuplicateRecordSetCount(obj, -1);
+        }
     }
 
     fn undeleteRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
@@ -1959,6 +2083,58 @@ pub const Evaluator = struct {
             try exc.fields.put(self.arena, "message", Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" });
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
+        }
+    }
+
+    /// Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is inserted/deleted.
+    /// `delta` is +1 for insert, -1 for delete.
+    fn updateDuplicateRecordSetCount(self: *Evaluator, dri: *types.SObject, delta: i64) !void {
+        const drs_id_val = utils.sobjectGet(&dri.fields, "DuplicateRecordSetId") orelse return;
+        if (drs_id_val != .string) return;
+        const drs_id = drs_id_val.string;
+
+        // Find the DuplicateRecordSet in the store and update RecordCount
+        if (self.store.getPtr("DuplicateRecordSet")) |records| {
+            for (records.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.mem.eql(u8, rec.sobject.id.?, drs_id))
+                {
+                    const old_count: i64 = if (utils.sobjectGet(&rec.sobject.fields, "RecordCount")) |v|
+                        (if (v == .integer) v.integer else 0)
+                    else
+                        0;
+                    const new_count = @max(old_count + delta, 0);
+                    try rec.sobject.fields.put(self.arena, "RecordCount", Value{ .integer = new_count });
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Auto-delete DuplicateRecordSet records with RecordCount < 2 (and not freshly created with count 0).
+    /// This mirrors the Salesforce trigger chain behavior: DRI delete → DRS trigger → auto-delete orphaned DRS.
+    fn cleanupOrphanedDuplicateRecordSets(self: *Evaluator) !void {
+        if (self.store.getPtr("DuplicateRecordSet")) |records| {
+            var i: usize = 0;
+            while (i < records.items.len) {
+                const rec = records.items[i];
+                if (rec == .sobject) {
+                    const count = if (utils.sobjectGet(&rec.sobject.fields, "RecordCount")) |v|
+                        (if (v == .integer) v.integer else 0)
+                    else
+                        0;
+                    // Delete DRS when RecordCount > 0 but < 2 (i.e., 1 — single duplicate remaining)
+                    // Also delete when RecordCount == 0 and there were items before (indicated by Object_Type__c being set)
+                    if (count >= 1 and count < 2) {
+                        const removed = records.orderedRemove(i);
+                        const trash_gop = try self.trash.getOrPut(self.arena, "DuplicateRecordSet");
+                        if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
+                        try trash_gop.value_ptr.append(self.arena, removed);
+                        continue;
+                    }
+                }
+                i += 1;
+            }
         }
     }
 
@@ -3240,6 +3416,13 @@ pub const Evaluator = struct {
                     field_found = true;
                     break;
                 }
+            }
+        }
+        if (!field_found) {
+            // IsDeleted defaults to FALSE for records in the active store
+            if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted")) {
+                field_val = Value{ .boolean = false };
+                field_found = true;
             }
         }
         if (!field_found) {
@@ -7103,6 +7286,77 @@ pub const Evaluator = struct {
                 }
             }
             return Value{ .string = try self.allocId() }; // Fake job ID
+        }
+        if (std.ascii.eqlIgnoreCase(method, "merge")) {
+            // Database.merge(primary, secondaries, allOrNothing)
+            // Delete secondary records and cascade-delete referencing DuplicateRecordItems.
+            // Return MergeResult[].
+            if (args.len >= 2) {
+                var secondary_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+                // Collect secondary record ids
+                if (args[1] == .sobject and args[1].sobject.id != null) {
+                    try secondary_ids.append(self.arena, args[1].sobject.id.?);
+                } else if (args[1] == .list) {
+                    for (args[1].list.items.items) |item| {
+                        if (item == .sobject and item.sobject.id != null) {
+                            try secondary_ids.append(self.arena, item.sobject.id.?);
+                        }
+                    }
+                }
+                // Delete secondary records from store
+                for (secondary_ids.items) |sec_id| {
+                    var store_iter = self.store.iterator();
+                    while (store_iter.next()) |entry| {
+                        var i: usize = 0;
+                        while (i < entry.value_ptr.items.len) {
+                            if (entry.value_ptr.items[i] == .sobject and entry.value_ptr.items[i].sobject.id != null and
+                                std.mem.eql(u8, entry.value_ptr.items[i].sobject.id.?, sec_id))
+                            {
+                                _ = entry.value_ptr.orderedRemove(i);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+                // Cascade-delete DuplicateRecordItems that reference deleted secondary records
+                if (self.store.getPtr("DuplicateRecordItem")) |dri_records| {
+                    var i: usize = 0;
+                    while (i < dri_records.items.len) {
+                        const item = dri_records.items[i];
+                        if (item == .sobject) {
+                            const rec_id_val = utils.sobjectGet(&item.sobject.fields, "RecordId");
+                            if (rec_id_val != null and rec_id_val.? == .string) {
+                                var is_deleted = false;
+                                for (secondary_ids.items) |sec_id| {
+                                    if (std.mem.eql(u8, rec_id_val.?.string, sec_id)) {
+                                        is_deleted = true;
+                                        break;
+                                    }
+                                }
+                                if (is_deleted) {
+                                    // Update RecordCount on parent DRS before removing
+                                    self.updateDuplicateRecordSetCount(item.sobject, -1) catch {};
+                                    _ = dri_records.orderedRemove(i);
+                                    continue;
+                                }
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            // Auto-delete orphaned DuplicateRecordSets after merge
+            try self.cleanupOrphanedDuplicateRecordSets();
+            // Return MergeResult list
+            const mr_list = try self.arena.create(types.ListValue);
+            mr_list.* = .{};
+            const mr = try self.arena.create(types.ObjectInstance);
+            mr.* = .{ .class_name = "Database.MergeResult" };
+            try mr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
+            try mr.fields.put(self.arena, "success", Value{ .boolean = true });
+            try mr_list.items.append(self.arena, Value{ .object = mr });
+            return Value{ .list = mr_list };
         }
         return .void_val;
     }
