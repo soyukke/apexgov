@@ -2387,6 +2387,12 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
             return obj.fields.get("name") orelse Value{ .string = "Object" };
         }
+        if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+            const sot = try ctx.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(ctx.arena, "name", obj.fields.get("name") orelse Value{ .string = "Object" });
+            return Value{ .object = sot };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
             return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
         }
