@@ -60,6 +60,8 @@ pub const Evaluator = struct {
     is_restricted_user: bool = false,
     // Whether running as a minimum-access user specifically (stricter than is_restricted_user)
     is_min_access_user: bool = false,
+    // Whether running as a standard user (has CRUD on business objects but not setup objects)
+    is_standard_user: bool = false,
     // ApexPages message store (for ApexPages.addMessages / hasMessages / getMessages)
     apex_pages_messages: std.ArrayListUnmanaged(Value) = .empty,
     // Trigger declarations (object name → list of triggers)
@@ -116,6 +118,7 @@ pub const Evaluator = struct {
         self.scheduled_jobs = .empty;
         self.is_restricted_user = false;
         self.is_min_access_user = false;
+        self.is_standard_user = false;
         self.pending_event_callback = null;
         self.apex_pages_messages = .empty;
 
@@ -211,6 +214,85 @@ pub const Evaluator = struct {
         try profile.fields.put(self.arena, "Id", Value{ .string = "00e000000000001" });
         try profile.fields.put(self.arena, "Name", Value{ .string = "System Administrator" });
         return Value{ .sobject = profile };
+    }
+
+    /// Create a synthetic Profile matching the WHERE clause Name — used by SOQL seeding.
+    /// Falls back to "System Administrator" if no Name condition is found.
+    fn createProfileForQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
+        const profile = try self.arena.create(types.SObject);
+        profile.* = .{ .type_name = "Profile" };
+        // Extract Name value from WHERE clause: WHERE Name = 'Xyz' or WHERE Name = :var
+        const profile_name = self.extractWhereFieldValue(soql, "Name", current_env) orelse "System Administrator";
+        const profile_id = try self.allocId();
+        profile.id = profile_id;
+        try profile.fields.put(self.arena, "Id", Value{ .string = profile_id });
+        try profile.fields.put(self.arena, "Name", Value{ .string = profile_name });
+        return Value{ .sobject = profile };
+    }
+
+    /// Seed stub records for setup objects queried with IN clause (PermissionSet, PermissionSetLicense, etc.).
+    /// Extracts names from WHERE Name/DeveloperName IN (:var) or IN ('a','b') and creates a stub for each.
+    fn seedNamedRecords(self: *Evaluator, obj_type: []const u8, soql: []const u8, current_env: *Env, records: *std.ArrayListUnmanaged(Value)) !void {
+        const where_clause = extractWhereClause(soql) orelse return;
+        // Collect names from the IN clause — supports both bind variables (Set/List) and literal lists
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        // Check for IN :var pattern
+        if (std.ascii.indexOfIgnoreCase(where_clause, " IN :")) |in_pos| {
+            var j = in_pos + 5; // skip " IN :"
+            const start = j;
+            while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+            if (j > start) {
+                const var_name = where_clause[start..j];
+                // Try env lookup, then class-qualified static field
+                const v = current_env.get(var_name) orelse blk: {
+                    if (self.current_class) |cc| {
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch break :blk null;
+                        break :blk self.global_env.get(key);
+                    }
+                    break :blk null;
+                };
+                if (v) |val| {
+                    if (val == .set) {
+                        for (val.set.entries.keys()) |k| try names.append(self.arena, k);
+                    } else if (val == .list) {
+                        for (val.list.items.items) |item| {
+                            if (item == .string) try names.append(self.arena, item.string);
+                        }
+                    }
+                }
+            }
+        }
+        // Also check for IN ('a', 'b', 'c') pattern
+        if (names.items.len == 0) {
+            if (std.ascii.indexOfIgnoreCase(where_clause, " IN (")) |in_pos| {
+                var j = in_pos + 5;
+                while (j < where_clause.len and where_clause[j] != ')') {
+                    while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ')') j += 1;
+                    if (j < where_clause.len and where_clause[j] == '\'') {
+                        j += 1;
+                        const start = j;
+                        while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+                        if (j > start) try names.append(self.arena, where_clause[start..j]);
+                        if (j < where_clause.len) j += 1;
+                    }
+                }
+            }
+        }
+        // Create stub records for each name
+        for (names.items) |name| {
+            const stub = try self.arena.create(types.SObject);
+            stub.* = .{ .type_name = obj_type };
+            const stub_id = try self.allocId();
+            stub.id = stub_id;
+            try stub.fields.put(self.arena, "Id", Value{ .string = stub_id });
+            try stub.fields.put(self.arena, "Name", Value{ .string = name });
+            try stub.fields.put(self.arena, "DeveloperName", Value{ .string = name });
+            try records.append(self.arena, Value{ .sobject = stub });
+            // Also store in data store so subsequent queries can find them
+            const gop = try self.store.getOrPut(self.arena, obj_type);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, Value{ .sobject = stub });
+        }
     }
 
     /// Seed synthetic RecordType records into the store for all known SObject types.
@@ -962,24 +1044,29 @@ pub const Evaluator = struct {
                 const user_val = try self.evalExpr(ras.user_expr, current_env);
                 const prev_restricted = self.is_restricted_user;
                 const prev_min_access = self.is_min_access_user;
-                // Determine if the user is a restricted/min-access user
+                const prev_standard = self.is_standard_user;
+                // Determine if the user is a restricted/min-access/standard user
                 if (user_val == .sobject) {
                     const profile_name = self.getUserProfileName(user_val.sobject);
                     if (profile_name) |pn| {
                         self.is_restricted_user = self.isRestrictedProfileName(pn);
                         self.is_min_access_user = std.ascii.indexOfIgnoreCase(pn, "Minimum Access") != null or
                             std.ascii.indexOfIgnoreCase(pn, "MinAccess") != null;
+                        self.is_standard_user = self.isStandardProfileName(pn);
                     } else {
                         // No profile info found: assume non-restricted (e.g. runAs with current user)
                         self.is_restricted_user = false;
                         self.is_min_access_user = false;
+                        self.is_standard_user = false;
                     }
                 } else {
                     self.is_restricted_user = true;
                     self.is_min_access_user = true;
+                    self.is_standard_user = false;
                 }
                 defer self.is_restricted_user = prev_restricted;
                 defer self.is_min_access_user = prev_min_access;
+                defer self.is_standard_user = prev_standard;
                 const result = self.execBlock(ras.body, current_env);
                 if (result) |r| return r else |e| return e;
             },
@@ -1166,7 +1253,7 @@ pub const Evaluator = struct {
     }
 
     /// Get the profile name for a User SObject by checking Profile field or looking up profileId.
-    fn getUserProfileName(self: *Evaluator, user: *types.SObject) ?[]const u8 {
+    pub fn getUserProfileName(self: *Evaluator, user: *types.SObject) ?[]const u8 {
         // Check the Profile field directly (SObject reference)
         if (utils.sobjectGet(&user.fields, "Profile")) |pv| {
             if (pv == .sobject) {
@@ -1198,10 +1285,43 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn isRestrictedProfileName(_: *Evaluator, name: []const u8) bool {
+    pub fn isRestrictedProfileName(_: *Evaluator, name: []const u8) bool {
         return std.ascii.indexOfIgnoreCase(name, "Minimum Access") != null or
             std.ascii.indexOfIgnoreCase(name, "MinAccess") != null or
             std.ascii.indexOfIgnoreCase(name, "Marketing") != null;
+    }
+
+    pub fn isStandardProfileName(_: *Evaluator, name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(name, "Standard User") or
+            std.ascii.eqlIgnoreCase(name, "Standard Platform User") or
+            std.ascii.eqlIgnoreCase(name, "Read Only") or
+            std.ascii.eqlIgnoreCase(name, "Chatter Free User") or
+            std.ascii.eqlIgnoreCase(name, "Chatter External User");
+    }
+
+    /// Check if an SObject type is a setup/admin object (not CRUD-accessible by Standard User)
+    pub fn isSetupObject(_: *Evaluator, obj_name: []const u8) bool {
+        const setup_objects = [_][]const u8{
+            "User",
+            "Profile",
+            "PermissionSet",
+            "PermissionSetLicense",
+            "PermissionSetAssignment",
+            "PermissionSetLicenseAssign",
+            "PermissionSetGroup",
+            "Group",
+            "GroupMember",
+            "UserRole",
+            "Organization",
+            "ApexClass",
+            "ApexTrigger",
+            "CustomPermission",
+            "SetupEntityAccess",
+        };
+        for (setup_objects) |so| {
+            if (std.ascii.eqlIgnoreCase(obj_name, so)) return true;
+        }
+        return false;
     }
 
     fn fireTrigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
@@ -1965,6 +2085,19 @@ pub const Evaluator = struct {
             }
         }
 
+        // Seed PermissionSet/PermissionSetLicense from IN clause (before metadata stubs)
+        if (records.items.len == 0 and
+            (std.ascii.eqlIgnoreCase(from_type, "PermissionSet") or
+            std.ascii.eqlIgnoreCase(from_type, "PermissionSetLicense")))
+        {
+            const where_check = extractWhereClause(soql);
+            if (where_check) |wc| {
+                if (std.ascii.indexOfIgnoreCase(wc, " IN :") != null or std.ascii.indexOfIgnoreCase(wc, " IN (") != null) {
+                    try self.seedNamedRecords(from_type, soql, current_env, &records);
+                }
+            }
+        }
+
         // Load custom metadata records from .md-meta.xml files if store is empty
         // Only load if generateMetadataStub doesn't handle this type (to avoid conflicting stubs)
         if (records.items.len == 0 and std.mem.endsWith(u8, from_type, "__mdt") and
@@ -2186,10 +2319,20 @@ pub const Evaluator = struct {
         if (records.items.len == 0 and self.store.get(from_type) == null) {
             if (std.ascii.eqlIgnoreCase(from_type, "User")) {
                 const user_record = try self.createCurrentUserRecord();
-                try records.append(self.arena, user_record);
+                // Only include seeded User if it matches WHERE clause
+                if (self.matchesWhere(user_record, soql, current_env)) {
+                    try records.append(self.arena, user_record);
+                }
             } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-                const profile_record = try self.createDefaultProfileRecord();
+                // Create a Profile matching the WHERE clause Name
+                const profile_record = try self.createProfileForQuery(soql, current_env);
                 try records.append(self.arena, profile_record);
+                // Also store in the data store so getUserProfileName can resolve ProfileId later
+                if (profile_record == .sobject) {
+                    const gop = try self.store.getOrPut(self.arena, "Profile");
+                    if (!gop.found_existing) gop.value_ptr.* = .empty;
+                    try gop.value_ptr.append(self.arena, profile_record);
+                }
             } else if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
                 // Seed RecordType records into the store, then filter by WHERE clause
                 try self.seedRecordTypeStore();

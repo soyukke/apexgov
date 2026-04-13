@@ -618,9 +618,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (std.ascii.eqlIgnoreCase(method_name, "now")) return Value{ .string = "2026-04-06T00:00:00Z" };
         if (std.ascii.eqlIgnoreCase(method_name, "today")) return Value{ .string = try currentDateString(ctx.arena) };
         if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
-            // Set restricted user flag when System.runAs is called with a user
-            if (args.len > 0) {
+            // Set restricted/standard user flags based on user's profile
+            if (args.len > 0 and args[0] == .sobject) {
+                const profile_name = ctx.eval.getUserProfileName(args[0].sobject);
+                if (profile_name) |pn| {
+                    ctx.eval.is_restricted_user = ctx.eval.isRestrictedProfileName(pn);
+                    ctx.eval.is_standard_user = ctx.eval.isStandardProfileName(pn);
+                } else {
+                    ctx.eval.is_restricted_user = true;
+                    ctx.eval.is_standard_user = false;
+                }
+            } else if (args.len > 0) {
                 ctx.eval.is_restricted_user = true;
+                ctx.eval.is_standard_user = false;
             }
             return .void_val;
         }
@@ -1405,13 +1415,15 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const desc = try ctx.arena.create(types.ObjectInstance);
     desc.* = .{ .class_name = "DescribeSObjectResult" };
     const is_restricted = ctx.eval.is_restricted_user;
+    // Standard User has no CRUD on setup/admin objects
+    const is_setup_denied = ctx.eval.is_standard_user and ctx.eval.isSetupObject(obj_name);
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
 
     // Check ObjectPermissions for granular CRUD access when user has permission sets
-    var perm_accessible = !is_restricted;
-    var perm_createable = !is_restricted;
-    var perm_updateable = !is_restricted;
-    var perm_deletable = !is_restricted;
+    var perm_accessible = !is_restricted and !is_setup_denied;
+    var perm_createable = !is_restricted and !is_setup_denied;
+    var perm_updateable = !is_restricted and !is_setup_denied;
+    var perm_deletable = !is_restricted and !is_setup_denied;
     if (is_restricted) {
         if (ctx.eval.store.get("ObjectPermissions")) |op_records| {
             for (op_records.items) |op_item| {
@@ -2285,17 +2297,20 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     {
         {
             // Check if field-level value is already stored (from createDescribeResult)
+            const desc_name = if (obj.fields.get("name")) |n| n.string else "";
+            const crud_default = !ctx.eval.is_restricted_user and
+                !(ctx.eval.is_standard_user and desc_name.len > 0 and ctx.eval.isSetupObject(desc_name));
             if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
-                return obj.fields.get("isAccessible") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+                return obj.fields.get("isAccessible") orelse Value{ .boolean = crud_default };
             }
             if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
-                return obj.fields.get("isCreateable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+                return obj.fields.get("isCreateable") orelse Value{ .boolean = crud_default };
             }
             if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
-                return obj.fields.get("isUpdateable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+                return obj.fields.get("isUpdateable") orelse Value{ .boolean = crud_default };
             }
             if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) {
-                return obj.fields.get("isDeletable") orelse Value{ .boolean = !ctx.eval.is_restricted_user };
+                return obj.fields.get("isDeletable") orelse Value{ .boolean = crud_default };
             }
         }
         if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
@@ -2432,7 +2447,13 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or
             std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
         {
-            return Value{ .boolean = !ctx.eval.is_restricted_user };
+            if (ctx.eval.is_restricted_user) return Value{ .boolean = false };
+            // Standard User has no CRUD on setup/admin objects
+            if (ctx.eval.is_standard_user) {
+                const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
+                if (ctx.eval.isSetupObject(sobj_name)) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or
             std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
