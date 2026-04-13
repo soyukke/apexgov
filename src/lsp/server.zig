@@ -126,6 +126,15 @@ pub const Server = struct {
             try self.handleCodeLens(id, obj);
         } else if (std.mem.eql(u8, method, "workspace/executeCommand")) {
             try self.handleExecuteCommand(id, obj);
+        } else {
+            // 未対応リクエスト（id あり）にはエラーレスポンスを返す。
+            // 通知（id なし）は無視して構わない。
+            switch (id) {
+                .none => {},
+                .integer, .string => {
+                    try self.transport.sendErrorResponse(self.allocator, id, -32601, "Method not found");
+                },
+            }
         }
 
         return false;
@@ -616,16 +625,24 @@ pub const Server = struct {
             self.allocator.free(pkg_dirs);
         }
 
-        // 各パッケージディレクトリ配下の classes/ サブディレクトリを探索
-        const classes_dirs = try sfdx_project.resolveSubDirs(self.allocator, pkg_dirs, "main/default/classes");
+        // パッケージディレクトリ配下の .cls を含むサブディレクトリを探索
+        // main/default/classes/ に加え tests/ 等も対象にする
+        const sub_candidates = [_][]const u8{ "main/default/classes", "tests" };
+        var all_dirs: std.ArrayList([]const u8) = .empty;
         defer {
-            for (classes_dirs) |p| self.allocator.free(p);
-            self.allocator.free(classes_dirs);
+            for (all_dirs.items) |p| self.allocator.free(p);
+            all_dirs.deinit(self.allocator);
+        }
+        for (&sub_candidates) |sub| {
+            const sub_dirs = try sfdx_project.resolveSubDirs(self.allocator, pkg_dirs, sub);
+            defer self.allocator.free(sub_dirs);
+            for (sub_dirs) |d| {
+                try all_dirs.append(self.allocator, d);
+            }
         }
 
-        // classes/ が見つかればそれを使い、無ければパッケージディレクトリ自体を使用
-        const test_paths = if (classes_dirs.len > 0) classes_dirs else pkg_dirs;
-        // NOTE: test_paths は classes_dirs か pkg_dirs のどちらかを参照するだけなので別途解放不要
+        // サブディレクトリが見つかればそれを使い、無ければパッケージディレクトリ自体を使用
+        const test_paths = if (all_dirs.items.len > 0) all_dirs.items else pkg_dirs;
 
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);

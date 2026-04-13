@@ -72,6 +72,29 @@ pub const Transport = struct {
         try self.writeMessage(aw.written());
     }
 
+    /// JSON-RPC エラーレスポンスを送信する。
+    pub fn sendErrorResponse(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, code: i32, message: []const u8) !void {
+        var aw: std.io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
+
+        var jw: std.json.Stringify = .{ .writer = &aw.writer };
+        try jw.beginObject();
+        try jw.objectField("jsonrpc");
+        try jw.write("2.0");
+        try jw.objectField("id");
+        try id.jsonStringify(&jw);
+        try jw.objectField("error");
+        try jw.beginObject();
+        try jw.objectField("code");
+        try jw.write(code);
+        try jw.objectField("message");
+        try jw.write(message);
+        try jw.endObject();
+        try jw.endObject();
+
+        try self.writeMessage(aw.written());
+    }
+
     /// JSON-RPC 通知を送信する。
     pub fn sendNotification(self: *Transport, allocator: std.mem.Allocator, method: []const u8, params: anytype) !void {
         var aw: std.io.Writer.Allocating = .init(allocator);
