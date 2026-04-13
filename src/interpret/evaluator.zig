@@ -583,11 +583,15 @@ pub const Evaluator = struct {
             try method_env.define(param.name, val);
         }
 
+        const saved_rv = self.return_value;
+        self.return_value = .void_val;
         const result = try self.execBlock(method.body, method_env);
-        return switch (result) {
+        const ret = switch (result) {
             .return_val => |v| v,
             else => self.return_value,
         };
+        self.return_value = saved_rv;
+        return ret;
     }
 
     // -----------------------------------------------------------------------
