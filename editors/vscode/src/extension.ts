@@ -87,21 +87,34 @@ async function ensureServer(
     return configPath;
   }
 
-  // 2. Already downloaded binary
+  // 2. Already downloaded binary (re-download if extension version changed)
   const binDir = path.join(context.globalStorageUri.fsPath, "bin");
   const binName = process.platform === "win32" ? "apexgov.exe" : "apexgov";
   const binPath = path.join(binDir, binName);
+  const versionFile = path.join(binDir, ".version");
+  const currentVersion = context.extension.packageJSON.version as string;
+
   if (fs.existsSync(binPath)) {
-    return binPath;
+    const storedVersion = fs.existsSync(versionFile)
+      ? fs.readFileSync(versionFile, "utf-8").trim()
+      : "";
+    if (storedVersion === currentVersion) {
+      return binPath;
+    }
+    outputChannel.appendLine(
+      `apexgov: version mismatch (${storedVersion || "unknown"} -> ${currentVersion}), re-downloading...`
+    );
   }
 
   // 3. Download from GitHub Releases
-  return await downloadServer(binDir, binPath);
+  return await downloadServer(binDir, binPath, versionFile, currentVersion);
 }
 
 async function downloadServer(
   binDir: string,
-  binPath: string
+  binPath: string,
+  versionFile: string,
+  currentVersion: string
 ): Promise<string | undefined> {
   const platformMap: Record<string, string> = {
     "darwin-arm64": "apexgov-darwin-aarch64",
@@ -142,6 +155,7 @@ async function downloadServer(
         }
 
         if (fs.existsSync(binPath)) {
+          fs.writeFileSync(versionFile, currentVersion, "utf-8");
           return binPath;
         }
       } catch (e) {
