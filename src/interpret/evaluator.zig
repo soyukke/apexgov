@@ -7640,6 +7640,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "SObjectAccessDecision")) {
             return .void_val;
         }
+        // System.Limits → all methods return 0
+        if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
+            return Value{ .integer = 0 };
+        }
         // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
         if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
             if (std.ascii.eqlIgnoreCase(method, "serialize") or std.ascii.eqlIgnoreCase(method, "serializePretty")) {
