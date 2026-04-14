@@ -559,21 +559,8 @@ pub const Evaluator = struct {
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             self.limits_publish_immediate += 1;
-            // Check for platform event validation: if event type ends with __e,
-            // check that it has at least one reference Id field set (non-null)
-            var publish_success = true;
-            if (args.len > 0 and args[0] == .sobject) {
-                const tn = args[0].sobject.type_name;
-                if (std.mem.endsWith(u8, tn, "__e")) {
-                    var has_ref_field = false;
-                    for (args[0].sobject.fields.keys(), args[0].sobject.fields.values()) |k, v| {
-                        if (std.mem.endsWith(u8, k, "Id__c") or std.mem.endsWith(u8, k, "id__c")) {
-                            if (v != .null_val) has_ref_field = true;
-                        }
-                    }
-                    if (!has_ref_field) publish_success = false;
-                }
-            }
+            // EventBus.publish always succeeds in Salesforce (errors are in SaveResult.errors)
+            const publish_success = true;
             if (publish_success and args.len > 0) {
                 if (args[0] == .sobject) {
                     try self.insertRecord(args[0].sobject);
