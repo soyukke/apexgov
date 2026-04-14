@@ -238,6 +238,7 @@ fn runTestsFiltered(
                     test_eval.triggers = eval.triggers;
                     test_eval.class_sources = eval.class_sources;
                     test_eval.source_paths = eval.source_paths;
+                    test_eval.field_defaults = eval.field_defaults;
 
                     // Check for @isTest(SeeAllData=true) annotation
                     test_eval.see_all_data = false;
@@ -396,16 +397,19 @@ fn collectFieldDefaults(
         const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse continue;
         const dv_value_start = dv_start + dv_start_tag.len;
         const dv_end = std.mem.indexOfPos(u8, content, dv_value_start, dv_end_tag) orelse continue;
-        const default_str = content[dv_value_start..dv_end];
+        const raw_str = content[dv_value_start..dv_end];
+
+        // Decode XML entities and strip Apex string quotes
+        const decoded = decodeXmlDefaultValue(alloc, raw_str) catch continue;
 
         // Convert to Value based on content
-        const value: Value = if (std.ascii.eqlIgnoreCase(default_str, "true"))
+        const value: Value = if (std.ascii.eqlIgnoreCase(decoded, "true"))
             Value{ .boolean = true }
-        else if (std.ascii.eqlIgnoreCase(default_str, "false"))
+        else if (std.ascii.eqlIgnoreCase(decoded, "false"))
             Value{ .boolean = false }
-        else if (std.fmt.parseInt(i64, default_str, 10)) |i|
+        else if (std.fmt.parseInt(i64, decoded, 10)) |i|
             Value{ .integer = i }
-        else |_| Value{ .string = alloc.dupe(u8, default_str) catch continue };
+        else |_| Value{ .string = decoded };
 
         // Store in field_defaults[type_name][field_name]
         const type_key = alloc.dupe(u8, type_name) catch continue;
@@ -416,6 +420,46 @@ fn collectFieldDefaults(
         }
         gop.value_ptr.put(alloc, field_key, value) catch continue;
     }
+}
+
+/// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
+/// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
+fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    // First pass: decode XML entities
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '&') {
+            if (std.mem.startsWith(u8, raw[i..], "&apos;")) {
+                try buf.append(alloc, '\'');
+                i += 6;
+            } else if (std.mem.startsWith(u8, raw[i..], "&quot;")) {
+                try buf.append(alloc, '"');
+                i += 6;
+            } else if (std.mem.startsWith(u8, raw[i..], "&amp;")) {
+                try buf.append(alloc, '&');
+                i += 5;
+            } else if (std.mem.startsWith(u8, raw[i..], "&lt;")) {
+                try buf.append(alloc, '<');
+                i += 4;
+            } else if (std.mem.startsWith(u8, raw[i..], "&gt;")) {
+                try buf.append(alloc, '>');
+                i += 4;
+            } else {
+                try buf.append(alloc, raw[i]);
+                i += 1;
+            }
+        } else {
+            try buf.append(alloc, raw[i]);
+            i += 1;
+        }
+    }
+    const decoded = buf.items;
+    // Strip surrounding single quotes (Apex string literal in metadata)
+    if (decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
+        return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
+    }
+    return alloc.dupe(u8, decoded);
 }
 
 /// arena 上の Value を gpa にコピーする。

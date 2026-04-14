@@ -6680,11 +6680,29 @@ pub const Evaluator = struct {
                             }
                         },
                         .field_decl => |fd| {
-                            if (std.ascii.eqlIgnoreCase(fd.name, fa.field)) {
-                                if (fd.modifiers.is_static) {
-                                    const skey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field }) catch return Value.null_val;
-                                    return self.global_env.get(skey) orelse Value.null_val;
+                            if (std.ascii.eqlIgnoreCase(fd.name, fa.field) and fd.modifiers.is_static) {
+                                // If property has a getter, execute it (unless we're already inside it)
+                                if (fd.getter_body != null) {
+                                    const already_in = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, fa.field) else false;
+                                    if (!already_in) {
+                                        const getter_env = self.global_env.child() catch return Value.null_val;
+                                        const saved_class = self.current_class;
+                                        const saved_getter = self.evaluating_getter;
+                                        self.current_class = class_name;
+                                        self.evaluating_getter = fa.field;
+                                        defer {
+                                            self.current_class = saved_class;
+                                            self.evaluating_getter = saved_getter;
+                                        }
+                                        const result = self.execBlock(fd.getter_body.?, getter_env) catch return Value.null_val;
+                                        return switch (result) {
+                                            .return_val => |v| v,
+                                            else => self.return_value,
+                                        };
+                                    }
                                 }
+                                const skey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field }) catch return Value.null_val;
+                                return self.global_env.get(skey) orelse Value.null_val;
                             }
                         },
                         else => {},
