@@ -31,6 +31,8 @@ pub const Evaluator = struct {
     // インメモリ SObject ストア
     store: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)) = .empty,
     next_id: u64 = 1,
+    /// Id → SObject type_name mapping (populated by insertRecord and createId)
+    id_type_map: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // bypass リスト (TriggerHandler.bypass 等)
     bypasses: std.StringArrayHashMapUnmanaged(void) = .empty,
     // 削除済みレコードのゴミ箱 (undelete 用)
@@ -1670,6 +1672,8 @@ pub const Evaluator = struct {
         self.next_id += 1;
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
+        // Register Id → type_name mapping for getSObjectType() lookups
+        try self.id_type_map.put(self.arena, id, obj.type_name);
 
         // Auto-generate system timestamp fields using current time
         {
@@ -6202,6 +6206,12 @@ pub const Evaluator = struct {
                         type_name = rec.sobject.type_name;
                         break;
                     }
+                }
+            }
+            // Fallback: check id_type_map (populated by insertRecord/createId)
+            if (std.mem.eql(u8, type_name, "SObject")) {
+                if (self.id_type_map.get(s)) |tn| {
+                    type_name = tn;
                 }
             }
             // Fallback: infer type from Id key prefix
