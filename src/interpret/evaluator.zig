@@ -1020,10 +1020,15 @@ pub const Evaluator = struct {
                             for (values) |val_expr| {
                                 var val_copy = val_expr;
                                 const when_val = try self.evalExpr(&val_copy, current_env);
-                                if (utils.valueEql(subject, when_val)) {
+                                // String switch is case-sensitive in Apex (unlike == operator)
+                                if (subject == .string and when_val == .string) {
+                                    if (std.mem.eql(u8, subject.string, when_val.string)) {
+                                        return self.execBlock(clause.body, current_env);
+                                    }
+                                } else if (utils.valueEql(subject, when_val)) {
                                     return self.execBlock(clause.body, current_env);
                                 }
-                                // Enum matching: when identifier matches string subject
+                                // Enum matching: when identifier matches string subject (case-insensitive for enums)
                                 if (subject == .string and val_copy == .identifier) {
                                     if (std.ascii.eqlIgnoreCase(subject.string, val_copy.identifier.name)) {
                                         return self.execBlock(clause.body, current_env);
