@@ -1385,6 +1385,30 @@ pub const Evaluator = struct {
         return "a00"; // fallback
     }
 
+    fn sobjectTypeFromPrefix(prefix: []const u8) []const u8 {
+        if (std.mem.eql(u8, prefix, "001")) return "Account";
+        if (std.mem.eql(u8, prefix, "003")) return "Contact";
+        if (std.mem.eql(u8, prefix, "006")) return "Opportunity";
+        if (std.mem.eql(u8, prefix, "00Q")) return "Lead";
+        if (std.mem.eql(u8, prefix, "500")) return "Case";
+        if (std.mem.eql(u8, prefix, "00T")) return "Task";
+        if (std.mem.eql(u8, prefix, "00U")) return "Event";
+        if (std.mem.eql(u8, prefix, "005")) return "User";
+        if (std.mem.eql(u8, prefix, "701")) return "Campaign";
+        if (std.mem.eql(u8, prefix, "00e")) return "Profile";
+        if (std.mem.eql(u8, prefix, "0PS")) return "PermissionSet";
+        if (std.mem.eql(u8, prefix, "069")) return "ContentDocument";
+        if (std.mem.eql(u8, prefix, "068")) return "ContentVersion";
+        if (std.mem.eql(u8, prefix, "00G")) return "Group";
+        if (std.mem.eql(u8, prefix, "012")) return "RecordType";
+        if (std.mem.eql(u8, prefix, "00N")) return "CaseComment";
+        if (std.mem.eql(u8, prefix, "501")) return "Solution";
+        if (std.mem.eql(u8, prefix, "800")) return "Contract";
+        if (std.mem.eql(u8, prefix, "801")) return "Order";
+        if (std.ascii.eqlIgnoreCase(prefix, "00D")) return "Organization";
+        return "SObject";
+    }
+
     fn getTargetObjectType(self: *Evaluator, target: Value) ?[]const u8 {
         _ = self;
         if (target == .sobject) return target.sobject.type_name;
@@ -6155,7 +6179,7 @@ pub const Evaluator = struct {
             const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, "");
             return Value{ .string = result };
         }
-        // getSobjectType() on Id strings → determine type from our store IDs
+        // getSobjectType() on Id strings → determine type from our store IDs or key prefix
         if (std.ascii.eqlIgnoreCase(method, "getSobjectType") or std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
             // Look up the Id in our store to determine its type
             var type_name: []const u8 = "SObject";
@@ -6169,6 +6193,10 @@ pub const Evaluator = struct {
                         break;
                     }
                 }
+            }
+            // Fallback: infer type from Id key prefix
+            if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
+                type_name = sobjectTypeFromPrefix(s[0..3]);
             }
             const sot = try self.arena.create(types.ObjectInstance);
             sot.* = .{ .class_name = "Schema.SObjectType" };
