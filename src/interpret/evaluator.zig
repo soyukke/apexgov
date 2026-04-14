@@ -5663,11 +5663,21 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
             const key = try utils.coerceToString(args[0], self.arena);
-            return map.entries.get(key) orelse Value.null_val;
+            if (map.entries.get(key)) |v| return v;
+            // Case-insensitive fallback for String-keyed maps
+            for (map.entries.keys(), map.entries.values()) |k, v| {
+                if (std.ascii.eqlIgnoreCase(k, key)) return v;
+            }
+            return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "containsKey") and args.len > 0) {
             const key = try utils.coerceToString(args[0], self.arena);
-            return Value{ .boolean = map.entries.contains(key) };
+            if (map.entries.contains(key)) return Value{ .boolean = true };
+            // Case-insensitive fallback
+            for (map.entries.keys()) |k| {
+                if (std.ascii.eqlIgnoreCase(k, key)) return Value{ .boolean = true };
+            }
+            return Value{ .boolean = false };
         }
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(map.entries.count()) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = map.entries.count() == 0 };

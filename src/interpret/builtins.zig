@@ -819,8 +819,20 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
             const sot = try ctx.arena.create(types.ObjectInstance);
             sot.* = .{ .class_name = "Schema.SObjectType" };
             try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-            const lower_key = try std.ascii.allocLowerString(ctx.arena, obj_name);
-            try map.entries.put(ctx.arena, lower_key, Value{ .object = sot });
+            // Store with original case — Map.get uses case-insensitive lookup in evalMapMethod
+            try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
+        }
+        // Also add custom objects from store
+        {
+            var store_iter = ctx.eval.store.iterator();
+            while (store_iter.next()) |entry| {
+                if (!map.entries.contains(entry.key_ptr.*)) {
+                    const sot2 = try ctx.arena.create(types.ObjectInstance);
+                    sot2.* = .{ .class_name = "Schema.SObjectType" };
+                    try sot2.fields.put(ctx.arena, "name", Value{ .string = entry.key_ptr.* });
+                    try map.entries.put(ctx.arena, entry.key_ptr.*, Value{ .object = sot2 });
+                }
+            }
         }
         return Value{ .map = map };
     }
