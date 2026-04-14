@@ -6214,9 +6214,31 @@ pub const Evaluator = struct {
                     type_name = tn;
                 }
             }
-            // Fallback: infer type from Id key prefix
+            // Fallback: infer type from Id key prefix (standard objects)
             if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
                 type_name = sobjectTypeFromPrefix(s[0..3]);
+            }
+            // Fallback: match prefix against known SObject types (store + field_types)
+            if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
+                const id_prefix = s[0..3];
+                // Check store
+                var store_iter2 = self.store.iterator();
+                while (store_iter2.next()) |entry| {
+                    if (std.mem.eql(u8, sobjectKeyPrefix(entry.key_ptr.*), id_prefix)) {
+                        type_name = entry.key_ptr.*;
+                        break;
+                    }
+                }
+                // Check field_types (knows about all SObject types from field-meta.xml)
+                if (std.mem.eql(u8, type_name, "SObject")) {
+                    var ft_iter = self.field_types.iterator();
+                    while (ft_iter.next()) |entry| {
+                        if (std.mem.eql(u8, sobjectKeyPrefix(entry.key_ptr.*), id_prefix)) {
+                            type_name = entry.key_ptr.*;
+                            break;
+                        }
+                    }
+                }
             }
             const sot = try self.arena.create(types.ObjectInstance);
             sot.* = .{ .class_name = "Schema.SObjectType" };
