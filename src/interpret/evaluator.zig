@@ -4222,10 +4222,12 @@ pub const Evaluator = struct {
                                 }
                             }
                         }
-                        // System.AccessType/AccessLevel
+                        // System.AccessType/AccessLevel/LoggingLevel/TriggerOperation
                         if (std.ascii.eqlIgnoreCase(outer_name, "System") and
                             (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
+                                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
+                                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
+                                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation")))
                         {
                             return Value{ .string = fa.field };
                         }
@@ -4444,7 +4446,28 @@ pub const Evaluator = struct {
                     break :blk result;
                 } else val;
                 current_env.set(id.name, final_val) catch {
-                    try current_env.define(id.name, final_val);
+                    // Before defining locally, check if this is a static field (ClassName.fieldName)
+                    // to avoid shadowing static variables with local bindings.
+                    var found_static = false;
+                    if (self.current_class) |cc| {
+                        const sk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch "";
+                        if (self.global_env.get(sk) != null) {
+                            self.global_env.set(sk, final_val) catch {};
+                            found_static = true;
+                        }
+                    }
+                    if (current_env.get("this")) |tv| {
+                        if (tv == .object) {
+                            const sk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ tv.object.class_name, id.name }) catch "";
+                            if (self.global_env.get(sk) != null) {
+                                self.global_env.set(sk, final_val) catch {};
+                                found_static = true;
+                            }
+                        }
+                    }
+                    if (!found_static) {
+                        try current_env.define(id.name, final_val);
+                    }
                 };
                 // Also update instance field on `this` if field exists or is declared
                 if (current_env.get("this")) |this_val| {
@@ -4473,7 +4496,6 @@ pub const Evaluator = struct {
                     }
                 }
                 // Also update current_class static field if applicable
-                // Only do this if the variable is NOT defined locally (to avoid shadowing)
                 if (self.current_class) |cc| {
                     if (current_env.get("this") == null) { // Only in static context
                         const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch "";
@@ -6013,9 +6035,9 @@ pub const Evaluator = struct {
                 }
             }
         }
-        // ordinal() - for enum values, return 0 as stub
+        // ordinal() - for enum values, look up known system enum ordinals
         if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
-            return Value{ .integer = 0 };
+            return Value{ .integer = lookupEnumOrdinal(s) };
         }
         // getOffset(DateTime) — TimeZone のオフセット (ミリ秒)。UTC を返す。
         if (std.ascii.eqlIgnoreCase(method, "getOffset")) {
@@ -6755,6 +6777,24 @@ pub const Evaluator = struct {
             }
         }
         return false;
+    }
+
+    /// System enum の文字列値から ordinal 値を返す。
+    /// System.LoggingLevel, System.StatusCode, DisplayType など既知のenumに対応。
+    fn lookupEnumOrdinal(s: []const u8) i64 {
+        // System.LoggingLevel: Salesforce declaration order (most verbose first)
+        // INTERNAL=0, FINEST=1, FINER=2, FINE=3, DEBUG=4, INFO=5, WARN=6, ERROR=7, NONE=8
+        const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        for (logging_levels, 0..) |name, i| {
+            if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
+        }
+        // System.TriggerOperation: BEFORE_INSERT=0, BEFORE_UPDATE=1, BEFORE_DELETE=2,
+        // AFTER_INSERT=3, AFTER_UPDATE=4, AFTER_DELETE=5, AFTER_UNDELETE=6
+        const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+        for (trigger_ops, 0..) |name, i| {
+            if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
+        }
+        return 0;
     }
 
     /// ISO 日付文字列 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ) をパースする。
