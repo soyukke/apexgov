@@ -133,6 +133,15 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
         return null;
     }
+    if (ci.eqlIgnoreCase(class_name, "OrgLimits")) {
+        if (ci.eqlIgnoreCase(method_name, "getMap")) {
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            // Return empty map — org limits are not tracked in the interpreter
+            return Value{ .map = map };
+        }
+        return null;
+    }
     if (ci.eqlIgnoreCase(class_name, "Database")) return dispatchDatabase(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "RestContext")) return dispatchStaticRestContext(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "HttpResponse") or ci.eqlIgnoreCase(class_name, "HttpRequest")) {
