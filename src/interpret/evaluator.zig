@@ -2635,7 +2635,8 @@ pub const Evaluator = struct {
                     "Group",                      "Attachment",             "Note",                         "EmailMessage",        "CaseComment",            "Solution",             "Contract",
                     "Product2",                   "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense",
                     "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
-                    "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember",
+                    "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
+                    "FlowVersionView",            "ApexEmailNotification",  "Network",                      "Topic",               "OmniProcess",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
