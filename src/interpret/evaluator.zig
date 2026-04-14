@@ -539,7 +539,7 @@ pub const Evaluator = struct {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
         if (self.call_depth > self.max_call_depth) {
-            return error.StackOverflow;
+            return .null_val;
         }
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
@@ -3898,7 +3898,9 @@ pub const Evaluator = struct {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
         if (self.call_depth > self.max_call_depth) {
-            return error.StackOverflow;
+            // error を返すと error return trace の記録でスタックを消費し
+            // OS スタックオーバーフローを引き起こす場合があるため null を返す
+            return .null_val;
         }
         switch (expr.*) {
             .integer_literal => |v| return .{ .integer = v },
@@ -3917,30 +3919,43 @@ pub const Evaluator = struct {
                 }
                 // Check if this is a property with a getter on `this`
                 // (bare identifier in getter body referencing another property)
+                // Skip if we're already inside this property's getter to avoid infinite recursion
+                // (self-referencing getter pattern: backing field access, not getter re-invocation)
                 if (current_env.get("this")) |this_check| {
                     if (this_check == .object) {
-                        if (self.findClass(this_check.object.class_name)) |this_cd| {
-                            var scan_cd: ?*ast.ClassDecl = this_cd;
-                            while (scan_cd) |scd| {
-                                for (scd.members) |m| {
-                                    switch (m) {
-                                        .field_decl => |pfd| {
-                                            if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and pfd.getter_body != null) {
-                                                // Evaluate as this.propertyName → triggers getter
-                                                const this_expr_node = try self.arena.create(ast.Expr);
-                                                this_expr_node.* = .this_expr;
-                                                const fa_node = try self.arena.create(ast.FieldAccess);
-                                                fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
-                                                const fa_expr = try self.arena.create(ast.Expr);
-                                                fa_expr.* = .{ .field_access = fa_node };
-                                                return self.evalExpr(fa_expr, current_env);
-                                            }
-                                        },
-                                        else => {},
+                        const already_in_instance_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
+                        if (!already_in_instance_getter) {
+                            if (self.findClass(this_check.object.class_name)) |this_cd| {
+                                var scan_cd: ?*ast.ClassDecl = this_cd;
+                                while (scan_cd) |scd| {
+                                    for (scd.members) |m| {
+                                        switch (m) {
+                                            .field_decl => |pfd| {
+                                                if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and pfd.getter_body != null) {
+                                                    // Evaluate as this.propertyName → triggers getter
+                                                    const this_expr_node = try self.arena.create(ast.Expr);
+                                                    this_expr_node.* = .this_expr;
+                                                    const fa_node = try self.arena.create(ast.FieldAccess);
+                                                    fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
+                                                    const fa_expr = try self.arena.create(ast.Expr);
+                                                    fa_expr.* = .{ .field_access = fa_node };
+                                                    return self.evalExpr(fa_expr, current_env);
+                                                }
+                                            },
+                                            else => {},
+                                        }
                                     }
+                                    scan_cd = if (scd.super_class) |sc| self.findClass(sc.name) else null;
                                 }
-                                scan_cd = if (scd.super_class) |sc| self.findClass(sc.name) else null;
                             }
+                        } else {
+                            // Inside own getter: return backing field value directly
+                            if (this_check.object.fields.get(id.name)) |fv| return fv;
+                            // Case-insensitive fallback
+                            for (this_check.object.fields.keys(), this_check.object.fields.values()) |fk, fv| {
+                                if (std.ascii.eqlIgnoreCase(fk, id.name)) return fv;
+                            }
+                            return .null_val;
                         }
                     }
                 }
@@ -4240,8 +4255,10 @@ pub const Evaluator = struct {
                 const obj = try self.evalExpr(ia.object, current_env);
                 const idx = try self.evalExpr(ia.index, current_env);
                 if (obj == .list and idx == .integer) {
-                    const i: usize = @intCast(idx.integer);
-                    if (i < obj.list.items.items.len) return obj.list.items.items[i];
+                    if (idx.integer >= 0) {
+                        const i: usize = @intCast(idx.integer);
+                        if (i < obj.list.items.items.len) return obj.list.items.items[i];
+                    }
                 }
                 if (obj == .map and idx == .string) {
                     return obj.map.entries.get(idx.string) orelse Value.null_val;
@@ -4530,7 +4547,7 @@ pub const Evaluator = struct {
             .index_access => |ia| {
                 const obj = try self.evalExpr(ia.object, current_env);
                 const idx = try self.evalExpr(ia.index, current_env);
-                if (obj == .list and idx == .integer) {
+                if (obj == .list and idx == .integer and idx.integer >= 0) {
                     const i: usize = @intCast(idx.integer);
                     if (i < obj.list.items.items.len) {
                         obj.list.items.items[i] = val;
@@ -5319,11 +5336,13 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(list.items.items.len) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = list.items.items.len == 0 };
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0 and args[0] == .integer) {
+            if (args[0].integer < 0) return Value.null_val;
             const i: usize = @intCast(args[0].integer);
             if (i < list.items.items.len) return list.items.items[i];
             return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "set") and args.len >= 2 and args[0] == .integer) {
+            if (args[0].integer < 0) return .void_val;
             const i: usize = @intCast(args[0].integer);
             if (i < list.items.items.len) list.items.items[i] = args[1];
             return .void_val;
@@ -5339,6 +5358,7 @@ pub const Evaluator = struct {
             return Value{ .boolean = false };
         }
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0 and args[0] == .integer) {
+            if (args[0].integer < 0) return .void_val;
             const i: usize = @intCast(args[0].integer);
             if (i < list.items.items.len) {
                 const removed = list.items.orderedRemove(i);
@@ -5589,9 +5609,16 @@ pub const Evaluator = struct {
                 }
                 break :blk pattern;
             };
-            var iter = std.mem.splitSequence(u8, s, split_str);
-            while (iter.next()) |part| {
-                try list.items.append(self.arena, Value{ .string = part });
+            if (split_str.len == 0) {
+                // 空デリミタ: 各文字を要素として返す (Apex の String.split('') 挙動)
+                for (0..s.len) |ci| {
+                    try list.items.append(self.arena, Value{ .string = s[ci .. ci + 1] });
+                }
+            } else {
+                var iter = std.mem.splitSequence(u8, s, split_str);
+                while (iter.next()) |part| {
+                    try list.items.append(self.arena, Value{ .string = part });
+                }
             }
             return Value{ .list = list };
         }
@@ -6375,6 +6402,18 @@ pub const Evaluator = struct {
                             .field_decl => |fd| {
                                 if (std.ascii.eqlIgnoreCase(fd.name, fa.field)) {
                                     if (fd.getter_body) |getter| {
+                                        // Skip getter re-invocation if we're already inside this property's getter
+                                        // (self-referencing getter pattern: this.prop inside prop's getter = backing field)
+                                        if (self.evaluating_getter) |eg| {
+                                            if (std.ascii.eqlIgnoreCase(eg, fd.name)) {
+                                                // Return backing field value directly
+                                                if (obj.object.fields.get(fa.field)) |fv| return fv;
+                                                for (obj.object.fields.keys(), obj.object.fields.values()) |fk, fv| {
+                                                    if (std.ascii.eqlIgnoreCase(fk, fa.field)) return fv;
+                                                }
+                                                return .null_val;
+                                            }
+                                        }
                                         // Execute getter body with 'this' bound to the object
                                         const getter_env = self.global_env.child() catch return Value.null_val;
                                         getter_env.define("this", Value{ .object = obj.object }) catch {};
@@ -6405,6 +6444,9 @@ pub const Evaluator = struct {
                                                 };
                                             }
                                         }
+                                        const saved_getter = self.evaluating_getter;
+                                        self.evaluating_getter = fd.name;
+                                        defer self.evaluating_getter = saved_getter;
                                         const result = self.execBlock(getter, getter_env) catch |err| {
                                             if (err == error.StackOverflow) return Value.null_val;
                                             return err;
@@ -7750,7 +7792,7 @@ pub const Evaluator = struct {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
         if (self.call_depth > self.max_call_depth) {
-            return error.StackOverflow;
+            return .null_val;
         }
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes

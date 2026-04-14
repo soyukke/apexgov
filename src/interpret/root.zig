@@ -112,29 +112,29 @@ fn runTestsFiltered(
     filter_method: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）
+    var parse_arena = std.heap.ArenaAllocator.init(gpa);
+    defer parse_arena.deinit();
+    const parse_alloc = parse_arena.allocator();
 
     // 1. .cls ファイルを収集
     var files: std.ArrayListUnmanaged(SourceFile) = .empty;
     for (paths) |path| {
-        try collectClsFiles(alloc, path, &files);
+        try collectClsFiles(parse_alloc, path, &files);
     }
-
     try writer.print("interpret: loaded {d} Apex source file(s)\n", .{files.items.len});
 
-    // 2. 全ファイルをパース
-    var eval = try evaluator.Evaluator.init(alloc);
+    // 2. 全ファイルをパース（永続アリーナ上）
+    var eval = try evaluator.Evaluator.init(parse_alloc);
     eval.source_paths = paths;
     var parse_errors: u32 = 0;
 
     for (files.items) |file| {
-        const tokens = lexer.tokenize(file.content, alloc) catch {
+        const tokens = lexer.tokenize(file.content, parse_alloc) catch {
             parse_errors += 1;
             continue;
         };
-        const decls = parser.parse(tokens, alloc) catch {
+        const decls = parser.parse(tokens, parse_alloc) catch {
             parse_errors += 1;
             continue;
         };
@@ -150,7 +150,6 @@ fn runTestsFiltered(
             eval.registerClassSource(cls_name, file.content) catch {};
         }
     }
-
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
 
     // Run static initializer blocks after all classes are registered
@@ -176,10 +175,14 @@ fn runTestsFiltered(
                     else => {},
                 }
             }
-            if (has_static_fields) try classes_with_statics.append(alloc, cd);
-            if (has_static_init) try classes_with_static_inits.append(alloc, cd);
+            if (has_static_fields) try classes_with_statics.append(parse_alloc, cd);
+            if (has_static_init) try classes_with_static_inits.append(parse_alloc, cd);
         }
     }
+
+    // テスト実行用アリーナ: テストごとにリセットしてメモリを回収
+    var test_arena = std.heap.ArenaAllocator.init(gpa);
+    defer test_arena.deinit();
 
     // 3. @isTest メソッドを発見・実行
     var suite = TestSuiteResult{};
@@ -221,47 +224,57 @@ fn runTestsFiltered(
 
                     suite.total += 1;
 
-                    // Reset store and assertions before each test
-                    eval.resetForTest();
+                    // テストアリーナをリセットしてメモリを回収し、新しい evaluator を作成
+                    _ = test_arena.reset(.retain_capacity);
+                    const test_alloc = test_arena.allocator();
+                    var test_eval = evaluator.Evaluator.init(test_alloc) catch continue;
+                    // 永続側のクラス・トリガー・ソース情報を引き継ぐ
+                    test_eval.classes = eval.classes;
+                    test_eval.triggers = eval.triggers;
+                    test_eval.class_sources = eval.class_sources;
+                    test_eval.source_paths = eval.source_paths;
+
                     // Check for @isTest(SeeAllData=true) annotation
-                    eval.see_all_data = false;
+                    test_eval.see_all_data = false;
                     for (md.annotations) |ann| {
                         if (std.ascii.indexOfIgnoreCase(ann, "seealldata") != null and
                             std.ascii.indexOfIgnoreCase(ann, "true") != null)
                         {
-                            eval.see_all_data = true;
+                            test_eval.see_all_data = true;
                             break;
                         }
                     }
                     // Re-init static fields for classes that have them
                     for (classes_with_statics.items) |cd| {
-                        eval.reInitClassStaticFields(cd);
+                        test_eval.reInitClassStaticFields(cd);
                     }
                     // Run static init blocks for classes that have them
                     for (classes_with_static_inits.items) |cd| {
-                        eval.runClassStaticInits(cd);
+                        test_eval.runClassStaticInits(cd);
                     }
 
                     // Run @TestSetup if exists
                     if (test_setup_method) |setup| {
-                        _ = eval.callMethod(class_name, setup.name, &.{}) catch {};
+                        _ = test_eval.callMethod(class_name, setup.name, &.{}) catch {};
                     }
 
-                    const result = eval.callMethod(class_name, md.name, &.{});
+                    const result = test_eval.callMethod(class_name, md.name, &.{});
                     if (result) |_| {
                         // Check assertion failures
-                        if (eval.assertion_failure) |msg| {
+                        if (test_eval.assertion_failure) |msg| {
                             suite.failed += 1;
-                            try suite.results.append(alloc, .{
+                            // failure_message をテストアリーナから永続アリーナにコピー
+                            const msg_copy = parse_alloc.dupe(u8, msg) catch msg;
+                            try suite.results.append(parse_alloc, .{
                                 .class_name = class_name,
                                 .method_name = md.name,
                                 .passed = false,
-                                .failure_message = msg,
+                                .failure_message = msg_copy,
                             });
                             try writer.print("[FAIL] {s}#{s}: {s}\n", .{ class_name, md.name, msg });
                         } else {
                             suite.passed += 1;
-                            try suite.results.append(alloc, .{
+                            try suite.results.append(parse_alloc, .{
                                 .class_name = class_name,
                                 .method_name = md.name,
                                 .passed = true,
@@ -271,7 +284,7 @@ fn runTestsFiltered(
                     } else |err| {
                         suite.errors += 1;
                         // Include pending exception message if available
-                        const exc_detail = if (eval.pending_exception) |pe| blk: {
+                        const exc_detail = if (test_eval.pending_exception) |pe| blk: {
                             if (pe == .object) {
                                 if (pe.object.fields.get("message")) |msg| {
                                     if (msg == .string) break :blk msg.string;
@@ -280,10 +293,10 @@ fn runTestsFiltered(
                             break :blk "";
                         } else "";
                         const err_msg = if (exc_detail.len > 0)
-                            try std.fmt.allocPrint(alloc, "{s}: {s}", .{ @errorName(err), exc_detail })
+                            try std.fmt.allocPrint(parse_alloc, "{s}: {s}", .{ @errorName(err), exc_detail })
                         else
-                            try std.fmt.allocPrint(alloc, "{s}", .{@errorName(err)});
-                        try suite.results.append(alloc, .{
+                            try std.fmt.allocPrint(parse_alloc, "{s}", .{@errorName(err)});
+                        try suite.results.append(parse_alloc, .{
                             .class_name = class_name,
                             .method_name = md.name,
                             .passed = false,
@@ -2432,4 +2445,61 @@ test "E2E: Custom metadata records loaded from .md-meta.xml files" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Reservation_Status__c:Draft", result.value.string);
+}
+
+test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {
+    // テストごとに新しい evaluator を作り、テストアリーナを reset(.retain_capacity) する。
+    // テストアリーナの容量が線形に増加しないことを検証する。
+    const source =
+        \\@IsTest
+        \\public class LeakTest {
+        \\    @IsTest
+        \\    static void test1() {
+        \\        List<String> items = new List<String>();
+        \\        for (Integer i = 0; i < 100; i++) {
+        \\            items.add('item' + i);
+        \\        }
+        \\        System.assertEquals(100, items.size());
+        \\    }
+        \\}
+    ;
+
+    // 永続アリーナ: パース + クラス登録
+    var parse_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer parse_arena.deinit();
+    const parse_alloc = parse_arena.allocator();
+
+    const tokens = try lexer.tokenize(source, parse_alloc);
+    const decls = try parser.parse(tokens, parse_alloc);
+    var base_eval = try evaluator.Evaluator.init(parse_alloc);
+    try base_eval.loadDecls(decls);
+
+    // テスト実行用アリーナ
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+
+    // 1回実行後のテストアリーナの容量を記録
+    {
+        _ = test_arena.reset(.retain_capacity);
+        var test_eval = try evaluator.Evaluator.init(test_arena.allocator());
+        test_eval.classes = base_eval.classes;
+        _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
+    }
+    const baseline = test_arena.queryCapacity();
+
+    // 同じテストを 50 回繰り返す
+    for (0..50) |_| {
+        _ = test_arena.reset(.retain_capacity);
+        var test_eval = try evaluator.Evaluator.init(test_arena.allocator());
+        test_eval.classes = base_eval.classes;
+        _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
+    }
+
+    const after = test_arena.queryCapacity();
+
+    // retain_capacity により容量は安定するはず（2倍以上増えたらリーク）
+    if (after > baseline * 2) {
+        std.debug.print("\n[LEAK] test arena capacity: baseline={d} bytes, after 50 iterations={d} bytes (x{d})\n", .{ baseline, after, after / baseline });
+        return error.TestUnexpectedResult;
+    }
 }
