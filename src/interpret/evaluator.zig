@@ -6885,6 +6885,15 @@ pub const Evaluator = struct {
                     return Value{ .string = fa.field };
                 }
 
+                // System.ExceptionType.class → Type object with "System.ExceptionType" name
+                if (std.ascii.eqlIgnoreCase(fa.field, "class") and std.ascii.eqlIgnoreCase(outer_name, "System")) {
+                    const type_obj = try self.arena.create(types.ObjectInstance);
+                    type_obj.* = .{ .class_name = "Type" };
+                    const fq_name = try std.fmt.allocPrint(self.arena, "System.{s}", .{inner_name});
+                    try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
+                    return Value{ .object = type_obj };
+                }
+
                 // Schema.SObjectType.Account etc.
                 if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and std.ascii.eqlIgnoreCase(inner_name, "SObjectType")) {
                     const sot = try self.arena.create(types.ObjectInstance);
