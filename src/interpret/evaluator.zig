@@ -7119,6 +7119,12 @@ pub const Evaluator = struct {
                 break;
             }
         }
+        // All *Exception classes are subclasses of Exception / System.Exception
+        if ((std.ascii.eqlIgnoreCase(parent_type, "Exception") or std.ascii.eqlIgnoreCase(parent_type, "System.Exception")) and
+            std.mem.endsWith(u8, child_class, "Exception"))
+        {
+            return true;
+        }
         return false;
     }
 
