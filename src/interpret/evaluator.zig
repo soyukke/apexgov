@@ -6873,10 +6873,14 @@ pub const Evaluator = struct {
                         }
                     }
                 }
-                // System.AccessType.CREATABLE / System.AccessLevel.SYSTEM_MODE etc.
+                // System.AccessType.CREATABLE / System.AccessLevel.SYSTEM_MODE / System.Quiddity.* etc.
                 if (std.ascii.eqlIgnoreCase(outer_name, "System") and
                     (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                        std.ascii.eqlIgnoreCase(inner_name, "AccessLevel")))
+                        std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
+                        std.ascii.eqlIgnoreCase(inner_name, "Quiddity") or
+                        std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation") or
+                        std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
+                        std.ascii.eqlIgnoreCase(inner_name, "StatusCode")))
                 {
                     return Value{ .string = fa.field };
                 }
