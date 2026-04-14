@@ -699,6 +699,21 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
 
     // LoggingLevel
     if (std.ascii.eqlIgnoreCase(class_name, "LoggingLevel")) {
+        // LoggingLevel.valueOf(name) → return the enum value string
+        if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
+            return Value{ .string = args[0].string };
+        }
+        // LoggingLevel.values() → return list of all values
+        if (std.ascii.eqlIgnoreCase(method_name, "values")) {
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+            for (names) |name| {
+                try list.items.append(ctx.arena, Value{ .string = name });
+            }
+            return Value{ .list = list };
+        }
+        // LoggingLevel.ENUM_VALUE → return the value name
         return Value{ .string = method_name };
     }
 
@@ -2585,11 +2600,17 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
                 new_sob.id = args[0].string;
                 try new_sob.fields.put(ctx.arena, "Id", args[0]);
             }
-            // If second arg is true, populate system fields (e.g., EventUuid for platform events)
+            // If second arg is true, populate default field values from field-meta.xml
             if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
                 // Generate EventUuid for platform events
                 if (std.mem.endsWith(u8, name, "__e")) {
                     try new_sob.fields.put(ctx.arena, "EventUuid", Value{ .string = "evt-00000001-0000-0000-0000-000000000001" });
+                }
+                // Apply field defaults from field-meta.xml
+                if (ctx.eval.field_defaults.get(name)) |defaults| {
+                    for (defaults.keys(), defaults.values()) |field_name, default_val| {
+                        try new_sob.fields.put(ctx.arena, field_name, default_val);
+                    }
                 }
             }
             return Value{ .sobject = new_sob };

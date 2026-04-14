@@ -70,6 +70,8 @@ pub const Evaluator = struct {
     trigger_context: ?TriggerContext = null,
     // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
     source_paths: []const []const u8 = &.{},
+    // SObject field default values from field-meta.xml (type_name → field_name → default Value)
+    field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
     // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
@@ -4889,9 +4891,27 @@ pub const Evaluator = struct {
             return self.callMethod(class_name, mc.method, args.items);
         }
 
-        // Handle System.Assert (field_access . method_call chain)
+        // Handle three-level field_access chains: Schema.TypeName.SObjectType.method()
         if (mc.object.* == .field_access) {
             const fa = mc.object.field_access;
+            // Schema.TypeName.SObjectType.newSObject(...) / getDescribe() etc.
+            if (fa.object.* == .field_access) {
+                const inner_fa = fa.object.field_access;
+                if (inner_fa.object.* == .identifier) {
+                    const outer_name = inner_fa.object.identifier.name;
+                    const type_name = inner_fa.field;
+                    if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+                        std.ascii.eqlIgnoreCase(fa.field, "SObjectType"))
+                    {
+                        // Build Schema.SObjectType object with name
+                        const sot = try self.arena.create(types.ObjectInstance);
+                        sot.* = .{ .class_name = "Schema.SObjectType" };
+                        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
+                        return self.evalInstanceMethod(Value{ .object = sot }, mc.method, args.items, current_env);
+                    }
+                }
+            }
+
             if (fa.object.* == .identifier) {
                 const outer_class = fa.object.identifier.name;
                 const inner = fa.field;
@@ -7519,6 +7539,28 @@ pub const Evaluator = struct {
         }
         // System.AccessType/AccessLevel
         if (std.ascii.eqlIgnoreCase(inner, "AccessType") or std.ascii.eqlIgnoreCase(inner, "AccessLevel")) {
+            return Value{ .string = method };
+        }
+        // System.LoggingLevel / System.TriggerOperation
+        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or std.ascii.eqlIgnoreCase(inner, "TriggerOperation")) {
+            // valueOf(name) → return the enum value string
+            if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
+                return Value{ .string = args[0].string };
+            }
+            // values() → return list of all values
+            if (std.ascii.eqlIgnoreCase(method, "values")) {
+                const list = try self.arena.create(types.ListValue);
+                list.* = .{};
+                if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel")) {
+                    const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
+                } else {
+                    const names = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
+                }
+                return Value{ .list = list };
+            }
+            // ENUM_VALUE → return the value name
             return Value{ .string = method };
         }
         // System.SObjectAccessDecision
