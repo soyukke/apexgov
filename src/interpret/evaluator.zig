@@ -4233,6 +4233,20 @@ pub const Evaluator = struct {
                         {
                             return Value{ .string = fa.field };
                         }
+                        // Schema.SObjectType.FieldName → treat as SObjectType.FieldName (strip Schema prefix)
+                        // Only when inner_name looks like an SObject type (not "sObjectType" namespace)
+                        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+                            !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
+                            !std.ascii.eqlIgnoreCase(inner_name, "SObjectType"))
+                        {
+                            const inner_id = try self.arena.create(ast.Expr);
+                            inner_id.* = .{ .identifier = .{ .name = inner_name } };
+                            const field_fa = try self.arena.create(ast.FieldAccess);
+                            field_fa.* = .{ .object = inner_id, .field = fa.field, .null_safe = fa.null_safe };
+                            const field_expr = try self.arena.create(ast.Expr);
+                            field_expr.* = .{ .field_access = field_fa };
+                            return self.evalExpr(field_expr, current_env);
+                        }
                     }
                 }
                 if (fa.null_safe) {
@@ -6038,6 +6052,13 @@ pub const Evaluator = struct {
             sot.* = .{ .class_name = "Schema.SObjectType" };
             try sot.fields.put(self.arena, "name", Value{ .string = type_name });
             return Value{ .object = sot };
+        }
+        // getDescribe() - for SObjectField tokens (stored as strings), return DescribeFieldResult
+        if (std.ascii.eqlIgnoreCase(method, "getDescribe")) {
+            const dfr = try self.arena.create(types.ObjectInstance);
+            dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
+            try dfr.fields.put(self.arena, "fieldName", Value{ .string = s });
+            return Value{ .object = dfr };
         }
         // name() - for enum values, returns the string itself
         if (std.ascii.eqlIgnoreCase(method, "name") or std.ascii.eqlIgnoreCase(method, "toString")) {
