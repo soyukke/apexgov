@@ -2136,6 +2136,8 @@ pub const Evaluator = struct {
                     const trash_gop = try self.trash.getOrPut(self.arena, obj.type_name);
                     if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
                     try trash_gop.value_ptr.append(self.arena, removed);
+                    // Mark the original record's IsDeleted field
+                    try obj.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
                     found = true;
                 } else {
                     i += 1;
