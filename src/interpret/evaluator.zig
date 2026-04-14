@@ -8420,11 +8420,21 @@ pub const Evaluator = struct {
                     } else if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) {
                         score += 2;
                     } else if (arg == .object) {
-                        score += 1;
+                        // Check if the object's class_name matches the param type
+                        if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) {
+                            score += 3;
+                        } else {
+                            score += 1;
+                        }
                     } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
                         score += 2;
                     } else if (arg == .sobject) {
-                        score += 1;
+                        // Prefer SObject parameter type over non-SObject
+                        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.mem.endsWith(u8, pt, "__c") or std.mem.endsWith(u8, pt, "__e")) {
+                            score += 3;
+                        } else {
+                            score += 1;
+                        }
                     }
                 }
                 if (best == null or score > best_score) {
