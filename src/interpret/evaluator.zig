@@ -21,6 +21,8 @@ pub const StmtResult = union(enum) {
 
 pub const Evaluator = struct {
     arena: std.mem.Allocator,
+    /// classes map 専用 allocator (parse_arena — テスト間で保持される)
+    class_arena: ?std.mem.Allocator = null,
     global_env: *Env,
     stdout: std.ArrayListUnmanaged(u8) = .empty,
     classes: std.StringArrayHashMapUnmanaged(*ast.ClassDecl) = .empty,
@@ -419,11 +421,12 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn loadDecls(self: *Evaluator, decls: []const ast.Decl) anyerror!void {
+        const ca = self.class_arena orelse self.arena;
         // Pass 1: Register all classes, inner classes, enums, and static field placeholders
         for (decls) |decl| {
             switch (decl) {
                 .class_decl => |cd| {
-                    try self.classes.put(self.arena, cd.name, cd);
+                    try self.classes.put(ca, cd.name, cd);
                     for (cd.members) |member| {
                         switch (member) {
                             .field_decl => |fd| {
@@ -434,9 +437,9 @@ pub const Evaluator = struct {
                                 }
                             },
                             .class_decl => |inner_cd| {
-                                try self.classes.put(self.arena, inner_cd.name, inner_cd);
-                                const fq_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, inner_cd.name }) catch continue;
-                                try self.classes.put(self.arena, fq_name, inner_cd);
+                                try self.classes.put(ca, inner_cd.name, inner_cd);
+                                const fq_name = std.fmt.allocPrint(ca, "{s}.{s}", .{ cd.name, inner_cd.name }) catch continue;
+                                try self.classes.put(ca, fq_name, inner_cd);
                             },
                             .enum_decl => |ed| {
                                 for (ed.values) |v| {
@@ -667,7 +670,7 @@ pub const Evaluator = struct {
             return result;
         }
 
-        // Case-insensitive class lookup (before TestFactory stubs so user-defined classes take priority)
+        // Case-insensitive class lookup (before user-defined classes)
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {

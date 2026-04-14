@@ -245,6 +245,7 @@ fn runTestsFiltered(
                     var test_eval = evaluator.Evaluator.init(test_alloc) catch continue;
                     // 永続側のクラス・トリガー・ソース情報を引き継ぐ
                     test_eval.classes = eval.classes;
+                    test_eval.class_arena = parse_alloc; // classes map は parse_arena 上に確保
                     test_eval.triggers = eval.triggers;
                     test_eval.class_sources = eval.class_sources;
                     test_eval.source_paths = eval.source_paths;
