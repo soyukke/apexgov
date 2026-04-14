@@ -2100,6 +2100,24 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
+            const fn_val = obj.fields.get("fieldName") orelse Value{ .string = "" };
+            if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLength")) {
+            // Return a reasonable default length for text fields (131072 = max long text area)
+            return Value{ .integer = 131072 };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) {
+            return Value{ .string = "STRING" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) {
+            return Value{ .string = "STRING" };
+        }
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
             return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
         }
@@ -2560,7 +2578,16 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return Value{ .integer = 131072 };
+        if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return Value{ .string = "STRING" };
+        if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return Value{ .string = "STRING" };
         if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+            return obj.fields.get("name") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
             return obj.fields.get("name") orelse Value{ .string = "" };
         }
         if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };
