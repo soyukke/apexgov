@@ -1753,7 +1753,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         return obj.fields.get("value") orelse Value{ .string = "" };
     }
     if (ci.eqlIgnoreCase(cn, "RestResponse") and ci.eqlIgnoreCase(method_name, "addHeader")) return .void_val;
-    if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult")) {
+    if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or ci.eqlIgnoreCase(cn, "DescribeFieldResult") or ci.eqlIgnoreCase(cn, "SObjectField")) {
         if (try dispatchObjSchemaDescribeField(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.PicklistEntry")) {
@@ -2097,7 +2097,7 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
-        const fn_val = obj.fields.get("fieldName") orelse Value{ .string = "" };
+        const fn_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
         if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
         return Value{ .boolean = false };
     }
@@ -2105,8 +2105,8 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;
 }
 
