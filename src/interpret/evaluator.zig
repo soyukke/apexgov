@@ -6964,10 +6964,17 @@ pub const Evaluator = struct {
         }
 
         // ClassName.class → Type object
+        // Use fully-qualified name when the class is an inner class of current_class
         if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            const simple_name = fa.object.identifier.name;
+            // Check if this is an inner class of the current class → use FQ name
+            const type_name: []const u8 = if (self.current_class) |cc| blk: {
+                const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, simple_name }) catch simple_name;
+                break :blk if (self.findClass(fq) != null) fq else simple_name;
+            } else simple_name;
             const type_obj = try self.arena.create(types.ObjectInstance);
             type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = fa.object.identifier.name });
+            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
             return Value{ .object = type_obj };
         }
 
