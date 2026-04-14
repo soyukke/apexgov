@@ -767,7 +767,16 @@ fn dispatchStaticUserInfo(method_name: []const u8) !?Value {
 
 fn dispatchStaticLoggingLevel(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
-        return Value{ .string = args[0].string };
+        const valid_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        for (valid_levels) |level| {
+            if (std.ascii.eqlIgnoreCase(args[0].string, level)) return Value{ .string = level };
+        }
+        // Invalid enum value → throw NoSuchElementException
+        const exc = try ctx.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "NoSuchElementException" };
+        try exc.fields.put(ctx.arena, "message", Value{ .string = try std.fmt.allocPrint(ctx.arena, "No enum constant System.LoggingLevel.{s}", .{args[0].string}) });
+        ctx.pending_exception.?.* = Value{ .object = exc };
+        return error.ApexException;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "values")) {
         const list = try ctx.arena.create(types.ListValue);

@@ -7765,9 +7765,20 @@ pub const Evaluator = struct {
         }
         // System.LoggingLevel / System.TriggerOperation
         if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or std.ascii.eqlIgnoreCase(inner, "TriggerOperation")) {
-            // valueOf(name) → return the enum value string
+            // valueOf(name) → return the enum value string, throw NoSuchElementException for invalid values
             if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
-                return Value{ .string = args[0].string };
+                const valid_values: []const []const u8 = if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel"))
+                    &.{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" }
+                else
+                    &.{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+                for (valid_values) |v| {
+                    if (std.ascii.eqlIgnoreCase(args[0].string, v)) return Value{ .string = v };
+                }
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "System.NoSuchElementException" };
+                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant System.{s}.{s}", .{ inner, args[0].string }) });
+                self.pending_exception = Value{ .object = exc };
+                return error.ApexException;
             }
             // values() → return list of all values
             if (std.ascii.eqlIgnoreCase(method, "values")) {
