@@ -7701,7 +7701,17 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "executeBatch")) {
-            // Execute the batch class's execute method directly
+            // Batch runs in separate transaction — save/restore limits
+            const sb_dml = self.limits_dml;
+            const sb_soql = self.limits_soql;
+            const sb_pub = self.limits_publish_immediate;
+            const sb_call = self.limits_callouts;
+            defer {
+                self.limits_dml = sb_dml;
+                self.limits_soql = sb_soql;
+                self.limits_publish_immediate = sb_pub;
+                self.limits_callouts = sb_call;
+            }
             if (args.len > 0 and args[0] == .object) {
                 const batch_obj = args[0].object;
                 if (self.findClass(batch_obj.class_name)) |batch_class| {
