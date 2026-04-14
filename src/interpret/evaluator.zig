@@ -674,6 +674,35 @@ pub const Evaluator = struct {
                 return Value.null_val; // method not found in class, return null
             }
         }
+        // Check if class_name is an enum (inner or top-level)
+        {
+            var enum_iter = self.classes.iterator();
+            while (enum_iter.next()) |entry| {
+                for (entry.value_ptr.*.members) |member| {
+                    switch (member) {
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
+                                if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
+                                    return Value{ .string = args[0].string };
+                                }
+                                if (std.ascii.eqlIgnoreCase(method_name, "values")) {
+                                    const list = try self.arena.create(types.ListValue);
+                                    list.* = .{};
+                                    for (ed.values) |v| {
+                                        try list.items.append(self.arena, Value{ .string = v });
+                                    }
+                                    return Value{ .list = list };
+                                }
+                                for (ed.values) |v| {
+                                    if (std.ascii.eqlIgnoreCase(v, method_name)) return Value{ .string = v };
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
         // TestFactory / TestDataHelpers builtin stubs (only when no user-defined class found)
         if (try self.handleTestFactory(class_name, method_name, args)) |result| {
             return result;
