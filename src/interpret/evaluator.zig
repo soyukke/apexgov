@@ -5142,6 +5142,7 @@ pub const Evaluator = struct {
             (std.ascii.eqlIgnoreCase(obj.object.class_name, "Http") or
                 std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
         {
+            self.limits_callouts += 1;
             if (self.callout_mock) |mock| {
                 // Call mock.respond(request) method
                 if (mock == .object) {
