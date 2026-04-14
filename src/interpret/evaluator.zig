@@ -8459,8 +8459,10 @@ pub const Evaluator = struct {
                         // Check if the object's class_name matches the param type
                         if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) {
                             score += 3;
+                        } else if (self.isSubclassOf(arg.object.class_name, pt)) {
+                            score += 2;
                         } else {
-                            score += 1;
+                            score += 0;
                         }
                     } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
                         score += 2;
