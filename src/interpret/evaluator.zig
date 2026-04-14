@@ -4140,6 +4140,12 @@ pub const Evaluator = struct {
 
             .assignment => |asgn| {
                 const val = try self.evalExpr(asgn.value, current_env);
+                if (asgn.is_postfix) {
+                    // Postfix n++ / n--: return original value, but still perform the assignment
+                    const original = self.evalExpr(asgn.target, current_env) catch Value.null_val;
+                    _ = try self.evalAssignment(asgn, val, current_env);
+                    return original;
+                }
                 return self.evalAssignment(asgn, val, current_env);
             },
 

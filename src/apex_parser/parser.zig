@@ -1165,12 +1165,12 @@ const Parser = struct {
                 expr = result;
                 continue;
             }
-            // Postfix ++ and -- → rewrite as x += 1 / x -= 1
+            // Postfix ++ and -- → rewrite as x += 1 / x -= 1 (with is_postfix flag)
             if (self.matchKind(.plus_plus)) {
                 const one = try self.arena.create(ast.Expr);
                 one.* = .{ .integer_literal = 1 };
                 const node = try self.arena.create(ast.Assignment);
-                node.* = .{ .target = expr, .op = .plus_assign, .value = one };
+                node.* = .{ .target = expr, .op = .plus_assign, .value = one, .is_postfix = true };
                 const result = try self.arena.create(ast.Expr);
                 result.* = .{ .assignment = node };
                 expr = result;
@@ -1180,7 +1180,7 @@ const Parser = struct {
                 const one = try self.arena.create(ast.Expr);
                 one.* = .{ .integer_literal = 1 };
                 const node = try self.arena.create(ast.Assignment);
-                node.* = .{ .target = expr, .op = .minus_assign, .value = one };
+                node.* = .{ .target = expr, .op = .minus_assign, .value = one, .is_postfix = true };
                 const result = try self.arena.create(ast.Expr);
                 result.* = .{ .assignment = node };
                 expr = result;
