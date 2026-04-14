@@ -1546,8 +1546,9 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u
     else
         131072;
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
-    // Set field type — infer from field name if not provided
-    const ft: []const u8 = field_type orelse inferFieldType(field_name);
+    // Set field type — map XML type to DisplayType enum name, infer from field name if not provided
+    const raw_ft: []const u8 = field_type orelse inferFieldType(field_name);
+    const ft: []const u8 = mapXmlTypeToDisplayType(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
     // Set SoapType based on field type
     const soap: []const u8 = if (std.ascii.eqlIgnoreCase(ft, "Boolean"))
@@ -1568,6 +1569,32 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u
     // We don't set a default here because it depends on the SObject type context,
     // which is handled by the caller (createDescribeResult).
     return Value{ .object = fdr };
+}
+
+/// field-meta.xml の <type> 値を Schema.DisplayType enum 名にマッピング。
+fn mapXmlTypeToDisplayType(xml_type: []const u8) []const u8 {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(xml_type, "Text") or ci.eqlIgnoreCase(xml_type, "STRING")) return "STRING";
+    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) return "TEXTAREA";
+    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) return "BOOLEAN";
+    if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) return "DOUBLE";
+    if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME")) return "DATETIME";
+    if (ci.eqlIgnoreCase(xml_type, "Date") or ci.eqlIgnoreCase(xml_type, "DATE")) return "DATE";
+    if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) return "REFERENCE";
+    if (ci.eqlIgnoreCase(xml_type, "Url") or ci.eqlIgnoreCase(xml_type, "URL")) return "URL";
+    if (ci.eqlIgnoreCase(xml_type, "Phone") or ci.eqlIgnoreCase(xml_type, "PHONE")) return "PHONE";
+    if (ci.eqlIgnoreCase(xml_type, "Email") or ci.eqlIgnoreCase(xml_type, "EMAIL")) return "EMAIL";
+    if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST")) return "PICKLIST";
+    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) return "MULTIPICKLIST";
+    if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY")) return "CURRENCY";
+    if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT")) return "PERCENT";
+    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) return "ENCRYPTEDSTRING";
+    if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER")) return "INTEGER";
+    if (ci.eqlIgnoreCase(xml_type, "Long") or ci.eqlIgnoreCase(xml_type, "LONG")) return "LONG";
+    if (ci.eqlIgnoreCase(xml_type, "Time") or ci.eqlIgnoreCase(xml_type, "TIME")) return "TIME";
+    if (ci.eqlIgnoreCase(xml_type, "Id") or ci.eqlIgnoreCase(xml_type, "ID")) return "ID";
+    // Already a DisplayType name — return as-is
+    return xml_type;
 }
 
 /// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
