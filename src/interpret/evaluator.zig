@@ -6493,8 +6493,16 @@ pub const Evaluator = struct {
 
         // Check if it's a user-defined class or exception
         // Also try the simple name (after last dot) for dotted type names
+        // Prioritize inner classes of the current class (e.g., MockDatabase in LoggerDataStore_Tests)
         const simple_name = if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |di| type_name[di + 1 ..] else type_name;
-        if (self.findClass(type_name) orelse self.findClass(simple_name)) |class_decl| {
+        const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
+            (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
+                (std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, type_name }) catch null)
+            else
+                null)
+        else
+            null;
+        if ((if (fq_inner_name) |fqn| self.findClass(fqn) else null) orelse self.findClass(type_name) orelse self.findClass(simple_name)) |class_decl| {
             const instance = try self.arena.create(types.ObjectInstance);
             instance.* = .{ .class_name = type_name };
 
