@@ -186,6 +186,7 @@ pub const TokenKind = enum {
     arrow,
     question,
     question_question,
+    question_question_equal,
     question_dot,
     ampersand,
     caret,

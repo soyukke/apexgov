@@ -316,6 +316,11 @@ const Lexer = struct {
             '?' => {
                 if (next_char == '?') {
                     self.advance();
+                    // Check for ??=
+                    if (self.pos < self.source.len and self.source[self.pos] == '=') {
+                        self.advance();
+                        return self.makeTokenAt(.question_question_equal, self.source[start..self.pos], start_loc);
+                    }
                     return self.makeTokenAt(.question_question, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '.') {

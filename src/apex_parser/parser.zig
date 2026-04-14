@@ -842,6 +842,7 @@ const Parser = struct {
             .minus_assign => .minus_assign,
             .star_assign => .star_assign,
             .slash_assign => .slash_assign,
+            .question_question_equal => .null_coalesce_assign,
             else => null,
         };
         if (op) |assign_op| {
@@ -863,9 +864,16 @@ const Parser = struct {
         var expr = try self.parseTernary();
         while (self.matchKind(.question_question)) {
             const right = try self.parseTernary();
-            // Represent as ternary: expr != null ? expr : right
+            // Represent as ternary: (expr != null) ? expr : right
+            // Build the condition: expr != null
+            const null_node = try self.arena.create(ast.Expr);
+            null_node.* = .null_literal;
+            const cond_node = try self.arena.create(ast.BinaryExpr);
+            cond_node.* = .{ .left = expr, .op = .neq, .right = null_node };
+            const cond_expr = try self.arena.create(ast.Expr);
+            cond_expr.* = .{ .binary = cond_node };
             const node = try self.arena.create(ast.TernaryExpr);
-            node.* = .{ .condition = expr, .then_expr = expr, .else_expr = right };
+            node.* = .{ .condition = cond_expr, .then_expr = expr, .else_expr = right };
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .ternary = node };
             expr = result;
