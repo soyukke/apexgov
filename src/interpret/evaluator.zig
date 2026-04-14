@@ -581,13 +581,19 @@ pub const Evaluator = struct {
                     }
                 }
                 // Fire after insert triggers for the event type
+                // Platform event triggers run in a separate transaction in Salesforce,
+                // so save/restore DML/SOQL limits to avoid counting trigger DML in caller's limits
                 const event_type = if (args[0] == .sobject) args[0].sobject.type_name else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
                     args[0].list.items.items[0].sobject.type_name
                 else
                     null;
                 if (event_type) |et| {
+                    const saved_dml = self.limits_dml;
+                    const saved_soql = self.limits_soql;
                     var record_list = try self.buildRecordList(args[0]);
                     self.fireTrigger(et, .after_insert, &record_list, null) catch {};
+                    self.limits_dml = saved_dml;
+                    self.limits_soql = saved_soql;
                 }
             }
             const result = try self.arena.create(types.ObjectInstance);
