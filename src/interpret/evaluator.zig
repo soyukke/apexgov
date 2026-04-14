@@ -6327,7 +6327,14 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     fn evalNewExpr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
-        const type_name = ne.type_name.name;
+        // Strip "System." and "Schema." prefixes for type resolution
+        const raw_type_name = ne.type_name.name;
+        const type_name = if (std.ascii.startsWithIgnoreCase(raw_type_name, "System."))
+            raw_type_name[7..]
+        else if (std.ascii.startsWithIgnoreCase(raw_type_name, "Schema."))
+            raw_type_name[7..]
+        else
+            raw_type_name;
 
         // Type literal: List<T>.class, Map<K,V>.class, Type[].class → return Type object
         if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(u8, type_name, "[]")) and ne.args.len == 0) {
