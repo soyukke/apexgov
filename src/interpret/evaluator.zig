@@ -8417,7 +8417,14 @@ pub const Evaluator = struct {
                 // For List args, check generic element type
                 if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
                     const elem_type = param.type_ref.params[0].name;
-                    if (arg.list.items.items.len > 0) {
+                    // SObject is a generic parent — any SObject matches List<SObject>
+                    if (std.ascii.eqlIgnoreCase(elem_type, "SObject")) {
+                        if (arg.list.items.items.len > 0) {
+                            if (arg.list.items.items[0] == .sobject) arg_score = 3;
+                        } else {
+                            arg_score = 2; // empty list matches
+                        }
+                    } else if (arg.list.items.items.len > 0) {
                         const first = arg.list.items.items[0];
                         if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
                             arg_score = 3;
@@ -9183,6 +9190,13 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
                 if (std.mem.lastIndexOf(u8, pt, ">")) |gt| {
                     const elem_type = pt[lt + 1 .. gt];
                     // Check first element of the list
+                    // SObject is a generic parent type — any SObject matches List<SObject>
+                    if (std.ascii.eqlIgnoreCase(elem_type, "SObject") or std.ascii.eqlIgnoreCase(elem_type, "sObject") or std.ascii.eqlIgnoreCase(elem_type, "Sobject")) {
+                        if (arg.list.items.items.len > 0) {
+                            if (arg.list.items.items[0] == .sobject) return 3;
+                        }
+                        return 2; // Empty list matches List<SObject>
+                    }
                     if (arg.list.items.items.len > 0) {
                         const first = arg.list.items.items[0];
                         if (first == .sobject) {
