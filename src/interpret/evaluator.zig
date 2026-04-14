@@ -4777,18 +4777,26 @@ pub const Evaluator = struct {
                 return self.handleTest(mc.method, args.items);
             }
 
-            // System.enqueueJob → execute synchronously
+            // System.enqueueJob → execute synchronously (separate transaction in Salesforce)
             if (std.ascii.eqlIgnoreCase(class_name, "System") and std.ascii.eqlIgnoreCase(mc.method, "enqueueJob")) {
+                self.limits_queueable += 1;
+                const s_dml = self.limits_dml;
+                const s_soql = self.limits_soql;
+                const s_pub = self.limits_publish_immediate;
+                const s_call = self.limits_callouts;
                 if (args.items.len > 0 and args.items[0] == .object) {
                     const job_obj = args.items[0].object;
                     if (self.findClass(job_obj.class_name)) |job_class| {
-                        // Try static method first, then instance method
                         const static_result = self.callMethod(job_obj.class_name, "execute", &.{Value.null_val}) catch null;
                         if (static_result == null) {
                             _ = self.callInstanceMethod(job_class, job_obj, "execute", &.{Value.null_val}) catch {};
                         }
                     }
                 }
+                self.limits_dml = s_dml;
+                self.limits_soql = s_soql;
+                self.limits_publish_immediate = s_pub;
+                self.limits_callouts = s_call;
                 return Value{ .string = try self.allocId() };
             }
 
@@ -7807,8 +7815,13 @@ pub const Evaluator = struct {
 
     fn handleSystemMethod(self: *Evaluator, inner: []const u8, method: []const u8, args: []const Value, current_env: *Env) !Value {
         // System.enqueueJob → execute the Queueable's execute method synchronously
+        // Queueable runs in a separate transaction in Salesforce, so save/restore limits
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
             self.limits_queueable += 1;
+            const saved_dml = self.limits_dml;
+            const saved_soql = self.limits_soql;
+            const saved_pub = self.limits_publish_immediate;
+            const saved_callouts = self.limits_callouts;
             const job_obj = args[0].object;
             if (self.findClass(job_obj.class_name)) |job_class| {
                 // Try static method first (common for Queueable), then instance method
@@ -7817,6 +7830,10 @@ pub const Evaluator = struct {
                     _ = self.callInstanceMethod(job_class, job_obj, "execute", &.{Value.null_val}) catch {};
                 }
             }
+            self.limits_dml = saved_dml;
+            self.limits_soql = saved_soql;
+            self.limits_publish_immediate = saved_pub;
+            self.limits_callouts = saved_callouts;
             return Value{ .string = try self.allocId() }; // Fake async job ID
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
