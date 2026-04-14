@@ -5713,6 +5713,17 @@ pub const Evaluator = struct {
             return Value{ .string = lower };
         }
         if (std.ascii.eqlIgnoreCase(method, "trim")) return Value{ .string = std.mem.trim(u8, s, " \t\r\n") };
+        if (std.ascii.eqlIgnoreCase(method, "repeat") and args.len > 0) {
+            const count: usize = switch (args[0]) {
+                .integer => |i| if (i > 0) @intCast(i) else 0,
+                .double => |d| if (d > 0) @intFromFloat(d) else 0,
+                else => 0,
+            };
+            if (count == 0 or s.len == 0) return Value{ .string = "" };
+            const buf = try self.arena.alloc(u8, s.len * count);
+            for (0..count) |ci| @memcpy(buf[ci * s.len ..][0..s.len], s);
+            return Value{ .string = buf };
+        }
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0 and args[0] == .string) {
             return Value{ .boolean = std.mem.indexOf(u8, s, args[0].string) != null };
         }
