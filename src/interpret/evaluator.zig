@@ -9280,7 +9280,7 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
         if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        if (std.ascii.startsWithIgnoreCase(pt, "Iterable")) return 1;
+        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable")) return 1;
         return 0;
     }
     if (arg == .sobject) {
