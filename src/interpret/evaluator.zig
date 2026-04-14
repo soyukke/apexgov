@@ -5394,10 +5394,23 @@ pub const Evaluator = struct {
                 return Value.null_val;
             }
             // put(fieldName, value)
-            if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2 and args[0] == .string) {
-                try utils.sobjectPut(&obj.sobject.fields, self.arena, args[0].string, args[1]);
+            if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
+                // put(String fieldName, value) or put(SObjectField, value)
+                const field_name: []const u8 = if (args[0] == .string)
+                    args[0].string
+                else if (args[0] == .object) blk: {
+                    // SObjectField token — extract field name from "name" or "fieldName" field
+                    if (args[0].object.fields.get("name")) |n| {
+                        if (n == .string) break :blk n.string;
+                    }
+                    if (args[0].object.fields.get("fieldName")) |n| {
+                        if (n == .string) break :blk n.string;
+                    }
+                    break :blk try utils.coerceToString(args[0], self.arena);
+                } else try utils.coerceToString(args[0], self.arena);
+                try utils.sobjectPut(&obj.sobject.fields, self.arena, field_name, args[1]);
                 // Sync Id field
-                if (std.ascii.eqlIgnoreCase(args[0].string, "Id") and args[1] == .string) {
+                if (std.ascii.eqlIgnoreCase(field_name, "Id") and args[1] == .string) {
                     obj.sobject.id = args[1].string;
                 }
                 return args[1];
