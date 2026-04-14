@@ -8970,7 +8970,17 @@ pub const Evaluator = struct {
         // Scalar values
         if (trimmed[0] == '"') {
             if (std.mem.lastIndexOfScalar(u8, trimmed, '"')) |end| {
-                if (end > 0) return Value{ .string = trimmed[1..end] };
+                if (end > 0) {
+                    const str_val = trimmed[1..end];
+                    // When type_hint is Date or Datetime, wrap the string as a Date/DateTime object
+                    if (std.ascii.eqlIgnoreCase(type_hint, "Date")) {
+                        return builtins.makeDateValue(self.arena, str_val) catch Value{ .string = str_val };
+                    }
+                    if (std.ascii.eqlIgnoreCase(type_hint, "DateTime") or std.ascii.eqlIgnoreCase(type_hint, "Datetime")) {
+                        return builtins.makeDatetimeValue(self.arena, str_val) catch Value{ .string = str_val };
+                    }
+                    return Value{ .string = str_val };
+                }
             }
             return Value{ .string = "" };
         }

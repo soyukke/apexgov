@@ -267,6 +267,14 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
             break :blk try buf.toOwnedSlice(arena);
         },
         .object => |obj| blk: {
+            // Date/DateTime objects serialize as their value string (e.g., "2026-04-07")
+            if ((std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
+            {
+                if (obj.fields.get("value")) |val| {
+                    if (val == .string) break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{val.string});
+                }
+            }
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             try buf.append(arena, '{');
             var first = true;
