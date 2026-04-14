@@ -5676,12 +5676,13 @@ pub const Evaluator = struct {
 
     fn evalMapMethod(self: *Evaluator, map: *types.MapValue, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
-            const key = try utils.coerceToString(args[0], self.arena);
+            // Apex Map<String,X> stores null keys as empty string
+            const key = if (args[0] == .null_val) "" else try utils.coerceToString(args[0], self.arena);
             try map.entries.put(self.arena, key, args[1]);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
-            const key = try utils.coerceToString(args[0], self.arena);
+            const key = if (args[0] == .null_val) "" else try utils.coerceToString(args[0], self.arena);
             if (map.entries.get(key)) |v| return v;
             // Case-insensitive fallback for String-keyed maps
             for (map.entries.keys(), map.entries.values()) |k, v| {
@@ -6377,7 +6378,7 @@ pub const Evaluator = struct {
                     const asgn = arg.assignment;
                     const key_val = try self.evalExpr(asgn.target, current_env);
                     const val_val = try self.evalExpr(asgn.value, current_env);
-                    const key_str = try utils.coerceToString(key_val, self.arena);
+                    const key_str = if (key_val == .null_val) "" else try utils.coerceToString(key_val, self.arena);
                     try map.entries.put(self.arena, key_str, val_val);
                 }
             }
