@@ -5659,17 +5659,15 @@ pub const Evaluator = struct {
             return Value{ .integer = -1 };
         }
         if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-            // Return type of first element
+            // Return type of first element, or null for empty/non-SObject lists
             if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
                 const sot = try self.arena.create(types.ObjectInstance);
                 sot.* = .{ .class_name = "Schema.SObjectType" };
                 try sot.fields.put(self.arena, "name", Value{ .string = list.items.items[0].sobject.type_name });
                 return Value{ .object = sot };
             }
-            const sot = try self.arena.create(types.ObjectInstance);
-            sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(self.arena, "name", Value{ .string = "SObject" });
-            return Value{ .object = sot };
+            // Empty list or non-SObject list → return null (Salesforce behavior)
+            return Value.null_val;
         }
         return Value.null_val;
     }
