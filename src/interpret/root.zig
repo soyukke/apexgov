@@ -272,6 +272,23 @@ fn runTestsFiltered(
                     // Run @TestSetup if exists
                     if (test_setup_method) |setup| {
                         _ = test_eval.callMethod(class_name, setup.name, &.{}) catch {};
+                        // After @TestSetup, re-init static fields so that side effects
+                        // (e.g. shouldExecute(false)) don't leak into the test body.
+                        // In Salesforce, each test method gets fresh static state.
+                        for (classes_with_statics.items) |cd2| {
+                            test_eval.reInitClassStaticFields(cd2);
+                        }
+                        // Re-run only the test class's own static init block (not all classes)
+                        // to restore mock setups like LoggerConfigurationSelector.useMocks()
+                        for (class_decl.members) |cm| {
+                            switch (cm) {
+                                .static_init => |body| {
+                                    const init_env = test_eval.global_env.child() catch continue;
+                                    _ = test_eval.execBlock(body, init_env) catch {};
+                                },
+                                else => {},
+                            }
+                        }
                     }
 
                     const result = test_eval.callMethod(class_name, md.name, &.{});
