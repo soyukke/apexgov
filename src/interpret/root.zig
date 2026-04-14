@@ -152,6 +152,11 @@ fn runTestsFiltered(
     }
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
 
+    // Load field-meta.xml default values for SObject types
+    for (paths) |path| {
+        collectFieldDefaults(parse_alloc, path, &eval.field_defaults) catch {};
+    }
+
     // Run static initializer blocks after all classes are registered
     eval.runStaticInits();
 
@@ -350,6 +355,66 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 10 * 1024 * 1024) catch continue;
         files.append(alloc, .{ .path = full_path, .content = content }) catch continue;
+    }
+}
+
+/// field-meta.xml からデフォルト値を読み込み、field_defaults マップに格納する。
+/// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
+fn collectFieldDefaults(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
+
+        // Extract type name from path: .../objects/TypeName/fields/FieldName.field-meta.xml
+        const entry_path = entry.path;
+        // Find "objects/" prefix
+        const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+            std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
+        const after_objects = entry_path[objects_idx + 8 ..];
+        // Find next separator
+        const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
+        const type_name = after_objects[0..sep_idx];
+
+        // Extract field name from basename
+        const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
+
+        // Read and parse the XML for defaultValue
+        const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
+        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
+
+        // Simple XML extraction: find <defaultValue>...</defaultValue>
+        const dv_start_tag = "<defaultValue>";
+        const dv_end_tag = "</defaultValue>";
+        const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse continue;
+        const dv_value_start = dv_start + dv_start_tag.len;
+        const dv_end = std.mem.indexOfPos(u8, content, dv_value_start, dv_end_tag) orelse continue;
+        const default_str = content[dv_value_start..dv_end];
+
+        // Convert to Value based on content
+        const value: Value = if (std.ascii.eqlIgnoreCase(default_str, "true"))
+            Value{ .boolean = true }
+        else if (std.ascii.eqlIgnoreCase(default_str, "false"))
+            Value{ .boolean = false }
+        else if (std.fmt.parseInt(i64, default_str, 10)) |i|
+            Value{ .integer = i }
+        else |_| Value{ .string = alloc.dupe(u8, default_str) catch continue };
+
+        // Store in field_defaults[type_name][field_name]
+        const type_key = alloc.dupe(u8, type_name) catch continue;
+        const field_key = alloc.dupe(u8, field_name) catch continue;
+        const gop = field_defaults.getOrPut(alloc, type_key) catch continue;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        gop.value_ptr.put(alloc, field_key, value) catch continue;
     }
 }
 
