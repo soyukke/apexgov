@@ -8860,6 +8860,17 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         return 0;
     }
     if (arg == .sobject) {
+        const tn = arg.sobject.type_name;
+        // Exact type match (e.g., Database.SaveResult matches param Database.SaveResult)
+        if (std.ascii.eqlIgnoreCase(tn, pt)) return 3;
+        // Simple name match (e.g., "SaveResult" matches param "Database.SaveResult")
+        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(tn, pt[di + 1 ..])) return 3;
+        }
+        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
+        }
+        // Generic SObject match
         if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")) return 2;
         return 0;
     }
