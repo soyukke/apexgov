@@ -7827,6 +7827,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "Database")) {
             return self.handleDatabaseMethod(method, args, current_env);
         }
+        // System.EventBus.publish → delegate to callMethod so it goes through the EventBus.publish handler
+        if (std.ascii.eqlIgnoreCase(inner, "EventBus") and std.ascii.eqlIgnoreCase(method, "publish")) {
+            return self.callMethod("EventBus", "publish", args) catch .void_val;
+        }
         // Generic fallback: delegate System.X.method to builtins.dispatchStatic(X, method, args)
         // This covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
         {
