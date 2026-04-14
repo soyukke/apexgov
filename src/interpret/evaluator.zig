@@ -611,24 +611,49 @@ pub const Evaluator = struct {
             return Value{ .object = result };
         }
 
-        // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance()
-        if (std.mem.endsWith(u8, class_name, "__c") and
-            (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults") or
-                std.ascii.eqlIgnoreCase(method_name, "getInstance")))
-        {
-            // Look for an existing record in the store
-            var cs_store_iter = self.store.iterator();
-            while (cs_store_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                    if (entry.value_ptr.items.len > 0) {
-                        return entry.value_ptr.items[0];
+        // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
+        if (std.mem.endsWith(u8, class_name, "__c")) {
+            if (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults") or
+                std.ascii.eqlIgnoreCase(method_name, "getInstance"))
+            {
+                // Look for an existing record in the store
+                var cs_store_iter = self.store.iterator();
+                while (cs_store_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        if (entry.value_ptr.items.len > 0) {
+                            return entry.value_ptr.items[0];
+                        }
                     }
                 }
+                // No record found → create SObject with field defaults from field-meta.xml
+                const sob = try self.arena.create(types.SObject);
+                sob.* = .{ .type_name = class_name };
+                if (self.field_defaults.get(class_name)) |defaults| {
+                    for (defaults.keys(), defaults.values()) |fk, fv| {
+                        try sob.fields.put(self.arena, fk, fv);
+                    }
+                }
+                return Value{ .sobject = sob };
             }
-            // No record found → create an empty SObject
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = class_name };
-            return Value{ .sobject = sob };
+            if (std.ascii.eqlIgnoreCase(method_name, "getValues") and args.len > 0) {
+                // getValues(Id) — look up Custom Setting by SetupOwnerId
+                const lookup_id = if (args[0] == .string) args[0].string else "";
+                var cs_store_iter2 = self.store.iterator();
+                while (cs_store_iter2.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        for (entry.value_ptr.items) |item| {
+                            if (item == .sobject) {
+                                if (utils.sobjectGet(&item.sobject.fields, "SetupOwnerId")) |owner_id| {
+                                    if (owner_id == .string and std.ascii.eqlIgnoreCase(owner_id.string, lookup_id)) {
+                                        return item;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return Value.null_val;
+            }
         }
 
         // Database methods that need store access (must be before builtins to avoid dead-code fallback)
@@ -4751,26 +4776,12 @@ pub const Evaluator = struct {
                         } else "Object";
                         const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List") or std.mem.endsWith(u8, type_name, "[]");
                         // Pre-validate: check for balanced braces/brackets (detect truncated JSON)
-                        {
-                            var brace_depth: i32 = 0;
-                            var bracket_depth: i32 = 0;
-                            var in_str = false;
-                            for (trimmed_json) |jc| {
-                                if (in_str) {
-                                    if (jc == '\\') {
-                                        // skip next char (handled by for loop advance)
-                                    } else if (jc == '"') in_str = false;
-                                } else {
-                                    if (jc == '"') in_str = true else if (jc == '{') brace_depth += 1 else if (jc == '}') brace_depth -= 1 else if (jc == '[') bracket_depth += 1 else if (jc == ']') bracket_depth -= 1;
-                                }
-                            }
-                            if (brace_depth != 0 or bracket_depth != 0 or in_str) {
-                                const exc = try self.arena.create(types.ObjectInstance);
-                                exc.* = .{ .class_name = "System.JSONException" };
-                                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
-                                self.pending_exception = Value{ .object = exc };
-                                return error.ApexException;
-                            }
+                        if (!utils.isJsonBalanced(trimmed_json)) {
+                            const exc = try self.arena.create(types.ObjectInstance);
+                            exc.* = .{ .class_name = "System.JSONException" };
+                            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
+                            self.pending_exception = Value{ .object = exc };
+                            return error.ApexException;
                         }
                         const parsed = self.parseJsonValue(json_str, type_name);
                         if (parsed) |pv| {
@@ -4911,24 +4922,46 @@ pub const Evaluator = struct {
                 return Value{ .object = sot };
             }
 
-            // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance()
-            if (std.mem.endsWith(u8, class_name, "__c") and
-                (std.ascii.eqlIgnoreCase(mc.method, "getOrgDefaults") or
-                    std.ascii.eqlIgnoreCase(mc.method, "getInstance")))
-            {
-                // Look for an existing record in the store
-                var cs_iter3 = self.store.iterator();
-                while (cs_iter3.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                        if (entry.value_ptr.items.len > 0) {
-                            return entry.value_ptr.items[0];
+            // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
+            if (std.mem.endsWith(u8, class_name, "__c")) {
+                if (std.ascii.eqlIgnoreCase(mc.method, "getOrgDefaults") or
+                    std.ascii.eqlIgnoreCase(mc.method, "getInstance"))
+                {
+                    var cs_iter3 = self.store.iterator();
+                    while (cs_iter3.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            if (entry.value_ptr.items.len > 0) {
+                                return entry.value_ptr.items[0];
+                            }
                         }
                     }
+                    const cs_sob3 = try self.arena.create(types.SObject);
+                    cs_sob3.* = .{ .type_name = class_name };
+                    if (self.field_defaults.get(class_name)) |defaults| {
+                        for (defaults.keys(), defaults.values()) |fk, fv| {
+                            try cs_sob3.fields.put(self.arena, fk, fv);
+                        }
+                    }
+                    return Value{ .sobject = cs_sob3 };
                 }
-                // No record found → create an empty SObject
-                const cs_sob3 = try self.arena.create(types.SObject);
-                cs_sob3.* = .{ .type_name = class_name };
-                return Value{ .sobject = cs_sob3 };
+                if (std.ascii.eqlIgnoreCase(mc.method, "getValues") and args.items.len > 0) {
+                    const lookup_id = if (args.items[0] == .string) args.items[0].string else "";
+                    var cs_iter4 = self.store.iterator();
+                    while (cs_iter4.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            for (entry.value_ptr.items) |item| {
+                                if (item == .sobject) {
+                                    if (utils.sobjectGet(&item.sobject.fields, "SetupOwnerId")) |owner_id| {
+                                        if (owner_id == .string and std.ascii.eqlIgnoreCase(owner_id.string, lookup_id)) {
+                                            return item;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value.null_val;
+                }
             }
 
             return self.callMethod(class_name, mc.method, args.items);
@@ -7702,24 +7735,12 @@ pub const Evaluator = struct {
                     const json_str = args[0].string;
                     const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
                     // Check balanced braces/brackets for truncated JSON detection
-                    {
-                        var brace_d: i32 = 0;
-                        var bracket_d: i32 = 0;
-                        var in_s = false;
-                        for (trimmed_json) |jc| {
-                            if (in_s) {
-                                if (jc == '"') in_s = false;
-                            } else {
-                                if (jc == '"') in_s = true else if (jc == '{') brace_d += 1 else if (jc == '}') brace_d -= 1 else if (jc == '[') bracket_d += 1 else if (jc == ']') bracket_d -= 1;
-                            }
-                        }
-                        if (brace_d != 0 or bracket_d != 0) {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.JSONException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
+                    if (!utils.isJsonBalanced(trimmed_json)) {
+                        const exc = try self.arena.create(types.ObjectInstance);
+                        exc.* = .{ .class_name = "System.JSONException" };
+                        try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
+                        self.pending_exception = Value{ .object = exc };
+                        return error.ApexException;
                     }
                     // Delegate to builtins for actual parsing
                     var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };

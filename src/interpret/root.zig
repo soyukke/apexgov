@@ -153,8 +153,18 @@ fn runTestsFiltered(
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
 
     // Load field-meta.xml default values for SObject types
+    // Search the given paths AND their ancestor directories (up to 3 levels) to find objects/ dirs
+    // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
     for (paths) |path| {
         collectFieldDefaults(parse_alloc, path, &eval.field_defaults) catch {};
+        // Walk parent directories to find sibling packages containing objects/
+        var parent = std.fs.path.dirname(path);
+        var depth: u8 = 0;
+        while (parent != null and depth < 3) : (depth += 1) {
+            const p = parent.?;
+            collectFieldDefaults(parse_alloc, p, &eval.field_defaults) catch {};
+            parent = std.fs.path.dirname(p);
+        }
     }
 
     // Run static initializer blocks after all classes are registered

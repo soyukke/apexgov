@@ -393,3 +393,34 @@ test "formatApexDouble" {
     defer alloc.free(s4);
     try std.testing.expectEqualStrings("86.0", s4);
 }
+
+/// JSON 文字列のバランスチェック (braces/brackets が閉じているか、文字列リテラルが開いたままでないか)。
+/// エスケープ (`\"`) を正しく考慮する。true = balanced, false = malformed / truncated。
+pub fn isJsonBalanced(json: []const u8) bool {
+    var brace_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var in_str = false;
+    var i: usize = 0;
+    while (i < json.len) : (i += 1) {
+        if (in_str) {
+            if (json[i] == '\\') {
+                i += 1; // skip escaped char
+            } else if (json[i] == '"') {
+                in_str = false;
+            }
+        } else {
+            if (json[i] == '"') in_str = true else if (json[i] == '{') brace_depth += 1 else if (json[i] == '}') brace_depth -= 1 else if (json[i] == '[') bracket_depth += 1 else if (json[i] == ']') bracket_depth -= 1;
+        }
+    }
+    return brace_depth == 0 and bracket_depth == 0 and !in_str;
+}
+
+test "isJsonBalanced" {
+    try std.testing.expect(isJsonBalanced("{}"));
+    try std.testing.expect(isJsonBalanced("{\"key\":\"val\"}"));
+    try std.testing.expect(isJsonBalanced("{\"key\":\"val with \\\"quotes\\\"\"}"));
+    try std.testing.expect(!isJsonBalanced("{"));
+    try std.testing.expect(!isJsonBalanced("{\"key\":\"unterminated}"));
+    try std.testing.expect(isJsonBalanced("[]"));
+    try std.testing.expect(!isJsonBalanced("["));
+}
