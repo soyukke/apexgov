@@ -1407,6 +1407,15 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
         const fdr = try createFieldDescribeResult(ctx, field_name);
         try fields_kv.entries.put(ctx.arena, field_name, fdr);
     }
+    // Add custom fields from field-meta.xml type info
+    if (ctx.eval.field_types.get(obj_name)) |type_map| {
+        for (type_map.keys(), type_map.values()) |fname, ftype| {
+            if (!fields_kv.entries.contains(fname)) {
+                const fdr = try createFieldDescribeResultWithType(ctx, fname, ftype);
+                try fields_kv.entries.put(ctx.arena, fname, fdr);
+            }
+        }
+    }
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
@@ -1472,6 +1481,10 @@ fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []cons
 }
 
 fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Value {
+    return createFieldDescribeResultWithType(ctx, field_name, null);
+}
+
+fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u8, field_type: ?[]const u8) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
     try fdr.fields.put(ctx.arena, "name", Value{ .string = field_name });
@@ -1487,7 +1500,7 @@ fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Valu
     try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = true });
-    // Set field length based on field type (Id=18, Name=255, default=131072 for Long Text Area)
+    // Set field length based on field type
     const length: i64 = if (std.ascii.eqlIgnoreCase(field_name, "Id"))
         18
     else if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
@@ -1495,7 +1508,45 @@ fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Valu
     else
         131072;
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
+    // Set field type — infer from field name if not provided
+    const ft: []const u8 = field_type orelse inferFieldType(field_name);
+    try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
+    // Set SoapType based on field type
+    const soap: []const u8 = if (std.ascii.eqlIgnoreCase(ft, "Boolean"))
+        "BOOLEAN"
+    else if (std.ascii.eqlIgnoreCase(ft, "Integer") or std.ascii.eqlIgnoreCase(ft, "Long"))
+        "INTEGER"
+    else if (std.ascii.eqlIgnoreCase(ft, "Double") or std.ascii.eqlIgnoreCase(ft, "Currency") or std.ascii.eqlIgnoreCase(ft, "Percent"))
+        "DOUBLE"
+    else if (std.ascii.eqlIgnoreCase(ft, "Date"))
+        "DATE"
+    else if (std.ascii.eqlIgnoreCase(ft, "DateTime"))
+        "DATETIME"
+    else
+        "STRING";
+    try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
     return Value{ .object = fdr };
+}
+
+/// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
+fn inferFieldType(field_name: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(field_name, "Id") or
+        std.ascii.eqlIgnoreCase(field_name, "OwnerId") or
+        std.mem.endsWith(u8, field_name, "Id") or
+        std.mem.endsWith(u8, field_name, "Id__c"))
+        return "Id";
+    if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted") or
+        std.ascii.eqlIgnoreCase(field_name, "IsActive") or
+        std.mem.startsWith(u8, field_name, "Is") or
+        std.mem.startsWith(u8, field_name, "Has"))
+        return "Boolean";
+    if (std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
+        std.mem.endsWith(u8, field_name, "Date__c") or
+        std.mem.endsWith(u8, field_name, "Timestamp__c"))
+        return "DateTime";
+    return "String";
 }
 
 fn dispatchDatabase(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -2001,8 +2052,8 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("fieldName") orelse Value{ .string = "Field" };
     return null;
@@ -2317,8 +2368,8 @@ fn dispatchObjDescribeFieldResult(obj: *types.ObjectInstance, method_name: []con
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };

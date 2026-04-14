@@ -156,13 +156,13 @@ fn runTestsFiltered(
     // Search the given paths AND their ancestor directories (up to 3 levels) to find objects/ dirs
     // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
     for (paths) |path| {
-        collectFieldDefaults(parse_alloc, path, &eval.field_defaults) catch {};
+        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types) catch {};
         // Walk parent directories to find sibling packages containing objects/
         var parent = std.fs.path.dirname(path);
         var depth: u8 = 0;
         while (parent != null and depth < 3) : (depth += 1) {
             const p = parent.?;
-            collectFieldDefaults(parse_alloc, p, &eval.field_defaults) catch {};
+            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types) catch {};
             parent = std.fs.path.dirname(p);
         }
     }
@@ -250,6 +250,7 @@ fn runTestsFiltered(
                     test_eval.class_sources = eval.class_sources;
                     test_eval.source_paths = eval.source_paths;
                     test_eval.field_defaults = eval.field_defaults;
+                    test_eval.field_types = eval.field_types;
 
                     // Check for @isTest(SeeAllData=true) annotation
                     test_eval.see_all_data = false;
@@ -387,12 +388,13 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
     }
 }
 
-/// field-meta.xml からデフォルト値を読み込み、field_defaults マップに格納する。
+/// field-meta.xml からデフォルト値と型情報を読み込む。
 /// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
 fn collectFieldDefaults(
     alloc: std.mem.Allocator,
     path: []const u8,
     field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+    field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
 ) !void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
     defer dir.close();
@@ -404,22 +406,30 @@ fn collectFieldDefaults(
 
         // Extract type name from path: .../objects/TypeName/fields/FieldName.field-meta.xml
         const entry_path = entry.path;
-        // Find "objects/" prefix
         const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
             std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
         const after_objects = entry_path[objects_idx + 8 ..];
-        // Find next separator
         const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
         const type_name = after_objects[0..sep_idx];
-
-        // Extract field name from basename
         const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
 
-        // Read and parse the XML for defaultValue
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
 
-        // Simple XML extraction: find <defaultValue>...</defaultValue>
+        // Extract <type>...</type> for field type info
+        if (std.mem.indexOf(u8, content, "<type>")) |ts| {
+            const t_start = ts + 6; // "<type>".len
+            if (std.mem.indexOfPos(u8, content, t_start, "</type>")) |te| {
+                const ft = content[t_start..te];
+                const tk = alloc.dupe(u8, type_name) catch continue;
+                const fk = alloc.dupe(u8, field_name) catch continue;
+                const ft_gop = field_types.getOrPut(alloc, tk) catch continue;
+                if (!ft_gop.found_existing) ft_gop.value_ptr.* = .empty;
+                ft_gop.value_ptr.put(alloc, fk, ft) catch {};
+            }
+        }
+
+        // Extract <defaultValue>...</defaultValue>
         const dv_start_tag = "<defaultValue>";
         const dv_end_tag = "</defaultValue>";
         const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse continue;

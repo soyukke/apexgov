@@ -74,6 +74,8 @@ pub const Evaluator = struct {
     source_paths: []const []const u8 = &.{},
     // SObject field default values from field-meta.xml (type_name → field_name → default Value)
     field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
+    /// field-meta.xml から読み取ったフィールド型情報。field_types[TypeName][FieldName] = "DateTime" 等。
+    field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
     // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
