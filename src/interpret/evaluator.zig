@@ -6123,7 +6123,11 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "toInteger")) {
             return Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 };
         }
-        if (std.ascii.eqlIgnoreCase(method, "valueOf")) {
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0) {
+            // For enum names (e.g., "SaveMethod".valueOf("EVENT_BUS")), return the arg value
+            return args[0];
+        }
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len == 0) {
             return Value{ .string = s };
         }
         if (std.ascii.eqlIgnoreCase(method, "substringAfter") and args.len > 0 and args[0] == .string) {
