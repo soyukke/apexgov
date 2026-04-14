@@ -691,6 +691,27 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
                                     try map.entries.put(ctx.arena, key, Value{ .list = list });
                                     pos = arr_pos;
                                     continue;
+                                } else if (json_str[val_start] == '{') {
+                                    // Nested object — find matching closing brace and recursively deserialize
+                                    var obj_depth: i32 = 1;
+                                    var obj_pos: usize = val_start + 1;
+                                    while (obj_pos < json_str.len and obj_depth > 0) : (obj_pos += 1) {
+                                        if (json_str[obj_pos] == '{') obj_depth += 1;
+                                        if (json_str[obj_pos] == '}') obj_depth -= 1;
+                                        if (json_str[obj_pos] == '"') {
+                                            obj_pos += 1;
+                                            while (obj_pos < json_str.len and json_str[obj_pos] != '"') : (obj_pos += 1) {
+                                                if (json_str[obj_pos] == '\\') obj_pos += 1;
+                                            }
+                                        }
+                                    }
+                                    const nested_json = json_str[val_start..obj_pos];
+                                    const nested_args2 = [_]Value{Value{ .string = nested_json }};
+                                    if (try dispatchStaticJson(ctx, "deserializeUntyped", &nested_args2)) |nested_val| {
+                                        try map.entries.put(ctx.arena, key, nested_val);
+                                    }
+                                    pos = obj_pos;
+                                    continue;
                                 } else {
                                     var val_end = val_start;
                                     while (val_end < json_str.len and json_str[val_end] != ',' and json_str[val_end] != '}' and json_str[val_end] != '\n') val_end += 1;
