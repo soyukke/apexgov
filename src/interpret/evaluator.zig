@@ -6826,6 +6826,40 @@ pub const Evaluator = struct {
         return false;
     }
 
+    /// child_class が parent_type のサブクラスかどうかを継承チェーンで確認する。
+    fn isSubclassOf(self: *Evaluator, child_class: []const u8, parent_type: []const u8) bool {
+        // Direct match
+        if (std.ascii.eqlIgnoreCase(child_class, parent_type)) return true;
+        // Check simple name match (inner class: "OuterClass.InnerClass" → "InnerClass")
+        if (std.mem.lastIndexOfScalar(u8, child_class, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(child_class[di + 1 ..], parent_type)) return true;
+        }
+        // Walk the inheritance chain
+        var cd = self.findClass(child_class);
+        var depth: u8 = 0;
+        while (cd) |c| : (depth += 1) {
+            if (depth > 20) break; // Safety limit
+            if (c.super_class) |sc| {
+                if (std.ascii.eqlIgnoreCase(sc.name, parent_type)) return true;
+                if (std.mem.lastIndexOfScalar(u8, sc.name, '.')) |di| {
+                    if (std.ascii.eqlIgnoreCase(sc.name[di + 1 ..], parent_type)) return true;
+                }
+                // Also check interfaces
+                for (c.interfaces) |iface| {
+                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                }
+                cd = self.findClass(sc.name);
+            } else {
+                // Check interfaces at this level
+                for (c.interfaces) |iface| {
+                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                }
+                break;
+            }
+        }
+        return false;
+    }
+
     /// System enum の文字列値から ordinal 値を返す。
     /// System.LoggingLevel, System.StatusCode, DisplayType など既知のenumに対応。
     fn lookupEnumOrdinal(s: []const u8) i64 {
@@ -8092,7 +8126,14 @@ pub const Evaluator = struct {
                         }
                     }
                 }
-                score += overloadScoreForArg(arg, pt);
+                var arg_score = overloadScoreForArg(arg, pt);
+                // For object args with score 0, check inheritance chain
+                if (arg_score == 0 and arg == .object) {
+                    if (self.isSubclassOf(arg.object.class_name, pt)) {
+                        arg_score = 2;
+                    }
+                }
+                score += arg_score;
             }
             if (score > best_score) {
                 best_score = score;
@@ -8105,7 +8146,7 @@ pub const Evaluator = struct {
     /// Type-aware method resolution for overloaded methods.
     /// When multiple methods match by name and arg count, picks the one
     /// whose parameter types best match the actual argument types.
-    fn findBestMethodInClass(_: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
+    fn findBestMethodInClass(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
         var candidates: [8]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
@@ -8147,7 +8188,13 @@ pub const Evaluator = struct {
                     // List passed where non-List expected = poor match
                     score -= 1;
                 } else {
-                    score += overloadScoreForArg(arg, pt);
+                    var arg_score = overloadScoreForArg(arg, pt);
+                    if (arg_score == 0 and arg == .object) {
+                        if (self.isSubclassOf(arg.object.class_name, pt)) {
+                            arg_score = 2;
+                        }
+                    }
+                    score += arg_score;
                 }
             }
             if (best == null or score > best_score) {
@@ -8796,18 +8843,27 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         return 0;
     }
     if (arg == .object) {
+        const cn = arg.object.class_name;
+        // Exact class name match (case-insensitive)
+        if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
+        // Also check simple name (e.g., "MockEventBus" matches param type "EventBus" → no, but
+        // "LoggerDataStore.EventBus" inner class: check if param type matches the simple name)
+        if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
+        }
         // Date/DateTime objects should score well for their specific types
-        if (std.ascii.eqlIgnoreCase(arg.object.class_name, "Date")) {
+        if (std.ascii.eqlIgnoreCase(cn, "Date")) {
             if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
             if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
             return 0;
         }
-        if (std.ascii.eqlIgnoreCase(arg.object.class_name, "Datetime")) {
+        if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
             if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
             if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
             return 0;
         }
-        return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
     }
     return 0;
 }
