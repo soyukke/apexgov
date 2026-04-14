@@ -9253,6 +9253,19 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         }
         return 0;
     }
+    if (arg == .map) {
+        if (std.ascii.eqlIgnoreCase(pt, "Map")) return 2;
+        if (std.ascii.startsWithIgnoreCase(pt, "Map<")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
+    if (arg == .set) {
+        if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
+        if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        if (std.ascii.startsWithIgnoreCase(pt, "Iterable")) return 1;
+        return 0;
+    }
     if (arg == .sobject) {
         const tn = arg.sobject.type_name;
         // Exact type match (e.g., Database.SaveResult matches param Database.SaveResult)
