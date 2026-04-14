@@ -8123,7 +8123,7 @@ pub const Evaluator = struct {
 
     /// Type-aware method resolution filtered by static/instance.
     fn findBestMethodInClassFiltered(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
-        var candidates: [8]*ast.MethodDecl = undefined;
+        var candidates: [64]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
 
@@ -8207,7 +8207,7 @@ pub const Evaluator = struct {
     /// When multiple methods match by name and arg count, picks the one
     /// whose parameter types best match the actual argument types.
     fn findBestMethodInClass(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
-        var candidates: [8]*ast.MethodDecl = undefined;
+        var candidates: [64]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
 
