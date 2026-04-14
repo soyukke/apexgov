@@ -2319,6 +2319,7 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
         const name = if (obj.fields.get("name")) |n| n.string else "000";
         var prefix: [3]u8 = .{ 'a', '0', '0' };
