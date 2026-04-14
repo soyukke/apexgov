@@ -9060,6 +9060,37 @@ fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Alloca
         return .{ .string = result };
     }
 
+    // Date/DateTime comparison (objects with "value" field containing ISO strings)
+    if (left == .object and right == .object) {
+        const left_cn = left.object.class_name;
+        const right_cn = right.object.class_name;
+        if ((std.ascii.eqlIgnoreCase(left_cn, "Date") or std.ascii.eqlIgnoreCase(left_cn, "Datetime")) and
+            (std.ascii.eqlIgnoreCase(right_cn, "Date") or std.ascii.eqlIgnoreCase(right_cn, "Datetime")))
+        {
+            const lv = if (left.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
+            const rv = if (right.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
+            const cmp = std.mem.order(u8, lv, rv);
+            return switch (op) {
+                .lt => .{ .boolean = cmp == .lt },
+                .gt => .{ .boolean = cmp == .gt },
+                .lte => .{ .boolean = cmp != .gt },
+                .gte => .{ .boolean = cmp != .lt },
+                else => .null_val,
+            };
+        }
+    }
+    // String comparison for < > <= >=
+    if (left == .string and right == .string) {
+        const cmp = std.mem.order(u8, left.string, right.string);
+        return switch (op) {
+            .lt => .{ .boolean = cmp == .lt },
+            .gt => .{ .boolean = cmp == .gt },
+            .lte => .{ .boolean = cmp != .gt },
+            .gte => .{ .boolean = cmp != .lt },
+            else => .null_val,
+        };
+    }
+
     return .null_val;
 }
 
