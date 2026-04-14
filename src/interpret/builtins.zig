@@ -2134,8 +2134,11 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     }
 
     // SaveResult / UpsertResult methods
-    if (std.ascii.eqlIgnoreCase(method_name, "isSuccess") or std.ascii.eqlIgnoreCase(method_name, "isCreated")) {
-        return obj.fields.get("isSuccess") orelse Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) {
+        return obj.fields.get("isSuccess") orelse obj.fields.get("success") orelse Value{ .boolean = true };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreated")) {
+        return obj.fields.get("isCreated") orelse obj.fields.get("created") orelse Value{ .boolean = false };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
         return obj.fields.get("Id") orelse Value.null_val;

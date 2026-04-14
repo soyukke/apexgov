@@ -5341,6 +5341,22 @@ pub const Evaluator = struct {
                 try sot.fields.put(self.arena, "name", Value{ .string = obj.sobject.type_name });
                 return Value{ .object = sot };
             }
+            // Database result methods on SObject (SaveResult, UpsertResult, etc.)
+            if (std.ascii.eqlIgnoreCase(method, "isSuccess")) {
+                return utils.sobjectGet(&obj.sobject.fields, "success") orelse
+                    utils.sobjectGet(&obj.sobject.fields, "isSuccess") orelse Value{ .boolean = true };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "isCreated")) {
+                return utils.sobjectGet(&obj.sobject.fields, "created") orelse
+                    utils.sobjectGet(&obj.sobject.fields, "isCreated") orelse Value{ .boolean = false };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
+                return utils.sobjectGet(&obj.sobject.fields, "errors") orelse try self.makeEmptyList();
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getId")) {
+                return utils.sobjectGet(&obj.sobject.fields, "Id") orelse
+                    utils.sobjectGet(&obj.sobject.fields, "id") orelse Value.null_val;
+            }
             // getPopulatedFieldsAsMap()
             if (std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap")) {
                 const map = try self.arena.create(types.MapValue);
@@ -8158,6 +8174,25 @@ pub const Evaluator = struct {
                         arg_score = 2;
                     }
                 }
+                // For List args, check generic element type
+                if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
+                    const elem_type = param.type_ref.params[0].name;
+                    if (arg.list.items.items.len > 0) {
+                        const first = arg.list.items.items[0];
+                        if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
+                            arg_score = 3;
+                        } else if (first == .sobject) {
+                            // Simple name match
+                            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
+                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) arg_score = 3;
+                            } else if (std.mem.lastIndexOfScalar(u8, first.sobject.type_name, '.')) |di| {
+                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name[di + 1 ..], elem_type)) arg_score = 3;
+                            }
+                        } else if (first == .object and std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) {
+                            arg_score = 3;
+                        }
+                    }
+                }
                 score += arg_score;
             }
             if (score > best_score) {
@@ -8217,6 +8252,24 @@ pub const Evaluator = struct {
                     if (arg_score == 0 and arg == .object) {
                         if (self.isSubclassOf(arg.object.class_name, pt)) {
                             arg_score = 2;
+                        }
+                    }
+                    // List generic element type check
+                    if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
+                        const elem_type = param.type_ref.params[0].name;
+                        if (arg.list.items.items.len > 0) {
+                            const first = arg.list.items.items[0];
+                            if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
+                                arg_score = 3;
+                            } else if (first == .sobject) {
+                                if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
+                                    if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) arg_score = 3;
+                                } else if (std.mem.lastIndexOfScalar(u8, first.sobject.type_name, '.')) |di| {
+                                    if (std.ascii.eqlIgnoreCase(first.sobject.type_name[di + 1 ..], elem_type)) arg_score = 3;
+                                }
+                            } else if (first == .object and std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) {
+                                arg_score = 3;
+                            }
                         }
                     }
                     score += arg_score;
@@ -8861,6 +8914,30 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
     }
     if (arg == .list) {
         if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
+        // Check List element type against generic parameter: List<Database.SaveResult> etc.
+        if (std.mem.startsWith(u8, pt, "List<") or std.mem.startsWith(u8, pt, "list<")) {
+            // Extract element type from param: "List<Database.SaveResult>" → "Database.SaveResult"
+            if (std.mem.indexOf(u8, pt, "<")) |lt| {
+                if (std.mem.lastIndexOf(u8, pt, ">")) |gt| {
+                    const elem_type = pt[lt + 1 .. gt];
+                    // Check first element of the list
+                    if (arg.list.items.items.len > 0) {
+                        const first = arg.list.items.items[0];
+                        if (first == .sobject) {
+                            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
+                            // Simple name match
+                            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
+                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
+                            }
+                        }
+                        if (first == .object) {
+                            if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) return 3;
+                        }
+                    }
+                    return 1; // It's a List but element type doesn't match
+                }
+            }
+        }
         return 0;
     }
     if (arg == .sobject) {
