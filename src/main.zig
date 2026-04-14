@@ -30,10 +30,19 @@ const ProfileOptions = struct {
     }
 };
 
-pub fn main() !void {
+pub fn main() void {
+    // 再帰が深い Apex コードの解釈実行に備え、スタックサイズを拡大した
+    // ワーカースレッドで実行する（macOS メインスレッドのデフォルトは 8 MB）。
+    const thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainWorker, .{}) catch {
+        std.process.exit(2);
+    };
+    thread.join();
+}
+
+fn mainWorker() void {
     const gpa = std.heap.page_allocator;
 
-    const argv = try std.process.argsAlloc(gpa);
+    const argv = std.process.argsAlloc(gpa) catch std.process.exit(2);
     defer std.process.argsFree(gpa, argv);
 
     const exit_code = run(gpa, argv) catch |err| {
