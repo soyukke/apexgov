@@ -409,7 +409,8 @@ fn collectFieldDefaults(
             Value{ .boolean = false }
         else if (std.fmt.parseInt(i64, decoded, 10)) |i|
             Value{ .integer = i }
-        else |_| Value{ .string = decoded };
+        else |_|
+            Value{ .string = decoded };
 
         // Store in field_defaults[type_name][field_name]
         const type_key = alloc.dupe(u8, type_name) catch continue;
