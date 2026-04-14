@@ -120,6 +120,19 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatchStaticUserInfo(method_name);
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel")) return dispatchStaticLoggingLevel(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
+    if (ci.eqlIgnoreCase(class_name, "UUID")) {
+        if (ci.eqlIgnoreCase(method_name, "randomUUID")) {
+            // Generate a deterministic pseudo-UUID based on a counter
+            const id = ctx.eval.next_id;
+            ctx.eval.next_id += 1;
+            const uuid_str = try std.fmt.allocPrint(ctx.arena, "{x:0>8}-0000-4000-8000-{x:0>12}", .{ id, id });
+            const uuid_obj = try ctx.arena.create(types.ObjectInstance);
+            uuid_obj.* = .{ .class_name = "UUID" };
+            try uuid_obj.fields.put(ctx.arena, "value", Value{ .string = uuid_str });
+            return Value{ .object = uuid_obj };
+        }
+        return null;
+    }
     if (ci.eqlIgnoreCase(class_name, "Database")) return dispatchDatabase(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "RestContext")) return dispatchStaticRestContext(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "HttpResponse") or ci.eqlIgnoreCase(class_name, "HttpRequest")) {
