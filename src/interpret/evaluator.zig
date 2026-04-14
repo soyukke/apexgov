@@ -76,6 +76,12 @@ pub const Evaluator = struct {
     field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
     /// field-meta.xml から読み取ったフィールド型情報。field_types[TypeName][FieldName] = "DateTime" 等。
     field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
+    // System.Limits counters
+    limits_dml: u32 = 0,
+    limits_soql: u32 = 0,
+    limits_publish_immediate: u32 = 0,
+    limits_queueable: u32 = 0,
+    limits_callouts: u32 = 0,
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
     // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
@@ -550,6 +556,7 @@ pub const Evaluator = struct {
         }
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
+            self.limits_publish_immediate += 1;
             // Check for platform event validation: if event type ends with __e,
             // check that it has at least one reference Id field set (non-null)
             var publish_success = true;
@@ -1161,6 +1168,7 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn executeDml(self: *Evaluator, op: ast.DmlOp, target: Value) anyerror!void {
+        self.limits_dml += 1;
         // Null target → throw NullPointerException (like Salesforce)
         if (target == .null_val) {
             const exc = try self.arena.create(types.ObjectInstance);
@@ -2204,6 +2212,7 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     fn executeSoql(self: *Evaluator, raw: []const u8, current_env: *Env) !Value {
+        self.limits_soql += 1;
         // Strip brackets
         var soql = raw;
         if (soql.len > 2 and soql[0] == '[') soql = soql[1 .. soql.len - 1];
@@ -7271,8 +7280,16 @@ pub const Evaluator = struct {
     }
 
     fn handleTest(self: *Evaluator, method: []const u8, args: []const Value) !Value {
-        // Test.startTest() / Test.stopTest() — no-op stubs
-        if (std.ascii.eqlIgnoreCase(method, "startTest") or std.ascii.eqlIgnoreCase(method, "stopTest")) {
+        // Test.startTest() — reset governor limits (Salesforce resets at startTest)
+        if (std.ascii.eqlIgnoreCase(method, "startTest")) {
+            self.limits_dml = 0;
+            self.limits_soql = 0;
+            self.limits_publish_immediate = 0;
+            self.limits_queueable = 0;
+            self.limits_callouts = 0;
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "stopTest")) {
             return .void_val;
         }
         // Test.setFixedSearchResults(List<Id>)
@@ -7672,6 +7689,7 @@ pub const Evaluator = struct {
         _ = current_env;
         // System.enqueueJob → execute the Queueable's execute method synchronously
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
+            self.limits_queueable += 1;
             const job_obj = args[0].object;
             if (self.findClass(job_obj.class_name)) |job_class| {
                 // Try static method first (common for Queueable), then instance method
@@ -7746,6 +7764,8 @@ pub const Evaluator = struct {
         }
         // System.Limits → all methods return 0
         if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            if (try builtins.dispatchStatic(&bctx, "Limits", method, args)) |result| return result;
             return Value{ .integer = 0 };
         }
         // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
@@ -7794,8 +7814,13 @@ pub const Evaluator = struct {
                 return Value.null_val;
             }
             // Other JSON methods: delegate to builtins
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatchStatic(&bctx, "JSON", method, args)) |result| return result;
+            var bctx2 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            if (try builtins.dispatchStatic(&bctx2, "JSON", method, args)) |result| return result;
+        }
+        // System.Test.startTest / System.Test.stopTest / etc.
+        if (std.ascii.eqlIgnoreCase(inner, "Test")) {
+            var bctx3 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            if (try builtins.dispatchStatic(&bctx3, "Test", method, args)) |result| return result;
         }
         return .void_val;
     }

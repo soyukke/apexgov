@@ -293,6 +293,13 @@ fn runTestsFiltered(
                         }
                     }
 
+                    // Reset Limits counters before test body (static inits may have caused DML/SOQL)
+                    test_eval.limits_dml = 0;
+                    test_eval.limits_soql = 0;
+                    test_eval.limits_publish_immediate = 0;
+                    test_eval.limits_queueable = 0;
+                    test_eval.limits_callouts = 0;
+
                     const result = test_eval.callMethod(class_name, md.name, &.{});
                     if (result) |_| {
                         // Check assertion failures

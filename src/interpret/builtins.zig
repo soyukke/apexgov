@@ -135,7 +135,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         return ctx.throwException("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
     }
     if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return .void_val;
-    if (ci.eqlIgnoreCase(class_name, "Limits")) return Value{ .integer = 0 };
+    if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatchStaticLimits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Script") or
         (std.mem.startsWith(u8, class_name, "DataWeave") and ci.eqlIgnoreCase(method_name, "createScript")))
         return dispatchStaticDataWeave(ctx, args);
@@ -151,7 +151,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatchStaticEncodingUtil(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatchStaticMessaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatchStaticEventBus(method_name);
-    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(method_name);
+    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatchStaticHttp(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatchStaticCanTheUser(ctx, method_name, args);
@@ -965,6 +965,18 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
     return Value.null_val;
 }
 
+fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
+    if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
+    if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
+        return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
+    if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    // All other Limits methods return 0
+    return Value{ .integer = 0 };
+}
+
 fn dispatchStaticDataWeave(ctx: *BuiltinContext, args: []const Value) !?Value {
     if (args.len > 0 and args[0] == .string) {
         const obj = try ctx.arena.create(types.ObjectInstance);
@@ -1185,8 +1197,17 @@ fn dispatchStaticEventBus(method_name: []const u8) !?Value {
     return .void_val;
 }
 
-fn dispatchStaticTest(method_name: []const u8) !?Value {
+fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "startTest")) {
+        // Reset Limits counters (Salesforce resets governor limits at Test.startTest)
+        ctx.eval.limits_dml = 0;
+        ctx.eval.limits_soql = 0;
+        ctx.eval.limits_publish_immediate = 0;
+        ctx.eval.limits_queueable = 0;
+        ctx.eval.limits_callouts = 0;
+        return .void_val;
+    }
     return .void_val;
 }
 
