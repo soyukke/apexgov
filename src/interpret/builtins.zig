@@ -1487,6 +1487,14 @@ fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Valu
     try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = true });
+    // Set field length based on field type (Id=18, Name=255, default=131072 for Long Text Area)
+    const length: i64 = if (std.ascii.eqlIgnoreCase(field_name, "Id"))
+        18
+    else if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
+        255
+    else
+        131072;
+    try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
     return Value{ .object = fdr };
 }
 
@@ -1991,7 +1999,7 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
         if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
         return Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return Value{ .integer = 131072 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return Value{ .string = "STRING" };
@@ -2226,6 +2234,16 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
+        const name = if (obj.fields.get("name")) |n| n.string else "000";
+        var prefix: [3]u8 = .{ 'a', '0', '0' };
+        if (name.len >= 3) {
+            prefix[0] = if (std.ascii.isAlphabetic(name[0])) std.ascii.toLower(name[0]) else 'a';
+            prefix[1] = '0' + @as(u8, @intCast(name.len % 10));
+            prefix[2] = '0' + @as(u8, @intCast((name.len / 10) % 10));
+        }
+        return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
         return obj.fields.get("recordTypeInfos") orelse blk: {
             const empty = try ctx.arena.create(types.ListValue);
@@ -2297,7 +2315,7 @@ fn dispatchObjDescribeFieldResult(obj: *types.ObjectInstance, method_name: []con
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return Value{ .integer = 131072 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return Value{ .string = "STRING" };
