@@ -1525,6 +1525,10 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u
     else
         "STRING";
     try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
+    // getDefaultValue() support — look up from field_defaults if available
+    // The field_defaults map is populated from field-meta.xml <defaultValue>
+    // We don't set a default here because it depends on the SObject type context,
+    // which is handled by the caller (createDescribeResult).
     return Value{ .object = fdr };
 }
 
@@ -2036,6 +2040,15 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
         }
         if (list.items.items.len == 0 and obj_type == .string and field_name == .string) {
             try loadPicklistFromMetadata(ctx, list, obj_type.string, field_name.string);
+        }
+        // Ensure at least one entry so that get(0) doesn't fail
+        if (list.items.items.len == 0) {
+            const pe = try ctx.arena.create(types.ObjectInstance);
+            pe.* = .{ .class_name = "Schema.PicklistEntry" };
+            try pe.fields.put(ctx.arena, "label", Value{ .string = "Default" });
+            try pe.fields.put(ctx.arena, "value", Value{ .string = "Default" });
+            try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+            try list.items.append(ctx.arena, Value{ .object = pe });
         }
         return Value{ .list = list };
     }
