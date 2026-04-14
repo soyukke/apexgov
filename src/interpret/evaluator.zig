@@ -7974,8 +7974,13 @@ pub const Evaluator = struct {
             var bctx2 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx2, "JSON", method, args)) |result| return result;
         }
-        // System.Test.startTest / System.Test.stopTest / etc.
+        // System.Test.startTest / System.Test.stopTest / setMock / etc.
         if (std.ascii.eqlIgnoreCase(inner, "Test")) {
+            // setMock needs to be handled by handleTest (not builtins)
+            if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
+                self.callout_mock = args[1];
+                return .void_val;
+            }
             var bctx3 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx3, "Test", method, args)) |result| return result;
         }
