@@ -266,9 +266,15 @@ fn runTestsFiltered(
                     for (classes_with_statics.items) |cd| {
                         test_eval.reInitClassStaticFields(cd);
                     }
-                    // Run static init blocks for classes that have them
+                    // Run static init blocks — only for the test class itself and
+                    // non-test classes. Other test classes' static init blocks should
+                    // not run (Salesforce isolates each test class's statics).
                     for (classes_with_static_inits.items) |cd| {
-                        test_eval.runClassStaticInits(cd);
+                        // Skip other test classes' static init blocks
+                        const is_other_test_class = !std.ascii.eqlIgnoreCase(cd.name, class_name) and isTestClass(cd);
+                        if (!is_other_test_class) {
+                            test_eval.runClassStaticInits(cd);
+                        }
                     }
 
                     // Run @TestSetup if exists
@@ -355,6 +361,26 @@ fn runTestsFiltered(
     suite.failed += suite.errors;
     try writer.print("\n--- Results: {d} total, {d} passed, {d} failed ---\n", .{ suite.total, suite.passed, suite.total - suite.passed });
     return suite;
+}
+
+fn isTestClass(cd: *ast.ClassDecl) bool {
+    for (cd.annotations) |ann| {
+        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or
+            std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test("))
+        {
+            return true;
+        }
+    }
+    // Also check if it has any test methods
+    for (cd.members) |member| {
+        switch (member) {
+            .method_decl => |md| {
+                if (isTestMethod(md)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn isTestMethod(md: *ast.MethodDecl) bool {
