@@ -117,6 +117,7 @@ pub const AssignOp = enum {
     minus_assign,
     star_assign,
     slash_assign,
+    null_coalesce_assign,
 };
 
 pub const NewExpr = struct {

@@ -4434,6 +4434,15 @@ pub const Evaluator = struct {
     fn evalAssignment(self: *Evaluator, asgn: *ast.Assignment, val: Value, current_env: *Env) !Value {
         switch (asgn.target.*) {
             .identifier => |id| {
+                // ??= : only assign if current value is null
+                if (asgn.op == .null_coalesce_assign) {
+                    const cur = self.evalExpr(asgn.target, current_env) catch Value.null_val;
+                    if (cur != .null_val) return cur;
+                    // Current is null, fall through to assign the new value
+                    const nca = try self.arena.create(ast.Assignment);
+                    nca.* = .{ .target = asgn.target, .op = .assign, .value = asgn.value, .loc = asgn.loc };
+                    return self.evalAssignment(nca, val, current_env);
+                }
                 const final_val = if (asgn.op != .assign) blk: {
                     const cur = current_env.get(id.name) orelse Value.null_val;
                     var result = evalCompoundAssign(cur, asgn.op, val, self.arena);
@@ -8831,6 +8840,7 @@ fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std
                 return .{ .integer = @divTrunc(current.integer, value.integer) };
         },
         .assign => return value,
+        .null_coalesce_assign => return if (current == .null_val) value else current,
     }
     return value;
 }
