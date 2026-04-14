@@ -6429,6 +6429,10 @@ pub const Evaluator = struct {
                     const field_name = asgn.target.identifier.name;
                     const field_val = try self.evalExpr(asgn.value, current_env);
                     try obj.fields.put(self.arena, field_name, field_val);
+                    // Sync internal id field when Id is set via constructor
+                    if (std.ascii.eqlIgnoreCase(field_name, "Id") and field_val == .string) {
+                        obj.id = field_val.string;
+                    }
                 }
             }
         }
