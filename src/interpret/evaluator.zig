@@ -6430,8 +6430,10 @@ pub const Evaluator = struct {
         }
 
         // SObject with named params: new Account(Name = 'Test', ...)
+        // Strip "Schema." prefix for SObject type names (e.g. Schema.User → User)
+        const sob_type_name = if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) type_name[7..] else type_name;
         const obj = try self.arena.create(types.SObject);
-        obj.* = .{ .type_name = type_name };
+        obj.* = .{ .type_name = sob_type_name };
         // Parse named params: args should be Assignment expressions
         for (ne.args) |*arg| {
             if (arg.* == .assignment) {
@@ -7686,7 +7688,6 @@ pub const Evaluator = struct {
     }
 
     fn handleSystemMethod(self: *Evaluator, inner: []const u8, method: []const u8, args: []const Value, current_env: *Env) !Value {
-        _ = current_env;
         // System.enqueueJob → execute the Queueable's execute method synchronously
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
             self.limits_queueable += 1;
@@ -7821,6 +7822,16 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "Test")) {
             var bctx3 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx3, "Test", method, args)) |result| return result;
+        }
+        // System.Database.insert / update / delete / upsert / undelete
+        if (std.ascii.eqlIgnoreCase(inner, "Database")) {
+            return self.handleDatabaseMethod(method, args, current_env);
+        }
+        // Generic fallback: delegate System.X.method to builtins.dispatchStatic(X, method, args)
+        // This covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
+        {
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            if (try builtins.dispatchStatic(&bctx, inner, method, args)) |result| return result;
         }
         return .void_val;
     }
