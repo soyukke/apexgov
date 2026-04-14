@@ -5932,14 +5932,7 @@ pub const Evaluator = struct {
                             const idx_str = s[i + 1 .. close];
                             if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
                                 if (idx < items.len) {
-                                    const val_str: []const u8 = switch (items[idx]) {
-                                        .string => |str| str,
-                                        .integer => |iv| try std.fmt.allocPrint(self.arena, "{d}", .{iv}),
-                                        .double => |dv| try std.fmt.allocPrint(self.arena, "{d}", .{dv}),
-                                        .boolean => |bv| if (bv) "true" else "false",
-                                        .null_val => "null",
-                                        else => "null",
-                                    };
+                                    const val_str: []const u8 = try utils.coerceToString(items[idx], self.arena);
                                     try result.appendSlice(self.arena, val_str);
                                     i = close + 1;
                                     continue;

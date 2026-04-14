@@ -206,12 +206,23 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
         return Value{ .string = "" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "join")) {
-        if (args.len >= 2 and args[0] == .list and args[1] == .string) {
+        const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
+        if (args.len >= 1 and args[0] == .list) {
             var result: std.ArrayListUnmanaged(u8) = .empty;
             for (args[0].list.items.items, 0..) |item, idx| {
-                if (idx > 0) try result.appendSlice(ctx.arena, args[1].string);
+                if (idx > 0) try result.appendSlice(ctx.arena, sep);
                 const s = try utils.coerceToString(item, ctx.arena);
                 try result.appendSlice(ctx.arena, s);
+            }
+            return Value{ .string = try result.toOwnedSlice(ctx.arena) };
+        }
+        if (args.len >= 1 and args[0] == .set) {
+            var result: std.ArrayListUnmanaged(u8) = .empty;
+            var first = true;
+            for (args[0].set.entries.keys()) |key| {
+                if (!first) try result.appendSlice(ctx.arena, sep);
+                first = false;
+                try result.appendSlice(ctx.arena, key);
             }
             return Value{ .string = try result.toOwnedSlice(ctx.arena) };
         }
@@ -229,14 +240,7 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
                         const idx_str = fmt_str[i + 1 .. close];
                         if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
                             if (idx < items.len) {
-                                const val_str: []const u8 = switch (items[idx]) {
-                                    .string => |str| str,
-                                    .integer => |iv| std.fmt.allocPrint(ctx.arena, "{d}", .{iv}) catch "",
-                                    .double => |dv| std.fmt.allocPrint(ctx.arena, "{d}", .{dv}) catch "",
-                                    .boolean => |bv| if (bv) "true" else "false",
-                                    .null_val => "null",
-                                    else => "null",
-                                };
+                                const val_str: []const u8 = utils.coerceToString(items[idx], ctx.arena) catch "null";
                                 result.appendSlice(ctx.arena, val_str) catch {};
                                 i = close + 1;
                                 continue;
