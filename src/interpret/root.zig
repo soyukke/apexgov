@@ -2664,3 +2664,122 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
         return error.TestUnexpectedResult;
     }
 }
+
+test "E2E: empty list DML does not increment getDmlStatements" {
+    const source =
+        \\public class EmptyDmlTest {
+        \\    public static Integer test() {
+        \\        List<Account> emptyList = new List<Account>();
+        \\        insert emptyList;
+        \\        update emptyList;
+        \\        delete emptyList;
+        \\        return Limits.getDmlStatements();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EmptyDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+}
+
+test "E2E: non-empty list DML still increments getDmlStatements" {
+    const source =
+        \\public class NonEmptyDmlTest {
+        \\    public static Integer test() {
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        return Limits.getDmlStatements();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NonEmptyDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: Database.insert empty list does not increment getDmlStatements" {
+    const source =
+        \\public class EmptyDbDmlTest {
+        \\    public static Integer test() {
+        \\        List<Account> emptyList = new List<Account>();
+        \\        Database.insert(emptyList);
+        \\        Database.update(emptyList);
+        \\        return Limits.getDmlStatements();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EmptyDbDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+}
+
+test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
+    const source =
+        \\public class TypeForNameSObjectTest {
+        \\    public static String test() {
+        \\        SObject obj = (SObject) Type.forName('Account').newInstance();
+        \\        Schema.SObjectType sot = obj.getSObjectType();
+        \\        return String.valueOf(sot);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypeForNameSObjectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Account", result.value.string);
+}
+
+test "E2E: Type.forName custom object __e returns sobject with put/get" {
+    const source =
+        \\public class TypeForNameEventTest {
+        \\    public static String test() {
+        \\        SObject obj = (SObject) Type.forName('MyEvent__e').newInstance();
+        \\        obj.put('Message__c', 'hello');
+        \\        return (String) obj.get('Message__c');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypeForNameEventTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.string);
+}
+
+test "E2E: Type.forName SObject + empty list DML integration" {
+    const source =
+        \\public class IntegrationTest {
+        \\    public static Integer test() {
+        \\        // SObject newInstance works
+        \\        SObject obj = (SObject) Type.forName('Account').newInstance();
+        \\        Schema.SObjectType sot = obj.getSObjectType();
+        \\        System.assertNotEquals(null, sot);
+        \\        // Empty list DML does not count
+        \\        List<Account> emptyList = new List<Account>();
+        \\        insert emptyList;
+        \\        // Only actual insert counts
+        \\        Account a = new Account(Name = 'Test');
+        \\        insert a;
+        \\        return Limits.getDmlStatements();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IntegrationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
