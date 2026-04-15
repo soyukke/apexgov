@@ -95,6 +95,16 @@ pub const Evaluator = struct {
     } = null,
     // Lazy static initialization: tracks which classes have been statically initialized
     static_inited: std.StringArrayHashMapUnmanaged(void) = .empty,
+    // Call stack for stack trace generation (Exception.getStackTraceString)
+    call_stack: std.ArrayListUnmanaged(CallFrame) = .empty,
+    // Line number of the current call-site expression (set before callMethod/callInstanceMethod)
+    current_call_line: u32 = 0,
+
+    pub const CallFrame = struct {
+        class_name: []const u8,
+        method_name: []const u8,
+        line: u32,
+    };
 
     const TriggerContext = struct {
         is_executing: bool = false,
@@ -404,6 +414,40 @@ pub const Evaluator = struct {
         }
     }
 
+    /// Resolve a class name to its fully-qualified form (e.g., "InnerClass" → "OuterClass.InnerClass").
+    /// If the name already contains a dot or no FQ match is found, returns the original name.
+    fn resolveFullClassName(self: *Evaluator, name: []const u8) []const u8 {
+        if (std.mem.indexOfScalar(u8, name, '.') != null) return name;
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            // Look for "Outer.Name" pattern where Name matches
+            if (std.mem.indexOfScalar(u8, key, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(key[di + 1 ..], name)) return key;
+            }
+        }
+        return name;
+    }
+
+    /// Build a Salesforce-format stack trace string from the current call stack.
+    /// Format: "Class.ClassName.methodName: line N, column 1\n..."
+    /// Call stack frames are walked top-to-bottom. Each frame's `line` should
+    /// already reflect the line of the call-site expression (set by evalMethodCall/evalNewExpr).
+    pub fn buildStackTraceString(self: *Evaluator) ![]const u8 {
+        var buf = std.ArrayListUnmanaged(u8){};
+        var i: usize = self.call_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const f = self.call_stack.items[i];
+            if (buf.items.len > 0) try buf.append(self.arena, '\n');
+            const fq = self.resolveFullClassName(f.class_name);
+            const line = if (f.line > 0) f.line else 1;
+            const entry = try std.fmt.allocPrint(self.arena, "Class.{s}.{s}: line {d}, column 1", .{ fq, f.method_name, line });
+            try buf.appendSlice(self.arena, entry);
+        }
+        return buf.items;
+    }
+
     /// Lazily ensure a class's static fields and static init blocks have been evaluated.
     /// Called on first access to a class (method call, field access, or instantiation).
     pub fn ensureStaticInit(self: *Evaluator, class_name: []const u8) void {
@@ -576,6 +620,11 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
+        // Push call frame for stack trace generation (use current_call_line set by caller)
+        const frame_line = self.current_call_line;
+        self.current_call_line = 0;
+        try self.call_stack.append(self.arena, .{ .class_name = class_name, .method_name = method_name, .line = frame_line });
+        defer _ = self.call_stack.pop();
         // Lazy static init: ensure the class's static fields/blocks are initialized
         self.ensureStaticInit(class_name);
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
@@ -4217,6 +4266,12 @@ pub const Evaluator = struct {
             },
 
             .call => |call| {
+                // Set call-site line for stack trace generation, and update parent frame's line
+                if (call.loc.line > 0) {
+                    self.current_call_line = call.loc.line;
+                    if (self.call_stack.items.len > 0)
+                        self.call_stack.items[self.call_stack.items.len - 1].line = call.loc.line;
+                }
                 var args: std.ArrayListUnmanaged(Value) = .empty;
                 var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
                 for (call.args) |*arg| {
@@ -4411,7 +4466,25 @@ pub const Evaluator = struct {
                 return Value.null_val;
             },
 
-            .new_expr => |ne| return self.evalNewExpr(ne, current_env),
+            .new_expr => |ne| {
+                // Set call-site line for constructor frame tracking, and update parent frame's line
+                if (ne.loc.line > 0) {
+                    self.current_call_line = ne.loc.line;
+                    if (self.call_stack.items.len > 0)
+                        self.call_stack.items[self.call_stack.items.len - 1].line = ne.loc.line;
+                }
+                const val = try self.evalNewExpr(ne, current_env);
+                // Capture stack trace for Exception objects at creation time
+                if (val == .object and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
+                    if (val.object.fields.get("stackTraceString") == null) {
+                        const line = if (ne.loc.line > 0) ne.loc.line else 1;
+                        const trace = try self.buildStackTraceString();
+                        try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
+                        try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
+                    }
+                }
+                return val;
+            },
 
             .cast_expr => |ce| {
                 const val = try self.evalExpr(ce.operand, current_env);
@@ -4736,6 +4809,12 @@ pub const Evaluator = struct {
     }
 
     fn evalMethodCall(self: *Evaluator, mc: *ast.MethodCallExpr, current_env: *Env) anyerror!Value {
+        // Set call-site line for stack trace generation, and update parent frame's line
+        if (mc.loc.line > 0) {
+            self.current_call_line = mc.loc.line;
+            if (self.call_stack.items.len > 0)
+                self.call_stack.items[self.call_stack.items.len - 1].line = mc.loc.line;
+        }
         // Null-safe operator (?.) - if object is null, return null
         if (mc.null_safe) {
             const obj_val = self.evalExpr(mc.object, current_env) catch |err| {
@@ -6213,7 +6292,8 @@ pub const Evaluator = struct {
             if (std.mem.indexOf(u8, s, sep)) |idx| {
                 return Value{ .string = s[0..idx] };
             }
-            return Value{ .string = "" };
+            // Salesforce returns original string when separator not found
+            return Value{ .string = s };
         }
         if (std.ascii.eqlIgnoreCase(method, "substringAfterLast") and args.len > 0 and args[0] == .string) {
             const sep = args[0].string;
@@ -6932,7 +7012,9 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 const type_obj = try self.arena.create(types.ObjectInstance);
                 type_obj.* = .{ .class_name = "Type" };
-                try type_obj.fields.put(self.arena, "name", Value{ .string = class_name });
+                // For inner classes, return the FQ name (e.g., "OuterClass.InnerClass")
+                const fq_name = self.resolveFullClassName(class_name);
+                try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
                 return Value{ .object = type_obj };
             }
 
@@ -7102,8 +7184,8 @@ pub const Evaluator = struct {
             // Check if this is an inner class of the current class → use FQ name
             const type_name: []const u8 = if (self.current_class) |cc| blk: {
                 const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, simple_name }) catch simple_name;
-                break :blk if (self.findClass(fq) != null) fq else simple_name;
-            } else simple_name;
+                break :blk if (self.findClass(fq) != null) fq else self.resolveFullClassName(simple_name);
+            } else self.resolveFullClassName(simple_name);
             const type_obj = try self.arena.create(types.ObjectInstance);
             type_obj.* = .{ .class_name = "Type" };
             try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
@@ -8346,6 +8428,11 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
+        // Push call frame for stack trace generation (use current_call_line set by caller)
+        const frame_line = self.current_call_line;
+        self.current_call_line = 0;
+        try self.call_stack.append(self.arena, .{ .class_name = instance.class_name, .method_name = method_name, .line = frame_line });
+        defer _ = self.call_stack.pop();
         // Lazy static init for the instance's class and its parent hierarchy
         self.ensureStaticInit(instance.class_name);
         self.ensureStaticInit(class_decl.name);
@@ -8761,6 +8848,11 @@ pub const Evaluator = struct {
                 const pval = if (pi < args.len) args[pi] else Value.null_val;
                 try ctor_env.define(param.name, pval);
             }
+            // Push call frame for constructor (use current_call_line from new-expression site)
+            const ctor_line = if (self.current_call_line > 0) self.current_call_line else if (cd.loc.line > 0) cd.loc.line else 1;
+            self.current_call_line = 0;
+            try self.call_stack.append(self.arena, .{ .class_name = class_decl.name, .method_name = "<init>", .line = ctor_line });
+            defer _ = self.call_stack.pop();
             // Track which class's constructor is running (for correct super() dispatch)
             const saved_ctor_class = self.current_constructor_class;
             self.current_constructor_class = class_decl.name;

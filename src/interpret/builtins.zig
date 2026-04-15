@@ -1907,7 +1907,8 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) return obj.fields.get("message") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) return Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber")) return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {
         const cn = obj.class_name;
         if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {

@@ -170,6 +170,16 @@ fn matchAt(
     var ip = input_pos;
 
     while (pp < pat.len) {
+        // ^ アンカー — 入力の先頭にのみマッチ
+        if (pat[pp] == '^') {
+            if (ip != 0) return null;
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1);
+        }
+        // $ アンカー — 入力の末尾にのみマッチ
+        if (pat[pp] == '$') {
+            if (ip != input.len) return null;
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1);
+        }
         // キャプチャグループ
         if (pat[pp] == '(') {
             const group_end = findGroupEnd(pat, pp) orelse return null;
@@ -475,6 +485,22 @@ test "matches full string" {
     try std.testing.expect(try matches(a, "\\d+", "12345"));
     try std.testing.expect(!try matches(a, "\\d+", "abc"));
     try std.testing.expect(!try matches(a, "\\d+", "12 34"));
+}
+
+test "anchors ^ and $" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // ^ and $ anchored pattern: match full string of parenthesized alphanumeric_
+    const pat = "^\\([0-9A-Za-z_ ]+\\)$";
+    const r1 = try findAll(a, pat, "(Some_Namespace)");
+    try std.testing.expectEqual(@as(usize, 1), r1.len);
+    const r2 = try findAll(a, pat, "(System Code)");
+    try std.testing.expectEqual(@as(usize, 1), r2.len);
+    const r3 = try findAll(a, pat, "Class.Foo.bar: line 1");
+    try std.testing.expectEqual(@as(usize, 0), r3.len);
+    const r4 = try findAll(a, pat, "()");
+    try std.testing.expectEqual(@as(usize, 0), r4.len);
 }
 
 test "javadoc @see pattern" {
