@@ -1190,6 +1190,8 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn executeDml(self: *Evaluator, op: ast.DmlOp, target: Value) anyerror!void {
+        // Salesforce: empty list DML does not count as a DML statement
+        if (target == .list and target.list.items.items.len == 0) return;
         self.limits_dml += 1;
         // Null target → throw NullPointerException (like Salesforce)
         if (target == .null_val) {
@@ -5198,6 +5200,12 @@ pub const Evaluator = struct {
                 const set = try self.arena.create(types.SetValue);
                 set.* = .{};
                 return Value{ .set = set };
+            }
+            // SObject type name → return .sobject directly
+            if (self.isSObjectTypeName(type_name)) {
+                const sob = try self.arena.create(types.SObject);
+                sob.* = .{ .type_name = type_name };
+                return Value{ .sobject = sob };
             }
             return self.instantiateClass(type_name);
         }
@@ -9243,6 +9251,34 @@ pub const Evaluator = struct {
         return null;
     }
 
+    /// Determine whether a type name represents a Salesforce SObject type.
+    fn isSObjectTypeName(self: *Evaluator, name: []const u8) bool {
+        // Custom suffixes: __c, __e, __mdt, __b
+        if (std.mem.endsWith(u8, name, "__c") or std.mem.endsWith(u8, name, "__e") or
+            std.mem.endsWith(u8, name, "__mdt") or std.mem.endsWith(u8, name, "__b"))
+            return true;
+        // Present in the data store
+        if (self.store.get(name) != null) return true;
+        // Known standard SObject types
+        const known = [_][]const u8{
+            "Account",                 "Contact",                "Opportunity",         "Case",                   "Lead",                 "Task",                 "Event",
+            "Campaign",                "User",                   "ContentVersion",      "ContentDocument",        "ContentDocumentLink",  "ContentDistribution",  "PermissionSet",
+            "PermissionSetAssignment", "ObjectPermissions",      "Profile",             "Organization",           "ApexClass",            "StaticResource",       "FieldPermissions",
+            "PermissionSetGroup",      "PlatformCachePartition", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",      "AggregateResult",
+            "RecordType",              "DuplicateRule",          "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",          "LoginHistory",
+            "TaskStatus",              "BusinessHours",          "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",          "Group",
+            "Attachment",              "Note",                   "EmailMessage",        "CaseComment",            "Solution",             "Contract",             "Product2",
+            "Pricebook2",              "PricebookEntry",         "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense", "EmailTemplate",
+            "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
+            "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowVersionView",
+            "ApexEmailNotification",   "Network",                "Topic",               "OmniProcess",            "SObject",
+        };
+        for (known) |kt| {
+            if (std.ascii.eqlIgnoreCase(name, kt)) return true;
+        }
+        return false;
+    }
+
     /// Instantiate a class by name (for Type.forName().newInstance())
     fn instantiateClass(self: *Evaluator, class_name: []const u8) !Value {
         // Lazy static init: ensure the class's static fields/blocks are initialized
@@ -9270,6 +9306,12 @@ pub const Evaluator = struct {
             // Execute own constructor
             self.runConstructor(class_decl, instance, &.{}) catch {};
             return Value{ .object = instance };
+        }
+        // SObject type name → return .sobject instead of .object
+        if (self.isSObjectTypeName(class_name)) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = class_name };
+            return Value{ .sobject = sob };
         }
         // Fallback: create a bare ObjectInstance
         const instance = try self.arena.create(types.ObjectInstance);
