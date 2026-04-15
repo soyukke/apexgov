@@ -108,6 +108,7 @@ pub const Assignment = struct {
     target: *Expr,
     op: AssignOp,
     value: *Expr,
+    is_postfix: bool = false,
     loc: SourceLoc = .zero,
 };
 

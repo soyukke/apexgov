@@ -83,12 +83,18 @@ pub fn valueEql(a: Value, b: Value) bool {
             if (av.id != null and b.sobject.id != null) return std.ascii.eqlIgnoreCase(av.id.?, b.sobject.id.?);
             // Pointer equality first
             if (av == b.sobject) return true;
-            // Deep equality: same type, same fields
+            // Deep equality: same type
             if (!std.ascii.eqlIgnoreCase(av.type_name, b.sobject.type_name)) return false;
-            if (av.fields.count() != b.sobject.fields.count()) return false;
+            // Compare all fields from both sides — missing fields treated as null
             for (av.fields.keys(), av.fields.values()) |k, v| {
-                const bv = b.sobject.fields.get(k) orelse return false;
+                const bv = sobjectGet(&b.sobject.fields, k) orelse Value.null_val;
                 if (!valueEql(v, bv)) return false;
+            }
+            // Check fields in b that are not in a
+            for (b.sobject.fields.keys(), b.sobject.fields.values()) |k, v| {
+                if (sobjectGet(&av.fields, k) == null) {
+                    if (!valueEql(v, Value.null_val)) return false;
+                }
             }
             return true;
         },
@@ -267,6 +273,14 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
             break :blk try buf.toOwnedSlice(arena);
         },
         .object => |obj| blk: {
+            // Date/DateTime objects serialize as their value string (e.g., "2026-04-07")
+            if ((std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
+            {
+                if (obj.fields.get("value")) |val| {
+                    if (val == .string) break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{val.string});
+                }
+            }
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             try buf.append(arena, '{');
             var first = true;
@@ -392,4 +406,35 @@ test "formatApexDouble" {
     const s4 = try formatApexDouble(alloc, 86.0);
     defer alloc.free(s4);
     try std.testing.expectEqualStrings("86.0", s4);
+}
+
+/// JSON 文字列のバランスチェック (braces/brackets が閉じているか、文字列リテラルが開いたままでないか)。
+/// エスケープ (`\"`) を正しく考慮する。true = balanced, false = malformed / truncated。
+pub fn isJsonBalanced(json: []const u8) bool {
+    var brace_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var in_str = false;
+    var i: usize = 0;
+    while (i < json.len) : (i += 1) {
+        if (in_str) {
+            if (json[i] == '\\') {
+                i += 1; // skip escaped char
+            } else if (json[i] == '"') {
+                in_str = false;
+            }
+        } else {
+            if (json[i] == '"') in_str = true else if (json[i] == '{') brace_depth += 1 else if (json[i] == '}') brace_depth -= 1 else if (json[i] == '[') bracket_depth += 1 else if (json[i] == ']') bracket_depth -= 1;
+        }
+    }
+    return brace_depth == 0 and bracket_depth == 0 and !in_str;
+}
+
+test "isJsonBalanced" {
+    try std.testing.expect(isJsonBalanced("{}"));
+    try std.testing.expect(isJsonBalanced("{\"key\":\"val\"}"));
+    try std.testing.expect(isJsonBalanced("{\"key\":\"val with \\\"quotes\\\"\"}"));
+    try std.testing.expect(!isJsonBalanced("{"));
+    try std.testing.expect(!isJsonBalanced("{\"key\":\"unterminated}"));
+    try std.testing.expect(isJsonBalanced("[]"));
+    try std.testing.expect(!isJsonBalanced("["));
 }
