@@ -167,8 +167,8 @@ fn runTestsFiltered(
         }
     }
 
-    // Run static initializer blocks after all classes are registered
-    eval.runStaticInits();
+    // Static initializer blocks are now evaluated lazily via ensureStaticInit()
+    // on first class access, matching Salesforce behavior.
 
     // Pre-compute which classes need static field reinit and which have static init blocks
     var classes_with_statics: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
@@ -262,41 +262,50 @@ fn runTestsFiltered(
                             break;
                         }
                     }
-                    // Re-init static fields for classes that have them
                     for (classes_with_statics.items) |cd| {
-                        test_eval.reInitClassStaticFields(cd);
+                        test_eval.registerStaticFieldPlaceholders(cd);
                     }
-                    // Run static init blocks — only for the test class itself and
-                    // non-test classes. Other test classes' static init blocks should
-                    // not run (Salesforce isolates each test class's statics).
+                    // Suppress ensureStaticInit during init phase to prevent
+                    // cascading class initialization from callMethod hooks.
+                    test_eval.suppress_ensure_static_init = true;
+                    // Step 1: Test class fields + static blocks FIRST (useMocks)
+                    test_eval.reInitClassStaticFields(class_decl);
+                    test_eval.runClassStaticInits(class_decl);
+                    // Step 2: Remaining classes' fields
+                    for (classes_with_statics.items) |cd| {
+                        if (!std.ascii.eqlIgnoreCase(cd.name, class_name)) {
+                            test_eval.reInitClassStaticFields(cd);
+                        }
+                    }
+                    // Step 3: Remaining non-test classes' static blocks
                     for (classes_with_static_inits.items) |cd| {
-                        // Skip other test classes' static init blocks
                         const is_other_test_class = !std.ascii.eqlIgnoreCase(cd.name, class_name) and isTestClass(cd);
-                        if (!is_other_test_class) {
+                        if (!is_other_test_class and !std.ascii.eqlIgnoreCase(cd.name, class_name)) {
                             test_eval.runClassStaticInits(cd);
                         }
                     }
-
+                    test_eval.suppress_ensure_static_init = false;
                     // Run @TestSetup if exists
                     if (test_setup_method) |setup| {
                         _ = test_eval.callMethod(class_name, setup.name, &.{}) catch {};
-                        // After @TestSetup, re-init static fields so that side effects
-                        // (e.g. shouldExecute(false)) don't leak into the test body.
-                        // In Salesforce, each test method gets fresh static state.
                         for (classes_with_statics.items) |cd2| {
-                            test_eval.reInitClassStaticFields(cd2);
+                            test_eval.registerStaticFieldPlaceholders(cd2);
                         }
-                        // Re-run only the test class's own static init block (not all classes)
-                        // to restore mock setups like LoggerConfigurationSelector.useMocks()
-                        for (class_decl.members) |cm| {
-                            switch (cm) {
-                                .static_init => |body| {
-                                    const init_env = test_eval.global_env.child() catch continue;
-                                    _ = test_eval.execBlock(body, init_env) catch {};
-                                },
-                                else => {},
+                        test_eval.suppress_ensure_static_init = true;
+                        test_eval.reInitClassStaticFields(class_decl);
+                        test_eval.runClassStaticInits(class_decl);
+                        for (classes_with_statics.items) |cd2| {
+                            if (!std.ascii.eqlIgnoreCase(cd2.name, class_name)) {
+                                test_eval.reInitClassStaticFields(cd2);
                             }
                         }
+                        for (classes_with_static_inits.items) |cd2| {
+                            const is_other_test = !std.ascii.eqlIgnoreCase(cd2.name, class_name) and isTestClass(cd2);
+                            if (!is_other_test and !std.ascii.eqlIgnoreCase(cd2.name, class_name)) {
+                                test_eval.runClassStaticInits(cd2);
+                            }
+                        }
+                        test_eval.suppress_ensure_static_init = false;
                     }
 
                     // Reset Limits counters before test body (static inits may have caused DML/SOQL)

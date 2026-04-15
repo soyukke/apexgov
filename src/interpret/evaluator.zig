@@ -93,6 +93,10 @@ pub const Evaluator = struct {
         callback: *types.ObjectInstance,
         event: Value,
     } = null,
+    // Lazy static initialization: tracks which classes have been statically initialized
+    static_inited: std.StringArrayHashMapUnmanaged(void) = .empty,
+    // When true, ensureStaticInit is a no-op (prevents cascading during test init phase)
+    suppress_ensure_static_init: bool = false,
 
     const TriggerContext = struct {
         is_executing: bool = false,
@@ -386,6 +390,45 @@ pub const Evaluator = struct {
         }
     }
 
+    /// Register static field placeholders (null values) without evaluating initializers.
+    /// Used to prepare global_env keys so that lazy init can later fill in real values.
+    pub fn registerStaticFieldPlaceholders(self: *Evaluator, cd: *ast.ClassDecl) void {
+        for (cd.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (fd.modifiers.is_static) {
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        self.global_env.define(key, defaultValue(fd.type_ref)) catch {};
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Lazily ensure a class's static fields and static init blocks have been evaluated.
+    /// Called on first access to a class (method call, field access, or instantiation).
+    pub fn ensureStaticInit(self: *Evaluator, class_name: []const u8) void {
+        if (self.suppress_ensure_static_init) return;
+        // Fast path: already initialized
+        if (self.static_inited.get(class_name) != null) return;
+        // Case-insensitive lookup
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                if (self.static_inited.get(entry.key_ptr.*) != null) return;
+                const cd = entry.value_ptr.*;
+                // Mark as initialized BEFORE evaluating to prevent infinite recursion
+                // on circular static dependencies (matches Salesforce behavior: circular
+                // deps see null/default for the not-yet-evaluated class).
+                self.static_inited.put(self.arena, entry.key_ptr.*, {}) catch return;
+                self.reInitClassStaticFields(cd);
+                self.runClassStaticInits(cd);
+                return;
+            }
+        }
+    }
+
     /// Run static init blocks for a single class
     pub fn runClassStaticInits(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
@@ -473,30 +516,10 @@ pub const Evaluator = struct {
                 else => {},
             }
         }
-        // Pass 2: Evaluate static field initializers (all class names and placeholders are now visible)
-        for (decls) |decl| {
-            switch (decl) {
-                .class_decl => |cd| {
-                    for (cd.members) |member| {
-                        switch (member) {
-                            .field_decl => |fd| {
-                                if (fd.modifiers.is_static and fd.initializer != null) {
-                                    const saved_class = self.current_class;
-                                    self.current_class = cd.name;
-                                    defer self.current_class = saved_class;
-                                    const val = self.evalExpr(fd.initializer.?, self.global_env) catch Value.null_val;
-                                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                    self.global_env.set(key, val) catch {};
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-        // Static init blocks are deferred to runStaticInits()
+        // Pass 2 is deferred: static field initializers and static init blocks
+        // are evaluated lazily via ensureStaticInit() on first class access.
+        // This matches Salesforce behavior where static initialization happens
+        // when a class is first referenced, not at load time.
     }
 
     /// Register source code for a class (used for ApexClass.Body queries)
@@ -556,6 +579,8 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
+        // Lazy static init: ensure the class's static fields/blocks are initialized
+        self.ensureStaticInit(class_name);
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             self.limits_publish_immediate += 1;
@@ -4645,6 +4670,8 @@ pub const Evaluator = struct {
                         std.ascii.eqlIgnoreCase(cls, "Trigger");
                     const is_var = current_env.get(cls) != null;
                     if (is_class and !is_var) {
+                        // Lazy static init: ensure the class is initialized before writing
+                        self.ensureStaticInit(cls);
                         const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cls, fa.field });
                         self.global_env.set(key, val) catch {
                             try self.global_env.define(key, val);
@@ -6072,6 +6099,58 @@ pub const Evaluator = struct {
                 @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec,
             }) };
         }
+        // addMinutes — Datetime に分を加算
+        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = s };
+            const delta: i32 = if (args.len > 0) switch (args[0]) {
+                .integer => |iv| @intCast(iv),
+                .double => |dv| @intFromFloat(dv),
+                else => 0,
+            } else 0;
+            var mi: i32 = @as(i32, dt.mi) + delta;
+            var hour_offset: i32 = 0;
+            while (mi >= 60) {
+                mi -= 60;
+                hour_offset += 1;
+            }
+            while (mi < 0) {
+                mi += 60;
+                hour_offset -= 1;
+            }
+            const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, @as(u8, @intCast(mi)), dt.sec,
+            });
+            if (hour_offset != 0) {
+                return self.evalStringMethod(base, "addHours", &.{Value{ .integer = hour_offset }});
+            }
+            return Value{ .string = base };
+        }
+        // addSeconds — Datetime に秒を加算
+        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) {
+            const dt = parseIsoDate(s) orelse return Value{ .string = s };
+            const delta: i32 = if (args.len > 0) switch (args[0]) {
+                .integer => |iv| @intCast(iv),
+                .double => |dv| @intFromFloat(dv),
+                else => 0,
+            } else 0;
+            var sec: i32 = @as(i32, dt.sec) + delta;
+            var min_offset: i32 = 0;
+            while (sec >= 60) {
+                sec -= 60;
+                min_offset += 1;
+            }
+            while (sec < 0) {
+                sec += 60;
+                min_offset -= 1;
+            }
+            const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, dt.mi, @as(u8, @intCast(sec)),
+            });
+            if (min_offset != 0) {
+                return self.evalStringMethod(base, "addMinutes", &.{Value{ .integer = min_offset }});
+            }
+            return Value{ .string = base };
+        }
         // year() / month() / day() — ISO 日付文字列からコンポーネント抽出
         if (std.ascii.eqlIgnoreCase(method, "year") or
             std.ascii.eqlIgnoreCase(method, "month") or
@@ -6791,6 +6870,9 @@ pub const Evaluator = struct {
         // Static field: ClassName.fieldName
         if (fa.object.* == .identifier) {
             const class_name = fa.object.identifier.name;
+
+            // Lazy static init: ensure the class's static fields/blocks are initialized
+            self.ensureStaticInit(class_name);
 
             // Date.today()
             if (std.ascii.eqlIgnoreCase(class_name, "Date") and std.ascii.eqlIgnoreCase(fa.field, "today")) {
@@ -8259,6 +8341,8 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
+        // Lazy static init for the instance's class
+        self.ensureStaticInit(instance.class_name);
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes
         const actual_class = self.findClass(instance.class_name);
@@ -9162,6 +9246,8 @@ pub const Evaluator = struct {
 
     /// Instantiate a class by name (for Type.forName().newInstance())
     fn instantiateClass(self: *Evaluator, class_name: []const u8) !Value {
+        // Lazy static init: ensure the class's static fields/blocks are initialized
+        self.ensureStaticInit(class_name);
         if (self.findClass(class_name)) |class_decl| {
             const instance = try self.arena.create(types.ObjectInstance);
             // Use the canonical class name from the declaration (preserves original casing)
