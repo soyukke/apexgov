@@ -9,6 +9,7 @@ const ast = @import("ast.zig");
 const env_mod = @import("env.zig");
 const builtins = @import("builtins.zig");
 const utils = @import("utils.zig");
+const regex = @import("regex.zig");
 const Value = types.Value;
 const Env = env_mod.Env;
 
@@ -6152,8 +6153,12 @@ pub const Evaluator = struct {
             }
             return Value{ .list = list };
         }
-        if ((std.ascii.eqlIgnoreCase(method, "replace") or std.ascii.eqlIgnoreCase(method, "replaceAll")) and args.len >= 2 and args[0] == .string and args[1] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "replace") and args.len >= 2 and args[0] == .string and args[1] == .string) {
             const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, args[1].string);
+            return Value{ .string = result };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "replaceAll") and args.len >= 2 and args[0] == .string and args[1] == .string) {
+            const result = try regex.replaceAll(self.arena, args[0].string, s, args[1].string);
             return Value{ .string = result };
         }
         if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0 and args[0] == .string) {

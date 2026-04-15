@@ -112,6 +112,43 @@ pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
     return false;
 }
 
+/// パターンにマッチする全ての部分文字列を replacement で置換。
+/// replacement 内の `$1`..`$9` はキャプチャグループに展開される。
+pub fn replaceAll(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, replacement: []const u8) ![]const u8 {
+    const all_matches = try findAll(arena, pattern, input);
+    if (all_matches.len == 0) return input;
+
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    var last_end: usize = 0;
+
+    for (all_matches) |m| {
+        const span = m.group(0) orelse continue;
+        // Append text before this match
+        try result.appendSlice(arena, input[last_end..span.start]);
+        // Expand replacement (handle $1..$9 backreferences)
+        var ri: usize = 0;
+        while (ri < replacement.len) : (ri += 1) {
+            if (replacement[ri] == '$' and ri + 1 < replacement.len and replacement[ri + 1] >= '0' and replacement[ri + 1] <= '9') {
+                const gidx: usize = replacement[ri + 1] - '0';
+                ri += 1;
+                if (m.groupSlice(gidx, input)) |gs| {
+                    try result.appendSlice(arena, gs);
+                }
+            } else if (replacement[ri] == '\\' and ri + 1 < replacement.len) {
+                // Escaped char in replacement (e.g., \\$ for literal $)
+                ri += 1;
+                try result.append(arena, replacement[ri]);
+            } else {
+                try result.append(arena, replacement[ri]);
+            }
+        }
+        last_end = span.end;
+    }
+    // Append remaining text after last match
+    try result.appendSlice(arena, input[last_end..]);
+    return result.items;
+}
+
 // ---------------------------------------------------------------------------
 // パターンプリプロセッサ
 // ---------------------------------------------------------------------------
@@ -501,6 +538,20 @@ test "anchors ^ and $" {
     try std.testing.expectEqual(@as(usize, 0), r3.len);
     const r4 = try findAll(a, pat, "()");
     try std.testing.expectEqual(@as(usize, 0), r4.len);
+}
+
+test "replaceAll with backreferences" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Simple replacement without backreferences
+    try std.testing.expectEqualStrings("hello planet", try replaceAll(a, "world", "hello world", "planet"));
+    // Backreference $1
+    try std.testing.expectEqualStrings("(abc) (def)", try replaceAll(a, "(\\w+)", "abc def", "($1)"));
+    // SSN-like pattern: mask first two groups
+    try std.testing.expectEqualStrings("XXX-XX-1234", try replaceAll(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"));
+    // No match → return original
+    try std.testing.expectEqualStrings("hello", try replaceAll(a, "\\d+", "hello", "NUM"));
 }
 
 test "javadoc @see pattern" {
