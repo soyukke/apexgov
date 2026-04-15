@@ -95,8 +95,6 @@ pub const Evaluator = struct {
     } = null,
     // Lazy static initialization: tracks which classes have been statically initialized
     static_inited: std.StringArrayHashMapUnmanaged(void) = .empty,
-    // When true, ensureStaticInit is a no-op (prevents cascading during test init phase)
-    suppress_ensure_static_init: bool = false,
 
     const TriggerContext = struct {
         is_executing: bool = false,
@@ -409,7 +407,6 @@ pub const Evaluator = struct {
     /// Lazily ensure a class's static fields and static init blocks have been evaluated.
     /// Called on first access to a class (method call, field access, or instantiation).
     pub fn ensureStaticInit(self: *Evaluator, class_name: []const u8) void {
-        if (self.suppress_ensure_static_init) return;
         // Fast path: already initialized
         if (self.static_inited.get(class_name) != null) return;
         // Case-insensitive lookup
@@ -8341,8 +8338,10 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
-        // Lazy static init for the instance's class
+        // Lazy static init for the instance's class and its parent hierarchy
         self.ensureStaticInit(instance.class_name);
+        self.ensureStaticInit(class_decl.name);
+        if (class_decl.super_class) |sc| self.ensureStaticInit(sc.name);
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes
         const actual_class = self.findClass(instance.class_name);
@@ -9249,6 +9248,8 @@ pub const Evaluator = struct {
         // Lazy static init: ensure the class's static fields/blocks are initialized
         self.ensureStaticInit(class_name);
         if (self.findClass(class_name)) |class_decl| {
+            // Also ensure parent class hierarchy is initialized
+            if (class_decl.super_class) |sc| self.ensureStaticInit(sc.name);
             const instance = try self.arena.create(types.ObjectInstance);
             // Use the canonical class name from the declaration (preserves original casing)
             instance.* = .{ .class_name = class_decl.name };
