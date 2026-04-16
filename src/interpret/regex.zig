@@ -244,6 +244,30 @@ fn matchAt(
                 return matchAt(pat, rest_start, input, ip, groups, depth + 1);
             }
 
+            // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
+            // Bounded by the pattern's maximum possible match length (kept small for perf;
+            // matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
+            if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and (inner[2] == '=' or inner[2] == '!')) {
+                const is_positive = inner[2] == '=';
+                const lb_pat = inner[3..];
+                const max_lb = lookbehindMaxLen(lb_pat);
+                var lb_matched = false;
+                var L: usize = 0;
+                const limit = @min(ip, max_lb);
+                while (L <= limit) : (L += 1) {
+                    if (matchAt(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1)) |end_pos| {
+                        if (end_pos == L) {
+                            lb_matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (is_positive != lb_matched) return null;
+                const rest_start = group_end + 1;
+                if (rest_start >= pat.len) return ip;
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1);
+            }
+
             // Non-capturing group: (?:...)
             const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
             const group_inner = if (is_non_capturing) inner[2..] else inner;
@@ -258,8 +282,8 @@ fn matchAt(
                         continue;
                     }
                     if (pat[gi] == '(') {
-                        // Skip non-capturing groups (?...) for index counting
-                        if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':')) continue;
+                        // Skip non-capturing groups (?...) and lookahead/lookbehind for index counting
+                        if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':' or pat[gi + 2] == '<')) continue;
                         idx += 1;
                     }
                 }
@@ -353,6 +377,40 @@ fn atomMatches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
     }
     if (pat[pp] == '[') return charClassMatches(pat, pp, c);
     return c == pat[pp];
+}
+
+/// Estimate the maximum number of characters a (fixed/bounded) lookbehind body can match.
+/// Counts atoms with quantifier upper bounds; unbounded `*`/`+` cap at HARD_CAP.
+/// Returns at most HARD_CAP to keep search cost predictable.
+fn lookbehindMaxLen(pat: []const u8) usize {
+    const HARD_CAP: usize = 64;
+    var total: usize = 0;
+    var i: usize = 0;
+    while (i < pat.len and total <= HARD_CAP) {
+        if (pat[i] == '(') {
+            const ge = findGroupEnd(pat, i) orelse return HARD_CAP;
+            const inner_max = lookbehindMaxLen(pat[i + 1 .. ge]);
+            const q = parseQuantifier(pat[ge + 1 ..]);
+            const reps: usize = if (q.max >= 1000) HARD_CAP else q.max;
+            total +|= inner_max *| reps;
+            i = ge + 1 + q.len;
+            continue;
+        }
+        if (pat[i] == '|' or pat[i] == '^' or pat[i] == '$') {
+            i += 1;
+            continue;
+        }
+        const al = atomLength(pat, i);
+        if (al == 0) {
+            i += 1;
+            continue;
+        }
+        const q = parseQuantifier(pat[i + al ..]);
+        const reps: usize = if (q.max >= 1000) HARD_CAP else q.max;
+        total +|= reps;
+        i += al + q.len;
+    }
+    return @min(total, HARD_CAP);
 }
 
 fn atomLength(pat: []const u8, pp: usize) usize {
@@ -665,4 +723,41 @@ test "SSN regex replaceAll" {
     try std.testing.expectEqualStrings("XXX-XX-6789", try replaceAll(a, ssn_pat, "123456789", "$1XXX-XX-$4"));
     // False positive: alphanumeric before → should NOT match
     try std.testing.expectEqualStrings("abc123456789", try replaceAll(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"));
+}
+
+test "negative lookbehind (?<!...)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Match digits NOT preceded by another digit (similar to (?<!\d)\d+)
+    const r1 = try findAll(a, "(?<!\\d)\\d+", "abc123def");
+    try std.testing.expectEqual(@as(usize, 1), r1.len);
+    try std.testing.expectEqualStrings("123", r1[0].groupSlice(0, "abc123def").?);
+}
+
+test "positive lookbehind (?<=...)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Match a word preceded by "Mr "
+    const r1 = try findAll(a, "(?<=Mr )\\w+", "Hello Mr Smith");
+    try std.testing.expectEqual(@as(usize, 1), r1.len);
+    try std.testing.expectEqualStrings("Smith", r1[0].groupSlice(0, "Hello Mr Smith").?);
+}
+
+test "NebulaLogger SSN pattern (?<!\\d)...(?!\\d)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ssn_pat = "(?<!\\d)(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?!\\d)";
+    // Matches space-separated SSN
+    try std.testing.expectEqualStrings(
+        "Something my social is XXX-XX-9999 in case",
+        try replaceAll(a, ssn_pat, "Something my social is 400 11 9999 in case", "XXX-XX-$3"),
+    );
+    // Not preceded by digit, not followed by digit → NO match (false positive avoided)
+    try std.testing.expectEqualStrings(
+        "abc1234567890def",
+        try replaceAll(a, ssn_pat, "abc1234567890def", "XXX-XX-$3"),
+    );
 }
