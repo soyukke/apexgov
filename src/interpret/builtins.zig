@@ -1938,12 +1938,13 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         const cn = obj.class_name;
         if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
             const system_exceptions = [_][]const u8{
-                "DMLException",      "DmlException",           "NullPointerException",           "TypeException",
-                "QueryException",    "JSONException",          "ListException",                  "MathException",
-                "SecurityException", "NoAccessException",      "InvalidParameterValueException", "CalloutException",
-                "StringException",   "NoSuchElementException", "NoDataFoundException",           "SearchException",
-                "SObjectException",  "HandledException",       "IllegalArgumentException",       "LimitException",
-                "AsyncException",    "SerializationException",
+                "DMLException",                  "DmlException",           "NullPointerException",           "TypeException",
+                "QueryException",                "JSONException",          "ListException",                  "MathException",
+                "SecurityException",             "NoAccessException",      "InvalidParameterValueException", "CalloutException",
+                "StringException",               "NoSuchElementException", "NoDataFoundException",           "SearchException",
+                "SObjectException",              "HandledException",       "IllegalArgumentException",       "LimitException",
+                "AsyncException",                "SerializationException", "FlowException",                  "FinalException",
+                "UnsupportedOperationException", "EventBusException",
             };
             for (system_exceptions) |se| {
                 if (std.ascii.eqlIgnoreCase(cn, se)) {
