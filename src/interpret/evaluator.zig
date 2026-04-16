@@ -381,6 +381,20 @@ pub const Evaluator = struct {
         const saved_class = self.current_class;
         self.current_class = cd.name;
         defer self.current_class = saved_class;
+        // Protect caller's stack-trace state: static initializers may evaluate
+        // `new_expr` which clobbers current_call_line and the top frame's line.
+        const saved_call_line = self.current_call_line;
+        const saved_top_line: ?u32 = if (self.call_stack.items.len > 0)
+            self.call_stack.items[self.call_stack.items.len - 1].line
+        else
+            null;
+        defer {
+            self.current_call_line = saved_call_line;
+            if (saved_top_line) |tl| {
+                if (self.call_stack.items.len > 0)
+                    self.call_stack.items[self.call_stack.items.len - 1].line = tl;
+            }
+        }
         for (cd.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
@@ -3333,6 +3347,13 @@ pub const Evaluator = struct {
             const values_end = std.mem.indexOfPos(u8, xml, value_search_start, "</values>") orelse break;
 
             // Look for <value ...>content</value> within this <values> block
+            // First check for xsi:nil="true" (self-closing tag: <value xsi:nil="true"/>)
+            const val_region = xml[value_search_start..values_end];
+            if (std.mem.indexOf(u8, val_region, "xsi:nil") != null) {
+                // Field is explicitly null — skip it
+                pos = values_end + "</values>".len;
+                continue;
+            }
             if (std.mem.indexOfPos(u8, xml, value_search_start, ">")) |val_tag_end| {
                 if (val_tag_end < values_end) {
                     const val_content_start = val_tag_end + 1;
@@ -3998,6 +4019,23 @@ pub const Evaluator = struct {
                     if (self.current_class) |cc| {
                         const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch break :blk @as(?Value, null);
                         if (self.global_env.get(key)) |v| break :blk v;
+                        // Check outer class static field
+                        if (self.findOuterClassName(cc)) |oc| {
+                            const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch break :blk @as(?Value, null);
+                            if (self.global_env.get(okey)) |v| break :blk v;
+                        }
+                    }
+                    // Try "this" class and outer class static fields
+                    if (current_env.get("this")) |tv| {
+                        if (tv == .object) {
+                            const this_cn = tv.object.class_name;
+                            const tkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, var_name }) catch break :blk @as(?Value, null);
+                            if (self.global_env.get(tkey)) |v| break :blk v;
+                            if (self.findOuterClassName(this_cn)) |oc| {
+                                const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch break :blk @as(?Value, null);
+                                if (self.global_env.get(okey)) |v| break :blk v;
+                            }
+                        }
                     }
                     break :blk @as(?Value, null);
                 } orelse return true;
@@ -4403,24 +4441,8 @@ pub const Evaluator = struct {
                                 if (self.global_env.get(pkey)) |val| return val;
                             }
                         }
-                        // Check outer class static fields (for inner classes)
-                        // Find any class that has this class as an inner class
-                        var oc_iter = self.classes.iterator();
-                        while (oc_iter.next()) |oc_entry| {
-                            const oc_cd = oc_entry.value_ptr.*;
-                            for (oc_cd.members) |member| {
-                                switch (member) {
-                                    .class_decl => |inner_cd| {
-                                        if (std.ascii.eqlIgnoreCase(inner_cd.name, this_cn)) {
-                                            self.ensureStaticInit(oc_entry.key_ptr.*);
-                                            const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc_entry.key_ptr.*, id.name }) catch break;
-                                            if (self.global_env.get(okey)) |val| return val;
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-                        }
+                        // Check outer class static fields/getters (for inner classes)
+                        if (self.resolveOuterStaticField(this_cn, id.name)) |val| return val;
                     }
                 }
                 // Check current_class static fields (for static methods)
@@ -4468,6 +4490,8 @@ pub const Evaluator = struct {
                             if (self.global_env.get(pkey)) |val| return val;
                         }
                     }
+                    // Check outer class static fields/getters when current_class is an inner class
+                    if (self.resolveOuterStaticField(cc, id.name)) |val| return val;
                 }
                 // Check if identifier is an inner enum/class of enclosing class or parent
                 // (e.g., HttpVerb inside RestClient → used as HttpVerb.GET)
@@ -4942,6 +4966,12 @@ pub const Evaluator = struct {
                         if (self.global_env.get(sk) != null) {
                             self.global_env.set(sk, final_val) catch {};
                             found_static = true;
+                        } else if (self.findOuterClassName(cc)) |oc| {
+                            const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
+                            if (self.global_env.get(osk) != null) {
+                                self.global_env.set(osk, final_val) catch {};
+                                found_static = true;
+                            }
                         }
                     }
                     if (current_env.get("this")) |tv| {
@@ -4950,6 +4980,12 @@ pub const Evaluator = struct {
                             if (self.global_env.get(sk) != null) {
                                 self.global_env.set(sk, final_val) catch {};
                                 found_static = true;
+                            } else if (self.findOuterClassName(tv.object.class_name)) |oc| {
+                                const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
+                                if (self.global_env.get(osk) != null) {
+                                    self.global_env.set(osk, final_val) catch {};
+                                    found_static = true;
+                                }
                             }
                         }
                     }
@@ -4989,6 +5025,11 @@ pub const Evaluator = struct {
                         const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch "";
                         if (self.global_env.get(static_key) != null) {
                             self.global_env.set(static_key, final_val) catch {};
+                        } else if (self.findOuterClassName(cc)) |oc| {
+                            const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
+                            if (self.global_env.get(osk) != null) {
+                                self.global_env.set(osk, final_val) catch {};
+                            }
                         }
                     }
                 }
@@ -5361,6 +5402,8 @@ pub const Evaluator = struct {
                     }
                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch break :blk Value.null_val;
                     if (self.global_env.get(key)) |v| break :blk v;
+                    // Check outer class static fields/getters when current_class is an inner class
+                    if (self.resolveOuterStaticField(cc, class_name)) |v| break :blk v;
                 }
                 // Check "this" class static fields (and parent class hierarchy)
                 if (current_env.get("this")) |this_val| {
@@ -5378,6 +5421,8 @@ pub const Evaluator = struct {
                                 cur_parent = if (self.findClass(sc.name)) |pcd| pcd.super_class else null;
                             }
                         }
+                        // Check outer class static fields/getters (for inner classes)
+                        if (self.resolveOuterStaticField(this_cn, class_name)) |v| break :blk v;
                     }
                 }
                 break :blk Value.null_val;
@@ -6147,9 +6192,16 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
+            const is_deep = std.ascii.eqlIgnoreCase(method, "deepClone");
             const new_list = try self.arena.create(types.ListValue);
             new_list.* = .{};
-            for (list.items.items) |item| try new_list.items.append(self.arena, item);
+            for (list.items.items) |item| {
+                const cloned = if (is_deep and item == .sobject) blk: {
+                    const clone = try self.cloneSObject(item.sobject);
+                    break :blk Value{ .sobject = clone };
+                } else item;
+                try new_list.items.append(self.arena, cloned);
+            }
             return Value{ .list = new_list };
         }
         if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
@@ -6242,6 +6294,18 @@ pub const Evaluator = struct {
             map.entries = .empty;
             return .void_val;
         }
+        if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
+            const new_map = try self.arena.create(types.MapValue);
+            new_map.* = .{};
+            for (map.entries.keys(), map.entries.values()) |k, v| {
+                const cloned_val = if (std.ascii.eqlIgnoreCase(method, "deepClone") and v == .sobject) blk: {
+                    const clone = try self.cloneSObject(v.sobject);
+                    break :blk Value{ .sobject = clone };
+                } else v;
+                try new_map.entries.put(self.arena, k, cloned_val);
+            }
+            return Value{ .map = new_map };
+        }
         return Value.null_val;
     }
 
@@ -6287,6 +6351,14 @@ pub const Evaluator = struct {
                 if (!set.entries.contains(key)) return Value{ .boolean = false };
             }
             return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
+            const new_set = try self.arena.create(types.SetValue);
+            new_set.* = .{};
+            for (set.entries.keys()) |key| {
+                try new_set.entries.put(self.arena, key, {});
+            }
+            return Value{ .set = new_set };
         }
         return Value.null_val;
     }
@@ -7129,6 +7201,12 @@ pub const Evaluator = struct {
         if ((if (fq_inner_name) |fqn| self.findClass(fqn) else null) orelse self.findClass(type_name) orelse self.findClass(simple_name)) |class_decl| {
             const instance = try self.arena.create(types.ObjectInstance);
             instance.* = .{ .class_name = type_name };
+
+            // Lazy static init for this class and parent hierarchy
+            // (so static field initializers like `static final Integer X = 5;`
+            // are evaluated before the constructor body references them)
+            self.ensureStaticInit(class_decl.name);
+            if (class_decl.super_class) |sc| self.ensureStaticInit(sc.name);
 
             // Check if it's an exception class (extends Exception)
             // If the class has its own constructor, fall through to run it
@@ -8060,7 +8138,9 @@ pub const Evaluator = struct {
         {
             const result_class = if (std.ascii.eqlIgnoreCase(method, "upsert"))
                 "Database.UpsertResult"
-            else if (std.ascii.eqlIgnoreCase(method, "delete") or std.ascii.eqlIgnoreCase(method, "undelete"))
+            else if (std.ascii.eqlIgnoreCase(method, "undelete"))
+                "Database.UndeleteResult"
+            else if (std.ascii.eqlIgnoreCase(method, "delete"))
                 "Database.DeleteResult"
             else
                 "Database.SaveResult";
@@ -8270,6 +8350,17 @@ pub const Evaluator = struct {
                 try ql.fields.put(self.arena, "query", args[0]);
             }
             return Value{ .object = ql };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "emptyRecycleBin")) {
+            // Database.emptyRecycleBin permanently deletes records from the recycle bin.
+            // Count it as a DML operation.
+            self.limits_dml += 1;
+            if (args.len > 0 and args[0] == .list) {
+                self.limits_dml_rows += @intCast(args[0].list.items.items.len);
+            } else if (args.len > 0) {
+                self.limits_dml_rows += 1;
+            }
+            return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setSavepoint")) {
             const sp = try self.arena.create(types.ObjectInstance);
@@ -9267,6 +9358,10 @@ pub const Evaluator = struct {
             const saved_ctor_class = self.current_constructor_class;
             self.current_constructor_class = class_decl.name;
             defer self.current_constructor_class = saved_ctor_class;
+            // Set current_class so unqualified method/field references resolve to this class
+            const saved_class = self.current_class;
+            self.current_class = class_decl.name;
+            defer self.current_class = saved_class;
             _ = try self.execBlock(cd.body, ctor_env);
         }
     }
@@ -9302,6 +9397,64 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) return entry.value_ptr.*;
         }
         return null;
+    }
+
+    /// Find the outer (enclosing) class name for a given inner class.
+    /// Returns null if the class is not an inner class.
+    fn findOuterClassName(self: *Evaluator, inner_class_name: []const u8) ?[]const u8 {
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            // Skip fully-qualified names (e.g. "Outer.Inner") — only check top-level class entries
+            if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') != null) continue;
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .class_decl => |inner_cd| {
+                        if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_class_name))
+                            return entry.key_ptr.*;
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Resolve a static field or static property getter from the outer class of an inner class.
+    /// Tries getter first (for lazy-init patterns), then plain global_env lookup.
+    fn resolveOuterStaticField(self: *Evaluator, inner_class_name: []const u8, field_name: []const u8) ?Value {
+        const outer_name = self.findOuterClassName(inner_class_name) orelse return null;
+        self.ensureStaticInit(outer_name);
+        const outer_cd = self.findClass(outer_name) orelse return null;
+        // Try static property getter first
+        const already_in_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, field_name) else false;
+        if (!already_in_getter) {
+            for (outer_cd.members) |member| {
+                switch (member) {
+                    .field_decl => |fd| {
+                        if (fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, field_name) and fd.getter_body != null) {
+                            const getter_env = self.global_env.child() catch return null;
+                            const saved_class = self.current_class;
+                            const saved_getter = self.evaluating_getter;
+                            self.current_class = outer_name;
+                            self.evaluating_getter = field_name;
+                            defer {
+                                self.current_class = saved_class;
+                                self.evaluating_getter = saved_getter;
+                            }
+                            const result = self.execBlock(fd.getter_body.?, getter_env) catch return null;
+                            return switch (result) {
+                                .return_val => |v| v,
+                                else => self.return_value,
+                            };
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        // Plain static field lookup
+        const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, field_name }) catch return null;
+        return self.global_env.get(okey);
     }
 
     // -----------------------------------------------------------------------
@@ -10522,4 +10675,72 @@ test "evaluate ternary expression" {
     var r = try evalSource(source, "Ternary", "run");
     defer r.deinit();
     try std.testing.expectEqualStrings("no", r.value.string);
+}
+
+test "inner class accesses outer class static field" {
+    const source =
+        \\public class Outer {
+        \\    private static String SHARED_VALUE = 'outer-value';
+        \\    public static String run() {
+        \\        Inner i = new Inner();
+        \\        return i.getValue();
+        \\    }
+        \\    private class Inner {
+        \\        public String getValue() {
+        \\            return SHARED_VALUE;
+        \\        }
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "Outer", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("outer-value", r.value.string);
+}
+
+test "inner class accesses outer class static property getter" {
+    const source =
+        \\public class Outer {
+        \\    private static String CACHED_VALUE {
+        \\        get {
+        \\            if (CACHED_VALUE == null) {
+        \\                CACHED_VALUE = 'lazy-init';
+        \\            }
+        \\            return CACHED_VALUE;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public static String run() {
+        \\        Inner i = new Inner();
+        \\        return i.getValue();
+        \\    }
+        \\    private class Inner {
+        \\        public String getValue() {
+        \\            return CACHED_VALUE;
+        \\        }
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "Outer", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("lazy-init", r.value.string);
+}
+
+test "inner class accesses outer class static field via method call" {
+    const source =
+        \\public class Outer {
+        \\    private static Map<String, String> CACHE = new Map<String, String>{ 'key1' => 'val1' };
+        \\    public static String run() {
+        \\        Inner i = new Inner();
+        \\        return i.getFromCache();
+        \\    }
+        \\    private class Inner {
+        \\        public String getFromCache() {
+        \\            return CACHE.get('key1');
+        \\        }
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "Outer", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("val1", r.value.string);
 }
