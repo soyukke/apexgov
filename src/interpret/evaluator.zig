@@ -2369,65 +2369,25 @@ pub const Evaluator = struct {
             return Value{ .integer = 0 };
         }
 
-        // Aggregate functions: SUM, AVG, MIN, MAX, COUNT(field)
+        // Aggregate functions (SUM/AVG/MIN/MAX/COUNT(field)) with optional GROUP BY
         if (std.ascii.indexOfIgnoreCase(soql, "SUM(") orelse
             std.ascii.indexOfIgnoreCase(soql, "AVG(") orelse
             std.ascii.indexOfIgnoreCase(soql, "MIN(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "MAX(")) |_|
+            std.ascii.indexOfIgnoreCase(soql, "MAX(") orelse
+            std.ascii.indexOfIgnoreCase(soql, "COUNT(")) |_|
         {
-            const from_type_agg = extractFromType(soql) orelse return self.makeEmptyList();
-            // Parse alias: SUM(Amount) total → field = Amount, alias = total
-            const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
-            const from_start = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
-            const select_clause = std.mem.trim(u8, soql[select_start..from_start], " \t\n\r");
-
-            // Extract function and field
-            var agg_fn: []const u8 = "SUM";
-            var agg_field: []const u8 = "";
-            var agg_alias: []const u8 = "expr0";
-            if (std.mem.indexOf(u8, select_clause, "(")) |paren_start| {
-                agg_fn = std.mem.trim(u8, select_clause[0..paren_start], " \t\n\r");
-                if (std.mem.indexOf(u8, select_clause[paren_start..], ")")) |paren_end_rel| {
-                    const paren_end = paren_start + paren_end_rel;
-                    agg_field = std.mem.trim(u8, select_clause[paren_start + 1 .. paren_end], " \t\n\r");
-                    const after_paren = std.mem.trim(u8, select_clause[paren_end + 1 ..], " \t\n\r");
-                    if (after_paren.len > 0) agg_alias = after_paren;
-                }
-            }
-
-            // Calculate aggregate
-            var sum: f64 = 0;
-            var count: i64 = 0;
-            var store_iter = self.store.iterator();
-            while (store_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type_agg)) {
-                    for (entry.value_ptr.items) |record| {
-                        if (!self.matchesWhere(record, soql, current_env)) continue;
-                        if (record == .sobject) {
-                            if (utils.sobjectGet(&record.sobject.fields, agg_field)) |fv| {
-                                count += 1;
-                                if (fv == .double) sum += fv.double else if (fv == .integer) sum += @floatFromInt(fv.integer);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Build AggregateResult
-            const agg = try self.arena.create(types.SObject);
-            agg.* = .{ .type_name = "AggregateResult" };
-            if (std.ascii.eqlIgnoreCase(agg_fn, "SUM") or std.ascii.eqlIgnoreCase(agg_fn, "AVG")) {
-                const result = if (std.ascii.eqlIgnoreCase(agg_fn, "AVG") and count > 0) sum / @as(f64, @floatFromInt(count)) else sum;
-                try agg.fields.put(self.arena, agg_alias, Value{ .double = result });
-            } else if (std.ascii.eqlIgnoreCase(agg_fn, "MIN") or std.ascii.eqlIgnoreCase(agg_fn, "MAX")) {
-                try agg.fields.put(self.arena, agg_alias, Value{ .double = sum });
+            // Detect GROUP BY (skip plain COUNT() which is handled above)
+            if (std.ascii.indexOfIgnoreCase(soql, "count()") != null and
+                std.ascii.indexOfIgnoreCase(soql, "group by") == null)
+            {
+                // Already handled by COUNT() path above — shouldn't reach here, but guard
             } else {
-                try agg.fields.put(self.arena, agg_alias, Value{ .integer = count });
+                return self.executeAggregateQuery(soql, current_env);
             }
-            const result_list = try self.arena.create(types.ListValue);
-            result_list.* = .{};
-            try result_list.items.append(self.arena, Value{ .sobject = agg });
-            return Value{ .list = result_list };
+        }
+        // GROUP BY without SUM/AVG/MIN/MAX (e.g., SELECT Field, COUNT(Id) ... GROUP BY Field)
+        if (std.ascii.indexOfIgnoreCase(soql, "group by") != null) {
+            return self.executeAggregateQuery(soql, current_env);
         }
 
         // Regular SELECT query
@@ -3347,6 +3307,231 @@ pub const Evaluator = struct {
         }
 
         return sob;
+    }
+
+    /// Execute an aggregate SOQL query (with SUM/AVG/MIN/MAX/COUNT and optional GROUP BY).
+    /// Returns List<AggregateResult>.
+    fn executeAggregateQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
+        const from_type_agg = extractFromType(soql) orelse return self.makeEmptyList();
+        const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
+        const from_start = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
+        const select_clause = std.mem.trim(u8, soql[select_start..from_start], " \t\n\r");
+
+        // Parse GROUP BY field(s)
+        const group_by_idx = std.ascii.indexOfIgnoreCase(soql, "group by");
+        var group_by_fields: [8][]const u8 = undefined;
+        var group_by_count: usize = 0;
+        if (group_by_idx) |gbi| {
+            const gb_clause = std.mem.trim(u8, soql[gbi + 8 ..], " \t\n\r");
+            var gb_iter = std.mem.splitScalar(u8, gb_clause, ',');
+            while (gb_iter.next()) |raw_f| {
+                const f = std.mem.trim(u8, raw_f, " \t\n\r");
+                if (f.len == 0) continue;
+                if (group_by_count < group_by_fields.len) {
+                    group_by_fields[group_by_count] = f;
+                    group_by_count += 1;
+                }
+            }
+        }
+
+        // Parse aggregate functions from SELECT clause
+        // e.g., "LogPurgeAction__c LogPurgeAction__c, count(id)"
+        // Each item is either a plain field (with optional alias) or FUNC(field) alias
+        const AggItem = struct {
+            fn_name: ?[]const u8, // null = plain field, "COUNT"/"SUM"/etc.
+            field: []const u8,
+            alias: []const u8,
+        };
+        var agg_items: [16]AggItem = undefined;
+        var agg_count: usize = 0;
+        {
+            var expr_idx: usize = 0;
+            var sel_iter = std.mem.splitScalar(u8, select_clause, ',');
+            while (sel_iter.next()) |raw_item| {
+                const item = std.mem.trim(u8, raw_item, " \t\n\r");
+                if (item.len == 0) continue;
+                if (agg_count >= agg_items.len) break;
+                if (std.mem.indexOf(u8, item, "(")) |paren_start| {
+                    // Aggregate function: FUNC(field) [alias]
+                    const fn_name = std.mem.trim(u8, item[0..paren_start], " \t\n\r");
+                    if (std.mem.indexOf(u8, item[paren_start..], ")")) |paren_end_rel| {
+                        const paren_end = paren_start + paren_end_rel;
+                        const field = std.mem.trim(u8, item[paren_start + 1 .. paren_end], " \t\n\r");
+                        const after = std.mem.trim(u8, item[paren_end + 1 ..], " \t\n\r");
+                        const alias = if (after.len > 0) after else try std.fmt.allocPrint(self.arena, "expr{d}", .{expr_idx});
+                        agg_items[agg_count] = .{ .fn_name = fn_name, .field = field, .alias = alias };
+                        agg_count += 1;
+                        expr_idx += 1;
+                    }
+                } else {
+                    // Plain field [alias] — e.g., "LogPurgeAction__c LogPurgeAction__c"
+                    var parts = std.mem.splitScalar(u8, item, ' ');
+                    const field = parts.next() orelse item;
+                    const alias = parts.next() orelse field;
+                    agg_items[agg_count] = .{ .fn_name = null, .field = field, .alias = alias };
+                    agg_count += 1;
+                }
+            }
+        }
+
+        // Collect matching records
+        var matched: std.ArrayListUnmanaged(Value) = .empty;
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type_agg)) {
+                for (entry.value_ptr.items) |record| {
+                    if (self.matchesWhere(record, soql, current_env))
+                        try matched.append(self.arena, record);
+                }
+                break;
+            }
+        }
+
+        if (group_by_count == 0) {
+            // No GROUP BY — single aggregate result over all matched records
+            const agg = try self.arena.create(types.SObject);
+            agg.* = .{ .type_name = "AggregateResult" };
+            for (agg_items[0..agg_count]) |ai| {
+                if (ai.fn_name) |fn_name| {
+                    try agg.fields.put(self.arena, ai.alias, self.computeAggregate(fn_name, ai.field, matched.items));
+                }
+            }
+            const result_list = try self.arena.create(types.ListValue);
+            result_list.* = .{};
+            try result_list.items.append(self.arena, Value{ .sobject = agg });
+            return Value{ .list = result_list };
+        }
+
+        // GROUP BY: bucket records by group key(s)
+        // Use string key for grouping (concatenation of field values)
+        var group_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+        var group_records: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)) = .empty;
+
+        for (matched.items) |record| {
+            // Build group key from GROUP BY fields
+            var key_buf = std.ArrayListUnmanaged(u8){};
+            for (group_by_fields[0..group_by_count]) |gb_field| {
+                if (key_buf.items.len > 0) try key_buf.append(self.arena, '|');
+                const fv = self.resolveFieldPath(record, gb_field);
+                const fv_str = if (fv != null and fv.? != .null_val)
+                    (utils.coerceToString(fv.?, self.arena) catch "")
+                else
+                    "";
+                try key_buf.appendSlice(self.arena, fv_str);
+            }
+            const key = key_buf.items;
+
+            // Find or create group
+            var found = false;
+            for (group_keys.items, 0..) |gk, idx| {
+                if (std.mem.eql(u8, gk, key)) {
+                    try group_records.items[idx].append(self.arena, record);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try group_keys.append(self.arena, key);
+                var new_group: std.ArrayListUnmanaged(Value) = .empty;
+                try new_group.append(self.arena, record);
+                try group_records.append(self.arena, new_group);
+            }
+        }
+
+        // Build AggregateResult per group
+        const result_list = try self.arena.create(types.ListValue);
+        result_list.* = .{};
+        for (group_records.items, 0..) |group, gi| {
+            _ = gi;
+            const agg = try self.arena.create(types.SObject);
+            agg.* = .{ .type_name = "AggregateResult" };
+            for (agg_items[0..agg_count]) |ai| {
+                if (ai.fn_name) |fn_name| {
+                    try agg.fields.put(self.arena, ai.alias, self.computeAggregate(fn_name, ai.field, group.items));
+                } else {
+                    // Plain field: take from first record in group, resolving dotted paths
+                    if (group.items.len > 0) {
+                        const fv = self.resolveFieldPath(group.items[0], ai.field) orelse Value.null_val;
+                        try agg.fields.put(self.arena, ai.alias, fv);
+                    }
+                }
+            }
+            try result_list.items.append(self.arena, Value{ .sobject = agg });
+        }
+        return Value{ .list = result_list };
+    }
+
+    /// Compute a single aggregate value (COUNT/SUM/AVG/MIN/MAX) over a set of records.
+    fn computeAggregate(self: *Evaluator, fn_name: []const u8, field: []const u8, records: []const Value) Value {
+        _ = self;
+        if (std.ascii.eqlIgnoreCase(fn_name, "COUNT")) {
+            var count: i64 = 0;
+            for (records) |r| {
+                if (r == .sobject) {
+                    // COUNT(Id) or COUNT(field) — count non-null values
+                    if (utils.sobjectGet(&r.sobject.fields, field)) |v| {
+                        if (v != .null_val) count += 1;
+                    } else if (std.ascii.eqlIgnoreCase(field, "Id") and r.sobject.id != null) {
+                        count += 1;
+                    }
+                }
+            }
+            return Value{ .integer = count };
+        }
+        // SUM, AVG, MIN, MAX
+        var sum: f64 = 0;
+        var count: i64 = 0;
+        var min_val: ?f64 = null;
+        var max_val: ?f64 = null;
+        for (records) |r| {
+            if (r == .sobject) {
+                if (utils.sobjectGet(&r.sobject.fields, field)) |fv| {
+                    const num: ?f64 = if (fv == .double) fv.double else if (fv == .integer) @floatFromInt(fv.integer) else null;
+                    if (num) |n| {
+                        sum += n;
+                        count += 1;
+                        if (min_val == null or n < min_val.?) min_val = n;
+                        if (max_val == null or n > max_val.?) max_val = n;
+                    }
+                }
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(fn_name, "SUM")) return Value{ .double = sum };
+        if (std.ascii.eqlIgnoreCase(fn_name, "AVG")) return if (count > 0) Value{ .double = sum / @as(f64, @floatFromInt(count)) } else Value{ .double = 0 };
+        if (std.ascii.eqlIgnoreCase(fn_name, "MIN")) return if (min_val) |v| Value{ .double = v } else Value.null_val;
+        if (std.ascii.eqlIgnoreCase(fn_name, "MAX")) return if (max_val) |v| Value{ .double = v } else Value.null_val;
+        return Value{ .integer = count };
+    }
+
+    /// Resolve a dotted field path like "Log__r.LogPurgeAction__c" on a record.
+    fn resolveFieldPath(self: *Evaluator, record: Value, path: []const u8) ?Value {
+        _ = self;
+        if (record != .sobject) return null;
+        // Simple field (no dot)
+        if (std.mem.indexOfScalar(u8, path, '.') == null) {
+            return utils.sobjectGet(&record.sobject.fields, path);
+        }
+        // Dotted path: walk relationships
+        var current = record;
+        var iter = std.mem.splitScalar(u8, path, '.');
+        while (iter.next()) |segment| {
+            if (current == .sobject) {
+                if (utils.sobjectGet(&current.sobject.fields, segment)) |v| {
+                    current = v;
+                } else {
+                    return null;
+                }
+            } else if (current == .object) {
+                if (current.object.fields.get(segment)) |v| {
+                    current = v;
+                } else {
+                    return null;
+                }
+            } else {
+                return null;
+            }
+        }
+        return current;
     }
 
     /// Execute a SOSL query using fixed search results.
