@@ -4873,6 +4873,10 @@ pub const Evaluator = struct {
                     if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
                         if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name[dot_pos + 1 ..])) return Value{ .boolean = true };
                     }
+                    // Also match when class_name is dotted ("OuterClass.Inner") and type_name is the simple name
+                    if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
+                        if (std.ascii.eqlIgnoreCase(val.object.class_name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
+                    }
                     // Walk superclass hierarchy
                     if (self.findClass(val.object.class_name)) |cd| {
                         var cur: ?*ast.ClassDecl = cd;
@@ -7206,9 +7210,23 @@ pub const Evaluator = struct {
                 null)
         else
             null;
-        if ((if (fq_inner_name) |fqn| self.findClass(fqn) else null) orelse self.findClass(type_name) orelse self.findClass(simple_name)) |class_decl| {
+        const resolved_class_name: ?[]const u8 = blk: {
+            if (fq_inner_name) |fqn| {
+                if (self.findClass(fqn) != null) break :blk fqn;
+            }
+            if (self.findClass(type_name) != null) break :blk type_name;
+            if (self.findClass(simple_name) != null) {
+                // Look up whether simple_name is an inner class of some outer — prefer FQ if unique
+                if (self.findOuterClassName(simple_name)) |outer| {
+                    break :blk std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, simple_name }) catch simple_name;
+                }
+                break :blk simple_name;
+            }
+            break :blk null;
+        };
+        if (if (resolved_class_name) |rn| self.findClass(rn) else null) |class_decl| {
             const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = type_name };
+            instance.* = .{ .class_name = resolved_class_name.? };
 
             // Lazy static init for this class and parent hierarchy
             // (so static field initializers like `static final Integer X = 5;`
@@ -7503,8 +7521,16 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 const type_obj = try self.arena.create(types.ObjectInstance);
                 type_obj.* = .{ .class_name = "Type" };
-                // For inner classes, return the FQ name (e.g., "OuterClass.InnerClass")
-                const fq_name = self.resolveFullClassName(class_name);
+                // For inner classes, return the FQ name (e.g., "OuterClass.InnerClass").
+                // Prefer current_class as the outer qualifier when the inner class exists
+                // there (avoids picking a same-named inner from a different outer class).
+                const fq_name: []const u8 = if (self.current_class) |cc| blk: {
+                    if (std.mem.indexOfScalar(u8, class_name, '.') == null) {
+                        const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch class_name;
+                        if (self.findClass(fq) != null) break :blk fq;
+                    }
+                    break :blk self.resolveFullClassName(class_name);
+                } else self.resolveFullClassName(class_name);
                 try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
                 return Value{ .object = type_obj };
             }
@@ -9336,6 +9362,16 @@ pub const Evaluator = struct {
                         } else {
                             score += 1;
                         }
+                    } else if (arg == .null_val) {
+                        // Null prefers primitive types (String/Id/Integer/etc) over Exception,
+                        // since `null` is most commonly assigned to strings/IDs in Apex code.
+                        if (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")) {
+                            score += 2;
+                        } else if (std.mem.endsWith(u8, pt, "Exception")) {
+                            score += 0;
+                        } else {
+                            score += 1;
+                        }
                     }
                 }
                 if (best == null or score > best_score) {
@@ -9360,7 +9396,17 @@ pub const Evaluator = struct {
             // Push call frame for constructor (use current_call_line from new-expression site)
             const ctor_line = if (self.current_call_line > 0) self.current_call_line else if (cd.loc.line > 0) cd.loc.line else 1;
             self.current_call_line = 0;
-            try self.call_stack.append(self.arena, .{ .class_name = class_decl.name, .method_name = "<init>", .line = ctor_line });
+            // Prefer the FQ class name for stack traces: if the instance's class_name
+            // is an FQ form ("Outer.Inner") and its suffix matches class_decl.name, use it.
+            const frame_class_name: []const u8 = blk: {
+                if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
+                    if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], class_decl.name)) {
+                        break :blk instance.class_name;
+                    }
+                }
+                break :blk class_decl.name;
+            };
+            try self.call_stack.append(self.arena, .{ .class_name = frame_class_name, .method_name = "<init>", .line = ctor_line });
             defer _ = self.call_stack.pop();
             // Track which class's constructor is running (for correct super() dispatch)
             const saved_ctor_class = self.current_constructor_class;
@@ -9409,7 +9455,18 @@ pub const Evaluator = struct {
 
     /// Find the outer (enclosing) class name for a given inner class.
     /// Returns null if the class is not an inner class.
+    /// Accepts either simple inner class name ("Inner") or FQ form ("Outer.Inner");
+    /// when FQ is passed and the prefix matches an outer class, returns it directly.
     fn findOuterClassName(self: *Evaluator, inner_class_name: []const u8) ?[]const u8 {
+        // Fast path: FQ form "Outer.Inner" → return prefix if it's a registered top-level class
+        if (std.mem.lastIndexOfScalar(u8, inner_class_name, '.')) |di| {
+            const outer = inner_class_name[0..di];
+            if (self.findClass(outer)) |_| return outer;
+        }
+        const simple = if (std.mem.lastIndexOfScalar(u8, inner_class_name, '.')) |di|
+            inner_class_name[di + 1 ..]
+        else
+            inner_class_name;
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             // Skip fully-qualified names (e.g. "Outer.Inner") — only check top-level class entries
@@ -9417,7 +9474,7 @@ pub const Evaluator = struct {
             for (entry.value_ptr.*.members) |member| {
                 switch (member) {
                     .class_decl => |inner_cd| {
-                        if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_class_name))
+                        if (std.ascii.eqlIgnoreCase(inner_cd.name, simple))
                             return entry.key_ptr.*;
                     },
                     else => {},
