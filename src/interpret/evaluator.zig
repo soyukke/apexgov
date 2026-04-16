@@ -3339,8 +3339,17 @@ pub const Evaluator = struct {
                     if (std.mem.indexOfPos(u8, xml, val_content_start, "</value>")) |val_end| {
                         if (val_end <= values_end) {
                             const field_value = std.mem.trim(u8, xml[val_content_start..val_end], " \t\n\r");
-                            // Store the field with __c suffix on the SObject
-                            try sob.fields.put(self.arena, field_name, Value{ .string = field_value });
+                            // Determine value type from xsi:type attribute in the <value> tag
+                            const val_tag = xml[value_search_start..val_tag_end];
+                            const typed_value: Value = if (std.mem.indexOf(u8, val_tag, "xsd:boolean") != null)
+                                Value{ .boolean = std.ascii.eqlIgnoreCase(field_value, "true") }
+                            else if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
+                                if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value }
+                            else if (std.mem.indexOf(u8, val_tag, "xsd:int") != null)
+                                if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value }
+                            else
+                                Value{ .string = field_value };
+                            try sob.fields.put(self.arena, field_name, typed_value);
                             // Also create __r relationship for fields that reference FieldDefinitions
                             // Convention: Customer_Name__c → value is the API name of a field
                             // Create Customer_Name__r as a FieldDefinition with QualifiedAPIName = value
