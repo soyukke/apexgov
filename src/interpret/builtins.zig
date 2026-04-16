@@ -1035,6 +1035,7 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
 
 fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     const ci = std.ascii;
+    // Usage counters
     if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
     if (ci.eqlIgnoreCase(method_name, "getDmlRows")) return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
     if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
@@ -1042,6 +1043,25 @@ fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    // Governor limit maximums (Salesforce default synchronous limits)
+    if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueries")) return Value{ .integer = 100 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueryRows")) return Value{ .integer = 50000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueryLocatorRows")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitAggregateQueries")) return Value{ .integer = 300 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitCallouts")) return Value{ .integer = 100 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitCpuTime")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitHeapSize")) return Value{ .integer = 6000000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitEmailInvocations")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFutureCalls")) return Value{ .integer = 50 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitMobilePushApexCalls")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueueableJobs")) return Value{ .integer = 50 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitSoslQueries")) return Value{ .integer = 20 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitApexCursorRows")) return Value{ .integer = 50000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitAsyncCalls")) return Value{ .integer = 50 };
     // All other Limits methods return 0
     return Value{ .integer = 0 };
 }

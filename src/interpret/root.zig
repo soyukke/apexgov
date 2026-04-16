@@ -395,6 +395,12 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
     while (walker.next() catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
+        // Skip name-shadowing stub classes that intentionally shadow system classes
+        // (e.g., extra-tests/name-shadowing/System/JSON.cls). These empty classes
+        // exist only to verify that production code uses fully-qualified names in
+        // Salesforce, but they break the interpreter's built-in dispatch.
+        if (std.mem.indexOf(u8, entry.path, "name-shadowing/") != null or
+            std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null) continue;
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 10 * 1024 * 1024) catch continue;
