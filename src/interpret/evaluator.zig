@@ -5249,11 +5249,22 @@ pub const Evaluator = struct {
                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch break :blk Value.null_val;
                     if (self.global_env.get(key)) |v| break :blk v;
                 }
-                // Check "this" class static fields
+                // Check "this" class static fields (and parent class hierarchy)
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_val.object.class_name, class_name }) catch break :blk Value.null_val;
+                        const this_cn = this_val.object.class_name;
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, class_name }) catch break :blk Value.null_val;
                         if (self.global_env.get(key)) |v| break :blk v;
+                        // Walk parent class chain for inherited static fields
+                        if (self.findClass(this_cn)) |this_cd| {
+                            var cur_parent = this_cd.super_class;
+                            while (cur_parent) |sc| {
+                                self.ensureStaticInit(sc.name);
+                                const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, class_name }) catch break;
+                                if (self.global_env.get(pkey)) |v| break :blk v;
+                                cur_parent = if (self.findClass(sc.name)) |pcd| pcd.super_class else null;
+                            }
+                        }
                     }
                 }
                 break :blk Value.null_val;
