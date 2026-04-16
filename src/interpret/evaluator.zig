@@ -628,6 +628,9 @@ pub const Evaluator = struct {
         defer _ = self.call_stack.pop();
         // Lazy static init: ensure the class's static fields/blocks are initialized
         self.ensureStaticInit(class_name);
+        if (self.findClass(class_name)) |cd| {
+            if (cd.super_class) |sc| self.ensureStaticInit(sc.name);
+        }
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             self.limits_publish_immediate += 1;
@@ -4327,6 +4330,7 @@ pub const Evaluator = struct {
                         // Check parent class static fields
                         if (self.findClass(this_cn)) |cd| {
                             if (cd.super_class) |sc| {
+                                self.ensureStaticInit(sc.name);
                                 const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id.name }) catch return .null_val;
                                 if (self.global_env.get(pkey)) |val| return val;
                             }
@@ -4340,6 +4344,7 @@ pub const Evaluator = struct {
                                 switch (member) {
                                     .class_decl => |inner_cd| {
                                         if (std.ascii.eqlIgnoreCase(inner_cd.name, this_cn)) {
+                                            self.ensureStaticInit(oc_entry.key_ptr.*);
                                             const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc_entry.key_ptr.*, id.name }) catch break;
                                             if (self.global_env.get(okey)) |val| return val;
                                         }
@@ -4390,6 +4395,7 @@ pub const Evaluator = struct {
                     // Check parent class too
                     if (self.findClass(cc)) |cd| {
                         if (cd.super_class) |sc| {
+                            self.ensureStaticInit(sc.name);
                             const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id.name }) catch return .null_val;
                             if (self.global_env.get(pkey)) |val| return val;
                         }
@@ -4577,6 +4583,9 @@ pub const Evaluator = struct {
                         const outer_name = inner_fa.object.identifier.name;
                         const inner_name = inner_fa.field;
                         // Try global_env key: OuterClass.Inner.Field
+                        self.ensureStaticInit(outer_name);
+                        const inner_fq = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_name });
+                        self.ensureStaticInit(inner_fq);
                         const fq_key = try std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ outer_name, inner_name, fa.field });
                         if (self.global_env.get(fq_key)) |v| return v;
                         // Try as enum in class
