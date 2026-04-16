@@ -5591,7 +5591,15 @@ pub const Evaluator = struct {
                 }
 
                 // SObjectType.FieldToken.getDescribe() → Schema.DescribeFieldResult
+                // Exception: Type.SObjectType.getDescribe() is the object-level token,
+                // which returns DescribeSObjectResult (handled via createDescribeResult)
                 if (std.ascii.eqlIgnoreCase(mc.method, "getDescribe")) {
+                    if (std.ascii.eqlIgnoreCase(inner, "SObjectType")) {
+                        const sot = try self.arena.create(types.ObjectInstance);
+                        sot.* = .{ .class_name = "Schema.SObjectType" };
+                        try sot.fields.put(self.arena, "name", Value{ .string = outer_class });
+                        return self.evalInstanceMethod(Value{ .object = sot }, mc.method, args.items, current_env);
+                    }
                     const dfr = try self.arena.create(types.ObjectInstance);
                     dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
                     try dfr.fields.put(self.arena, "objectType", Value{ .string = outer_class });

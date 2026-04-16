@@ -2433,6 +2433,33 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        // Strip namespace prefix (e.g., "ns__Foo__c" → "Foo__c"); for unqualified names, same as getName
+        const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
+        if (name_val == .string) {
+            const s = name_val.string;
+            if (std.mem.indexOf(u8, s, "__")) |idx| {
+                // Namespaces are of the form "ns__Object"; custom suffixes __c/__e/__mdt end with __X
+                // Only strip if there's a namespace prefix pattern: letters + "__" + name, and remainder has no more "__X$"
+                // Simple heuristic: if name starts with non-standard-suffix "__", strip.
+                // In practice most objects here are without namespace prefix.
+                if (idx > 0 and !std.mem.eql(u8, s[idx..], "__c") and
+                    !std.mem.eql(u8, s[idx..], "__e") and
+                    !std.mem.eql(u8, s[idx..], "__r") and
+                    !std.mem.eql(u8, s[idx..], "__b") and
+                    !std.mem.eql(u8, s[idx..], "__x") and
+                    !std.mem.eql(u8, s[idx..], "__mdt") and
+                    !std.mem.eql(u8, s[idx..], "__Share") and
+                    !std.mem.eql(u8, s[idx..], "__History") and
+                    !std.mem.eql(u8, s[idx..], "__ChangeEvent"))
+                {
+                    return Value{ .string = s[idx + 2 ..] };
+                }
+            }
+            return name_val;
+        }
+        return name_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
         const sot = try ctx.arena.create(types.ObjectInstance);
         sot.* = .{ .class_name = "Schema.SObjectType" };
