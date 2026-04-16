@@ -217,36 +217,86 @@ fn matchAt(
             if (ip != input.len) return null;
             return matchAt(pat, pp + 1, input, ip, groups, depth + 1);
         }
-        // キャプチャグループ
+        // グループ (キャプチャ、非キャプチャ、lookahead)
         if (pat[pp] == '(') {
             const group_end = findGroupEnd(pat, pp) orelse return null;
             const inner = pat[pp + 1 .. group_end];
             const after = pat[group_end + 1 ..];
-            const quant = parseQuantifier(after);
-            var grp_idx: u8 = 1;
-            for (pat[0..pp]) |c| {
-                if (c == '(') grp_idx += 1;
+
+            // Lookahead: (?=...) positive, (?!...) negative — zero-width assertion
+            if (inner.len >= 2 and inner[0] == '?' and (inner[1] == '=' or inner[1] == '!')) {
+                const is_positive = inner[1] == '=';
+                const la_pat = inner[2..];
+                const la_alts = splitAlternatives(la_pat);
+                var la_matched = false;
+                for (la_alts) |alt| {
+                    if (alt) |a| {
+                        if (matchAt(a, 0, input, ip, groups, depth + 1) != null) {
+                            la_matched = true;
+                            break;
+                        }
+                    } else break;
+                }
+                if (is_positive != la_matched) return null;
+                // Zero-width: don't consume input, continue with rest
+                const rest_start = group_end + 1;
+                if (rest_start >= pat.len) return ip;
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1);
             }
-            if (grp_idx > max_groups - 1) grp_idx = max_groups - 1;
-            const alternatives = splitAlternatives(inner);
+
+            // Non-capturing group: (?:...)
+            const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
+            const group_inner = if (is_non_capturing) inner[2..] else inner;
+
+            const quant = parseQuantifier(after);
+            const grp_idx: u8 = if (is_non_capturing) 0 else blk: {
+                var idx: u8 = 1;
+                var gi: usize = 0;
+                while (gi < pp) : (gi += 1) {
+                    if (pat[gi] == '\\') {
+                        gi += 1;
+                        continue;
+                    }
+                    if (pat[gi] == '(') {
+                        // Skip non-capturing groups (?...) for index counting
+                        if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':')) continue;
+                        idx += 1;
+                    }
+                }
+                break :blk if (idx > max_groups - 1) max_groups - 1 else idx;
+            };
+            const alternatives = splitAlternatives(group_inner);
             const rest_start = group_end + 1 + quant.len;
 
             if (quant.min == 1 and quant.max == 1) {
                 for (alternatives) |alt| {
                     if (alt) |a| {
                         if (matchAt(a, 0, input, ip, groups, depth + 1)) |alt_end| {
-                            groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                            if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
                             if (rest_start >= pat.len) return alt_end;
                             if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1)) |final_end| {
                                 return final_end;
                             }
-                            groups.*[grp_idx] = null;
+                            if (grp_idx > 0) groups.*[grp_idx] = null;
                         }
                     } else break;
                 }
                 return null;
             }
             return matchQuantifiedGroup(pat, pp, group_end, rest_start, quant, input, ip, groups, grp_idx, depth);
+        }
+
+        // Backreference: \1..\9 — match the same text as captured by group N
+        if (pat[pp] == '\\' and pp + 1 < pat.len and pat[pp + 1] >= '1' and pat[pp + 1] <= '9') {
+            const ref_idx: u8 = pat[pp + 1] - '0';
+            const ref_span = groups.*[ref_idx] orelse return null;
+            const ref_text = input[ref_span.start..ref_span.end];
+            if (ip + ref_text.len > input.len) return null;
+            if (!std.mem.eql(u8, input[ip .. ip + ref_text.len], ref_text)) return null;
+            const rest_start = pp + 2;
+            const new_ip = ip + ref_text.len;
+            if (rest_start >= pat.len) return new_ip;
+            return matchAt(pat, rest_start, input, new_ip, groups, depth + 1);
         }
 
         // 単一アトム＋量詞
@@ -307,7 +357,11 @@ fn atomMatches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
 
 fn atomLength(pat: []const u8, pp: usize) usize {
     if (pp >= pat.len) return 0;
-    if (pat[pp] == '\\' and pp + 1 < pat.len) return 2;
+    if (pat[pp] == '\\' and pp + 1 < pat.len) {
+        // Backreferences (\1..\9) are handled separately in matchAt, not as atoms
+        if (pat[pp + 1] >= '1' and pat[pp + 1] <= '9') return 0;
+        return 2;
+    }
     if (pat[pp] == '[') {
         var i = pp + 1;
         if (i < pat.len and pat[i] == '^') i += 1;
@@ -562,4 +616,53 @@ test "javadoc @see pattern" {
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("RestClient", result[0].groupSlice(1, input).?);
     try std.testing.expectEqualStrings("ApiModel", result[1].groupSlice(1, input).?);
+}
+
+test "positive lookahead (?=...)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Match digits followed by a non-digit (without consuming the non-digit)
+    const r1 = try findAll(a, "\\d+(?=[^0-9]|$)", "123abc");
+    try std.testing.expectEqual(@as(usize, 1), r1.len);
+    try std.testing.expectEqualStrings("123", r1[0].groupSlice(0, "123abc").?);
+}
+
+test "negative lookahead (?!...)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Match digits NOT followed by more digits
+    const r1 = try findAll(a, "\\d(?!\\d)", "1234a5b");
+    try std.testing.expectEqual(@as(usize, 2), r1.len);
+    try std.testing.expectEqualStrings("4", r1[0].groupSlice(0, "1234a5b").?);
+    try std.testing.expectEqualStrings("5", r1[1].groupSlice(0, "1234a5b").?);
+}
+
+test "backreference \\1 in pattern" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Match word repeated with same separator: "ab-cd-ef" where separators must be same
+    const r1 = try findAll(a, "(\\d{4})([- ]?)\\d{4}\\2(\\d{4})", "1234-5678-9012");
+    try std.testing.expectEqual(@as(usize, 1), r1.len);
+    try std.testing.expectEqualStrings("-", r1[0].groupSlice(2, "1234-5678-9012").?);
+    // Mixed separators should NOT match
+    const r2 = try findAll(a, "(\\d{4})([- ])\\d{4}\\2(\\d{4})", "1234-5678 9012");
+    try std.testing.expectEqual(@as(usize, 0), r2.len);
+}
+
+test "SSN regex replaceAll" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ssn_pat = "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)";
+    // Basic SSN: 123-45-6789 → XXX-XX-6789
+    try std.testing.expectEqualStrings("XXX-XX-6789", try replaceAll(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"));
+    // SSN in context
+    try std.testing.expectEqualStrings("xyz XXX-XX-6789.", try replaceAll(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"));
+    // No dashes: 123456789 → XXX-XX-6789
+    try std.testing.expectEqualStrings("XXX-XX-6789", try replaceAll(a, ssn_pat, "123456789", "$1XXX-XX-$4"));
+    // False positive: alphanumeric before → should NOT match
+    try std.testing.expectEqualStrings("abc123456789", try replaceAll(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"));
 }
