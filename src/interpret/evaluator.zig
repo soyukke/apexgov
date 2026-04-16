@@ -81,6 +81,7 @@ pub const Evaluator = struct {
     field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
     // System.Limits counters
     limits_dml: u32 = 0,
+    limits_dml_rows: u32 = 0,
     limits_soql: u32 = 0,
     limits_publish_immediate: u32 = 0,
     limits_queueable: u32 = 0,
@@ -653,10 +654,12 @@ pub const Evaluator = struct {
                     null;
                 if (event_type) |et| {
                     const saved_dml = self.limits_dml;
+                    const saved_dml_rows = self.limits_dml_rows;
                     const saved_soql = self.limits_soql;
                     var record_list = try self.buildRecordList(args[0]);
                     self.fireTrigger(et, .after_insert, &record_list, null) catch {};
                     self.limits_dml = saved_dml;
+                    self.limits_dml_rows = saved_dml_rows;
                     self.limits_soql = saved_soql;
                 }
             }
@@ -1246,6 +1249,11 @@ pub const Evaluator = struct {
         // Salesforce: empty list DML does not count as a DML statement
         if (target == .list and target.list.items.items.len == 0) return;
         self.limits_dml += 1;
+        if (target == .list) {
+            self.limits_dml_rows += @intCast(target.list.items.items.len);
+        } else {
+            self.limits_dml_rows += 1;
+        }
         // Null target → throw NullPointerException (like Salesforce)
         if (target == .null_val) {
             const exc = try self.arena.create(types.ObjectInstance);
@@ -5068,6 +5076,7 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(class_name, "System") and std.ascii.eqlIgnoreCase(mc.method, "enqueueJob")) {
                 self.limits_queueable += 1;
                 const s_dml = self.limits_dml;
+                const s_dml_rows = self.limits_dml_rows;
                 const s_soql = self.limits_soql;
                 const s_pub = self.limits_publish_immediate;
                 const s_call = self.limits_callouts;
@@ -5081,6 +5090,7 @@ pub const Evaluator = struct {
                     }
                 }
                 self.limits_dml = s_dml;
+                self.limits_dml_rows = s_dml_rows;
                 self.limits_soql = s_soql;
                 self.limits_publish_immediate = s_pub;
                 self.limits_callouts = s_call;
@@ -5713,7 +5723,27 @@ pub const Evaluator = struct {
                 if (md != null) {
                     return self.callInstanceMethod(class_decl, obj.object, method, args);
                 }
-                // debug removed
+                // Method not found in this class — it may be shadowed by a same-named
+                // top-level class. Search for an outer class whose inner class matches
+                // and has the method (e.g., LoggerDataStore.Database vs top-level Database).
+                var cls_iter = self.classes.iterator();
+                while (cls_iter.next()) |entry| {
+                    const cd = entry.value_ptr.*;
+                    for (cd.members) |member| {
+                        switch (member) {
+                            .class_decl => |inner_cd| {
+                                if (std.ascii.eqlIgnoreCase(inner_cd.name, obj.object.class_name) and inner_cd != class_decl) {
+                                    const inner_md = self.findMethodInHierarchyTyped(null, inner_cd, method, args) orelse
+                                        self.findMethodInHierarchy(null, inner_cd, method, args.len);
+                                    if (inner_md != null) {
+                                        return self.callInstanceMethod(inner_cd, obj.object, method, args);
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                }
             }
         }
 
@@ -7783,6 +7813,7 @@ pub const Evaluator = struct {
         // Test.startTest() — reset governor limits (Salesforce resets at startTest)
         if (std.ascii.eqlIgnoreCase(method, "startTest")) {
             self.limits_dml = 0;
+            self.limits_dml_rows = 0;
             self.limits_soql = 0;
             self.limits_publish_immediate = 0;
             self.limits_queueable = 0;
@@ -8075,11 +8106,13 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "executeBatch")) {
             // Batch runs in separate transaction — save/restore limits
             const sb_dml = self.limits_dml;
+            const sb_dml_rows = self.limits_dml_rows;
             const sb_soql = self.limits_soql;
             const sb_pub = self.limits_publish_immediate;
             const sb_call = self.limits_callouts;
             defer {
                 self.limits_dml = sb_dml;
+                self.limits_dml_rows = sb_dml_rows;
                 self.limits_soql = sb_soql;
                 self.limits_publish_immediate = sb_pub;
                 self.limits_callouts = sb_call;
@@ -8201,6 +8234,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
             self.limits_queueable += 1;
             const saved_dml = self.limits_dml;
+            const saved_dml_rows = self.limits_dml_rows;
             const saved_soql = self.limits_soql;
             const saved_pub = self.limits_publish_immediate;
             const saved_callouts = self.limits_callouts;
@@ -8213,6 +8247,7 @@ pub const Evaluator = struct {
                 }
             }
             self.limits_dml = saved_dml;
+            self.limits_dml_rows = saved_dml_rows;
             self.limits_soql = saved_soql;
             self.limits_publish_immediate = saved_pub;
             self.limits_callouts = saved_callouts;

@@ -281,6 +281,7 @@ fn runTestsFiltered(
 
                     // Reset Limits counters before test body (static inits may have caused DML/SOQL)
                     test_eval.limits_dml = 0;
+                    test_eval.limits_dml_rows = 0;
                     test_eval.limits_soql = 0;
                     test_eval.limits_publish_immediate = 0;
                     test_eval.limits_queueable = 0;
