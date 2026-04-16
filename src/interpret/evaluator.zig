@@ -696,6 +696,55 @@ pub const Evaluator = struct {
             return Value{ .object = result };
         }
 
+        // Custom Metadata Type: Type__mdt.getInstance(developerName) / getAll()
+        if (std.mem.endsWith(u8, class_name, "__mdt")) {
+            // Ensure records are loaded
+            {
+                var found_in_store = false;
+                var si = self.store.iterator();
+                while (si.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        found_in_store = true;
+                        break;
+                    }
+                }
+                if (!found_in_store) self.loadCustomMetadataFromFiles(class_name) catch {};
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "getInstance") and args.len > 0 and args[0] == .string) {
+                const dev_name = args[0].string;
+                var mdt_iter = self.store.iterator();
+                while (mdt_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        for (entry.value_ptr.items) |item| {
+                            if (item == .sobject) {
+                                if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
+                                }
+                            }
+                        }
+                    }
+                }
+                return Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(method_name, "getAll")) {
+                const map = try self.arena.create(types.MapValue);
+                map.* = .{};
+                var mdt_iter = self.store.iterator();
+                while (mdt_iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                        for (entry.value_ptr.items) |item| {
+                            if (item == .sobject) {
+                                if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                    if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                }
+                            }
+                        }
+                    }
+                }
+                return Value{ .map = map };
+            }
+        }
+
         // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
         if (std.mem.endsWith(u8, class_name, "__c")) {
             if (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults") or
@@ -3240,10 +3289,12 @@ pub const Evaluator = struct {
                     {
                         // Extract DeveloperName from filename: <BaseName>.<RecordName>.md-meta.xml
                         const after_dot = after_cm[base_name.len + 1 ..]; // "RecordName.md-meta.xml"
-                        const dev_name = if (std.mem.indexOf(u8, after_dot, ".")) |next_dot|
+                        const dev_name_raw = if (std.mem.indexOf(u8, after_dot, ".")) |next_dot|
                             after_dot[0..next_dot]
                         else
                             after_dot;
+                        // Duplicate on arena since walker memory is temporary
+                        const dev_name = self.arena.dupe(u8, dev_name_raw) catch continue;
 
                         const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ sp, entry.path }) catch continue;
                         const content = std.fs.cwd().readFileAlloc(self.arena, full_path, 1024 * 1024) catch continue;
@@ -5194,6 +5245,59 @@ pub const Evaluator = struct {
                 }
             }
 
+            // Custom Metadata Type: Type__mdt.getInstance(developerName) — early intercept
+            if (std.mem.endsWith(u8, class_name, "__mdt") and
+                (std.ascii.eqlIgnoreCase(mc.method, "getInstance") or std.ascii.eqlIgnoreCase(mc.method, "getAll")))
+            {
+                // Ensure records are loaded from .md-meta.xml files
+                {
+                    var fi = false;
+                    var si = self.store.iterator();
+                    while (si.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            fi = true;
+                            break;
+                        }
+                    }
+                    if (!fi) self.loadCustomMetadataFromFiles(class_name) catch {};
+                }
+                if (std.ascii.eqlIgnoreCase(mc.method, "getInstance")) {
+                    const dev_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "";
+                    if (dev_name.len > 0) {
+                        var mi = self.store.iterator();
+                        while (mi.next()) |entry| {
+                            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                                for (entry.value_ptr.items) |item| {
+                                    if (item == .sobject) {
+                                        if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                            if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value.null_val;
+                }
+                if (std.ascii.eqlIgnoreCase(mc.method, "getAll")) {
+                    const map = try self.arena.create(types.MapValue);
+                    map.* = .{};
+                    var mi = self.store.iterator();
+                    while (mi.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            for (entry.value_ptr.items) |item| {
+                                if (item == .sobject) {
+                                    if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value{ .map = map };
+                }
+            }
+
             // Integer.valueOf with invalid string → throw TypeException
             if (std.ascii.eqlIgnoreCase(class_name, "Integer") and std.ascii.eqlIgnoreCase(mc.method, "valueOf")) {
                 if (args.items.len > 0 and args.items[0] == .string) {
@@ -5282,22 +5386,56 @@ pub const Evaluator = struct {
                 return result;
             }
 
-            // User-defined class method (check before stubs/getSObjectType fallback)
-            if (self.findClass(class_name) != null) {
-                return self.callMethod(class_name, mc.method, args.items);
-            }
-
-            // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
-            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
-            if (std.ascii.eqlIgnoreCase(mc.method, "getSObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
-                return Value{ .object = sot };
+            // Custom Metadata Type: Type__mdt.getInstance(developerName) / getAll()
+            // Must be checked BEFORE findClass to avoid falling through to callMethod
+            if (std.mem.endsWith(u8, class_name, "__mdt")) {
+                // Ensure records are loaded from .md-meta.xml files
+                {
+                    var found_in_store = false;
+                    var si = self.store.iterator();
+                    while (si.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            found_in_store = true;
+                            break;
+                        }
+                    }
+                    if (!found_in_store) self.loadCustomMetadataFromFiles(class_name) catch {};
+                }
+                if (std.ascii.eqlIgnoreCase(mc.method, "getInstance")) {
+                    const dev_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "";
+                    var mdt_iter = self.store.iterator();
+                    while (mdt_iter.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            for (entry.value_ptr.items) |item| {
+                                if (item == .sobject) {
+                                    if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                        if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) {
+                                            return item;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value.null_val;
+                }
+                if (std.ascii.eqlIgnoreCase(mc.method, "getAll")) {
+                    const map = try self.arena.create(types.MapValue);
+                    map.* = .{};
+                    var mdt_iter = self.store.iterator();
+                    while (mdt_iter.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                            for (entry.value_ptr.items) |item| {
+                                if (item == .sobject) {
+                                    if (utils.sobjectGet(&item.sobject.fields, "DeveloperName")) |dn| {
+                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value{ .map = map };
+                }
             }
 
             // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
@@ -5340,6 +5478,24 @@ pub const Evaluator = struct {
                     }
                     return Value.null_val;
                 }
+            }
+
+            // User-defined class method (check before stubs/getSObjectType fallback)
+            if (self.findClass(class_name) != null) {
+                return self.callMethod(class_name, mc.method, args.items);
+            }
+
+            // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
+            if (try self.handleTestFactory(class_name, mc.method, args.items)) |result| {
+                return result;
+            }
+
+            // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
+            if (std.ascii.eqlIgnoreCase(mc.method, "getSObjectType")) {
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
+                return Value{ .object = sot };
             }
 
             return self.callMethod(class_name, mc.method, args.items);
