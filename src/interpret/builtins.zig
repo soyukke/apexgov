@@ -137,7 +137,27 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (ci.eqlIgnoreCase(method_name, "getMap")) {
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
-            // Return empty map — org limits are not tracked in the interpreter
+            // Seed known org limits with plausible defaults so that
+            // callers like `OrgLimits.getMap().get('SingleEmail').getValue()` work.
+            const known = [_]struct { name: []const u8, value: i64, limit: i64 }{
+                .{ .name = "SingleEmail", .value = 0, .limit = 5000 },
+                .{ .name = "MassEmail", .value = 0, .limit = 10 },
+                .{ .name = "DailyApiRequests", .value = 0, .limit = 100000 },
+                .{ .name = "DailyAsyncApexExecutions", .value = 0, .limit = 250000 },
+                .{ .name = "DailyBulkApiBatches", .value = 0, .limit = 15000 },
+                .{ .name = "HourlyAsyncReportRuns", .value = 0, .limit = 1200 },
+                .{ .name = "DailyDurableGenericStreamingApiEvents", .value = 0, .limit = 1000000 },
+                .{ .name = "DailyDurableStreamingApiEvents", .value = 0, .limit = 1000000 },
+                .{ .name = "DailyStreamingApiEvents", .value = 0, .limit = 1000000 },
+            };
+            for (known) |k| {
+                const ol = try ctx.arena.create(types.ObjectInstance);
+                ol.* = .{ .class_name = "System.OrgLimit" };
+                try ol.fields.put(ctx.arena, "name", Value{ .string = k.name });
+                try ol.fields.put(ctx.arena, "value", Value{ .integer = k.value });
+                try ol.fields.put(ctx.arena, "limit", Value{ .integer = k.limit });
+                try map.entries.put(ctx.arena, k.name, Value{ .object = ol });
+            }
             return Value{ .map = map };
         }
         return null;
@@ -1863,6 +1883,11 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (ci.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
         if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
         if (ci.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
+    }
+    if (ci.eqlIgnoreCase(cn, "System.OrgLimit") or ci.eqlIgnoreCase(cn, "OrgLimit")) {
+        if (ci.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
+        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .integer = 0 };
+        if (ci.eqlIgnoreCase(method_name, "getLimit")) return obj.fields.get("limit") orelse Value{ .integer = 0 };
     }
     if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
         if (try dispatchObjHttp(ctx, obj, method_name, args)) |v| return v;
