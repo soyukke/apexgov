@@ -449,6 +449,91 @@ pub const Evaluator = struct {
         return Value{ .sobject = user };
     }
 
+    fn appendRecordIdsFromValue(self: *Evaluator, value: Value, record_ids: *std.ArrayListUnmanaged([]const u8)) !void {
+        switch (value) {
+            .string => |s| if (s.len > 0) try record_ids.append(self.arena, s),
+            .sobject => |sob| if (sob.id) |id| try record_ids.append(self.arena, id),
+            .list => |list| {
+                for (list.items.items) |item| {
+                    try self.appendRecordIdsFromValue(item, record_ids);
+                }
+            },
+            .set => |set| {
+                for (set.entries.values()) |item| {
+                    try self.appendRecordIdsFromValue(item, record_ids);
+                }
+            },
+            .map => |map| {
+                for (map.entries.keys()) |key| {
+                    if (key.len > 0) try record_ids.append(self.arena, key);
+                }
+            },
+            else => {
+                const coerced = utils.coerceToString(value, self.arena) catch return;
+                if (coerced.len > 0) try record_ids.append(self.arena, coerced);
+            },
+        }
+    }
+
+    fn canDeleteRecordViaUserRecordAccess(self: *Evaluator, record_id: []const u8) bool {
+        const type_name = self.findRecordTypeById(record_id) orelse blk: {
+            if (record_id.len < 3) break :blk "SObject";
+            break :blk sobjectTypeFromPrefix(record_id[0..3]);
+        };
+        if (std.ascii.eqlIgnoreCase(type_name, "SObject")) return false;
+        if (std.ascii.eqlIgnoreCase(type_name, "User")) return false;
+        if (self.isSetupObject(type_name)) return false;
+        return true;
+    }
+
+    fn seedUserRecordAccessRecords(self: *Evaluator, soql: []const u8, current_env: *Env, records: *std.ArrayListUnmanaged(Value)) !void {
+        const where_clause = extractWhereClause(soql) orelse return;
+        const requested_user_id = self.extractWhereFieldValue(soql, "UserId", current_env) orelse blk: {
+            if (std.ascii.indexOfIgnoreCase(where_clause, "UserId = :System.UserInfo.getUserId()") != null) {
+                break :blk self.current_user_id;
+            }
+            break :blk null;
+        };
+        if (requested_user_id) |user_id| {
+            if (!std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return;
+        }
+
+        var record_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (std.ascii.indexOfIgnoreCase(where_clause, "RecordId IN :")) |in_pos| {
+            var j = in_pos + "RecordId IN :".len;
+            const start = j;
+            while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+            if (j > start) {
+                if (self.lookupBindValue(current_env, where_clause[start..j])) |bind_val| {
+                    try self.appendRecordIdsFromValue(bind_val, &record_ids);
+                }
+            }
+        }
+        if (record_ids.items.len == 0) {
+            if (self.extractWhereFieldValue(soql, "RecordId", current_env)) |record_id| {
+                try record_ids.append(self.arena, record_id);
+            }
+        }
+
+        for (record_ids.items) |record_id| {
+            const access = try self.arena.create(types.SObject);
+            const access_id = try self.allocId();
+            const has_delete_access = self.canDeleteRecordViaUserRecordAccess(record_id);
+            access.* = .{ .type_name = "UserRecordAccess", .id = access_id };
+            try access.fields.put(self.arena, "Id", Value{ .string = access_id });
+            try access.fields.put(self.arena, "UserId", Value{ .string = self.current_user_id });
+            try access.fields.put(self.arena, "RecordId", Value{ .string = record_id });
+            try access.fields.put(self.arena, "HasReadAccess", Value{ .boolean = has_delete_access });
+            try access.fields.put(self.arena, "HasEditAccess", Value{ .boolean = has_delete_access });
+            try access.fields.put(self.arena, "HasDeleteAccess", Value{ .boolean = has_delete_access });
+
+            const access_value = Value{ .sobject = access };
+            if (self.matchesWhere(access_value, soql, current_env)) {
+                try records.append(self.arena, access_value);
+            }
+        }
+    }
+
     /// Seed stub records for setup objects queried with IN clause (PermissionSet, PermissionSetLicense, etc.).
     /// Extracts names from WHERE Name/DeveloperName IN (:var) or IN ('a','b') and creates a stub for each.
     fn seedNamedRecords(self: *Evaluator, obj_type: []const u8, soql: []const u8, current_env: *Env, records: *std.ArrayListUnmanaged(Value)) !void {
@@ -2960,6 +3045,10 @@ pub const Evaluator = struct {
             }
         }
 
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "UserRecordAccess")) {
+            try self.seedUserRecordAccessRecords(soql, current_env, &records);
+        }
+
         // Seed PermissionSet/PermissionSetLicense from IN clause (before metadata stubs)
         if (records.items.len == 0 and
             (std.ascii.eqlIgnoreCase(from_type, "PermissionSet") or
@@ -4563,44 +4652,15 @@ pub const Evaluator = struct {
         // Get field value from record (case-insensitive), supporting dotted parent refs
         var field_val: Value = Value.null_val;
         var field_found = false;
-        if (std.mem.indexOf(u8, field_name, ".")) |dot_pos| {
-            // Dotted field: Account.Name → follow parent reference
-            const parent_ref = field_name[0..dot_pos];
-            const child_field = field_name[dot_pos + 1 ..];
-            // First check if we have the parent as a nested SObject
-            if (utils.sobjectGet(&sob.fields, parent_ref)) |parent_val| {
-                if (parent_val == .sobject) {
-                    if (utils.sobjectGet(&parent_val.sobject.fields, child_field)) |v| {
-                        field_val = v;
-                        field_found = true;
-                    }
-                }
-            }
-            // If not found, try looking up via FK (Account.Name → AccountId → lookup)
-            if (!field_found) {
-                const fk_field = self.parentRefToFk(parent_ref);
-                if (utils.sobjectGet(&sob.fields, fk_field)) |fk_val| {
-                    if (fk_val == .string) {
-                        if (self.parentRefToTypeForSObject(sob.type_name, parent_ref)) |parent_type| {
-                            if (self.findRecordById(parent_type, fk_val.string)) |parent_rec| {
-                                if (parent_rec == .sobject) {
-                                    if (utils.sobjectGet(&parent_rec.sobject.fields, child_field)) |v| {
-                                        field_val = v;
-                                        field_found = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        if (std.mem.indexOf(u8, field_name, ".")) |_| {
+            if (self.resolveFieldPathValue(sob, field_name)) |resolved| {
+                field_val = resolved;
+                field_found = true;
             }
         } else {
-            for (sob.fields.keys(), sob.fields.values()) |k, v| {
-                if (std.ascii.eqlIgnoreCase(k, field_name)) {
-                    field_val = v;
-                    field_found = true;
-                    break;
-                }
+            if (self.getSObjectFieldValueCaseInsensitive(sob, field_name)) |resolved| {
+                field_val = resolved;
+                field_found = true;
             }
         }
         if (!field_found) {
@@ -4784,8 +4844,13 @@ pub const Evaluator = struct {
             cmp_val = Value{ .integer = int_val };
         } else |_| {
             // Could be null or enum value
-            if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, value_str, " \t\n\r"), "null")) {
+            const trimmed_value = std.mem.trim(u8, value_str, " \t\n\r");
+            if (std.ascii.eqlIgnoreCase(trimmed_value, "null")) {
                 cmp_val = Value.null_val;
+            } else if (std.ascii.eqlIgnoreCase(trimmed_value, "true")) {
+                cmp_val = Value{ .boolean = true };
+            } else if (std.ascii.eqlIgnoreCase(trimmed_value, "false")) {
+                cmp_val = Value{ .boolean = false };
             } else {
                 return true; // unknown, include
             }
@@ -5088,6 +5153,51 @@ pub const Evaluator = struct {
             return self.createCurrentUserRecord() catch null;
         }
         return null;
+    }
+
+    fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+        _ = self;
+        for (sob.fields.keys(), sob.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, field_name)) return v;
+        }
+        return null;
+    }
+
+    fn resolveFieldPathValue(self: *Evaluator, sob: *types.SObject, field_path: []const u8) ?Value {
+        var current = sob;
+        var remaining = field_path;
+        while (true) {
+            const dot_pos = std.mem.indexOfScalar(u8, remaining, '.') orelse {
+                return self.getSObjectFieldValueCaseInsensitive(current, remaining);
+            };
+            const segment = remaining[0..dot_pos];
+            remaining = remaining[dot_pos + 1 ..];
+
+            if (self.getSObjectFieldValueCaseInsensitive(current, segment)) |segment_val| {
+                if (segment_val == .sobject) {
+                    current = segment_val.sobject;
+                    continue;
+                }
+                return null;
+            }
+
+            const fk_field = self.parentRefToFk(segment);
+            const fk_val = utils.sobjectGet(&current.fields, fk_field) orelse return null;
+            if (fk_val != .string) return null;
+
+            const parent_type = self.parentRefToTypeForSObject(current.type_name, segment) orelse
+                self.findRecordTypeById(fk_val.string) orelse
+                blk: {
+                    if (fk_val.string.len < 3) break :blk null;
+                    const inferred = sobjectTypeFromPrefix(fk_val.string[0..3]);
+                    if (std.ascii.eqlIgnoreCase(inferred, "SObject")) break :blk null;
+                    break :blk inferred;
+                } orelse return null;
+
+            const parent_record = self.findRecordById(parent_type, fk_val.string) orelse return null;
+            if (parent_record != .sobject) return null;
+            current = parent_record.sobject;
+        }
     }
 
     /// Create a shallow clone of an SObject (copies the fields map).
@@ -5671,13 +5781,20 @@ pub const Evaluator = struct {
     fn isCollectionTypeName(type_name: []const u8) bool {
         return std.ascii.eqlIgnoreCase(type_name, "List") or
             std.ascii.eqlIgnoreCase(type_name, "Set") or
-            std.ascii.eqlIgnoreCase(type_name, "Iterable");
+            std.ascii.eqlIgnoreCase(type_name, "Iterable") or
+            std.ascii.eqlIgnoreCase(type_name, "Map");
     }
 
     fn stripTypeNamespace(type_name: []const u8) []const u8 {
         if (std.ascii.startsWithIgnoreCase(type_name, "System.")) return type_name["System.".len..];
         if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) return type_name["Schema.".len..];
         return type_name;
+    }
+
+    fn typeBaseName(type_name: []const u8) []const u8 {
+        const stripped = stripTypeNamespace(type_name);
+        if (std.mem.indexOfScalar(u8, stripped, '<')) |lt| return stripped[0..lt];
+        return stripped;
     }
 
     fn findDeclaredFieldType(self: *Evaluator, class_name: []const u8, field_name: []const u8) ?[]const u8 {
@@ -5740,7 +5857,7 @@ pub const Evaluator = struct {
 
     fn extractExprTypeHint(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) ?[]const u8 {
         switch (expr.*) {
-            .cast_expr => |ce| return stripTypeNamespace(ce.target_type.name),
+            .cast_expr => |ce| return self.renderTypeRef(ce.target_type),
             .identifier, .field_access => {
                 if (self.resolveAssignmentTargetType(expr, current_env)) |type_name| {
                     return stripTypeNamespace(type_name);
@@ -5749,6 +5866,20 @@ pub const Evaluator = struct {
             },
             else => return null,
         }
+    }
+
+    fn renderTypeRef(self: *Evaluator, type_ref: types.TypeRef) []const u8 {
+        if (type_ref.params.len == 0) return stripTypeNamespace(type_ref.name);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        buf.appendSlice(self.arena, stripTypeNamespace(type_ref.name)) catch return stripTypeNamespace(type_ref.name);
+        buf.append(self.arena, '<') catch return stripTypeNamespace(type_ref.name);
+        for (type_ref.params, 0..) |param, i| {
+            if (i > 0) buf.appendSlice(self.arena, ",") catch {};
+            buf.appendSlice(self.arena, self.renderTypeRef(param)) catch {};
+        }
+        buf.append(self.arena, '>') catch {};
+        return buf.toOwnedSlice(self.arena) catch stripTypeNamespace(type_ref.name);
     }
 
     fn coerceSoqlAssignmentToDeclaredType(self: *Evaluator, val: Value, source_expr: ?*const ast.Expr, target_type: []const u8) !Value {
@@ -8038,11 +8169,11 @@ pub const Evaluator = struct {
 
         // Known non-SObject types: create ObjectInstance instead
         const non_sobject_types = [_][]const u8{
-            "RestRequest",            "RestResponse",                     "HttpRequest",         "HttpResponse",
-            "Http",                   "PageReference",                    "SelectOption",        "Messaging.SingleEmailMessage",
-            "Messaging.InboundEmail", "QueryException",                   "DmlException",        "AuraHandledException",
-            "CalloutException",       "Database.DmlOptions",              "DmlOptions",          "VisualEditor.DataRow",
-            "DataRow",                "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
+            "RestRequest",            "RestResponse",        "HttpRequest",                      "HttpResponse",
+            "Http",                   "PageReference",       "SelectOption",                     "Messaging.SingleEmailMessage",
+            "Messaging.InboundEmail", "QueryException",      "DmlException",                     "AuraHandledException",
+            "CalloutException",       "Database.DmlOptions", "DmlOptions",                       "ApexPages.Message",
+            "VisualEditor.DataRow",   "DataRow",             "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
         };
         for (non_sobject_types) |nst| {
             if (std.ascii.eqlIgnoreCase(type_name, nst)) {
@@ -8091,6 +8222,29 @@ pub const Evaluator = struct {
                     const data_rows = try self.arena.create(types.ListValue);
                     data_rows.* = .{};
                     try instance.fields.put(self.arena, "dataRows", Value{ .list = data_rows });
+                    return Value{ .object = instance };
+                }
+
+                if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.Message")) {
+                    const severity = if (ne.args.len >= 1) blk: {
+                        var arg0_copy = ne.args[0];
+                        const severity_val = try self.evalExpr(&arg0_copy, current_env);
+                        break :blk try utils.coerceToString(severity_val, self.arena);
+                    } else "ERROR";
+                    const summary = if (ne.args.len >= 2) blk: {
+                        var arg1_copy = ne.args[1];
+                        const summary_val = try self.evalExpr(&arg1_copy, current_env);
+                        break :blk try utils.coerceToString(summary_val, self.arena);
+                    } else "";
+                    const detail = if (ne.args.len >= 3) blk: {
+                        var arg2_copy = ne.args[2];
+                        const detail_val = try self.evalExpr(&arg2_copy, current_env);
+                        break :blk try utils.coerceToString(detail_val, self.arena);
+                    } else summary;
+                    try instance.fields.put(self.arena, "severity", Value{ .string = severity });
+                    try instance.fields.put(self.arena, "summary", Value{ .string = summary });
+                    try instance.fields.put(self.arena, "detail", Value{ .string = detail });
+                    try instance.fields.put(self.arena, "message", Value{ .string = summary });
                     return Value{ .object = instance };
                 }
 
@@ -8265,6 +8419,12 @@ pub const Evaluator = struct {
     fn evalFieldAccess(self: *Evaluator, fa: *ast.FieldAccess, obj: Value, current_env: *Env) !Value {
         if (fa.object.* == .field_access) {
             const inner_fa = fa.object.field_access;
+            if (inner_fa.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "ApexPages") and
+                std.ascii.eqlIgnoreCase(inner_fa.field, "Severity"))
+            {
+                return Value{ .string = fa.field };
+            }
             if (inner_fa.object.* == .identifier and
                 std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
             {
@@ -8542,7 +8702,8 @@ pub const Evaluator = struct {
 
             // AccessLevel / AccessType enum
             if (std.ascii.eqlIgnoreCase(class_name, "AccessLevel") or
-                std.ascii.eqlIgnoreCase(class_name, "AccessType"))
+                std.ascii.eqlIgnoreCase(class_name, "AccessType") or
+                std.ascii.eqlIgnoreCase(class_name, "ApexPages.Severity"))
             {
                 return Value{ .string = fa.field };
             }
@@ -9708,7 +9869,7 @@ pub const Evaluator = struct {
                 const batch_obj = args[0].object;
                 if (self.findClass(batch_obj.class_name)) |batch_class| {
                     // Call start() to get the QueryLocator
-                    const scope = self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val}) catch Value.null_val;
+                    const scope = try self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val});
                     // Use QueryLocator's query to get the correct records
                     var all_records: std.ArrayListUnmanaged(Value) = .empty;
                     if (scope == .object) {
@@ -9749,9 +9910,9 @@ pub const Evaluator = struct {
                     }
                     const record_list = try self.arena.create(types.ListValue);
                     record_list.* = .{ .items = all_records };
-                    _ = self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ Value.null_val, Value{ .list = record_list } }) catch {};
+                    _ = try self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ Value.null_val, Value{ .list = record_list } });
                     // Call finish()
-                    _ = self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val}) catch {};
+                    _ = try self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val});
                 }
             }
             return Value{ .string = try self.allocId() }; // Fake job ID
@@ -10507,12 +10668,12 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                if (arg == .null_val and arg_type_hints != null and i < arg_type_hints.?.len) {
+                if (arg_type_hints != null and i < arg_type_hints.?.len) {
                     if (arg_type_hints.?[i]) |hint| {
-                        const hint_score = self.overloadScoreForTypeHint(hint, pt);
+                        const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
                         if (hint_score > 0) {
                             score += hint_score;
-                            continue;
+                            if (arg == .null_val) continue;
                         }
                     }
                 }
@@ -10597,12 +10758,12 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                if (arg == .null_val and arg_type_hints != null and i < arg_type_hints.?.len) {
+                if (arg_type_hints != null and i < arg_type_hints.?.len) {
                     if (arg_type_hints.?[i]) |hint| {
-                        const hint_score = self.overloadScoreForTypeHint(hint, pt);
+                        const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
                         if (hint_score > 0) {
                             score += hint_score;
-                            continue;
+                            if (arg == .null_val) continue;
                         }
                     }
                 }
@@ -10623,7 +10784,13 @@ pub const Evaluator = struct {
                     // List generic element type check
                     if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
                         const elem_type = param.type_ref.params[0].name;
-                        if (arg.list.items.items.len > 0) {
+                        if (std.ascii.eqlIgnoreCase(elem_type, "SObject")) {
+                            if (arg.list.items.items.len > 0) {
+                                if (arg.list.items.items[0] == .sobject) arg_score = 3;
+                            } else {
+                                arg_score = 2;
+                            }
+                        } else if (arg.list.items.items.len > 0) {
                             const first = arg.list.items.items[0];
                             if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
                                 arg_score = 3;
@@ -10650,26 +10817,32 @@ pub const Evaluator = struct {
     }
 
     fn overloadScoreForTypeHint(self: *Evaluator, raw_hint: []const u8, raw_param_type: []const u8) i32 {
+        if (std.ascii.eqlIgnoreCase(raw_hint, raw_param_type)) return 6;
         const hint = stripTypeNamespace(raw_hint);
         const pt = stripTypeNamespace(raw_param_type);
+        const hint_base = typeBaseName(hint);
+        const pt_base = typeBaseName(pt);
+        const hint_has_generics = std.mem.indexOfScalar(u8, hint, '<') != null;
+        const pt_has_generics = std.mem.indexOfScalar(u8, pt, '<') != null;
         if (std.ascii.eqlIgnoreCase(hint, pt)) return 3;
+        if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
 
-        if (isCollectionTypeName(hint)) {
-            if (std.ascii.eqlIgnoreCase(hint, "Set") and std.ascii.eqlIgnoreCase(pt, "Iterable")) return 2;
-            if (std.ascii.eqlIgnoreCase(hint, "List") and std.ascii.eqlIgnoreCase(pt, "Iterable")) return 1;
+        if (isCollectionTypeName(hint_base)) {
+            if (std.ascii.eqlIgnoreCase(hint_base, "Set") and std.ascii.eqlIgnoreCase(pt_base, "Iterable")) return 2;
+            if (std.ascii.eqlIgnoreCase(hint_base, "List") and std.ascii.eqlIgnoreCase(pt_base, "Iterable")) return 1;
             return 0;
         }
 
-        if (self.isSObjectTypeName(hint) and
-            (std.ascii.eqlIgnoreCase(pt, "SObject") or
-                std.ascii.eqlIgnoreCase(pt, "sObject") or
-                std.ascii.eqlIgnoreCase(pt, "Sobject")))
+        if (self.isSObjectTypeName(hint_base) and
+            (std.ascii.eqlIgnoreCase(pt_base, "SObject") or
+                std.ascii.eqlIgnoreCase(pt_base, "sObject") or
+                std.ascii.eqlIgnoreCase(pt_base, "Sobject")))
         {
             return 3;
         }
 
-        if (self.findClass(hint) != null and self.isSubclassOf(hint, pt)) return 2;
+        if (self.findClass(hint_base) != null and self.isSubclassOf(hint_base, pt_base)) return 2;
         return 0;
     }
 

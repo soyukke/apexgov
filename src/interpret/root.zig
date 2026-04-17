@@ -3499,6 +3499,23 @@ test "E2E: StandardSetController preserves selected records" {
     try std.testing.expectEqualStrings("1:B", result.value.string);
 }
 
+test "E2E: ApexPages.Message preserves summary when added to page state" {
+    const source =
+        \\public class ApexPagesMessageSummaryTest {
+        \\    public static String test() {
+        \\        ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR, 'Denied'));
+        \\        return ApexPages.getMessages().get(0).getSummary() + ':' + ApexPages.getMessages().get(0).getSeverity();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ApexPagesMessageSummaryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
+}
+
 test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
     const source =
         \\public class IdValueOfTest {
@@ -3540,6 +3557,97 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
     ;
     const result = try run(std.testing.allocator, source, .{
         .entry_class = "QueryLocatorScopeBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: instance overload resolves cast List<SObject> target" {
+    const source =
+        \\public class ListOverloadForwarder {
+        \\    public String run(List<Account> rows) {
+        \\        return this.run((List<SObject>) rows);
+        \\    }
+        \\    public String run(List<SObject> rows) {
+        \\        return 'sobject:' + rows.size();
+        \\    }
+        \\    public static String test() {
+        \\        ListOverloadForwarder forwarder = new ListOverloadForwarder();
+        \\        return forwarder.run(new List<Account>{ new Account(Name = 'A') });
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ListOverloadForwarder",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("sobject:1", result.value.string);
+}
+
+test "E2E: null collection variables preserve declared overload targets" {
+    const source =
+        \\public class NullCollectionOverloadTest {
+        \\    public String pick(List<SObject> rows) { return 'List'; }
+        \\    public String pick(Map<String, SObject> rows) { return 'Map'; }
+        \\    public String pick(Iterable<Id> ids) { return 'Iterable'; }
+        \\    public String pick(Object anything) { return anything == null ? 'null' : 'Object'; }
+        \\    public static String test() {
+        \\        NullCollectionOverloadTest helper = new NullCollectionOverloadTest();
+        \\        List<Account> rows = null;
+        \\        Map<String, Account> rowMap = null;
+        \\        Iterable<Id> ids = null;
+        \\        return helper.pick(rows) + ':' + helper.pick(rowMap) + ':' + helper.pick(ids);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullCollectionOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("List:Map:Iterable", result.value.string);
+}
+
+test "E2E: UserRecordAccess delete query returns only deletable records" {
+    const source =
+        \\public class UserRecordAccessDeleteQueryTest {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'CanDelete');
+        \\        insert account;
+        \\        List<Id> recordIds = new List<Id>{ account.Id, System.UserInfo.getUserId() };
+        \\        List<UserRecordAccess> accessRows = [
+        \\            SELECT RecordId
+        \\            FROM UserRecordAccess
+        \\            WHERE UserId = :System.UserInfo.getUserId() AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
+        \\        ];
+        \\        return String.valueOf(accessRows.size()) + ':' + String.valueOf(accessRows.get(0).RecordId == account.Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserRecordAccessDeleteQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true", result.value.string);
+}
+
+test "E2E: SOQL WHERE resolves multi-hop parent relationship fields" {
+    const source =
+        \\public class MultiHopParentWhereTest {
+        \\    public static Integer test() {
+        \\        Account account = new Account(Name = 'Parent');
+        \\        insert account;
+        \\        Contact contact = new Contact(LastName = 'Child', AccountId = account.Id);
+        \\        insert contact;
+        \\        return [SELECT COUNT() FROM Contact WHERE Account.Owner.Name = 'Test User'];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MultiHopParentWhereTest",
         .entry_method = "test",
     });
     defer result.deinit();

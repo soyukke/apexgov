@@ -1440,6 +1440,12 @@ fn dispatchStaticApexPages(ctx: *BuiltinContext, method_name: []const u8, args: 
         if (args.len > 0) {
             const msg_text = blk: {
                 if (args[0] == .object) {
+                    if (args[0].object.fields.get("summary")) |summary| {
+                        if (summary == .string) break :blk summary.string;
+                    }
+                    if (args[0].object.fields.get("detail")) |detail| {
+                        if (detail == .string) break :blk detail.string;
+                    }
                     if (args[0].object.fields.get("message")) |msg| {
                         if (msg == .string) break :blk msg.string;
                     }
@@ -1447,10 +1453,20 @@ fn dispatchStaticApexPages(ctx: *BuiltinContext, method_name: []const u8, args: 
                 if (args[0] == .string) break :blk args[0].string;
                 break :blk "Error";
             };
+            const severity = blk: {
+                if (args[0] == .object) {
+                    if (args[0].object.fields.get("severity")) |sev| {
+                        if (sev == .string) break :blk sev.string;
+                    }
+                }
+                break :blk "ERROR";
+            };
             const msg_obj = try ctx.arena.create(types.ObjectInstance);
             msg_obj.* = .{ .class_name = "ApexPages.Message" };
             try msg_obj.fields.put(ctx.arena, "summary", Value{ .string = msg_text });
-            try msg_obj.fields.put(ctx.arena, "severity", Value{ .string = "ERROR" });
+            try msg_obj.fields.put(ctx.arena, "detail", Value{ .string = msg_text });
+            try msg_obj.fields.put(ctx.arena, "message", Value{ .string = msg_text });
+            try msg_obj.fields.put(ctx.arena, "severity", Value{ .string = severity });
             try ctx.eval.apex_pages_messages.append(ctx.arena, Value{ .object = msg_obj });
         }
         return Value.void_val;
