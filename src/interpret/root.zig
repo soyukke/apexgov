@@ -51,8 +51,19 @@ pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
     var eval = try evaluator.Evaluator.init(arena.allocator());
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
+        for (opts.source_paths) |path| {
+            collectFieldDefaults(arena.allocator(), path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collectFieldSets(arena.allocator(), path, &eval.field_sets) catch {};
+        }
     }
     try eval.loadDecls(decls);
+    for (decls) |decl| {
+        switch (decl) {
+            .class_decl => |cd| try eval.registerClassSource(cd.name, source),
+            .trigger_decl => |td| try eval.registerTriggerSource(td.name, source),
+            else => {},
+        }
+    }
 
     const value = if (opts.entry_class.len > 0 and opts.entry_method.len > 0)
         try eval.callMethod(opts.entry_class, opts.entry_method, opts.args)
@@ -142,12 +153,16 @@ fn runTestsFiltered(
             parse_errors += 1;
             continue;
         };
-        // Register class source for ApexClass.Body queries
-        // Extract class name from file path (basename without .cls)
-        const basename = std.fs.path.basename(file.path);
-        if (std.mem.endsWith(u8, basename, ".cls")) {
-            const cls_name = basename[0 .. basename.len - 4];
-            eval.registerClassSource(cls_name, file.content) catch {};
+        for (decls) |decl| {
+            switch (decl) {
+                .class_decl => |cd| {
+                    eval.registerClassSource(cd.name, file.content) catch {};
+                },
+                .trigger_decl => |td| {
+                    eval.registerTriggerSource(td.name, file.content) catch {};
+                },
+                else => {},
+            }
         }
     }
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
@@ -156,14 +171,16 @@ fn runTestsFiltered(
     // Search the given paths AND their ancestor directories (up to 3 levels) to find objects/ dirs
     // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
     for (paths) |path| {
-        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types) catch {};
+        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+        collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
         collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types) catch {};
         // Walk parent directories to find sibling packages containing objects/
         var parent = std.fs.path.dirname(path);
         var depth: u8 = 0;
         while (parent != null and depth < 3) : (depth += 1) {
             const p = parent.?;
-            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types) catch {};
+            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
             collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types) catch {};
             parent = std.fs.path.dirname(p);
         }
@@ -250,10 +267,14 @@ fn runTestsFiltered(
                     test_eval.class_arena = parse_alloc; // classes map は parse_arena 上に確保
                     test_eval.triggers = eval.triggers;
                     test_eval.class_sources = eval.class_sources;
+                    test_eval.trigger_sources = eval.trigger_sources;
                     test_eval.source_paths = eval.source_paths;
                     test_eval.field_defaults = eval.field_defaults;
                     test_eval.field_types = eval.field_types;
+                    test_eval.field_metadata = eval.field_metadata;
+                    test_eval.child_relationships = eval.child_relationships;
                     test_eval.custom_setting_types = eval.custom_setting_types;
+                    test_eval.field_sets = eval.field_sets;
 
                     // Check for @isTest(SeeAllData=true) annotation
                     test_eval.see_all_data = false;
@@ -418,6 +439,8 @@ fn collectFieldDefaults(
     path: []const u8,
     field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
     field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
+    field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
 ) !void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
     defer dir.close();
@@ -439,6 +462,44 @@ fn collectFieldDefaults(
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
 
+        var metadata = evaluator.FieldMetadata{};
+
+        if (std.mem.indexOf(u8, content, "<caseSensitive>")) |cs| {
+            const cs_start = cs + "<caseSensitive>".len;
+            if (std.mem.indexOfPos(u8, content, cs_start, "</caseSensitive>")) |ce| {
+                const value = std.mem.trim(u8, content[cs_start..ce], " \t\n\r");
+                metadata.case_sensitive = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<externalId>")) |es| {
+            const e_start = es + "<externalId>".len;
+            if (std.mem.indexOfPos(u8, content, e_start, "</externalId>")) |ee| {
+                const value = std.mem.trim(u8, content[e_start..ee], " \t\n\r");
+                metadata.is_external_id = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<unique>")) |us| {
+            const u_start = us + "<unique>".len;
+            if (std.mem.indexOfPos(u8, content, u_start, "</unique>")) |ue| {
+                const value = std.mem.trim(u8, content[u_start..ue], " \t\n\r");
+                metadata.is_unique = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<required>")) |rs| {
+            const r_start = rs + "<required>".len;
+            if (std.mem.indexOfPos(u8, content, r_start, "</required>")) |re| {
+                const value = std.mem.trim(u8, content[r_start..re], " \t\n\r");
+                metadata.is_required = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<length>")) |ls| {
+            const l_start = ls + "<length>".len;
+            if (std.mem.indexOfPos(u8, content, l_start, "</length>")) |le| {
+                const value = std.mem.trim(u8, content[l_start..le], " \t\n\r");
+                metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
+            }
+        }
+
         // Extract <type>...</type> for field type info
         if (std.mem.indexOf(u8, content, "<type>")) |ts| {
             const t_start = ts + 6; // "<type>".len
@@ -450,6 +511,35 @@ fn collectFieldDefaults(
                 if (!ft_gop.found_existing) ft_gop.value_ptr.* = .empty;
                 ft_gop.value_ptr.put(alloc, fk, ft) catch {};
             }
+        }
+
+        if (std.mem.indexOf(u8, content, "<referenceTo>")) |rs| {
+            const r_start = rs + "<referenceTo>".len;
+            if (std.mem.indexOfPos(u8, content, r_start, "</referenceTo>")) |re| {
+                metadata.reference_to = alloc.dupe(u8, std.mem.trim(u8, content[r_start..re], " \t\n\r")) catch null;
+                if (std.mem.indexOf(u8, content, "<relationshipName>")) |ns| {
+                    const n_start = ns + "<relationshipName>".len;
+                    if (std.mem.indexOfPos(u8, content, n_start, "</relationshipName>")) |ne| {
+                        const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
+                        const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
+                        putChildRelationship(alloc, child_relationships, parent_type, relationship_name, type_name, field_name) catch {};
+                        if (!std.mem.endsWith(u8, relationship_name, "__r")) {
+                            const rel_with_suffix = std.fmt.allocPrint(alloc, "{s}__r", .{relationship_name}) catch "";
+                            if (rel_with_suffix.len > 0) {
+                                putChildRelationship(alloc, child_relationships, parent_type, rel_with_suffix, type_name, field_name) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (metadata.is_unique or metadata.is_external_id or metadata.is_required or metadata.length != null or metadata.reference_to != null) {
+            const type_key = alloc.dupe(u8, type_name) catch continue;
+            const field_key = alloc.dupe(u8, field_name) catch continue;
+            const meta_gop = field_metadata.getOrPut(alloc, type_key) catch continue;
+            if (!meta_gop.found_existing) meta_gop.value_ptr.* = .empty;
+            meta_gop.value_ptr.put(alloc, field_key, metadata) catch {};
         }
 
         // Extract <defaultValue>...</defaultValue>
@@ -484,6 +574,23 @@ fn collectFieldDefaults(
     }
 }
 
+fn putChildRelationship(
+    alloc: std.mem.Allocator,
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+    parent_type: []const u8,
+    relationship_name: []const u8,
+    child_type: []const u8,
+    fk_field: []const u8,
+) !void {
+    const raw_key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parent_type, relationship_name });
+    const key = try alloc.alloc(u8, raw_key.len);
+    _ = std.ascii.lowerString(key, raw_key);
+    try child_relationships.put(alloc, key, .{
+        .child_type = try alloc.dupe(u8, child_type),
+        .fk_field = try alloc.dupe(u8, fk_field),
+    });
+}
+
 /// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名を集める。
 /// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
 fn collectCustomSettingTypes(
@@ -506,6 +613,106 @@ fn collectCustomSettingTypes(
         if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
         const type_key = alloc.dupe(u8, type_name) catch continue;
         custom_setting_types.put(alloc, type_key, {}) catch {};
+    }
+}
+
+fn splitNamespacedMetadataName(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+    if (std.mem.indexOf(u8, name, "__")) |idx| {
+        return .{
+            .namespace = name[0..idx],
+            .local_name = name[idx + 2 ..],
+        };
+    }
+    return .{ .namespace = "", .local_name = name };
+}
+
+/// fieldSet-meta.xml を走査し field set metadata を読み込む。
+/// パス構造: .../objects/TypeName__c/fieldSets/FieldSetName.fieldSet-meta.xml
+fn collectFieldSets(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    field_sets: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata)),
+) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) continue;
+
+        const entry_path = entry.path;
+        const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+            std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
+        const after_objects = entry_path[objects_idx + 8 ..];
+        const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
+        const type_name = after_objects[0..sep_idx];
+
+        const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
+        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 128 * 1024) catch continue;
+
+        var full_name: []const u8 = entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
+        if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
+            const start = start_idx + "<fullName>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</fullName>")) |end_idx| {
+                full_name = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+            }
+        }
+
+        var label: []const u8 = full_name;
+        if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
+            const start = start_idx + "<label>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</label>")) |end_idx| {
+                label = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+            }
+        }
+
+        var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+            const block_start = block_start_idx + "<displayedFields>".len;
+            const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
+            const block = content[block_start..block_end];
+
+            const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
+                search_start = block_end + "</displayedFields>".len;
+                continue;
+            };
+            const field_start = field_start_idx + "<field>".len;
+            const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
+                search_start = block_end + "</displayedFields>".len;
+                continue;
+            };
+            const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
+
+            var is_required = false;
+            if (std.mem.indexOf(u8, block, "<isRequired>")) |req_idx| {
+                const req_start = req_idx + "<isRequired>".len;
+                if (std.mem.indexOfPos(u8, block, req_start, "</isRequired>")) |req_end| {
+                    const value = std.mem.trim(u8, block[req_start..req_end], " \t\r\n");
+                    is_required = std.ascii.eqlIgnoreCase(value, "true");
+                }
+            }
+
+            try members.append(alloc, .{
+                .field_path = try alloc.dupe(u8, field_path),
+                .is_required = is_required,
+            });
+            search_start = block_end + "</displayedFields>".len;
+        }
+
+        const names = splitNamespacedMetadataName(full_name);
+        const type_key = alloc.dupe(u8, type_name) catch continue;
+        const field_set_key = alloc.dupe(u8, full_name) catch continue;
+        const gop = field_sets.getOrPut(alloc, type_key) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        gop.value_ptr.put(alloc, field_set_key, .{
+            .name = alloc.dupe(u8, names.local_name) catch continue,
+            .qualified_name = field_set_key,
+            .label = alloc.dupe(u8, label) catch continue,
+            .namespace = alloc.dupe(u8, names.namespace) catch continue,
+            .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch continue,
+        }) catch {};
     }
 }
 
@@ -905,6 +1112,258 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
+test "E2E: Cache.Partition isAvailable returns true for existing org partition" {
+    const source =
+        \\public class CacheAvailabilityTest {
+        \\    public static String test() {
+        \\        Cache.OrgPartition p = Cache.Org.getPartition('LoggerCache');
+        \\        p.put('myKey', 'myValue');
+        \\        return String.valueOf(p.isAvailable()) + ':' + String.valueOf(p.contains('myKey'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CacheAvailabilityTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Flow metadata stubs support IN bind variables" {
+    const source =
+        \\public class FlowMetadataQueryTest {
+        \\    public static String test() {
+        \\        List<String> flowApiNames = new List<String>{ 'MockLogBatchPurgerPlugin' };
+        \\        List<Schema.FlowDefinitionView> defs = [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\        List<String> activeVersionIds = new List<String>{ defs.get(0).ActiveVersionId };
+        \\        List<Schema.FlowVersionView> vers = [
+        \\            SELECT DurableId, FlowDefinitionViewId
+        \\            FROM FlowVersionView
+        \\            WHERE DurableId IN :activeVersionIds
+        \\        ];
+        \\        return defs.get(0).ApiName + ':' +
+        \\            String.valueOf(vers.get(0).FlowDefinitionViewId == defs.get(0).DurableId) + ':' +
+        \\            String.valueOf(vers.get(0).DurableId == defs.get(0).ActiveVersionId);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowMetadataQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("MockLogBatchPurgerPlugin:true:true", result.value.string);
+}
+
+test "E2E: metadata stubs resolve static bind variables" {
+    const source =
+        \\public class StaticFlowBindTest {
+        \\    private static final String FLOW_API_NAME = 'LogEntryHandler_Tests_Flow';
+        \\    public static String test() {
+        \\        Schema.FlowDefinitionView def = [
+        \\            SELECT ApiName
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName = :FLOW_API_NAME AND IsActive = TRUE
+        \\        ];
+        \\        return def.ApiName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticFlowBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("LogEntryHandler_Tests_Flow", result.value.string);
+}
+
+test "E2E: FlowDefinitionView stub query works through helper method reuse" {
+    const source =
+        \\public class FlowSelector {
+        \\    public static List<Schema.FlowDefinitionView> getDefs(List<String> flowApiNames) {
+        \\        return [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\    }
+        \\}
+        \\
+        \\public class FlowSelectorTest {
+        \\    public static String test() {
+        \\        List<String> flowApiNames = new List<String>{ 'MockLogBatchPurgerPlugin' };
+        \\        List<Schema.FlowDefinitionView> directResults = [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\        List<Schema.FlowDefinitionView> helperResults = FlowSelector.getDefs(flowApiNames);
+        \\        return String.valueOf(directResults.size()) + ':' + String.valueOf(helperResults.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowSelectorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Flow.Interview plugin mock exposes input and output variables" {
+    const source =
+        \\public class FlowInterviewTest {
+        \\    public static String test() {
+        \\        Map<String, Object> inputs = new Map<String, Object>();
+        \\        inputs.put('pluginConfiguration', 'cfg');
+        \\        inputs.put('pluginInput', 'input');
+        \\        Flow.Interview interview = Flow.Interview.createInterview('MockLogBatchPurgerPlugin', inputs);
+        \\        interview.start();
+        \\        return (String) interview.getVariableValue('pluginConfiguration') + ':' +
+        \\            (String) interview.getVariableValue('pluginInput') + ':' +
+        \\            (String) interview.getVariableValue('someExampleVariable');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowInterviewTest",
+        .entry_method = "test",
+        .source_paths = &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("cfg:input:Hello, world", result.value.string);
+}
+
+test "E2E: FeatureManagement.checkPermission honors assigned custom permissions in runAs" {
+    const source =
+        \\public class FeaturePermissionTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'perm@example.com', Email = 'perm@example.com', Alias = 'pusr');
+        \\        insert u;
+        \\        PermissionSet ps = new PermissionSet(Name = 'CustomPermissionEnabled', Label = 'Custom Permission Enabled');
+        \\        insert ps;
+        \\        SetupEntityAccess sea = new SetupEntityAccess(
+        \\            ParentId = ps.Id,
+        \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName = 'CanModifyLoggerSettings'].Id
+        \\        );
+        \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        insert new List<SObject>{ sea, psa };
+        \\        Boolean hasPermission = false;
+        \\        System.runAs(u) {
+        \\            hasPermission = System.FeatureManagement.checkPermission('CanModifyLoggerSettings');
+        \\        }
+        \\        return hasPermission;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FeaturePermissionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: standard user custom object describe is not updateable by default" {
+    const source =
+        \\public class StandardUserCrudTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'crud@example.com', Email = 'crud@example.com', Alias = 'cusr');
+        \\        insert u;
+        \\        Boolean canUpdate = true;
+        \\        System.runAs(u) {
+        \\            canUpdate = Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable();
+        \\        }
+        \\        return canUpdate;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardUserCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(false, result.value.boolean);
+}
+
+test "E2E: schema-qualified standard user custom object describe is not updateable by default" {
+    const source =
+        \\public class SchemaQualifiedCrudTest {
+        \\    public static String test() {
+        \\        Schema.Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        Schema.User u = new Schema.User(ProfileId = p.Id, LastName = 'User', Username = 'schema-crud@example.com', Email = 'schema-crud@example.com', Alias = 'sqru');
+        \\        insert u;
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\                String.valueOf(System.FeatureManagement.checkPermission('CanModifyLoggerSettings'));
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaQualifiedCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false", result.value.string);
+}
+
+test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in runAs" {
+    const source =
+        \\public class ProfileInCrudTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\                String.valueOf(Schema.Log__c.SObjectType.getDescribe().isDeletable());
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ProfileInCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false", result.value.string);
+}
+
+test "E2E: standard user cannot access AccountBrand describe fields" {
+    const source =
+        \\public class AccountBrandAccessTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'accountbrand@example.com', Email = 'accountbrand@example.com', Alias = 'abrd');
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.AccountBrand.SObjectType.getDescribe().isAccessible()) + ':' +
+        \\                String.valueOf(Schema.AccountBrand.CompanyName.getDescribe().isAccessible()) + ':' +
+        \\                String.valueOf(Schema.AccountBrand.Name.getDescribe().isAccessible());
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AccountBrandAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false:false", result.value.string);
+}
+
 test "E2E: StaticResource IN clause returns multiple stubs" {
     // Multi-line SOQL like in apex-recipes
     const source =
@@ -952,6 +1411,96 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: super method dispatch uses parent implementation" {
+    const source =
+        \\public virtual class BaseCounter {
+        \\    public Integer count = 0;
+        \\    public virtual void run() {
+        \\        this.count++;
+        \\    }
+        \\}
+        \\public class ChildCounter extends BaseCounter {
+        \\    public override void run() {
+        \\        this.count++;
+        \\        super.run();
+        \\    }
+        \\}
+        \\public class SuperDispatchTest {
+        \\    public static String test() {
+        \\        ChildCounter c = new ChildCounter();
+        \\        c.run();
+        \\        return String.valueOf(c.count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SuperDispatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: enqueueJob executes instance queueable method" {
+    const source =
+        \\public class InstanceQueueable implements Queueable {
+        \\    public static String lastMessage;
+        \\    private String message;
+        \\    public InstanceQueueable(String message) {
+        \\        this.message = message;
+        \\    }
+        \\    public void execute(QueueableContext qc) {
+        \\        InstanceQueueable.lastMessage = this.message;
+        \\    }
+        \\}
+        \\public class InstanceQueueableTest {
+        \\    public static String test() {
+        \\        System.enqueueJob(new InstanceQueueable('queued'));
+        \\        return InstanceQueueable.lastMessage;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InstanceQueueableTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("queued", result.value.string);
+}
+
+test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
+    const source =
+        \\public class UpsertExternalIdTest {
+        \\    public static String test() {
+        \\        insert new Thing__c(UniqueId__c = 'u1', Name = 'Original');
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(UniqueId__c = 'u1', Name = 'Updated'),
+        \\            new Thing__c(UniqueId__c = 'u2', Name = 'Created')
+        \\        };
+        \\        List<Database.UpsertResult> results = Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Thing__c> saved = [SELECT UniqueId__c, Name FROM Thing__c];
+        \\        String existingName = null;
+        \\        for (Thing__c row : saved) {
+        \\            if (row.UniqueId__c == 'u1') {
+        \\                existingName = row.Name;
+        \\            }
+        \\        }
+        \\        return String.valueOf(results.get(0).isCreated()) + ':' +
+        \\            String.valueOf(results.get(1).isCreated()) + ':' +
+        \\            existingName + ':' +
+        \\            String.valueOf(saved.size()) + ':' +
+        \\            String.valueOf(Schema.Thing__c.UniqueId__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UpsertExternalIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:true:Updated:2:UniqueId__c", result.value.string);
 }
 
 test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
@@ -2643,6 +3192,138 @@ test "E2E: Custom metadata records loaded from .md-meta.xml files" {
     try std.testing.expectEqualStrings("Reservation_Status__c:Draft", result.value.string);
 }
 
+test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
+    const source =
+        \\public class DescribeFieldLocalNameTest {
+        \\    public class FieldSchema {
+        \\        public String localApiName;
+        \\    }
+        \\    public static String test() {
+        \\        Map<String, FieldSchema> fields = new Map<String, FieldSchema>();
+        \\        for (Schema.SObjectField field : Schema.User.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
+        \\            FieldSchema schema = new FieldSchema();
+        \\            schema.localApiName = fieldDescribe.getLocalName();
+        \\            fields.put(fieldDescribe.getLocalName(), schema);
+        \\        }
+        \\        return String.valueOf(fields.size()) + ':' + String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DescribeFieldLocalNameTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("6:true:Name", result.value.string);
+}
+
+test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Related_List_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>Name</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <displayedFields>
+        \\        <field>Status__c</field>
+        \\        <isRequired>true</isRequired>
+        \\    </displayedFields>
+        \\    <label>Related List Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldSetMetadataTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
+        \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
+        \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
+        \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
+        \\        List<Schema.FieldSetMember> members = fieldSet.getFields();
+        \\        return String.valueOf(byType.size()) + ':' +
+        \\            String.valueOf(describedFieldSet != null) + ':' +
+        \\            fieldSet.getLabel() + ':' +
+        \\            String.valueOf(members.size()) + ':' +
+        \\            members.get(0).getFieldPath() + ':' +
+        \\            members.get(0).getSObjectField().getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldSetMetadataTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
+}
+
+test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Related_List_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>Name</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <label>Related List Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ThingPicklist extends VisualEditor.DynamicPickList {
+        \\    public override VisualEditor.DataRow getDefaultValue() {
+        \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c.fieldSets.getMap().get('Related_List_Defaults');
+        \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName());
+        \\    }
+        \\    public override VisualEditor.DynamicPickListRows getValues() {
+        \\        VisualEditor.DynamicPickListRows rows = new VisualEditor.DynamicPickListRows();
+        \\        for (Schema.FieldSet fieldSet : Schema.SObjectType.Thing__c.fieldSets.getMap().values()) {
+        \\            rows.addRow(new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName()));
+        \\        }
+        \\        return rows;
+        \\    }
+        \\}
+        \\public class ThingPicklistTest {
+        \\    public static String test() {
+        \\        ThingPicklist picklist = new ThingPicklist();
+        \\        VisualEditor.DataRow row = picklist.getDefaultValue();
+        \\        List<VisualEditor.DataRow> rows = picklist.getValues().getDataRows();
+        \\        return (String) row.getLabel() + ':' + String.valueOf(rows.size()) + ':' + (String) rows.get(0).getValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "ThingPicklistTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
+}
+
 test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {
     // テストごとに新しい evaluator を作り、テストアリーナを reset(.retain_capacity) する。
     // テストアリーナの容量が線形に増加しないことを検証する。
@@ -2757,6 +3438,64 @@ test "E2E: Database.insert empty list does not increment getDmlStatements" {
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
+test "E2E: Database DmlOptions allOrNone false returns partial save results" {
+    const source =
+        \\public class DatabaseDmlOptionsTest {
+        \\    public static String test() {
+        \\        Account existing = new Account(Name = 'Existing');
+        \\        insert existing;
+        \\
+        \\        List<Account> insertRows = new List<Account>{
+        \\            new Account(Name = 'Fresh'),
+        \\            existing
+        \\        };
+        \\        Database.DmlOptions insertOptions = new Database.DmlOptions();
+        \\        insertOptions.OptAllOrNone = false;
+        \\        List<Database.SaveResult> insertResults = Database.insert(insertRows, insertOptions);
+        \\
+        \\        List<Account> updateRows = new List<Account>{
+        \\            new Account(Id = existing.Id, Name = 'Updated'),
+        \\            new Account(Name = 'Missing Id')
+        \\        };
+        \\        Database.DmlOptions updateOptions = new Database.DmlOptions();
+        \\        updateOptions.OptAllOrNone = false;
+        \\        List<Database.SaveResult> updateResults = Database.update(updateRows, updateOptions);
+        \\
+        \\        return String.valueOf(insertResults[0].isSuccess()) + ':' +
+        \\            String.valueOf(insertResults[1].isSuccess()) + ':' +
+        \\            String.valueOf(updateResults[0].isSuccess()) + ':' +
+        \\            String.valueOf(updateResults[1].isSuccess());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseDmlOptionsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:false:true:false", result.value.string);
+}
+
+test "E2E: Database partial DML with null list returns empty results" {
+    const source =
+        \\public class DatabaseNullListDmlTest {
+        \\    public static String test() {
+        \\        List<Account> rows = null;
+        \\        Database.DmlOptions options = new Database.DmlOptions();
+        \\        options.OptAllOrNone = false;
+        \\        List<Database.SaveResult> results = Database.insert(rows, options);
+        \\        return String.valueOf(results.size()) + ':' + String.valueOf(Limits.getDmlStatements());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseNullListDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:0", result.value.string);
+}
+
 test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
     const source =
         \\public class TypeForNameSObjectTest {
@@ -2773,6 +3512,648 @@ test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Account", result.value.string);
+}
+
+test "E2E: NebulaLogger flow definition view selector test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogManagementDataSelector_Tests_Flow",
+        "it_returns_matching_flow_definition_view_for_specified_flow_api_name",
+        out.writer(std.testing.allocator),
+    );
+
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger cached organization selector test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LoggerEngineDataSelector_Tests",
+        "it_returns_cached_organization",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: sobject put rejects incompatible datetime string" {
+    const source =
+        \\public class InvalidDatetimePutProbe {
+        \\    public static Boolean test() {
+        \\        LogEntry__c logEntry = new LogEntry__c();
+        \\        try {
+        \\            logEntry.put('Timestamp__c', 'Some value');
+        \\            return false;
+        \\        } catch (System.Exception ex) {
+        \\            return true;
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidDatetimePutProbe",
+        .entry_method = "test",
+        .source_paths = &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: NebulaLogger field mapping integration test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventHandler_Tests_FieldMappings",
+        "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry_when_mappings_have_been_configured",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger transaction limits builder test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_transaction_limits_fields_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger auth session builder test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_authSession_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger organization builder test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_organization_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger user builder test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_user_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: custom object query by Name IN set finds existing record" {
+    const source =
+        \\public class NameInSetQueryProbe {
+        \\    public static String test() {
+        \\        insert new Thing__c(Name = 'Some tag!', UniqueId__c = 'Some tag!');
+        \\        Set<String> names = new Set<String>{ 'Some tag!' };
+        \\        List<Thing__c> rows = [SELECT Id, Name FROM Thing__c WHERE Name IN :names];
+        \\        return String.valueOf(rows.size()) + ':' + (rows.isEmpty() ? '' : rows.get(0).Name);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NameInSetQueryProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Some tag!", result.value.string);
+}
+
+test "E2E: custom object upsert by external id updates existing record" {
+    const source =
+        \\public class ExternalIdUpsertProbe {
+        \\    public static String test() {
+        \\        Thing__c firstRow = new Thing__c(Name = 'original', UniqueId__c = 'txn-1');
+        \\        Database.upsert(new List<SObject>{ firstRow }, Schema.Thing__c.UniqueId__c);
+        \\
+        \\        Thing__c secondRow = new Thing__c(Name = 'updated', UniqueId__c = 'txn-1');
+        \\        Database.upsert(new List<SObject>{ secondRow }, Schema.Thing__c.UniqueId__c);
+        \\
+        \\        List<Thing__c> rows = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'txn-1'];
+        \\        return String.valueOf(rows.size()) + ':' + rows.get(0).Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ExternalIdUpsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:updated", result.value.string);
+}
+
+test "E2E: NebulaLogger duplicate logger scenario test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LoggerScenarioHandler_Tests",
+        "it_should_not_allow_duplicate_scenario_to_be_inserted",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger tag creation test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventHandler_Tests",
+        "it_should_create_tag_records_when_tagging_is_enabled",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger tag reuse test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventHandler_Tests",
+        "it_should_reuse_existing_tag_records",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger log entry upsert-by-event-uuid test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventHandler_Tests",
+        "it_should_upsert_log_entries_when_event_uuid_is_populated",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: custom object upsert by external id inserts queryable row" {
+    const source =
+        \\public class ExternalIdInsertProbe {
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'Created', UniqueId__c = 'created-1')
+        \\        };
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'created-1'];
+        \\        return String.valueOf(saved.size()) + ':' + String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ExternalIdInsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:Created", result.value.string);
+}
+
+test "E2E: switch on newSObject matches custom object type-binding clause" {
+    const source =
+        \\public class SwitchOnNewSObjectProbe {
+        \\    public static String test() {
+        \\        switch on Schema.Thing__c.SObjectType.newSObject() {
+        \\            when Thing__c row {
+        \\                return 'custom';
+        \\            }
+        \\            when else {
+        \\                return 'else';
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SwitchOnNewSObjectProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("custom", result.value.string);
+}
+
+test "E2E: List constructor preserves SObjects from Set" {
+    const source =
+        \\public class SetToListProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Acme');
+        \\        Set<SObject> rows = new Set<SObject>();
+        \\        rows.add(account);
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        return copied.size() + ':' + copied.get(0).getSObjectType();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SetToListProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Account", result.value.string);
+}
+
+test "E2E: Set<SObject> keeps distinct unsaved records by field values" {
+    const source =
+        \\public class DistinctUnsavedSetProbe {
+        \\    public static String test() {
+        \\        Set<SObject> rows = new Set<SObject>();
+        \\        rows.add(new Thing__c(Name = 'first', UniqueId__c = 'u1'));
+        \\        rows.add(new Thing__c(Name = 'second', UniqueId__c = 'u2'));
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(copied.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DistinctUnsavedSetProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:2", result.value.string);
+}
+
+test "E2E: inner database gateway upsert writes Ids back to original rows" {
+    const source =
+        \\public class DataGateway {
+        \\    private static Database databaseInstance = new Database();
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\            return System.Database.upsert(records, externalIdField);
+        \\        }
+        \\    }
+        \\}
+        \\public class DataGatewayUpsertProbe {
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        DataGateway.getDatabase().upsertRecords(copied, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DataGatewayUpsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("DataGatewayUpsertProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call" {
+    const source =
+        \\public class TypedGatewayProbe {
+        \\    private static Database databaseInstance = new Database();
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\            return System.Database.upsert(records, externalIdField);
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
+        \\        getDatabase().upsertRecords(rows, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypedGatewayProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: List<SObject> copy preserves SObject identity for DML" {
+    const source =
+        \\public class ListIdentityProbe {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{ new Account(Name = 'Acme') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        insert copied;
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ListIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "001")) {
+        std.debug.print("ListIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "001"));
+}
+
+test "E2E: Database.upsert list writes Id back to original row" {
+    const source =
+        \\public class DatabaseUpsertListIdentityProbe {
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseUpsertListIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("DatabaseUpsertListIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: wrapper method preserves list element identity for Database.upsert" {
+    const source =
+        \\public class WrapperIdentityProbe {
+        \\    public static void save(List<SObject> rows) {
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\    }
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        save(copied);
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "WrapperIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("WrapperIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: inner class named Database can call System.Database.upsert" {
+    const source =
+        \\public class InnerDatabaseProbe {
+        \\    public class Database {
+        \\        public static void save(List<SObject> rows) {
+        \\            System.Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        Database.save(rows);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerDatabaseProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("InnerDatabaseProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: NebulaLogger anonymous-mode-disabled user fields test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_user_fields_when_anonymous_mode_disabled",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger template standard object recordId test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_recordId_when_template_standard_object",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger custom object recordId test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_recordId_when_custom_object",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger null record overload test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_record_when_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger null list overload test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_list_of_records_when_list_is_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger null map overload test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_map_of_sobject_records_when_map_is_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: NebulaLogger null iterable overload test passes" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/NebulaLogger/nebula-logger/"},
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_iterable_ids_when_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
 
 test "E2E: Type.forName custom object __e returns sobject with put/get" {

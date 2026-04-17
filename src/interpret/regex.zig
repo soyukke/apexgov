@@ -330,7 +330,7 @@ fn matchAt(
         const quant = parseQuantifier(after_atom);
         const rest_start = pp + atom_len + quant.len;
 
-        // Greedy マッチ
+        // Quantified atom match
         var count: usize = 0;
         var positions: [1001]usize = undefined;
         positions[0] = ip;
@@ -340,16 +340,24 @@ fn matchAt(
             count += 1;
             if (count < positions.len) positions[count] = ip;
         }
-        // バックトラック（max → min）
-        var try_count = count;
-        while (true) {
-            if (try_count >= quant.min) {
+        if (quant.greedy) {
+            var try_count = count;
+            while (true) {
+                if (try_count >= quant.min) {
+                    const try_ip = positions[@min(try_count, positions.len - 1)];
+                    if (rest_start >= pat.len) return try_ip;
+                    if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+                }
+                if (try_count == 0) break;
+                try_count -= 1;
+            }
+        } else {
+            var try_count = quant.min;
+            while (try_count <= count) : (try_count += 1) {
                 const try_ip = positions[@min(try_count, positions.len - 1)];
                 if (rest_start >= pat.len) return try_ip;
                 if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
             }
-            if (try_count == 0) break;
-            try_count -= 1;
         }
         return null;
     }
@@ -463,20 +471,45 @@ fn charClassMatches(pat: []const u8, pp: usize, c: u8) bool {
 // 量詞パーサー
 // ---------------------------------------------------------------------------
 
-const Quantifier = struct { min: usize, max: usize, len: usize };
+const Quantifier = struct {
+    min: usize,
+    max: usize,
+    len: usize,
+    greedy: bool = true,
+};
 
 fn parseQuantifier(after: []const u8) Quantifier {
     if (after.len == 0) return .{ .min = 1, .max = 1, .len = 0 };
-    if (after[0] == '*') return .{ .min = 0, .max = 1000, .len = 1 };
-    if (after[0] == '+') return .{ .min = 1, .max = 1000, .len = 1 };
-    if (after[0] == '?') return .{ .min = 0, .max = 1, .len = 1 };
+    if (after[0] == '*') return .{
+        .min = 0,
+        .max = 1000,
+        .len = if (after.len > 1 and after[1] == '?') 2 else 1,
+        .greedy = !(after.len > 1 and after[1] == '?'),
+    };
+    if (after[0] == '+') return .{
+        .min = 1,
+        .max = 1000,
+        .len = if (after.len > 1 and after[1] == '?') 2 else 1,
+        .greedy = !(after.len > 1 and after[1] == '?'),
+    };
+    if (after[0] == '?') return .{
+        .min = 0,
+        .max = 1,
+        .len = if (after.len > 1 and after[1] == '?') 2 else 1,
+        .greedy = !(after.len > 1 and after[1] == '?'),
+    };
     if (after[0] == '{') {
         var i: usize = 1;
         var n1: usize = 0;
         while (i < after.len and std.ascii.isDigit(after[i])) : (i += 1) {
             n1 = n1 * 10 + (after[i] - '0');
         }
-        if (i < after.len and after[i] == '}') return .{ .min = n1, .max = n1, .len = i + 1 };
+        if (i < after.len and after[i] == '}') return .{
+            .min = n1,
+            .max = n1,
+            .len = if (i + 1 < after.len and after[i + 1] == '?') i + 2 else i + 1,
+            .greedy = !(i + 1 < after.len and after[i + 1] == '?'),
+        };
         if (i < after.len and after[i] == ',') {
             i += 1;
             var n2: usize = 1000;
@@ -486,7 +519,12 @@ fn parseQuantifier(after: []const u8) Quantifier {
                     n2 = n2 * 10 + (after[i] - '0');
                 }
             }
-            if (i < after.len and after[i] == '}') return .{ .min = n1, .max = n2, .len = i + 1 };
+            if (i < after.len and after[i] == '}') return .{
+                .min = n1,
+                .max = n2,
+                .len = if (i + 1 < after.len and after[i + 1] == '?') i + 2 else i + 1,
+                .greedy = !(i + 1 < after.len and after[i + 1] == '?'),
+            };
         }
     }
     return .{ .min = 1, .max = 1, .len = 0 };
@@ -562,16 +600,36 @@ fn matchQuantifiedGroup(
             if (rep_count < reps.len) reps[rep_count] = ip;
         } else break;
     }
-    var try_reps = rep_count;
-    while (true) {
-        if (try_reps >= quant.min) {
+    if (quant.greedy) {
+        var try_reps = rep_count;
+        while (true) {
+            if (try_reps >= quant.min) {
+                const try_ip = reps[@min(try_reps, reps.len - 1)];
+                if (grp_idx > 0) {
+                    groups.*[grp_idx] = if (try_reps > 0)
+                        .{ .start = reps[try_reps - 1], .end = try_ip }
+                    else
+                        null;
+                }
+                if (rest_start >= pat.len) return try_ip;
+                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+            }
+            if (try_reps == 0) break;
+            try_reps -= 1;
+        }
+    } else {
+        var try_reps = quant.min;
+        while (try_reps <= rep_count) : (try_reps += 1) {
             const try_ip = reps[@min(try_reps, reps.len - 1)];
-            if (try_reps > 0) groups.*[grp_idx] = .{ .start = reps[try_reps - 1], .end = try_ip };
+            if (grp_idx > 0) {
+                groups.*[grp_idx] = if (try_reps > 0)
+                    .{ .start = reps[try_reps - 1], .end = try_ip }
+                else
+                    null;
+            }
             if (rest_start >= pat.len) return try_ip;
             if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
         }
-        if (try_reps == 0) break;
-        try_reps -= 1;
     }
     return null;
 }
@@ -664,6 +722,22 @@ test "replaceAll with backreferences" {
     try std.testing.expectEqualStrings("XXX-XX-1234", try replaceAll(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"));
     // No match → return original
     try std.testing.expectEqualStrings("hello", try replaceAll(a, "\\d+", "hello", "NUM"));
+}
+
+test "replaceAll supports non-greedy quantifiers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("x<>b<>c", try replaceAll(a, "a.+?z", "xa123zba456zc", "<>"));
+    try std.testing.expectEqualStrings(
+        "\nClass.CallableLogger_Tests.test: line 10, column 1",
+        try replaceAll(
+            a,
+            "(Class\\.Logger)\\..+?column 1",
+            "Class.Logger.newEntry: line 2, column 1\nClass.CallableLogger_Tests.test: line 10, column 1",
+            "",
+        ),
+    );
 }
 
 test "javadoc @see pattern" {

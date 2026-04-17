@@ -68,7 +68,7 @@ pub const MapValue = struct {
 };
 
 pub const SetValue = struct {
-    entries: std.StringArrayHashMapUnmanaged(void) = .empty,
+    entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
 };
 
 pub const ObjectInstance = struct {
