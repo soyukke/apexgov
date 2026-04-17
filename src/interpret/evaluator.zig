@@ -9666,6 +9666,8 @@ pub const Evaluator = struct {
             ql.* = .{ .class_name = "Database.QueryLocator" };
             if (args.len > 0 and args[0] == .string) {
                 try ql.fields.put(self.arena, "query", args[0]);
+            } else if (args.len > 0 and args[0] == .list) {
+                try ql.fields.put(self.arena, "records", args[0]);
             }
             return Value{ .object = ql };
         }
@@ -9709,14 +9711,29 @@ pub const Evaluator = struct {
                     const scope = self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val}) catch Value.null_val;
                     // Use QueryLocator's query to get the correct records
                     var all_records: std.ArrayListUnmanaged(Value) = .empty;
-                    if (scope == .object and scope.object.fields.get("query") != null) {
-                        const query_val = scope.object.fields.get("query").?;
-                        if (query_val == .string) {
-                            // Execute the SOQL query to get records
-                            const batch_env = try self.global_env.child();
-                            const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
-                            if (query_result == .list) {
-                                for (query_result.list.items.items) |item| {
+                    if (scope == .object) {
+                        if (scope.object.fields.get("query")) |query_val| {
+                            if (query_val == .string) {
+                                // Execute the SOQL query to get records
+                                const batch_env = try self.global_env.child();
+                                const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
+                                if (query_result == .list) {
+                                    for (query_result.list.items.items) |item| {
+                                        try all_records.append(self.arena, item);
+                                    }
+                                }
+                            }
+                        } else if (scope.object.fields.get("records")) |records_val| {
+                            if (records_val == .list) {
+                                for (records_val.list.items.items) |item| {
+                                    try all_records.append(self.arena, item);
+                                }
+                            }
+                        } else {
+                            // Fallback: get all records from store
+                            var store_iter = self.store.iterator();
+                            while (store_iter.next()) |entry| {
+                                for (entry.value_ptr.items) |item| {
                                     try all_records.append(self.arena, item);
                                 }
                             }

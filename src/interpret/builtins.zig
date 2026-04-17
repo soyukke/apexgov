@@ -2558,6 +2558,17 @@ fn dispatchObjStandardSetController(ctx: *BuiltinContext, obj: *types.ObjectInst
             break :blk Value{ .list = empty };
         };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "setSelected") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "selected", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSelected")) {
+        return obj.fields.get("selected") orelse blk: {
+            const empty = try ctx.arena.create(types.ListValue);
+            empty.* = .{};
+            break :blk Value{ .list = empty };
+        };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getResultSize")) {
         if (obj.fields.get("records")) |recs| {
             if (recs == .list) return Value{ .integer = @intCast(recs.list.items.items.len) };

@@ -3476,6 +3476,29 @@ test "E2E: Salesforce-style id strings satisfy instanceof Id" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: StandardSetController preserves selected records" {
+    const source =
+        \\public class StandardSetControllerSelectionTest {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Name = 'A'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        ApexPages.StandardSetController controller = new ApexPages.StandardSetController(rows);
+        \\        controller.setSelected(new List<Account>{ rows[1] });
+        \\        List<Account> selected = (List<Account>) controller.getSelected();
+        \\        return String.valueOf(selected.size()) + ':' + selected[0].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardSetControllerSelectionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:B", result.value.string);
+}
+
 test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
     const source =
         \\public class IdValueOfTest {
@@ -3490,6 +3513,37 @@ test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("005000000000000", result.value.string);
+}
+
+test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
+    const source =
+        \\global class QueryLocatorScopeBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([SELECT Id FROM Account WHERE Name = 'Keep']);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed = scope.size();
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class QueryLocatorScopeBatchTest {
+        \\    public static Integer test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'Keep'),
+        \\            new Account(Name = 'Skip')
+        \\        };
+        \\        Database.executeBatch(new QueryLocatorScopeBatch());
+        \\        return QueryLocatorScopeBatch.processed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QueryLocatorScopeBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
 test "E2E: Database DmlOptions allOrNone false returns partial save results" {
