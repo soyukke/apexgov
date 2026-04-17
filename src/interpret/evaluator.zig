@@ -5646,7 +5646,11 @@ pub const Evaluator = struct {
                 if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
                 if (val == .set) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Set") };
                 if (val == .string) {
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "String") };
+                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
+                        return Value{ .boolean = isSalesforceIdString(val.string) };
+                    }
+                    return Value{ .boolean = false };
                 }
                 if (val == .integer) {
                     return Value{ .boolean = instanceofMatchesNumericType(ie.type_name.name) };
@@ -8831,11 +8835,22 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(tn, "Number");
     }
 
+    fn isSalesforceIdString(value: []const u8) bool {
+        if (value.len != 15 and value.len != 18) return false;
+        for (value) |ch| {
+            if (!std.ascii.isAlphanumeric(ch)) return false;
+        }
+        return true;
+    }
+
     /// instanceof チェック: Value がプリミティブ型名にマッチするか。
     fn instanceofMatchesPrimitive(val: Value, tn: []const u8) bool {
         if (val == .integer or val == .double) return instanceofMatchesNumericType(tn);
         if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
-        if (val == .string) return std.ascii.eqlIgnoreCase(tn, "String");
+        if (val == .string) {
+            return std.ascii.eqlIgnoreCase(tn, "String") or
+                (std.ascii.eqlIgnoreCase(tn, "Id") and Evaluator.isSalesforceIdString(val.string));
+        }
         if (val == .sobject) return std.ascii.eqlIgnoreCase(tn, "SObject") or std.ascii.eqlIgnoreCase(tn, "Sobject") or std.ascii.eqlIgnoreCase(tn, "sObject");
         if (val == .object) {
             const cn = val.object.class_name;
@@ -9294,6 +9309,8 @@ pub const Evaluator = struct {
         switch (target) {
             .null_val, .void_val => return self.createEmptyResultListValue(),
             .sobject => {
+                self.limits_dml += 1;
+                self.limits_dml_rows += 1;
                 return switch (op) {
                     .insert => blk: {
                         try self.executeDmlWithExternalIdInternal(.insert, target, null, false);
@@ -11535,7 +11552,8 @@ pub const Evaluator = struct {
 /// メソッドオーバーロード解決用: 引数の Value とパラメータ型名のスコア計算。
 fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
     if (arg == .string) {
-        if (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Id")) return if (Evaluator.isSalesforceIdString(arg.string)) 3 else 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         // Date/DateTime-like strings should match Date/DateTime params
         if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.isDateOnlyFormatString(arg.string)) return 2;

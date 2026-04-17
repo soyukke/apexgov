@@ -107,6 +107,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(class_name, "System")) return dispatchStaticSystem(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "String")) return dispatchStaticString(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Id")) return dispatchStaticId(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Integer")) return dispatchStaticInteger(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Long")) return dispatchStaticLong(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatchStaticBoolean(method_name, args);
@@ -333,6 +334,26 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
             if (args[0] == .string) return Value{ .boolean = args[0].string.len > 0 };
         }
         return Value{ .boolean = false };
+    }
+    return null;
+}
+
+fn isSalesforceIdString(value: []const u8) bool {
+    if (value.len != 15 and value.len != 18) return false;
+    for (value) |ch| {
+        if (!std.ascii.isAlphanumeric(ch)) return false;
+    }
+    return true;
+}
+
+fn dispatchStaticId(_: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+        if (args.len == 0) return Value.null_val;
+        return switch (args[0]) {
+            .null_val => Value.null_val,
+            .string => |s| if (isSalesforceIdString(s)) Value{ .string = s } else Value{ .string = s },
+            else => Value.null_val,
+        };
     }
     return null;
 }

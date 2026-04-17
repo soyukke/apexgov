@@ -3438,6 +3438,60 @@ test "E2E: Database.insert empty list does not increment getDmlStatements" {
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
+test "E2E: Database.insert single record increments getDmlStatements" {
+    const source =
+        \\public class SingleDbDmlTest {
+        \\    public static String test() {
+        \\        Account row = new Account(Name = 'Inserted');
+        \\        Database.SaveResult result = Database.insert(row);
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf(Limits.getDmlStatements()) + ':' +
+        \\            String.valueOf(Limits.getDmlRows());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SingleDbDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:1:1", result.value.string);
+}
+
+test "E2E: Salesforce-style id strings satisfy instanceof Id" {
+    const source =
+        \\public class IdInstanceofTest {
+        \\    public static String test() {
+        \\        String userId = '005000000000000';
+        \\        String queueId = '00G000000000000005';
+        \\        return String.valueOf(userId instanceof Id) + ':' + String.valueOf(queueId instanceof Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IdInstanceofTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
+    const source =
+        \\public class IdValueOfTest {
+        \\    public static String test() {
+        \\        return String.valueOf(Id.valueOf('005000000000000'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IdValueOfTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("005000000000000", result.value.string);
+}
+
 test "E2E: Database DmlOptions allOrNone false returns partial save results" {
     const source =
         \\public class DatabaseDmlOptionsTest {
