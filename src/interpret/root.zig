@@ -157,12 +157,14 @@ fn runTestsFiltered(
     // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
     for (paths) |path| {
         collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types) catch {};
+        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types) catch {};
         // Walk parent directories to find sibling packages containing objects/
         var parent = std.fs.path.dirname(path);
         var depth: u8 = 0;
         while (parent != null and depth < 3) : (depth += 1) {
             const p = parent.?;
             collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types) catch {};
+            collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types) catch {};
             parent = std.fs.path.dirname(p);
         }
     }
@@ -251,6 +253,7 @@ fn runTestsFiltered(
                     test_eval.source_paths = eval.source_paths;
                     test_eval.field_defaults = eval.field_defaults;
                     test_eval.field_types = eval.field_types;
+                    test_eval.custom_setting_types = eval.custom_setting_types;
 
                     // Check for @isTest(SeeAllData=true) annotation
                     test_eval.see_all_data = false;
@@ -478,6 +481,31 @@ fn collectFieldDefaults(
             gop.value_ptr.* = .empty;
         }
         gop.value_ptr.put(alloc, field_key, value) catch continue;
+    }
+}
+
+/// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名を集める。
+/// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
+fn collectCustomSettingTypes(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
+) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".object-meta.xml")) continue;
+
+        const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 256 * 1024) catch continue;
+
+        if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
+        const type_key = alloc.dupe(u8, type_name) catch continue;
+        custom_setting_types.put(alloc, type_key, {}) catch {};
     }
 }
 

@@ -1535,9 +1535,9 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     // isCustom: objects ending with __c or __e are custom
     const is_custom = std.mem.endsWith(u8, obj_name, "__c") or std.mem.endsWith(u8, obj_name, "__e") or std.mem.endsWith(u8, obj_name, "__mdt");
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
-    // isCustomSetting: Hierarchy/List custom settings end with __c and have object-meta.xml with customSettingsType
-    // For simplicity, we check if field_defaults contain the type (indicating it's a custom setting with field metadata)
-    const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.field_defaults.get(obj_name) != null;
+    // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
+    // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
+    const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.custom_setting_types.get(obj_name) != null;
     try desc.fields.put(ctx.arena, "isCustomSetting", Value{ .boolean = is_custom_setting });
 
     // RecordTypeInfos: Every SObject has at least a Master RecordType.

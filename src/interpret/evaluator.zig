@@ -79,6 +79,8 @@ pub const Evaluator = struct {
     field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
     /// field-meta.xml から読み取ったフィールド型情報。field_types[TypeName][FieldName] = "DateTime" 等。
     field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
+    /// object-meta.xml で `<customSettingsType>` が指定されている Custom Setting オブジェクト名の集合。
+    custom_setting_types: std.StringArrayHashMapUnmanaged(void) = .empty,
     // System.Limits counters
     limits_dml: u32 = 0,
     limits_dml_rows: u32 = 0,
