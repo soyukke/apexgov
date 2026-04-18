@@ -126,6 +126,8 @@ pub const Evaluator = struct {
     child_relationships: std.StringArrayHashMapUnmanaged(CustomChildRelationship) = .empty,
     /// object-meta.xml で `<customSettingsType>` が指定されている Custom Setting オブジェクト名の集合。
     custom_setting_types: std.StringArrayHashMapUnmanaged(void) = .empty,
+    /// object-meta.xml で読み取った Custom Setting 種別。`Hierarchy` / `List` を保持する。
+    custom_setting_kinds: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// fieldSet-meta.xml から読み取った field set 情報。field_sets[TypeName][QualifiedFieldSetName] = metadata。
     field_sets: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldSetMetadata)) = .empty,
     // System.Limits counters
@@ -845,12 +847,16 @@ pub const Evaluator = struct {
             switch (member) {
                 .static_init => |body| {
                     const init_env = self.global_env.child() catch continue;
+                    var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+                    var original_values: std.ArrayListUnmanaged(Value) = .empty;
                     for (cd.members) |m2| {
                         switch (m2) {
                             .field_decl => |fd| {
                                 if (fd.modifiers.is_static) {
                                     const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
                                     const cur = self.global_env.get(key) orelse Value.null_val;
+                                    static_keys.append(self.arena, key) catch continue;
+                                    original_values.append(self.arena, cur) catch continue;
                                     init_env.define(fd.name, cur) catch {};
                                 }
                             },
@@ -858,16 +864,29 @@ pub const Evaluator = struct {
                         }
                     }
                     _ = self.execBlock(body, init_env) catch {};
+                    var static_index: usize = 0;
                     for (cd.members) |m2| {
                         switch (m2) {
                             .field_decl => |fd| {
                                 if (fd.modifiers.is_static) {
-                                    if (init_env.get(fd.name)) |v| {
-                                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                        self.global_env.set(key, v) catch {
-                                            self.global_env.define(key, v) catch {};
-                                        };
-                                    }
+                                    const key = if (static_index < static_keys.items.len)
+                                        static_keys.items[static_index]
+                                    else
+                                        std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                    const original_value = if (static_index < original_values.items.len)
+                                        original_values.items[static_index]
+                                    else
+                                        Value.null_val;
+                                    static_index += 1;
+                                    const local_value = init_env.get(fd.name) orelse Value.null_val;
+                                    const global_value = self.global_env.get(key) orelse Value.null_val;
+                                    const writeback_value = if (!utils.valueEql(local_value, original_value))
+                                        local_value
+                                    else
+                                        global_value;
+                                    self.global_env.set(key, writeback_value) catch {
+                                        self.global_env.define(key, writeback_value) catch {};
+                                    };
                                 }
                             },
                             else => {},
@@ -924,6 +943,8 @@ pub const Evaluator = struct {
                 switch (member) {
                     .static_init => |body| {
                         const init_env = self.global_env.child() catch continue;
+                        var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+                        var original_values: std.ArrayListUnmanaged(Value) = .empty;
                         // Define static fields as local variables
                         for (cd.members) |m2| {
                             switch (m2) {
@@ -931,6 +952,8 @@ pub const Evaluator = struct {
                                     if (fd.modifiers.is_static) {
                                         const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
                                         const cur = self.global_env.get(key) orelse Value.null_val;
+                                        static_keys.append(self.arena, key) catch continue;
+                                        original_values.append(self.arena, cur) catch continue;
                                         init_env.define(fd.name, cur) catch {};
                                     }
                                 },
@@ -939,16 +962,29 @@ pub const Evaluator = struct {
                         }
                         _ = self.execBlock(body, init_env) catch {};
                         // Write back static fields to global env
+                        var static_index: usize = 0;
                         for (cd.members) |m2| {
                             switch (m2) {
                                 .field_decl => |fd| {
                                     if (fd.modifiers.is_static) {
-                                        if (init_env.get(fd.name)) |v| {
-                                            const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                            self.global_env.set(key, v) catch {
-                                                self.global_env.define(key, v) catch {};
-                                            };
-                                        }
+                                        const key = if (static_index < static_keys.items.len)
+                                            static_keys.items[static_index]
+                                        else
+                                            std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                        const original_value = if (static_index < original_values.items.len)
+                                            original_values.items[static_index]
+                                        else
+                                            Value.null_val;
+                                        static_index += 1;
+                                        const local_value = init_env.get(fd.name) orelse Value.null_val;
+                                        const global_value = self.global_env.get(key) orelse Value.null_val;
+                                        const writeback_value = if (!utils.valueEql(local_value, original_value))
+                                            local_value
+                                        else
+                                            global_value;
+                                        self.global_env.set(key, writeback_value) catch {
+                                            self.global_env.define(key, writeback_value) catch {};
+                                        };
                                     }
                                 },
                                 else => {},
@@ -1097,49 +1133,8 @@ pub const Evaluator = struct {
             }
         }
 
-        // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
-        if (std.mem.endsWith(u8, class_name, "__c")) {
-            if (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults") or
-                std.ascii.eqlIgnoreCase(method_name, "getInstance"))
-            {
-                // Look for an existing record in the store
-                var cs_store_iter = self.store.iterator();
-                while (cs_store_iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                        if (entry.value_ptr.items.len > 0) {
-                            return entry.value_ptr.items[0];
-                        }
-                    }
-                }
-                // No record found → create SObject with field defaults from field-meta.xml
-                const sob = try self.arena.create(types.SObject);
-                sob.* = .{ .type_name = class_name };
-                if (self.field_defaults.get(class_name)) |defaults| {
-                    for (defaults.keys(), defaults.values()) |fk, fv| {
-                        try sob.fields.put(self.arena, fk, fv);
-                    }
-                }
-                return Value{ .sobject = sob };
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "getValues") and args.len > 0) {
-                // getValues(Id) — look up Custom Setting by SetupOwnerId
-                const lookup_id = if (args[0] == .string) args[0].string else "";
-                var cs_store_iter2 = self.store.iterator();
-                while (cs_store_iter2.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                        for (entry.value_ptr.items) |item| {
-                            if (item == .sobject) {
-                                if (utils.sobjectGet(&item.sobject.fields, "SetupOwnerId")) |owner_id| {
-                                    if (owner_id == .string and std.ascii.eqlIgnoreCase(owner_id.string, lookup_id)) {
-                                        return item;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                return Value.null_val;
-            }
+        if (try self.handleCustomSettingStaticMethod(class_name, method_name, args)) |result| {
+            return result;
         }
 
         // Database methods that need store access. Preserve user-defined classes named
@@ -5494,6 +5489,121 @@ pub const Evaluator = struct {
         return copy;
     }
 
+    fn defaultCustomSettingRecord(self: *Evaluator, class_name: []const u8, setup_owner_id: ?[]const u8) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = class_name };
+        if (self.field_defaults.get(class_name)) |defaults| {
+            for (defaults.keys(), defaults.values()) |fk, fv| {
+                try sob.fields.put(self.arena, fk, fv);
+            }
+        }
+        if (setup_owner_id) |owner_id| {
+            try sob.fields.put(self.arena, "SetupOwnerId", Value{ .string = owner_id });
+        }
+        return Value{ .sobject = sob };
+    }
+
+    fn cloneCustomSettingRecord(self: *Evaluator, record: *types.SObject, setup_owner_id: ?[]const u8, clear_id: bool) !Value {
+        const copy = try self.cloneSObject(record);
+        if (clear_id) {
+            copy.id = null;
+            try copy.fields.put(self.arena, "Id", Value.null_val);
+        }
+        if (setup_owner_id) |owner_id| {
+            try copy.fields.put(self.arena, "SetupOwnerId", Value{ .string = owner_id });
+        }
+        return Value{ .sobject = copy };
+    }
+
+    fn findCustomSettingRecord(self: *Evaluator, class_name: []const u8, owner_id: []const u8) ?*types.SObject {
+        var cs_iter = self.store.iterator();
+        while (cs_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item != .sobject) continue;
+                if (utils.sobjectGet(&item.sobject.fields, "SetupOwnerId")) |stored_owner| {
+                    if (stored_owner == .string and std.ascii.eqlIgnoreCase(stored_owner.string, owner_id)) {
+                        return item.sobject;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn firstCustomSettingRecord(self: *Evaluator, class_name: []const u8) ?*types.SObject {
+        var cs_iter = self.store.iterator();
+        while (cs_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item == .sobject) return item.sobject;
+            }
+        }
+        return null;
+    }
+
+    fn customSettingKind(self: *Evaluator, class_name: []const u8) ?[]const u8 {
+        if (self.custom_setting_kinds.get(class_name)) |kind| return kind;
+        if (self.custom_setting_types.get(class_name) != null) return "Hierarchy";
+        return null;
+    }
+
+    fn handleCustomSettingStaticMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+        if (!std.mem.endsWith(u8, class_name, "__c")) return null;
+
+        const kind = self.customSettingKind(class_name);
+        const is_hierarchy = kind != null and std.ascii.eqlIgnoreCase(kind.?, "Hierarchy");
+
+        if (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults")) {
+            if (is_hierarchy) {
+                if (self.findCustomSettingRecord(class_name, "00D000000000001")) |org_defaults| {
+                    return try self.cloneCustomSettingRecord(org_defaults, null, false);
+                }
+                return try self.defaultCustomSettingRecord(class_name, "00D000000000001");
+            }
+            if (self.firstCustomSettingRecord(class_name)) |record| {
+                return try self.cloneCustomSettingRecord(record, null, false);
+            }
+            return try self.defaultCustomSettingRecord(class_name, null);
+        }
+
+        if (std.ascii.eqlIgnoreCase(method_name, "getInstance")) {
+            if (is_hierarchy) {
+                const owner_id = if (args.len > 0 and args[0] == .string and args[0].string.len > 0)
+                    args[0].string
+                else
+                    self.current_user_id;
+                const profile_id = self.current_profile_id;
+                const org_id = "00D000000000001";
+
+                if (self.findCustomSettingRecord(class_name, owner_id)) |user_record| {
+                    return try self.cloneCustomSettingRecord(user_record, owner_id, false);
+                }
+                if (self.findCustomSettingRecord(class_name, profile_id)) |profile_record| {
+                    return try self.cloneCustomSettingRecord(profile_record, owner_id, true);
+                }
+                if (self.findCustomSettingRecord(class_name, org_id)) |org_defaults| {
+                    return try self.cloneCustomSettingRecord(org_defaults, owner_id, true);
+                }
+                return try self.defaultCustomSettingRecord(class_name, owner_id);
+            }
+
+            if (self.firstCustomSettingRecord(class_name)) |record| {
+                return try self.cloneCustomSettingRecord(record, null, false);
+            }
+            return try self.defaultCustomSettingRecord(class_name, null);
+        }
+
+        if (std.ascii.eqlIgnoreCase(method_name, "getValues") and args.len > 0 and args[0] == .string) {
+            if (self.findCustomSettingRecord(class_name, args[0].string)) |record| {
+                return try self.cloneCustomSettingRecord(record, null, false);
+            }
+            return Value.null_val;
+        }
+
+        return null;
+    }
+
     /// Find the type name of a record by its Id, searching all types in store.
     fn findRecordTypeById(self: *Evaluator, id: []const u8) ?[]const u8 {
         var store_iter = self.store.iterator();
@@ -6752,46 +6862,8 @@ pub const Evaluator = struct {
                 }
             }
 
-            // Custom Settings: SomeSettings__c.getOrgDefaults() / .getInstance() / .getValues(id)
-            if (std.mem.endsWith(u8, class_name, "__c")) {
-                if (std.ascii.eqlIgnoreCase(mc.method, "getOrgDefaults") or
-                    std.ascii.eqlIgnoreCase(mc.method, "getInstance"))
-                {
-                    var cs_iter3 = self.store.iterator();
-                    while (cs_iter3.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            if (entry.value_ptr.items.len > 0) {
-                                return entry.value_ptr.items[0];
-                            }
-                        }
-                    }
-                    const cs_sob3 = try self.arena.create(types.SObject);
-                    cs_sob3.* = .{ .type_name = class_name };
-                    if (self.field_defaults.get(class_name)) |defaults| {
-                        for (defaults.keys(), defaults.values()) |fk, fv| {
-                            try cs_sob3.fields.put(self.arena, fk, fv);
-                        }
-                    }
-                    return Value{ .sobject = cs_sob3 };
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "getValues") and args.items.len > 0) {
-                    const lookup_id = if (args.items[0] == .string) args.items[0].string else "";
-                    var cs_iter4 = self.store.iterator();
-                    while (cs_iter4.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            for (entry.value_ptr.items) |item| {
-                                if (item == .sobject) {
-                                    if (utils.sobjectGet(&item.sobject.fields, "SetupOwnerId")) |owner_id| {
-                                        if (owner_id == .string and std.ascii.eqlIgnoreCase(owner_id.string, lookup_id)) {
-                                            return item;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value.null_val;
-                }
+            if (try self.handleCustomSettingStaticMethod(class_name, mc.method, args.items)) |result| {
+                return result;
             }
 
             // User-defined class method (check before stubs/getSObjectType fallback)

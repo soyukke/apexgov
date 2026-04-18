@@ -54,6 +54,7 @@ pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
         for (opts.source_paths) |path| {
             collectFieldDefaults(arena.allocator(), path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
             collectFieldSets(arena.allocator(), path, &eval.field_sets) catch {};
+            collectCustomSettingTypes(arena.allocator(), path, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
         }
     }
     try eval.loadDecls(decls);
@@ -258,7 +259,7 @@ fn runTestsFiltered(
     for (paths) |path| {
         collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
         collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
-        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types) catch {};
+        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
         // Walk parent directories to find sibling packages containing objects/
         var parent = std.fs.path.dirname(path);
         var depth: u8 = 0;
@@ -266,7 +267,7 @@ fn runTestsFiltered(
             const p = parent.?;
             collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
             collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
-            collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types) catch {};
+            collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
             parent = std.fs.path.dirname(p);
         }
     }
@@ -359,6 +360,7 @@ fn runTestsFiltered(
                     test_eval.field_metadata = eval.field_metadata;
                     test_eval.child_relationships = eval.child_relationships;
                     test_eval.custom_setting_types = eval.custom_setting_types;
+                    test_eval.custom_setting_kinds = eval.custom_setting_kinds;
                     test_eval.field_sets = eval.field_sets;
 
                     // Check for @isTest(SeeAllData=true) annotation
@@ -740,12 +742,13 @@ fn putChildRelationship(
     });
 }
 
-/// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名を集める。
+/// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名と種別を集める。
 /// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
 fn collectCustomSettingTypes(
     alloc: std.mem.Allocator,
     path: []const u8,
     custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
+    custom_setting_kinds: *std.StringArrayHashMapUnmanaged([]const u8),
 ) !void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
     defer dir.close();
@@ -762,6 +765,17 @@ fn collectCustomSettingTypes(
         if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
         const type_key = alloc.dupe(u8, type_name) catch continue;
         custom_setting_types.put(alloc, type_key, {}) catch {};
+
+        var kind_value: []const u8 = "Hierarchy";
+        if (std.mem.indexOf(u8, content, "<customSettingsType>")) |start_idx| {
+            const start = start_idx + "<customSettingsType>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</customSettingsType>")) |end_idx| {
+                kind_value = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+            }
+        }
+        const kind_key = alloc.dupe(u8, type_name) catch continue;
+        const kind_dup = alloc.dupe(u8, kind_value) catch continue;
+        custom_setting_kinds.put(alloc, kind_key, kind_dup) catch {};
     }
 }
 
@@ -989,6 +1003,32 @@ fn writeGenericRollupMetadataFixture(dir: anytype) !void {
         \\    <referenceTo>Child__c</referenceTo>
         \\    <relationshipName>Grandchildren</relationshipName>
         \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn writeGenericHierarchyCustomSettingFixture(dir: anytype) !void {
+    try dir.makePath("objects/AppSettings__c/fields");
+    try dir.writeFile(.{
+        .sub_path = "objects/AppSettings__c/AppSettings__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <customSettingsType>Hierarchy</customSettingsType>
+        \\    <label>App Settings</label>
+        \\    <visibility>Public</visibility>
+        \\</CustomObject>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/AppSettings__c/fields/Flag__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Flag__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
         \\</CustomField>
         ,
     });
@@ -2450,6 +2490,244 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: hierarchy custom setting getInstance returns user-scoped inherited settings" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingScopeTest {
+        \\    public static String test() {
+        \\        AppSettings__c orgDefaults = AppSettings__c.getOrgDefaults();
+        \\        orgDefaults.Flag__c = 'org';
+        \\        insert orgDefaults;
+        \\        AppSettings__c currentUserSettings = AppSettings__c.getInstance();
+        \\        return String.valueOf(currentUserSettings.Id == null) + ':' +
+        \\            String.valueOf(currentUserSettings.SetupOwnerId == UserInfo.getUserId()) + ':' +
+        \\            String.valueOf(currentUserSettings.Flag__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "HierarchySettingScopeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:org", result.value.string);
+}
+
+test "E2E: hierarchy custom setting accessors return detached records" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingDetachTest {
+        \\    public static String test() {
+        \\        insert new AppSettings__c(SetupOwnerId = UserInfo.getUserId(), Flag__c = 'saved');
+        \\        AppSettings__c loadedUser = AppSettings__c.getValues(UserInfo.getUserId());
+        \\        loadedUser.Flag__c = 'mutated';
+        \\        AppSettings__c reloadedUser = AppSettings__c.getValues(UserInfo.getUserId());
+        \\        AppSettings__c orgDefaults = AppSettings__c.getOrgDefaults();
+        \\        orgDefaults.Flag__c = 'org';
+        \\        insert orgDefaults;
+        \\        AppSettings__c loadedOrg = AppSettings__c.getOrgDefaults();
+        \\        loadedOrg.Flag__c = 'changed';
+        \\        return reloadedUser.Flag__c + ':' + AppSettings__c.getOrgDefaults().Flag__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "HierarchySettingDetachTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("saved:org", result.value.string);
+}
+
+test "E2E: hierarchy custom setting records are visible to later static initialization" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingStaticHolder {
+        \\    private static String currentValue;
+        \\    static {
+        \\        currentValue = AppSettings__c.getValues(UserInfo.getUserId()).Flag__c;
+        \\    }
+        \\    public static String getCurrentValue() {
+        \\        return currentValue;
+        \\    }
+        \\}
+        \\public class HierarchySettingStaticInitTest {
+        \\    public static String test() {
+        \\        AppSettings__c userSettings = AppSettings__c.getInstance();
+        \\        userSettings.Flag__c = 'configured';
+        \\        upsert userSettings;
+        \\        return HierarchySettingStaticHolder.getCurrentValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "HierarchySettingStaticInitTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("configured", result.value.string);
+}
+
+test "E2E: static initializer preserves static method side effects on fields" {
+    const source =
+        \\public class StaticInitSideEffectTest {
+        \\    private static String configuredValue;
+        \\    static {
+        \\        setConfiguredValue('ready');
+        \\    }
+        \\    private static void setConfiguredValue(String nextValue) {
+        \\        configuredValue = nextValue;
+        \\    }
+        \\    public static String test() {
+        \\        return configuredValue;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticInitSideEffectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ready", result.value.string);
+}
+
+test "E2E: test runner sees hierarchy custom settings before later class static init" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "ScenarioHolder.cls",
+        .data =
+        \\public class ScenarioHolder {
+        \\    private static String currentScenario;
+        \\    static {
+        \\        currentScenario = AppSettings__c.getValues(UserInfo.getUserId()).Flag__c;
+        \\    }
+        \\    public static String getScenario() {
+        \\        return currentScenario;
+        \\    }
+        \\}
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "ScenarioHolder_Tests.cls",
+        .data =
+        \\@IsTest
+        \\private class ScenarioHolder_Tests {
+        \\    @IsTest
+        \\    static void it_reads_user_setting_during_subject_static_init() {
+        \\        AppSettings__c settings = AppSettings__c.getInstance();
+        \\        settings.Flag__c = 'configured';
+        \\        upsert settings;
+        \\        System.Assert.areEqual('configured', ScenarioHolder.getScenario());
+        \\    }
+        \\}
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const suite = try runTestSuite(alloc, &.{tmp_path}, std.io.null_writer);
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+    try std.testing.expectEqual(@as(u32, 0), suite.failed);
+    try std.testing.expectEqual(@as(u32, 0), suite.errors);
+}
+
+test "E2E: safe navigation preserves chained fluent instance calls" {
+    const source =
+        \\public class FluentChain {
+        \\    private Integer callCount = 0;
+        \\    public FluentChain touch() {
+        \\        callCount++;
+        \\        return this;
+        \\    }
+        \\    public Integer getCallCount() {
+        \\        return callCount;
+        \\    }
+        \\    public static FluentChain build() {
+        \\        return new FluentChain();
+        \\    }
+        \\}
+        \\public class SafeNavFluentChainTest {
+        \\    public static String test() {
+        \\        return String.valueOf(FluentChain.build()?.touch().getCallCount());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SafeNavFluentChainTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Type.forName inner handler retains SObjectType map keys after execute" {
+    const source =
+        \\public abstract class HandlerBase {
+        \\    private static Map<Schema.SObjectType, List<HandlerBase>> executed = new Map<Schema.SObjectType, List<HandlerBase>>();
+        \\    public abstract Schema.SObjectType getSObjectType();
+        \\    public void execute() {
+        \\        if (executed.containsKey(this.getSObjectType()) == false) {
+        \\            executed.put(this.getSObjectType(), new List<HandlerBase>());
+        \\        }
+        \\        executed.get(this.getSObjectType()).add(this);
+        \\    }
+        \\    public static Integer getExecutionCount(Schema.SObjectType sobjectType) {
+        \\        List<HandlerBase> handlers = executed.get(sobjectType);
+        \\        return handlers == null ? null : handlers.size();
+        \\    }
+        \\}
+        \\public class HandlerFactoryHost {
+        \\    public class AccountHandler extends HandlerBase {
+        \\        private Schema.SObjectType sobjectType;
+        \\        public AccountHandler() {
+        \\            this.sobjectType = Schema.Account.SObjectType;
+        \\        }
+        \\        public override Schema.SObjectType getSObjectType() {
+        \\            return this.sobjectType;
+        \\        }
+        \\    }
+        \\}
+        \\public class InnerHandlerFactoryTest {
+        \\    public static String test() {
+        \\        HandlerBase handler = (HandlerBase) Type.forName('HandlerFactoryHost.AccountHandler').newInstance();
+        \\        handler.execute();
+        \\        return String.valueOf(HandlerBase.getExecutionCount(Schema.Account.SObjectType));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerHandlerFactoryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
 }
 
 test "E2E: SObject.getSObject resolves parent records from a reference field token" {
