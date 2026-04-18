@@ -6861,7 +6861,7 @@ pub const Evaluator = struct {
                 break :blk Value.null_val;
             };
             switch (resolved_var) {
-                .list, .map, .set, .sobject, .object, .string, .double, .integer => {
+                .list, .map, .set, .sobject, .object, .string, .double, .integer, .boolean => {
                     return self.evalInstanceMethod(resolved_var, mc.method, args.items, current_env);
                 },
                 else => {},
@@ -7115,6 +7115,16 @@ pub const Evaluator = struct {
     fn evalInstanceMethod(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, _: *Env) anyerror!Value {
         // Null dereference → return null gracefully (some tests depend on this)
         if (obj == .null_val) return Value.null_val;
+
+        if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = if (obj.boolean) "true" else "false" };
+        }
+        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = try utils.coerceToString(obj, self.arena) };
+        }
+        if (obj == .double and std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = try utils.coerceToString(obj, self.arena) };
+        }
 
         // Http.send() mock interception
         if (obj == .object and std.ascii.eqlIgnoreCase(method, "send") and

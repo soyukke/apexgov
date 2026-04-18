@@ -3355,6 +3355,25 @@ test "E2E: nested field access preserves null overload selection" {
     try std.testing.expectEqualStrings("2|true", result.value.string);
 }
 
+test "E2E: Object-wrapped primitive values support null-safe toString" {
+    const source =
+        \\public class PrimitiveObjectToStringTest {
+        \\    public static String test() {
+        \\        Object boolValue = true;
+        \\        Object intValue = 1;
+        \\        Object doubleValue = 1.5;
+        \\        return boolValue?.toString() + '|' + intValue?.toString() + '|' + doubleValue?.toString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PrimitiveObjectToStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|1|1.5", result.value.string);
+}
+
 test "E2E: System.Test.testInstall invokes install handlers" {
     const source =
         \\global class PackageInstallHook implements System.InstallHandler {
