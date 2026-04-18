@@ -463,17 +463,21 @@ pub const Evaluator = struct {
 
     fn createUserForQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
         const user = try self.arena.create(types.SObject);
-        const username = self.extractWhereFieldValue(soql, "Username", current_env) orelse "testuser@example.com";
+        const alias = self.extractWhereFieldValue(soql, "Alias", current_env) orelse "tuser";
+        const username = self.extractWhereFieldValue(soql, "Username", current_env) orelse if (std.ascii.startsWithIgnoreCase(alias, "autoproc"))
+            "autoproc@example.com"
+        else
+            "testuser@example.com";
         const user_id = try std.fmt.allocPrint(self.arena, "005{d:0>15}", .{self.next_id});
         self.next_id += 1;
         user.* = .{ .type_name = "User", .id = user_id };
         try user.fields.put(self.arena, "Id", Value{ .string = user_id });
         try user.fields.put(self.arena, "Username", Value{ .string = username });
         try user.fields.put(self.arena, "Email", Value{ .string = username });
-        try user.fields.put(self.arena, "Alias", Value{ .string = "tuser" });
+        try user.fields.put(self.arena, "Alias", Value{ .string = alias });
         try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
 
-        const is_automated_process = std.ascii.startsWithIgnoreCase(username, "autoproc@");
+        const is_automated_process = std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.startsWithIgnoreCase(alias, "autoproc");
         const has_null_profile = self.hasWhereFieldNullLiteral(soql, "Profile.Name");
         const profile_name_opt = if (self.hasExactWhereFieldComparison(soql, "Profile.Name") and !has_null_profile)
             self.extractWhereFieldValue(soql, "Profile.Name", current_env)
@@ -486,7 +490,8 @@ pub const Evaluator = struct {
         else
             null;
 
-        if (!has_null_profile or profile_name_opt != null or explicit_user_type != null) {
+        const should_materialize_profile = (!is_automated_process and !has_null_profile) or profile_name_opt != null or explicit_user_type != null;
+        if (should_materialize_profile) {
             const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
                 (if (std.ascii.eqlIgnoreCase(user_type, "Guest")) "Logger Test LWR Site Guest Profile" else "Standard User")
             else
@@ -3418,6 +3423,7 @@ pub const Evaluator = struct {
         if (records.items.len == 0 and self.store.get(from_type) == null) {
             if (std.ascii.eqlIgnoreCase(from_type, "User")) {
                 const use_query_specific_user = self.hasExactWhereFieldComparison(soql, "Username") or
+                    self.hasExactWhereFieldComparison(soql, "Alias") or
                     self.hasExactWhereFieldComparison(soql, "Profile.Name") or
                     self.hasExactWhereFieldComparison(soql, "Profile.UserType") or
                     self.hasExactWhereFieldComparison(soql, "UserType");
@@ -4695,6 +4701,35 @@ pub const Evaluator = struct {
         return self.evalWhereCondition(record.sobject, where_clause, current_env);
     }
 
+    fn bindCollectionContains(self: *Evaluator, field_val: Value, bind_val: Value) bool {
+        switch (bind_val) {
+            .list => |list| {
+                for (list.items.items) |item| {
+                    if (utils.valueEql(field_val, item)) return true;
+                    if (field_val == .string and item == .sobject) {
+                        if (item.sobject.id) |item_id| {
+                            if (std.ascii.eqlIgnoreCase(field_val.string, item_id)) return true;
+                        }
+                    }
+                }
+                return false;
+            },
+            .map => |map| {
+                if (field_val == .string) {
+                    for (map.entries.keys()) |key| {
+                        if (std.ascii.eqlIgnoreCase(field_val.string, key)) return true;
+                    }
+                }
+                return false;
+            },
+            .set => {
+                const field_str = utils.coerceToString(field_val, self.arena) catch return false;
+                return bind_val.set.entries.contains(field_str);
+            },
+            else => return false,
+        }
+    }
+
     fn evalWhereCondition(self: *Evaluator, sob: *types.SObject, clause: []const u8, current_env: *Env) bool {
         const trimmed = std.mem.trim(u8, clause, " \t\n\r");
         if (trimmed.len == 0) return true;
@@ -4891,33 +4926,8 @@ pub const Evaluator = struct {
             if (in_str.len > 0 and in_str[0] == ':') {
                 const var_name = in_str[1..];
                 if (self.lookupBindValue(current_env, var_name)) |bind_val| {
-                    if (bind_val == .list) {
-                        for (bind_val.list.items.items) |item| {
-                            if (utils.valueEql(field_val, item)) return true;
-                            // When comparing Id field against a list of SObjects,
-                            // extract the SObject's Id for comparison
-                            if (field_val == .string and item == .sobject) {
-                                if (item.sobject.id) |item_id| {
-                                    if (std.ascii.eqlIgnoreCase(field_val.string, item_id)) return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }
-                    // Handle Map<Id, SObject> for IN clause (e.g. WHERE Id IN :mapVar)
-                    if (bind_val == .map) {
-                        if (field_val == .string) {
-                            // Check if the field value is a key in the map (case-insensitive)
-                            for (bind_val.map.entries.keys()) |key| {
-                                if (std.ascii.eqlIgnoreCase(field_val.string, key)) return true;
-                            }
-                        }
-                        return false;
-                    }
-                    if (bind_val == .set) {
-                        const field_str = utils.coerceToString(field_val, self.arena) catch return true;
-                        return bind_val.set.entries.contains(field_str);
-                    }
+                    if (self.bindCollectionContains(field_val, bind_val)) return true;
+                    if (bind_val == .list or bind_val == .map or bind_val == .set) return false;
                 }
             }
             // IN ('val1', 'val2') — parse literal list
@@ -5002,6 +5012,11 @@ pub const Evaluator = struct {
             } else {
                 return true; // unknown, include
             }
+        }
+
+        if (cmp_val == .list or cmp_val == .map or cmp_val == .set) {
+            const contains = self.bindCollectionContains(field_val, cmp_val);
+            return if (is_neq) !contains else contains;
         }
 
         if (is_neq) return !utils.valueEql(field_val, cmp_val);

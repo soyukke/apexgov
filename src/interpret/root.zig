@@ -6691,6 +6691,50 @@ test "E2E: SOQL IN bind resolves map values expression" {
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "2:a"));
 }
 
+test "E2E: SOQL equality bind treats collection binds as membership" {
+    const source =
+        \\public class EqualityBindCollectionProbe {
+        \\    public static String test() {
+        \\        insert new Thing__c(Name = 'alpha', UniqueId__c = 'alpha');
+        \\        insert new Thing__c(Name = 'beta', UniqueId__c = 'beta');
+        \\
+        \\        Map<String, String> selectedNames = new Map<String, String>();
+        \\        selectedNames.put('alpha', 'included');
+        \\
+        \\        List<Thing__c> rows = [
+        \\            SELECT Id, Name
+        \\            FROM Thing__c
+        \\            WHERE Name = :selectedNames.keySet()
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rows.get(0).Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EqualityBindCollectionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:alpha", result.value.string);
+}
+
+test "E2E: synthetic User query respects Alias filters" {
+    const source =
+        \\public class UserAliasQueryProbe {
+        \\    public static String test() {
+        \\        Schema.User userRow = [SELECT Id, Alias, UserType FROM User WHERE Alias = 'autoproc'];
+        \\        return userRow.Alias + ':' + userRow.UserType;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserAliasQueryProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("autoproc:AutomatedProcess", result.value.string);
+}
+
 test "E2E: fixture duplicate scenario guard test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
     defer fixture_paths.deinit();
