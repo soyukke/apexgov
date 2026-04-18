@@ -6267,7 +6267,7 @@ pub const Evaluator = struct {
                 for (ccd.members) |member| {
                     switch (member) {
                         .field_decl => |fd| {
-                            if (std.ascii.eqlIgnoreCase(fd.name, field_name)) return fd.type_ref.name;
+                            if (std.ascii.eqlIgnoreCase(fd.name, field_name)) return self.renderTypeRef(fd.type_ref);
                         },
                         else => {},
                     }
@@ -6306,11 +6306,17 @@ pub const Evaluator = struct {
                 }
                 if (fa.object.* == .identifier) {
                     const owner_name = fa.object.identifier.name;
+                    if (current_env.getDeclaredType(owner_name)) |owner_type| {
+                        if (self.findDeclaredFieldType(typeBaseName(owner_type), fa.field)) |type_name| return type_name;
+                    }
                     const is_class = self.findClass(owner_name) != null;
                     const is_var = current_env.get(owner_name) != null;
                     if (is_class and !is_var) {
                         if (self.findDeclaredFieldType(owner_name, fa.field)) |type_name| return type_name;
                     }
+                }
+                if (self.resolveAssignmentTargetType(fa.object, current_env)) |owner_type| {
+                    if (self.findDeclaredFieldType(typeBaseName(owner_type), fa.field)) |type_name| return type_name;
                 }
                 return null;
             },

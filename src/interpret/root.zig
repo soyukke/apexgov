@@ -3080,6 +3080,252 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
     try std.testing.expectEqualStrings("AA", result.value.string);
 }
 
+test "E2E: Type.forName null-safe fluent execute preserves constructor-initialized fields" {
+    const source =
+        \\public abstract class TriggerableHost {
+        \\    private static Map<Schema.SObjectType, Integer> counts = new Map<Schema.SObjectType, Integer>();
+        \\    public abstract Schema.SObjectType getSObjectType();
+        \\    public virtual TriggerableHost overrideContext(String value) {
+        \\        return this;
+        \\    }
+        \\    public void execute() {
+        \\        Integer currentCount = counts.get(this.getSObjectType());
+        \\        counts.put(this.getSObjectType(), currentCount == null ? 1 : currentCount + 1);
+        \\    }
+        \\    public static Integer getExecutionCount(Schema.SObjectType sobjectType) {
+        \\        return counts.get(sobjectType);
+        \\    }
+        \\}
+        \\public class TriggerableFactoryHost {
+        \\    public class EventTriggerable extends TriggerableHost {
+        \\        private Schema.SObjectType sobjectType;
+        \\        public EventTriggerable() {
+        \\            this.sobjectType = Schema.LogEntryEvent__e.SObjectType;
+        \\        }
+        \\        public override Schema.SObjectType getSObjectType() {
+        \\            return this.sobjectType;
+        \\        }
+        \\    }
+        \\}
+        \\public class TriggerableFactoryTest {
+        \\    public static TriggerableHost getHandler(String className) {
+        \\        return (TriggerableHost) Type.forName(className)?.newInstance();
+        \\    }
+        \\    public static String test() {
+        \\        getHandler(TriggerableFactoryHost.EventTriggerable.class.getName())?.overrideContext('x').execute();
+        \\        return String.valueOf(TriggerableHost.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TriggerableFactoryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: parent constructors can read overridden type getters before child initialization without losing child state" {
+    const source =
+        \\public abstract class ParentCtorTypeHost {
+        \\    private static Map<String, String> readings = new Map<String, String>();
+        \\    public ParentCtorTypeHost() {
+        \\        readings.put('duringParentCtor', String.valueOf(this.getSObjectType()));
+        \\    }
+        \\    public abstract Schema.SObjectType getSObjectType();
+        \\    public static String getReading(String key) {
+        \\        return readings.get(key);
+        \\    }
+        \\}
+        \\public class ParentCtorTypeFactory {
+        \\    public class EventChild extends ParentCtorTypeHost {
+        \\        private Schema.SObjectType sobjectType;
+        \\        public EventChild() {
+        \\            this.sobjectType = Schema.LogEntryEvent__e.SObjectType;
+        \\        }
+        \\        public override Schema.SObjectType getSObjectType() {
+        \\            return this.sobjectType;
+        \\        }
+        \\    }
+        \\}
+        \\public class ParentCtorTypeFactoryTest {
+        \\    public static String test() {
+        \\        ParentCtorTypeHost child = (ParentCtorTypeHost) Type.forName(ParentCtorTypeFactory.EventChild.class.getName()).newInstance();
+        \\        return ParentCtorTypeHost.getReading('duringParentCtor') + '|' + String.valueOf(child.getSObjectType());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ParentCtorTypeFactoryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("null|LogEntryEvent__e", result.value.string);
+}
+
+test "E2E: static method returned map supports chained get size and index access" {
+    const source =
+        \\public class StaticMapChainHost {
+        \\    private static Map<Schema.SObjectType, List<String>> valuesByType = new Map<Schema.SObjectType, List<String>>();
+        \\    static {
+        \\        valuesByType.put(Schema.Account.SObjectType, new List<String>{ 'a', 'b' });
+        \\    }
+        \\    public static Map<Schema.SObjectType, List<String>> getValuesByType() {
+        \\        return valuesByType;
+        \\    }
+        \\}
+        \\public class StaticMapChainTest {
+        \\    public static String test() {
+        \\        return String.valueOf(StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).size()) +
+        \\            '|' +
+        \\            StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).get(0);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticMapChainTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|a", result.value.string);
+}
+
+test "E2E: static method returned map preserves list values keyed by Schema SObjectType" {
+    const source =
+        \\public class ChainedHandlerBase {
+        \\    public String name;
+        \\    public ChainedHandlerBase(String value) {
+        \\        this.name = value;
+        \\    }
+        \\}
+        \\public class ChainedHandlerStore {
+        \\    private static Map<Schema.SObjectType, List<ChainedHandlerBase>> executed = new Map<Schema.SObjectType, List<ChainedHandlerBase>>();
+        \\    static {
+        \\        executed.put(
+        \\            Schema.LogEntryEvent__e.SObjectType,
+        \\            new List<ChainedHandlerBase>{
+        \\                new ChainedHandlerBase('first'),
+        \\                new ChainedHandlerBase('second')
+        \\            }
+        \\        );
+        \\    }
+        \\    public static Map<Schema.SObjectType, List<ChainedHandlerBase>> getExecuted() {
+        \\        return executed;
+        \\    }
+        \\}
+        \\public class ChainedHandlerStoreTest {
+        \\    public static String test() {
+        \\        return String.valueOf(ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).size()) +
+        \\            '|' +
+        \\            ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).get(1).name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChainedHandlerStoreTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|second", result.value.string);
+}
+
+test "E2E: overridden methods persist List<SObject> fields on handler instances" {
+    const source =
+        \\public abstract class HandlerExecutionBase {
+        \\    private static List<HandlerExecutionBase> executed = new List<HandlerExecutionBase>();
+        \\    public static List<HandlerExecutionBase> getExecuted() {
+        \\        return executed;
+        \\    }
+        \\    public void execute() {
+        \\        this.executeBeforeInsert(
+        \\            new List<SObject>{
+        \\                new Account(Name = 'first'),
+        \\                new Account(Name = 'second')
+        \\            }
+        \\        );
+        \\        executed.add(this);
+        \\    }
+        \\    protected virtual void executeBeforeInsert(List<SObject> triggerNew) {
+        \\    }
+        \\}
+        \\public class HandlerExecutionChild extends HandlerExecutionBase {
+        \\    public String executedOperation;
+        \\    public List<SObject> executedTriggerNew;
+        \\    protected override void executeBeforeInsert(List<SObject> triggerNew) {
+        \\        this.executedOperation = 'before';
+        \\        this.executedTriggerNew = triggerNew;
+        \\    }
+        \\}
+        \\public class HandlerExecutionChildTest {
+        \\    public static String test() {
+        \\        new HandlerExecutionChild().execute();
+        \\        HandlerExecutionChild child = (HandlerExecutionChild) HandlerExecutionBase.getExecuted().get(0);
+        \\        return child.executedOperation + '|' +
+        \\            String.valueOf(child.executedTriggerNew.size()) + '|' +
+        \\            String.valueOf(child.executedTriggerNew.get(0).get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "HandlerExecutionChildTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("before|2|first", result.value.string);
+}
+
+test "E2E: nested field access preserves null overload selection" {
+    const source =
+        \\public class NestedOverloadContext {
+        \\    public List<SObject> records;
+        \\    public Map<Id, SObject> recordMap;
+        \\}
+        \\public abstract class NestedOverloadBase {
+        \\    public NestedOverloadContext context;
+        \\    public NestedOverloadBase() {
+        \\        this.context = new NestedOverloadContext();
+        \\        this.context.records = new List<SObject>{
+        \\            new Account(Name = 'first'),
+        \\            new Account(Name = 'second')
+        \\        };
+        \\        this.context.recordMap = null;
+        \\    }
+        \\    public void execute() {
+        \\        this.executeAfterInsert(this.context.records);
+        \\        this.executeAfterInsert(this.context.recordMap);
+        \\    }
+        \\    protected virtual void executeAfterInsert(List<SObject> triggerNew) {
+        \\    }
+        \\    protected virtual void executeAfterInsert(Map<Id, SObject> triggerNewMap) {
+        \\    }
+        \\}
+        \\public class NestedOverloadChild extends NestedOverloadBase {
+        \\    public List<SObject> seenRecords;
+        \\    public Map<Id, SObject> seenRecordMap;
+        \\    protected override void executeAfterInsert(List<SObject> triggerNew) {
+        \\        this.seenRecords = triggerNew;
+        \\    }
+        \\    protected override void executeAfterInsert(Map<Id, SObject> triggerNewMap) {
+        \\        this.seenRecordMap = triggerNewMap;
+        \\    }
+        \\}
+        \\public class NestedOverloadChildTest {
+        \\    public static String test() {
+        \\        NestedOverloadChild child = new NestedOverloadChild();
+        \\        child.execute();
+        \\        return String.valueOf(child.seenRecords?.size()) + '|' +
+        \\            String.valueOf(child.seenRecordMap == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NestedOverloadChildTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|true", result.value.string);
+}
+
 test "E2E: System.Test.testInstall invokes install handlers" {
     const source =
         \\global class PackageInstallHook implements System.InstallHandler {
