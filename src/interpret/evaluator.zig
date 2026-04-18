@@ -193,6 +193,7 @@ pub const Evaluator = struct {
         self.return_value = .void_val;
         self.stdout = .empty;
         self.store = .empty;
+        self.static_inited = .empty;
         self.next_id = 1;
         self.bypasses = .empty;
         self.pending_exception = null;
@@ -898,6 +899,9 @@ pub const Evaluator = struct {
 
     /// Run static init blocks for a single class
     pub fn runClassStaticInits(self: *Evaluator, cd: *ast.ClassDecl) void {
+        const saved_class = self.current_class;
+        self.current_class = cd.name;
+        defer self.current_class = saved_class;
         for (cd.members) |member| {
             switch (member) {
                 .static_init => |body| {

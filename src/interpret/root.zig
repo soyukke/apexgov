@@ -2661,6 +2661,35 @@ test "E2E: static initializer preserves static method side effects on fields" {
     try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
+test "E2E: static initializer resolves bare helper calls against the declaring class" {
+    const source =
+        \\public class StaticInitCollisionHelper {
+        \\    public static String getStaticInitCollisionValue() {
+        \\        return 'wrong';
+        \\    }
+        \\}
+        \\
+        \\public class StaticInitCollisionTarget {
+        \\    private static String cachedValue;
+        \\    static {
+        \\        cachedValue = getStaticInitCollisionValue();
+        \\    }
+        \\    private static String getStaticInitCollisionValue() {
+        \\        return 'right';
+        \\    }
+        \\    public static String test() {
+        \\        return cachedValue;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticInitCollisionTarget",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("right", result.value.string);
+}
+
 test "E2E: test runner sees hierarchy custom settings before later class static init" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -3936,6 +3965,57 @@ test "Double/Decimal instance fields default to null" {
     eval.resetForTest();
     _ = eval.callMethod("DoubleDefaultTest", "testDoubleNull", &.{}) catch |e| {
         std.debug.print("testDoubleNull error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "resetForTest re-runs static initializers for later test methods" {
+    const source =
+        \\@IsTest
+        \\public class StaticInitResetTest {
+        \\    public class Config {
+        \\        public static String value = 'A';
+        \\    }
+        \\    public class Consumer {
+        \\        private static String cached;
+        \\        static {
+        \\            cached = Config.value;
+        \\        }
+        \\        public static String getCached() {
+        \\            return cached;
+        \\        }
+        \\    }
+        \\    @IsTest
+        \\    static void firstMethod() {
+        \\        Config.value = 'first';
+        \\        System.assertEquals('first', Consumer.getCached());
+        \\    }
+        \\    @IsTest
+        \\    static void secondMethod() {
+        \\        Config.value = 'second';
+        \\        System.assertEquals('second', Consumer.getCached());
+        \\    }
+        \\}
+    ;
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+    const alloc = arena_alloc.allocator();
+
+    const tokens = try lexer.tokenize(source, alloc);
+    const decls = try parser.parse(tokens, alloc);
+    var eval = try evaluator.Evaluator.init(alloc);
+    try eval.loadDecls(decls);
+
+    _ = eval.callMethod("StaticInitResetTest", "firstMethod", &.{}) catch |e| {
+        std.debug.print("firstMethod error: {}\n", .{e});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(eval.assertion_failure == null);
+
+    eval.resetForTest();
+    _ = eval.callMethod("StaticInitResetTest", "secondMethod", &.{}) catch |e| {
+        std.debug.print("secondMethod error: {}\n", .{e});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(eval.assertion_failure == null);
