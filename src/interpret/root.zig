@@ -2777,6 +2777,248 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
+test "E2E: Type.forName event handler retains platform event SObjectType map keys after execute" {
+    const source =
+        \\public abstract class EventHandlerBase {
+        \\    private static Map<Schema.SObjectType, List<EventHandlerBase>> executed = new Map<Schema.SObjectType, List<EventHandlerBase>>();
+        \\    public abstract Schema.SObjectType getSObjectType();
+        \\    public void execute() {
+        \\        if (executed.containsKey(this.getSObjectType()) == false) {
+        \\            executed.put(this.getSObjectType(), new List<EventHandlerBase>());
+        \\        }
+        \\        executed.get(this.getSObjectType()).add(this);
+        \\    }
+        \\    public static Integer getExecutionCount(Schema.SObjectType sobjectType) {
+        \\        List<EventHandlerBase> handlers = executed.get(sobjectType);
+        \\        return handlers == null ? null : handlers.size();
+        \\    }
+        \\}
+        \\public class EventHandlerFactoryHost {
+        \\    public class PlatformEventHandler extends EventHandlerBase {
+        \\        private Schema.SObjectType sobjectType;
+        \\        public PlatformEventHandler() {
+        \\            this.sobjectType = Schema.LogEntryEvent__e.SObjectType;
+        \\        }
+        \\        public override Schema.SObjectType getSObjectType() {
+        \\            return this.sobjectType;
+        \\        }
+        \\    }
+        \\}
+        \\public class EventHandlerFactoryTest {
+        \\    public static String test() {
+        \\        EventHandlerBase handler = (EventHandlerBase) Type.forName('EventHandlerFactoryHost.PlatformEventHandler').newInstance();
+        \\        handler.execute();
+        \\        return String.valueOf(EventHandlerBase.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EventHandlerFactoryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: JSON round-trip into SObject preserves setup object fields when adding read-only field" {
+    const source =
+        \\public class JsonReadOnlyFieldRoundTripTest {
+        \\    public static String test() {
+        \\        SObject record = new ApexClass(Name = 'SomeClass', Body = 'body');
+        \\        String serializedRecord = System.JSON.serialize(record);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        SObject updatedRecord = (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        return updatedRecord.getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(updatedRecord.get('Name')) + ':' +
+        \\            String.valueOf(updatedRecord.get('Body')) + ':' +
+        \\            String.valueOf(updatedRecord.get('LastModifiedDate'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonReadOnlyFieldRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+}
+
+test "E2E: JSON read-only round-trip preserves typed ApexClass property access" {
+    const source =
+        \\public class JsonTypedApexClassRoundTripTest {
+        \\    public static String test() {
+        \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
+        \\        String serializedRecord = System.JSON.serialize(record);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        record = (Schema.ApexClass) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        return String.valueOf(record.Name != null) + ':' +
+        \\            String.valueOf(record.Name) + ':' +
+        \\            String.valueOf(record.Body) + ':' +
+        \\            String.valueOf(record.LastModifiedDate);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonTypedApexClassRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+}
+
+test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
+    const source =
+        \\public class SchemaFieldTokenMapTest {
+        \\    public static String test() {
+        \\        Map<Schema.SObjectField, Object> changesToFields = new Map<Schema.SObjectField, Object>{
+        \\            Schema.ApexClass.LastModifiedDate => Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        };
+        \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
+        \\            return sobjectField.toString() + ':' + String.valueOf(changesToFields.get(sobjectField));
+        \\        }
+        \\        return 'empty';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaFieldTokenMapTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("LastModifiedDate:2026-04-01T00:00:00Z", result.value.string);
+}
+
+test "E2E: helper-style read-only field setter preserves ApexClass Name" {
+    const source =
+        \\public class ReadOnlyFieldSetterProbe {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    }
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\        String serializedRecord = System.JSON.serialize(record);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
+        \\            String fieldName = sobjectField.toString();
+        \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
+        \\        }
+        \\        serializedRecord = System.JSON.serialize(deserializedRecordMap);
+        \\        return (SObject) System.JSON.deserialize(serializedRecord, SObject.class);
+        \\    }
+        \\    public static String test() {
+        \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
+        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        return String.valueOf(record.Name != null) + ':' +
+        \\            String.valueOf(record.Name) + ':' +
+        \\            String.valueOf(record.Body) + ':' +
+        \\            String.valueOf(record.LastModifiedDate);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ReadOnlyFieldSetterProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+}
+
+test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
+    const source =
+        \\public class ReadOnlyFieldSetterCommaProbe {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    }
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\        String serializedRecord = System.JSON.serialize(record);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
+        \\            String fieldName = sobjectField.toString();
+        \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
+        \\        }
+        \\        serializedRecord = System.JSON.serialize(deserializedRecordMap);
+        \\        return (SObject) System.JSON.deserialize(serializedRecord, SObject.class);
+        \\    }
+        \\    public static String test() {
+        \\        Schema.ApexClass record = new Schema.ApexClass(
+        \\            Name = 'SomeClass',
+        \\            Body = 'Wow, look at this code for a mock version of apex class SomeClass'
+        \\        );
+        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        return String.valueOf(record.Name != null) + ':' +
+        \\            String.valueOf(record.Name) + ':' +
+        \\            String.valueOf(record.Body);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ReadOnlyFieldSetterCommaProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass", result.value.string);
+}
+
+test "E2E: qualified Schema setup objects ignore same-named user classes" {
+    const source =
+        \\public class ApexClass {
+        \\}
+        \\public class QualifiedSchemaSetupObjectCtorProbe {
+        \\    public static String test() {
+        \\        Schema.ApexClass record = new Schema.ApexClass(
+        \\            Name = 'SomeClass',
+        \\            Body = 'mock body'
+        \\        );
+        \\        return record.getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(record.Name) + ':' +
+        \\            String.valueOf(record.Body);
+        \\    }
+        \\}
+        \\public class QualifiedSchemaSetupObjectProbe {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    }
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\        String serializedRecord = System.JSON.serialize(record);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
+        \\            deserializedRecordMap.put(sobjectField.toString(), changesToFields.get(sobjectField));
+        \\        }
+        \\        return (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\    }
+        \\    public static String test() {
+        \\        Schema.ApexClass record = new Schema.ApexClass(
+        \\            Name = 'SomeClass',
+        \\            Body = 'mock body'
+        \\        );
+        \\        record = (Schema.ApexClass) setReadOnlyField(
+        \\            record,
+        \\            Schema.ApexClass.LastModifiedDate,
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
+        \\        return record.getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(record.Name) + ':' +
+        \\            String.valueOf(record.Body) + ':' +
+        \\            String.valueOf(record.LastModifiedDate);
+        \\    }
+        \\}
+    ;
+    const ctor_result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedSchemaSetupObjectCtorProbe",
+        .entry_method = "test",
+    });
+    defer ctor_result.deinit();
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body", ctor_result.value.string);
+
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedSchemaSetupObjectProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
+}
+
 test "E2E: qualified inner class literals preserve outer class names" {
     const source =
         \\public class OuterNameHost {
@@ -3966,7 +4208,7 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         \\            schema.localApiName = fieldDescribe.getLocalName();
         \\            fields.put(fieldDescribe.getLocalName(), schema);
         \\        }
-        \\        return String.valueOf(fields.size()) + ':' + String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName;
+        \\        return String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName + ':' + String.valueOf(fields.containsKey('Username'));
         \\    }
         \\}
     ;
@@ -3975,7 +4217,41 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("6:true:Name", result.value.string);
+    try std.testing.expectEqualStrings("true:Name:true", result.value.string);
+}
+
+test "E2E: DescribeSObjectResult fields map includes common User fields" {
+    const source =
+        \\public class UserDescribeFieldsTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields = Schema.User.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('Username')) + ':' + fields.get('Username').getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserDescribeFieldsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:Username", result.value.string);
+}
+
+test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
+    const source =
+        \\public class EmailMessageDescribeFieldTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields = Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('Subject')) + ':' + String.valueOf(Schema.EmailMessage.Subject.getDescribe().isNameField());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EmailMessageDescribeFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:false", result.value.string);
 }
 
 test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {

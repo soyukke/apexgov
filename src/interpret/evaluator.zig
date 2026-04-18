@@ -8533,6 +8533,8 @@ pub const Evaluator = struct {
     fn evalNewExpr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
         // Strip "System." and "Schema." prefixes for type resolution
         const raw_type_name = ne.type_name.name;
+        const is_platform_qualified = std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
+            std.ascii.startsWithIgnoreCase(raw_type_name, "Schema.");
         const type_name = if (std.ascii.startsWithIgnoreCase(raw_type_name, "System."))
             raw_type_name[7..]
         else if (std.ascii.startsWithIgnoreCase(raw_type_name, "Schema."))
@@ -8865,12 +8867,15 @@ pub const Evaluator = struct {
                 null)
         else
             null;
+        const allow_simple_name_fallback = !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
         const resolved_class_name: ?[]const u8 = blk: {
-            if (fq_inner_name) |fqn| {
-                if (self.findClass(fqn) != null) break :blk fqn;
+            if (!is_platform_qualified) {
+                if (fq_inner_name) |fqn| {
+                    if (self.findClass(fqn) != null) break :blk fqn;
+                }
+                if (self.findClass(type_name) != null) break :blk type_name;
             }
-            if (self.findClass(type_name) != null) break :blk type_name;
-            if (self.findClass(simple_name) != null) {
+            if (allow_simple_name_fallback and self.findClass(simple_name) != null) {
                 // Look up whether simple_name is an inner class of some outer — prefer FQ if unique
                 if (self.findOuterClassName(simple_name)) |outer| {
                     break :blk std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, simple_name }) catch simple_name;

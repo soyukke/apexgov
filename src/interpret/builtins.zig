@@ -1669,6 +1669,8 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
             }
         }
     }
+    try addKnownDescribeFields(ctx, fields_kv, obj_name);
+    try addDescribeFieldsFromStore(ctx, fields_kv, obj_name);
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
@@ -1740,6 +1742,61 @@ fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []cons
 
 fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
     return createFieldDescribeResultWithType(ctx, object_type, field_name, null);
+}
+
+fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, field_name: []const u8) !void {
+    if (fields_kv.entries.contains(field_name)) return;
+    const fdr = try createFieldDescribeResult(ctx, object_type, field_name);
+    if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
+    try fields_kv.entries.put(ctx.arena, field_name, fdr);
+}
+
+fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+    if (std.ascii.eqlIgnoreCase(object_type, "User")) {
+        for ([_][]const u8{ "Username", "Email", "FirstName", "LastName", "ProfileId", "Alias", "UserType", "IsActive" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Profile")) {
+        for ([_][]const u8{ "DeveloperName", "UserType", "UserLicenseId" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) {
+        for ([_][]const u8{ "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "AccountBrand")) {
+        for ([_][]const u8{ "CompanyName", "Email", "Phone" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+    }
+}
+
+fn addDescribeFieldsFromRecord(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, record: Value) !void {
+    if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
+    for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
+        if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
+        if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) continue;
+        try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+    }
+}
+
+fn addDescribeFieldsFromStore(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+    if (ctx.eval.store.get(object_type)) |records| {
+        for (records.items) |record| {
+            try addDescribeFieldsFromRecord(ctx, fields_kv, object_type, record);
+        }
+    }
+    if (ctx.eval.trash.get(object_type)) |records| {
+        for (records.items) |record| {
+            try addDescribeFieldsFromRecord(ctx, fields_kv, object_type, record);
+        }
+    }
 }
 
 fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
@@ -2498,6 +2555,15 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isNameField")) {
+        if (std.ascii.eqlIgnoreCase(field_name, "Name")) return Value{ .boolean = true };
+        if (object_type) |obj_name| {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and std.ascii.eqlIgnoreCase(field_name, "CaseNumber")) return Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and std.ascii.eqlIgnoreCase(field_name, "ContractNumber")) return Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and std.ascii.eqlIgnoreCase(field_name, "OrderNumber")) return Value{ .boolean = true };
+        }
+        return Value{ .boolean = false };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
         const fn_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
         if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
