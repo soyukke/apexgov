@@ -1765,6 +1765,8 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
         "DATE"
     else if (std.ascii.eqlIgnoreCase(ft, "DateTime"))
         "DATETIME"
+    else if (std.ascii.eqlIgnoreCase(ft, "ID") or std.ascii.eqlIgnoreCase(ft, "REFERENCE"))
+        "ID"
     else
         "STRING";
     try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
@@ -2149,7 +2151,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
     }
     if (ci.eqlIgnoreCase(cn, "DescribeFieldResult")) {
-        if (try dispatchObjDescribeFieldResult(obj, method_name)) |v| return v;
+        if (try dispatchObjDescribeFieldResult(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.SObjectType")) {
         if (try dispatchObjSObjectType(ctx, obj, method_name, args)) |v| return v;
@@ -2816,7 +2818,7 @@ fn dispatchObjSelectOption(ctx: *BuiltinContext, obj: *types.ObjectInstance, met
     return null;
 }
 
-fn dispatchObjDescribeFieldResult(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
@@ -2836,6 +2838,26 @@ fn dispatchObjDescribeFieldResult(obj: *types.ObjectInstance, method_name: []con
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getReferenceTo")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        if (obj.fields.get("objectType")) |object_type_val| {
+            if (object_type_val == .string) {
+                const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+                if (field_name_val == .string) {
+                    if (lookupFieldMetadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
+                        if (metadata.reference_to) |reference_to| {
+                            const token = try ctx.arena.create(types.ObjectInstance);
+                            token.* = .{ .class_name = "Schema.SObjectType" };
+                            try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
+                            try list.items.append(ctx.arena, Value{ .object = token });
+                        }
+                    }
+                }
+            }
+        }
+        return Value{ .list = list };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;

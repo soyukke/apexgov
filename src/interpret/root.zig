@@ -499,6 +499,22 @@ fn collectFieldDefaults(
                 metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
             }
         }
+        if (extractXmlTagValue(content, "formula")) |formula| {
+            metadata.formula = decodeXmlText(alloc, formula, false) catch null;
+        }
+        if (extractXmlTagValue(content, "formulaTreatBlanksAs")) |blank_mode| {
+            metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(std.mem.trim(u8, blank_mode, " \t\n\r"), "BlankAsZero");
+        }
+        if (extractXmlTagValue(content, "summarizedField")) |summarized_field| {
+            metadata.summarized_field = alloc.dupe(u8, std.mem.trim(u8, summarized_field, " \t\n\r")) catch null;
+        }
+        if (extractXmlTagValue(content, "summaryForeignKey")) |summary_foreign_key| {
+            metadata.summary_foreign_key = alloc.dupe(u8, std.mem.trim(u8, summary_foreign_key, " \t\n\r")) catch null;
+        }
+        if (extractXmlTagValue(content, "summaryOperation")) |summary_operation| {
+            metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
+        }
+        metadata.summary_filters = parseSummaryFilters(alloc, content) catch &.{};
 
         // Extract <type>...</type> for field type info
         if (std.mem.indexOf(u8, content, "<type>")) |ts| {
@@ -534,7 +550,14 @@ fn collectFieldDefaults(
             }
         }
 
-        if (metadata.is_unique or metadata.is_external_id or metadata.is_required or metadata.length != null or metadata.reference_to != null) {
+        if (metadata.is_unique or
+            metadata.is_external_id or
+            metadata.is_required or
+            metadata.length != null or
+            metadata.reference_to != null or
+            metadata.formula != null or
+            metadata.summary_operation != null)
+        {
             const type_key = alloc.dupe(u8, type_name) catch continue;
             const field_key = alloc.dupe(u8, field_name) catch continue;
             const meta_gop = field_metadata.getOrPut(alloc, type_key) catch continue;
@@ -572,6 +595,47 @@ fn collectFieldDefaults(
         }
         gop.value_ptr.put(alloc, field_key, value) catch continue;
     }
+}
+
+fn extractXmlTagValue(content: []const u8, tag_name: []const u8) ?[]const u8 {
+    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
+    defer std.heap.page_allocator.free(start_tag);
+    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return null;
+    defer std.heap.page_allocator.free(end_tag);
+
+    const start_idx = std.mem.indexOf(u8, content, start_tag) orelse return null;
+    const value_start = start_idx + start_tag.len;
+    const end_idx = std.mem.indexOfPos(u8, content, value_start, end_tag) orelse return null;
+    return content[value_start..end_idx];
+}
+
+fn parseSummaryFilters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
+    var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
+        const block_start = block_start_idx + "<summaryFilterItems>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</summaryFilterItems>") orelse break;
+        const block = content[block_start..block_end];
+        const field = extractXmlTagValue(block, "field") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        const operation = extractXmlTagValue(block, "operation") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        const value = extractXmlTagValue(block, "value") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        try filters.append(alloc, .{
+            .field_path = try decodeXmlText(alloc, std.mem.trim(u8, field, " \t\n\r"), false),
+            .operation = try decodeXmlText(alloc, std.mem.trim(u8, operation, " \t\n\r"), false),
+            .value = try decodeXmlText(alloc, std.mem.trim(u8, value, " \t\n\r"), false),
+        });
+        search_start = block_end + "</summaryFilterItems>".len;
+    }
+    return try alloc.dupe(evaluator.SummaryFilter, filters.items);
 }
 
 fn putChildRelationship(
@@ -718,7 +782,7 @@ fn collectFieldSets(
 
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
 /// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
-fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+fn decodeXmlText(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
     // First pass: decode XML entities
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
@@ -750,10 +814,14 @@ fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 
     }
     const decoded = buf.items;
     // Strip surrounding single quotes (Apex string literal in metadata)
-    if (decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
+    if (strip_outer_quotes and decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
     return alloc.dupe(u8, decoded);
+}
+
+fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return decodeXmlText(alloc, raw, true);
 }
 
 /// arena 上の Value を gpa にコピーする。
@@ -762,6 +830,83 @@ fn copyValue(gpa: std.mem.Allocator, value: Value) !Value {
         .string => |s| Value{ .string = try gpa.dupe(u8, s) },
         else => value,
     };
+}
+
+fn writeGenericRollupMetadataFixture(dir: anytype) !void {
+    try dir.makePath("objects/Parent__c/fields");
+    try dir.makePath("objects/Child__c/fields");
+    try dir.makePath("objects/Grandchild__c/fields");
+    try dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/OpenChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>OpenChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Status__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>Open</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/ClosedChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ClosedChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Status__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>Closed</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/TotalChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>TotalChildren__c</fullName>
+        \\    <formula>OpenChildren__c
+        \\+ ClosedChildren__c</formula>
+        \\    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+        \\    <type>Number</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Grandchild__c/fields/Child__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Child__c</fullName>
+        \\    <referenceTo>Child__c</referenceTo>
+        \\    <relationshipName>Grandchildren</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
 }
 
 // サブモジュールのテストを参照
@@ -2138,6 +2283,108 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: rollup summary fields resolve in WHERE clauses and selected records" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RollupSummaryRuntimeTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent');
+        \\        insert parent;
+        \\        insert new List<Child__c>{
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Open'),
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Closed'),
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Closed')
+        \\        };
+        \\        Parent__c refreshed = [
+        \\            SELECT OpenChildren__c, ClosedChildren__c, TotalChildren__c
+        \\            FROM Parent__c
+        \\            WHERE TotalChildren__c = 3
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(refreshed.OpenChildren__c) + ':' +
+        \\            String.valueOf(refreshed.ClosedChildren__c) + ':' +
+        \\            String.valueOf(refreshed.TotalChildren__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RollupSummaryRuntimeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2:3", result.value.string);
+}
+
+test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class MultiHopCountQueryTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        insert parent;
+        \\        Child__c child = new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        insert child;
+        \\        insert new Grandchild__c(Child__c = child.Id);
+        \\        Integer grandchildCount = [
+        \\            SELECT COUNT()
+        \\            FROM Grandchild__c
+        \\            WHERE Child__r.Parent__r.RetentionDate__c <= :System.today()
+        \\            AND Child__r.Parent__r.RetentionDate__c != null
+        \\        ];
+        \\        Integer childCount = [
+        \\            SELECT COUNT()
+        \\            FROM Child__c
+        \\            WHERE Parent__r.RetentionDate__c <= :System.today()
+        \\            AND Parent__r.RetentionDate__c != null
+        \\        ];
+        \\        return String.valueOf(grandchildCount) + ':' + String.valueOf(childCount);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "MultiHopCountQueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: SObject.getSObject resolves parent records from a reference field token" {
+    const source =
+        \\public class GetSObjectParentTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
+        \\        insert contactRecord;
+        \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id = :contactRecord.Id];
+        \\        SObject parentRecord = queried.getSObject(Schema.Contact.AccountId);
+        \\        return String.valueOf(parentRecord.get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GetSObjectParentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
 test "E2E: SOQL parent relationship field in WHERE" {
@@ -3561,6 +3808,141 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
     });
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: executeBatch queues chained jobs triggered from finish" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\global class ChainedCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public String phase = 'Children';
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
+        \\        }
+        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE TotalChildren__c = 0]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        Database.delete(scope);
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            phase = 'Parents';
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\}
+        \\public class ChainedCleanupBatchTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent');
+        \\        insert parent;
+        \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        Database.executeBatch(new ChainedCleanupBatch());
+        \\        return String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "ChainedCleanupBatchTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: direct batch finish does not synchronously run chained executeBatch" {
+    const source =
+        \\global class DeferredFinishBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public Integer startRuns = 0;
+        \\    public String phase = 'initial';
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        startRuns++;
+        \\        return Database.getQueryLocator(new List<Account>());
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {}
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (phase == 'initial') {
+        \\            phase = 'queued';
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\}
+        \\public class DeferredFinishBatchTest {
+        \\    public static String test() {
+        \\        DeferredFinishBatch batchJob = new DeferredFinishBatch();
+        \\        batchJob.finish(null);
+        \\        return batchJob.phase + ':' + String.valueOf(batchJob.startRuns);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DeferredFinishBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("queued:0", result.value.string);
+}
+
+test "E2E: Database.insert null list throws by default without allOrNone false" {
+    const source =
+        \\public class DefaultDatabaseAllOrNothingTest {
+        \\    public static String test() {
+        \\        List<Account> rows = null;
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            Database.insert(rows);
+        \\        } catch (NullPointerException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException != null ? 'threw' : 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DefaultDatabaseAllOrNothingTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("threw", result.value.string);
+}
+
+test "E2E: switch when else executes for unmatched string subjects" {
+    const source =
+        \\public class SwitchElseRuntimeTest {
+        \\    public static String choose(String value) {
+        \\        switch on value {
+        \\            when 'A' {
+        \\                return 'match';
+        \\            }
+        \\            when else {
+        \\                throw new IllegalArgumentException('bad:' + value);
+        \\            }
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            choose('Z');
+        \\        } catch (IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SwitchElseRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:Z", result.value.string);
 }
 
 test "E2E: instance overload resolves cast List<SObject> target" {

@@ -25,6 +25,12 @@ pub const CustomChildRelationship = struct {
     fk_field: []const u8,
 };
 
+pub const SummaryFilter = struct {
+    field_path: []const u8,
+    operation: []const u8,
+    value: []const u8,
+};
+
 pub const FieldMetadata = struct {
     is_unique: bool = false,
     is_external_id: bool = false,
@@ -32,6 +38,12 @@ pub const FieldMetadata = struct {
     is_required: bool = false,
     length: ?i64 = null,
     reference_to: ?[]const u8 = null,
+    formula: ?[]const u8 = null,
+    formula_blank_as_zero: bool = false,
+    summarized_field: ?[]const u8 = null,
+    summary_foreign_key: ?[]const u8 = null,
+    summary_operation: ?[]const u8 = null,
+    summary_filters: []const SummaryFilter = &.{},
 };
 
 pub const FieldSetMemberMetadata = struct {
@@ -141,6 +153,10 @@ pub const Evaluator = struct {
     // Current user context (defaults to the synthetic system test user)
     current_user_id: []const u8 = "005000000000001",
     current_profile_id: []const u8 = "00e000000000001",
+    // Batch job execution queue used to model chained Database.executeBatch calls
+    pending_batch_jobs: std.ArrayListUnmanaged(Value) = .empty,
+    batch_job_runner_active: bool = false,
+    batch_lifecycle_depth: u32 = 0,
 
     pub const CallFrame = struct {
         class_name: []const u8,
@@ -3141,9 +3157,8 @@ pub const Evaluator = struct {
                         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
                         for (records.items) |item| {
                             if (item == .sobject) {
-                                if (utils.sobjectGet(&item.sobject.fields, field_name) == null) {
-                                    try item.sobject.fields.put(self.arena, field_name, Value.null_val);
-                                }
+                                const selected_value = self.getSObjectFieldValueCaseInsensitive(item.sobject, field_name) orelse Value.null_val;
+                                try utils.sobjectPut(&item.sobject.fields, self.arena, field_name, selected_value);
                                 // toLabel: convert API name to picklist label using field-meta.xml
                                 if (is_to_label) {
                                     if (utils.sobjectGet(&item.sobject.fields, field_name)) |fv| {
@@ -5156,11 +5171,18 @@ pub const Evaluator = struct {
     }
 
     fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
-        _ = self;
+        var matched_value: ?Value = null;
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, field_name)) return v;
+            if (std.ascii.eqlIgnoreCase(k, field_name)) {
+                matched_value = v;
+                break;
+            }
         }
-        return null;
+        if (matched_value) |value| {
+            if (value != .null_val) return value;
+        }
+        if (self.resolveDerivedFieldValue(sob, field_name)) |derived| return derived;
+        return matched_value;
     }
 
     fn resolveFieldPathValue(self: *Evaluator, sob: *types.SObject, field_path: []const u8) ?Value {
@@ -5198,6 +5220,182 @@ pub const Evaluator = struct {
             if (parent_record != .sobject) return null;
             current = parent_record.sobject;
         }
+    }
+
+    fn resolveDerivedFieldValue(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+        const metadata = self.getFieldMetadata(sob.type_name, field_name) orelse return null;
+        if (metadata.summary_operation != null) {
+            if (self.computeSummaryFieldValue(sob, metadata)) |value| return value;
+        }
+        if (metadata.formula != null) {
+            if (self.computeFormulaFieldValue(sob, metadata)) |value| return value;
+        }
+        return null;
+    }
+
+    fn normalizeSummaryFieldPath(_: *Evaluator, child_type: []const u8, field_path: []const u8) []const u8 {
+        if (std.mem.startsWith(u8, field_path, child_type) and field_path.len > child_type.len and field_path[child_type.len] == '.') {
+            return field_path[child_type.len + 1 ..];
+        }
+        return field_path;
+    }
+
+    fn summaryFilterMatches(self: *Evaluator, child: *types.SObject, child_type: []const u8, filter: SummaryFilter) bool {
+        const field_path = self.normalizeSummaryFieldPath(child_type, filter.field_path);
+        const field_val = if (std.mem.indexOfScalar(u8, field_path, '.')) |_|
+            self.resolveFieldPathValue(child, field_path)
+        else
+            self.getSObjectFieldValueCaseInsensitive(child, field_path);
+        if (field_val == null) return false;
+
+        if (std.ascii.eqlIgnoreCase(filter.operation, "equals")) {
+            return switch (field_val.?) {
+                .string => std.ascii.eqlIgnoreCase(field_val.?.string, filter.value),
+                .integer => blk: {
+                    const expected = std.fmt.parseInt(i64, filter.value, 10) catch break :blk false;
+                    break :blk field_val.?.integer == expected;
+                },
+                .double => blk: {
+                    const expected = std.fmt.parseFloat(f64, filter.value) catch break :blk false;
+                    break :blk field_val.?.double == expected;
+                },
+                .boolean => if (std.ascii.eqlIgnoreCase(filter.value, "true")) field_val.?.boolean else if (std.ascii.eqlIgnoreCase(filter.value, "false")) !field_val.?.boolean else false,
+                .null_val => std.ascii.eqlIgnoreCase(filter.value, "null"),
+                else => {
+                    const actual = utils.coerceToString(field_val.?, self.arena) catch return false;
+                    return std.ascii.eqlIgnoreCase(actual, filter.value);
+                },
+            };
+        }
+
+        if (std.ascii.eqlIgnoreCase(filter.operation, "notEqual")) {
+            return !self.summaryFilterMatches(child, child_type, .{
+                .field_path = filter.field_path,
+                .operation = "equals",
+                .value = filter.value,
+            });
+        }
+
+        return false;
+    }
+
+    fn computeSummaryFieldValue(self: *Evaluator, sob: *types.SObject, metadata: FieldMetadata) ?Value {
+        const summary_operation = metadata.summary_operation orelse return null;
+        const summary_fk = metadata.summary_foreign_key orelse return null;
+        const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse return null;
+        const child_type = summary_fk[0..dot_idx];
+        const fk_field = summary_fk[dot_idx + 1 ..];
+
+        const parent_id = sob.id orelse blk: {
+            if (utils.sobjectGet(&sob.fields, "Id")) |id_val| {
+                if (id_val == .string) break :blk id_val.string;
+            }
+            break :blk null;
+        };
+
+        if (parent_id == null) {
+            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
+            return Value.null_val;
+        }
+
+        const child_records = self.store.get(child_type) orelse {
+            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
+            return Value.null_val;
+        };
+
+        var count: i64 = 0;
+        var aggregate: ?Value = null;
+        const summarized_field = if (metadata.summarized_field) |field_path|
+            self.normalizeSummaryFieldPath(child_type, field_path)
+        else
+            "";
+
+        for (child_records.items) |record| {
+            if (record != .sobject) continue;
+            const fk_val = self.getSObjectFieldValueCaseInsensitive(record.sobject, fk_field) orelse continue;
+            if (fk_val != .string or !std.ascii.eqlIgnoreCase(fk_val.string, parent_id.?)) continue;
+
+            var passes_filters = true;
+            for (metadata.summary_filters) |filter| {
+                if (!self.summaryFilterMatches(record.sobject, child_type, filter)) {
+                    passes_filters = false;
+                    break;
+                }
+            }
+            if (!passes_filters) continue;
+
+            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) {
+                count += 1;
+                continue;
+            }
+
+            if (summarized_field.len == 0) continue;
+            const child_value = blk: {
+                if (std.mem.indexOfScalar(u8, summarized_field, '.')) |_| {
+                    break :blk self.resolveFieldPathValue(record.sobject, summarized_field) orelse Value.null_val;
+                }
+                break :blk self.getSObjectFieldValueCaseInsensitive(record.sobject, summarized_field) orelse Value.null_val;
+            };
+            if (child_value == .null_val) continue;
+
+            if (aggregate == null) {
+                aggregate = child_value;
+                continue;
+            }
+
+            const cmp = self.compareValues(aggregate.?, child_value);
+            if (std.ascii.eqlIgnoreCase(summary_operation, "min")) {
+                if (cmp > 0) aggregate = child_value;
+            } else if (std.ascii.eqlIgnoreCase(summary_operation, "max")) {
+                if (cmp < 0) aggregate = child_value;
+            }
+        }
+
+        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
+        return aggregate orelse Value.null_val;
+    }
+
+    fn computeFormulaFieldValue(self: *Evaluator, sob: *types.SObject, metadata: FieldMetadata) ?Value {
+        const formula = metadata.formula orelse return null;
+        const trimmed = std.mem.trim(u8, formula, " \t\n\r");
+        if (trimmed.len == 0) return null;
+
+        if (std.mem.indexOfScalar(u8, trimmed, '+')) |_| {
+            var total: i64 = 0;
+            var term_iter = std.mem.splitScalar(u8, trimmed, '+');
+            while (term_iter.next()) |raw_term| {
+                const term = std.mem.trim(u8, raw_term, " \t\n\r()");
+                if (term.len == 0) continue;
+                const term_value = self.getSObjectFieldValueCaseInsensitive(sob, term) orelse Value.null_val;
+                switch (term_value) {
+                    .integer => |i| total += i,
+                    .double => |d| total += @intFromFloat(d),
+                    .null_val => {
+                        if (!metadata.formula_blank_as_zero) return Value.null_val;
+                    },
+                    else => return Value.null_val,
+                }
+            }
+            return Value{ .integer = total };
+        }
+
+        if (std.mem.indexOfScalar(u8, trimmed, '.')) |_| {
+            return self.resolveFieldPathValue(sob, trimmed);
+        }
+
+        if (std.ascii.indexOfIgnoreCase(trimmed, "!= null")) |idx| {
+            const lhs = std.mem.trim(u8, trimmed[0..idx], " \t\n\r");
+            const lhs_value = self.getSObjectFieldValueCaseInsensitive(sob, lhs) orelse Value.null_val;
+            return Value{ .boolean = lhs_value != .null_val };
+        }
+
+        if (std.ascii.indexOfIgnoreCase(trimmed, "== null")) |idx| {
+            const lhs = std.mem.trim(u8, trimmed[0..idx], " \t\n\r");
+            const lhs_value = self.getSObjectFieldValueCaseInsensitive(sob, lhs) orelse Value.null_val;
+            return Value{ .boolean = lhs_value == .null_val };
+        }
+
+        return self.getSObjectFieldValueCaseInsensitive(sob, trimmed);
     }
 
     /// Create a shallow clone of an SObject (copies the fields map).
@@ -7016,11 +7214,54 @@ pub const Evaluator = struct {
                     }
                     break :blk try utils.coerceToString(args[0], self.arena);
                 } else try utils.coerceToString(args[0], self.arena);
-                // Case-insensitive field lookup
-                for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                    if (std.ascii.eqlIgnoreCase(k, field_name)) return v;
+                return self.getSObjectFieldValueCaseInsensitive(obj.sobject, field_name) orelse Value.null_val;
+            }
+            // getSObject(fieldName) - resolve loaded parent records or follow FK to the store
+            if (std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0) {
+                const raw_name: []const u8 = if (args[0] == .string)
+                    args[0].string
+                else if (args[0] == .object) blk: {
+                    if (args[0].object.fields.get("fieldName")) |n| {
+                        if (n == .string) break :blk n.string;
+                    }
+                    if (args[0].object.fields.get("name")) |n| {
+                        if (n == .string) break :blk n.string;
+                    }
+                    break :blk try utils.coerceToString(args[0], self.arena);
+                } else try utils.coerceToString(args[0], self.arena);
+
+                if (self.getSObjectFieldValueCaseInsensitive(obj.sobject, raw_name)) |loaded| {
+                    if (loaded == .sobject) return loaded;
                 }
-                return Value.null_val;
+
+                const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+                    raw_name
+                else
+                    self.parentRefToFk(raw_name);
+                const fk_value = self.getSObjectFieldValueCaseInsensitive(obj.sobject, fk_field) orelse return Value.null_val;
+                if (fk_value != .string) return Value.null_val;
+
+                const target_type = blk: {
+                    if (self.getFieldMetadata(obj.sobject.type_name, fk_field)) |meta| {
+                        if (meta.reference_to) |reference_to| break :blk reference_to;
+                    }
+                    if (self.findRecordTypeById(fk_value.string)) |record_type| break :blk record_type;
+                    if (fk_value.string.len >= 3) {
+                        const inferred = sobjectTypeFromPrefix(fk_value.string[0..3]);
+                        if (!std.ascii.eqlIgnoreCase(inferred, "SObject")) break :blk inferred;
+                    }
+                    break :blk null;
+                } orelse return Value.null_val;
+
+                if (self.findRecordById(target_type, fk_value.string)) |record| {
+                    if (record == .sobject) return record;
+                }
+
+                const related = try self.arena.create(types.SObject);
+                related.* = .{ .type_name = target_type };
+                related.id = fk_value.string;
+                try related.fields.put(self.arena, "Id", fk_value);
+                return Value{ .sobject = related };
             }
             // put(fieldName, value)
             if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
@@ -8479,11 +8720,7 @@ pub const Evaluator = struct {
             if (obj.list.items.items.len > 0) {
                 const first = obj.list.items.items[0];
                 if (first == .sobject) {
-                    // Case-insensitive field lookup
-                    for (first.sobject.fields.keys(), first.sobject.fields.values()) |k, v| {
-                        if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
-                    }
-                    return Value.null_val;
+                    return self.getSObjectFieldValueCaseInsensitive(first.sobject, fa.field) orelse Value.null_val;
                 }
             }
             // List.size as property
@@ -8492,10 +8729,7 @@ pub const Evaluator = struct {
         }
 
         if (obj == .sobject) {
-            // Case-insensitive field lookup
-            for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
-            }
+            if (self.getSObjectFieldValueCaseInsensitive(obj.sobject, fa.field)) |value| return value;
             // If this SObject was processed by stripInaccessible, throw SObjectException
             if (obj.sobject.is_stripped) {
                 const exc = try self.arena.create(types.ObjectInstance);
@@ -9649,7 +9883,7 @@ pub const Evaluator = struct {
                 if (args.len >= 2) {
                     if (self.getDmlOptionsAllOrNone(args[1])) |opt| break :blk opt;
                 }
-                break :blk false;
+                break :blk true;
             };
 
             // Check if second arg is AccessLevel.USER_MODE for min-access user context (without permsets)
@@ -9866,32 +10100,56 @@ pub const Evaluator = struct {
                 self.limits_callouts = sb_call;
             }
             if (args.len > 0 and args[0] == .object) {
-                const batch_obj = args[0].object;
-                if (self.findClass(batch_obj.class_name)) |batch_class| {
-                    // Call start() to get the QueryLocator
-                    const scope = try self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val});
-                    // Use QueryLocator's query to get the correct records
-                    var all_records: std.ArrayListUnmanaged(Value) = .empty;
-                    if (scope == .object) {
-                        if (scope.object.fields.get("query")) |query_val| {
-                            if (query_val == .string) {
-                                // Execute the SOQL query to get records
-                                const batch_env = try self.global_env.child();
-                                const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
-                                if (query_result == .list) {
-                                    for (query_result.list.items.items) |item| {
+                const job_id = try self.allocId();
+                if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
+                    if (self.batch_job_runner_active) {
+                        try self.pending_batch_jobs.append(self.arena, args[0]);
+                    }
+                    return Value{ .string = job_id };
+                }
+
+                self.batch_job_runner_active = true;
+                self.pending_batch_jobs = .empty;
+                defer {
+                    self.pending_batch_jobs = .empty;
+                    self.batch_job_runner_active = false;
+                }
+
+                try self.pending_batch_jobs.append(self.arena, args[0]);
+                var job_index: usize = 0;
+                while (job_index < self.pending_batch_jobs.items.len) : (job_index += 1) {
+                    const batch_value = self.pending_batch_jobs.items[job_index];
+                    if (batch_value != .object) continue;
+                    const batch_obj = batch_value.object;
+                    if (self.findClass(batch_obj.class_name)) |batch_class| {
+                        const scope = try self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val});
+                        var all_records: std.ArrayListUnmanaged(Value) = .empty;
+                        if (scope == .object) {
+                            if (scope.object.fields.get("query")) |query_val| {
+                                if (query_val == .string) {
+                                    const batch_env = try self.global_env.child();
+                                    const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
+                                    if (query_result == .list) {
+                                        for (query_result.list.items.items) |item| {
+                                            try all_records.append(self.arena, item);
+                                        }
+                                    }
+                                }
+                            } else if (scope.object.fields.get("records")) |records_val| {
+                                if (records_val == .list) {
+                                    for (records_val.list.items.items) |item| {
+                                        try all_records.append(self.arena, item);
+                                    }
+                                }
+                            } else {
+                                var store_iter = self.store.iterator();
+                                while (store_iter.next()) |entry| {
+                                    for (entry.value_ptr.items) |item| {
                                         try all_records.append(self.arena, item);
                                     }
                                 }
                             }
-                        } else if (scope.object.fields.get("records")) |records_val| {
-                            if (records_val == .list) {
-                                for (records_val.list.items.items) |item| {
-                                    try all_records.append(self.arena, item);
-                                }
-                            }
                         } else {
-                            // Fallback: get all records from store
                             var store_iter = self.store.iterator();
                             while (store_iter.next()) |entry| {
                                 for (entry.value_ptr.items) |item| {
@@ -9899,21 +10157,13 @@ pub const Evaluator = struct {
                                 }
                             }
                         }
-                    } else {
-                        // Fallback: get all records from store
-                        var store_iter = self.store.iterator();
-                        while (store_iter.next()) |entry| {
-                            for (entry.value_ptr.items) |item| {
-                                try all_records.append(self.arena, item);
-                            }
-                        }
+                        const record_list = try self.arena.create(types.ListValue);
+                        record_list.* = .{ .items = all_records };
+                        _ = try self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ Value.null_val, Value{ .list = record_list } });
+                        _ = try self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val});
                     }
-                    const record_list = try self.arena.create(types.ListValue);
-                    record_list.* = .{ .items = all_records };
-                    _ = try self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ Value.null_val, Value{ .list = record_list } });
-                    // Call finish()
-                    _ = try self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val});
                 }
+                return Value{ .string = job_id };
             }
             return Value{ .string = try self.allocId() }; // Fake job ID
         }
@@ -10469,6 +10719,12 @@ pub const Evaluator = struct {
             const saved_class = self.current_class;
             self.current_class = owner_decl.name;
             defer self.current_class = saved_class;
+            const batch_lifecycle = self.isBatchLifecycleMethod(owner_decl.name, method_name) or
+                self.isBatchLifecycleMethod(instance.class_name, method_name);
+            if (batch_lifecycle) self.batch_lifecycle_depth += 1;
+            defer {
+                if (batch_lifecycle) self.batch_lifecycle_depth -= 1;
+            }
             const result = try self.execBlock(method.body, method_env);
             // Sync back fields modified via `this.field = value`
             const this_val = method_env.get("this");
@@ -11223,9 +11479,9 @@ pub const Evaluator = struct {
 
     /// Compare two Values by a field name for ORDER BY.
     /// Returns: -1 if a < b, 0 if equal, 1 if a > b
-    fn compareByField(_: *Evaluator, a: Value, b: Value, field: []const u8) i32 {
-        const av = if (a == .sobject) utils.sobjectGet(&a.sobject.fields, field) orelse Value.null_val else Value.null_val;
-        const bv = if (b == .sobject) utils.sobjectGet(&b.sobject.fields, field) orelse Value.null_val else Value.null_val;
+    fn compareByField(self: *Evaluator, a: Value, b: Value, field: []const u8) i32 {
+        const av = if (a == .sobject) self.getSObjectFieldValueCaseInsensitive(a.sobject, field) orelse Value.null_val else Value.null_val;
+        const bv = if (b == .sobject) self.getSObjectFieldValueCaseInsensitive(b.sobject, field) orelse Value.null_val else Value.null_val;
         // null sorts last
         if (av == .null_val and bv == .null_val) return 0;
         if (av == .null_val) return 1;
@@ -11299,16 +11555,34 @@ pub const Evaluator = struct {
         return 0;
     }
 
-    fn hasComparableInterface(self: *Evaluator, class_name: []const u8) bool {
+    fn classImplementsInterface(self: *Evaluator, class_name: []const u8, interface_name: []const u8) bool {
         const cd = self.findClass(class_name) orelse return false;
         for (cd.interfaces) |iface| {
-            if (std.ascii.eqlIgnoreCase(iface.name, "Comparable")) return true;
+            if (std.ascii.eqlIgnoreCase(iface.name, interface_name)) return true;
+            if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
+                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) return true;
+            }
         }
         // Check parent class
         if (cd.super_class) |sc| {
-            return self.hasComparableInterface(sc.name);
+            return self.classImplementsInterface(sc.name, interface_name);
         }
         return false;
+    }
+
+    fn hasComparableInterface(self: *Evaluator, class_name: []const u8) bool {
+        return self.classImplementsInterface(class_name, "Comparable");
+    }
+
+    fn isBatchLifecycleMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8) bool {
+        if (!(std.ascii.eqlIgnoreCase(method_name, "start") or
+            std.ascii.eqlIgnoreCase(method_name, "execute") or
+            std.ascii.eqlIgnoreCase(method_name, "finish")))
+        {
+            return false;
+        }
+        return self.classImplementsInterface(class_name, "Database.Batchable") or
+            self.classImplementsInterface(class_name, "Batchable");
     }
 
     fn callCompareTo(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) i32 {
