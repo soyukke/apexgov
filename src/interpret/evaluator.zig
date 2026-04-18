@@ -2868,6 +2868,21 @@ pub const Evaluator = struct {
 
     fn upsertRecord(self: *Evaluator, obj: *types.SObject, external_id_field: ?[]const u8) anyerror!void {
         if (external_id_field) |field_name| {
+            if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
+                if (obj.id != null) {
+                    try self.updateRecord(obj);
+                    return;
+                }
+                if (utils.sobjectGet(&obj.fields, "Id")) |id_val| {
+                    if (id_val == .string and id_val.string.len > 0) {
+                        obj.id = id_val.string;
+                        try self.updateRecord(obj);
+                        return;
+                    }
+                }
+                try self.insertRecord(obj);
+                return;
+            }
             const field_value = getUpsertFieldValue(obj, field_name);
             if (field_value == .null_val) {
                 const exc = try self.arena.create(types.ObjectInstance);
@@ -3486,8 +3501,15 @@ pub const Evaluator = struct {
                         break;
                     }
                 }
-                // Also known if it ends with __c (custom object), __e (platform event), __mdt (custom metadata)
-                if (std.mem.endsWith(u8, from_type, "__c") or std.mem.endsWith(u8, from_type, "__e") or std.mem.endsWith(u8, from_type, "__mdt") or std.mem.endsWith(u8, from_type, "__b")) {
+                // Also known if it is a custom-object derivative type.
+                if (std.mem.endsWith(u8, from_type, "__c") or
+                    std.mem.endsWith(u8, from_type, "__e") or
+                    std.mem.endsWith(u8, from_type, "__mdt") or
+                    std.mem.endsWith(u8, from_type, "__b") or
+                    std.mem.endsWith(u8, from_type, "__Share") or
+                    std.mem.endsWith(u8, from_type, "__History") or
+                    std.mem.endsWith(u8, from_type, "__ChangeEvent"))
+                {
                     is_known = true;
                 }
                 // Also known if generateMetadataStub can handle it

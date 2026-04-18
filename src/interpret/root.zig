@@ -1822,6 +1822,50 @@ test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
     try std.testing.expectEqualStrings("false:true:Updated:2:UniqueId__c", result.value.string);
 }
 
+test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
+    const source =
+        \\public class UpsertByIdFieldTest {
+        \\    public static String test() {
+        \\        Account row = new Account(Name = 'Created via Id token');
+        \\        Database.UpsertResult saveResult = Database.upsert(row, Schema.Account.Id);
+        \\        return String.valueOf(saveResult.isSuccess()) + ':' + String.valueOf(saveResult.isCreated()) + ':' + String.valueOf(row.Id != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UpsertByIdFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+}
+
+test "E2E: custom share objects are queryable" {
+    const source =
+        \\public class CustomShareQueryTest {
+        \\    public static String test() {
+        \\        Thing__c parentRecord = new Thing__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        Thing__Share shareRow = new Thing__Share(
+        \\            ParentId = parentRecord.Id,
+        \\            UserOrGroupId = UserInfo.getUserId(),
+        \\            AccessLevel = 'Read'
+        \\        );
+        \\        insert shareRow;
+        \\        List<Thing__Share> rows = [SELECT ParentId, UserOrGroupId, AccessLevel FROM Thing__Share WHERE ParentId = :parentRecord.Id];
+        \\        Thing__Share savedRow = rows[0];
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(savedRow.ParentId == parentRecord.Id) + ':' + String.valueOf(savedRow.UserOrGroupId == UserInfo.getUserId());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CustomShareQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:true", result.value.string);
+}
+
 test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
     const source =
         \\public class MockH2 implements HttpCalloutMock {
