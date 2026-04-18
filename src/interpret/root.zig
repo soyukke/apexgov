@@ -1307,6 +1307,22 @@ test "E2E: Date.today returns current date, Date.newInstance builds from args" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: System.now date matches System.today" {
+    const source =
+        \\public class SystemNowTest {
+        \\    public static String test() {
+        \\        return String.valueOf(System.now().date() == System.today());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SystemNowTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: Database.query on unknown object throws QueryException" {
     const source =
         \\public class UnknownObjTest {
@@ -2438,6 +2454,23 @@ test "E2E: Datetime.getTime() returns epoch millis" {
     try std.testing.expectEqualStrings("2024-07-19", result.value.string);
 }
 
+test "E2E: Datetime.valueOf accepts epoch milliseconds" {
+    const source =
+        \\public class DtValueOfMillisTest {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.valueOf(1735689600000L);
+        \\        return dt.format('yyyy-MM-dd') + ':' + String.valueOf(dt.getTime());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtValueOfMillisTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2025-01-01:1735689600000", result.value.string);
+}
+
 test "E2E: String.toLowerCase and trim" {
     const source =
         \\public class StrLowerTest {
@@ -2475,6 +2508,25 @@ test "E2E: Database.query resolves local bind variables" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Integer and Long valueOf preserve null inputs" {
+    const source =
+        \\public class NullNumericValueOfTest {
+        \\    public static String test() {
+        \\        String missingValue = null;
+        \\        Integer integerValue = Integer.valueOf(missingValue);
+        \\        Long longValue = Long.valueOf(missingValue);
+        \\        return String.valueOf(integerValue == null) + ':' + String.valueOf(longValue == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullNumericValueOfTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
 test "E2E: SOQL formula field Experience_Name__c resolved from parent" {

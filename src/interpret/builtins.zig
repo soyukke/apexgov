@@ -218,7 +218,7 @@ fn dispatchStaticSystem(ctx: *BuiltinContext, method_name: []const u8, args: []c
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
-    if (std.ascii.eqlIgnoreCase(method_name, "now")) return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
+    if (std.ascii.eqlIgnoreCase(method_name, "now")) return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "today")) return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = false };
@@ -366,7 +366,7 @@ fn dispatchStaticInteger(ctx: *BuiltinContext, method_name: []const u8, args: []
             } },
             .integer => args[0],
             .double => |d| Value{ .integer = @intFromFloat(d) },
-            .null_val => Value{ .integer = 0 },
+            .null_val => Value.null_val,
             else => Value.null_val,
         };
     }
@@ -381,7 +381,7 @@ fn dispatchStaticLong(ctx: *BuiltinContext, method_name: []const u8, args: []con
             } },
             .integer => args[0],
             .double => |d| Value{ .integer = @intFromFloat(d) },
-            .null_val => Value{ .integer = 0 },
+            .null_val => Value.null_val,
             else => Value.null_val,
         };
     }
@@ -522,6 +522,22 @@ fn dispatchStaticTime(ctx: *BuiltinContext, method_name: []const u8, args: []con
 }
 
 fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    const fromEpochMillis = struct {
+        fn convert(ctx2: *BuiltinContext, ms: i64) !Value {
+            const total_secs = @divTrunc(ms, 1000);
+            const epoch_secs: u64 = @intCast(if (total_secs > 0) total_secs else 0);
+            const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+            const epoch_day = es.getEpochDay();
+            const yd = epoch_day.calculateYearDay();
+            const md = yd.calculateMonthDay();
+            const ds = es.getDaySeconds();
+            return makeDatetimeValue(ctx2.arena, try std.fmt.allocPrint(ctx2.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+                yd.year,              md.month.numeric(),      md.day_index + 1,
+                ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+            }));
+        }
+    };
+
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
     }
@@ -594,30 +610,26 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
                 .double => |d10| @as(i64, @intFromFloat(d10)),
                 else => 0,
             };
-            const total_secs = @divTrunc(ms, 1000);
-            const epoch_secs: u64 = @intCast(if (total_secs > 0) total_secs else 0);
-            const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
-            const epoch_day = es.getEpochDay();
-            const yd = epoch_day.calculateYearDay();
-            const md = yd.calculateMonthDay();
-            const ds = es.getDaySeconds();
-            return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                yd.year,              md.month.numeric(),      md.day_index + 1,
-                ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
-            }));
+            return try fromEpochMillis.convert(ctx, ms);
         }
         return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
     }
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
+            switch (args[0]) {
+                .integer => |i| return try fromEpochMillis.convert(ctx, i),
+                .double => |d| return try fromEpochMillis.convert(ctx, @intFromFloat(d)),
+                .null_val => return Value.null_val,
+                else => {},
+            }
             if (extractDateString(args[0])) |s| {
                 if (!isValidDateString(s)) return error.ApexException;
                 return try makeDatetimeValue(ctx.arena, s);
             }
         }
-        return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
+        return Value.null_val;
     }
-    return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
+    return Value.null_val;
 }
 
 fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
