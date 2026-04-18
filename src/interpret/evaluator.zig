@@ -7229,8 +7229,9 @@ pub const Evaluator = struct {
             const type_name = if (obj.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object";
             if (self.findClass(type_name)) |cd| {
                 const inst = try self.arena.create(types.ObjectInstance);
-                // Use the canonical class name from the declaration
-                inst.* = .{ .class_name = cd.name };
+                // Preserve the requested type name so qualified inner classes
+                // continue to dispatch against the intended outer class.
+                inst.* = .{ .class_name = type_name };
                 self.initInstanceFields(cd, inst) catch {};
                 if (cd.super_class) |sc| {
                     if (self.findClass(sc.name)) |parent| {
@@ -9403,6 +9404,16 @@ pub const Evaluator = struct {
                                 return self.global_env.get(skey) orelse Value.null_val;
                             }
                         },
+                        .class_decl => |inner_cd| {
+                            if (std.ascii.eqlIgnoreCase(inner_cd.name, fa.field)) {
+                                return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, inner_cd.name }) };
+                            }
+                        },
+                        .interface_decl => |inner_iface| {
+                            if (std.ascii.eqlIgnoreCase(inner_iface.name, fa.field)) {
+                                return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, inner_iface.name }) };
+                            }
+                        },
                         else => {},
                     }
                 }
@@ -9429,6 +9440,30 @@ pub const Evaluator = struct {
                             .enum_decl => |ed| {
                                 if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
                                     return Value{ .string = fa.field };
+                                }
+                            },
+                            .class_decl => |inner_cd| {
+                                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
+                                    if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                                        const type_obj = try self.arena.create(types.ObjectInstance);
+                                        type_obj.* = .{ .class_name = "Type" };
+                                        const fq_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_cd.name });
+                                        try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
+                                        return Value{ .object = type_obj };
+                                    }
+                                    const fq_inner_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_cd.name });
+                                    const static_key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fq_inner_name, fa.field });
+                                    if (self.global_env.get(static_key)) |v| return v;
+                                    return Value{ .string = fa.field };
+                                }
+                            },
+                            .interface_decl => |inner_iface| {
+                                if (std.ascii.eqlIgnoreCase(inner_iface.name, inner_name) and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                                    const type_obj = try self.arena.create(types.ObjectInstance);
+                                    type_obj.* = .{ .class_name = "Type" };
+                                    const fq_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_iface.name });
+                                    try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
+                                    return Value{ .object = type_obj };
                                 }
                             },
                             else => {},
@@ -12305,8 +12340,9 @@ pub const Evaluator = struct {
             // Also ensure parent class hierarchy is initialized
             if (class_decl.super_class) |sc| self.ensureStaticInit(sc.name);
             const instance = try self.arena.create(types.ObjectInstance);
-            // Use the canonical class name from the declaration (preserves original casing)
-            instance.* = .{ .class_name = class_decl.name };
+            // Preserve the requested class name so qualified inner classes
+            // continue to dispatch against the intended outer class.
+            instance.* = .{ .class_name = class_name };
             // Initialize instance fields
             self.initInstanceFields(class_decl, instance) catch {};
             // Initialize parent class fields

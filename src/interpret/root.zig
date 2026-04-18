@@ -2777,6 +2777,67 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
+test "E2E: qualified inner class literals preserve outer class names" {
+    const source =
+        \\public class OuterNameHost {
+        \\    public class InnerNameTarget {
+        \\    }
+        \\    public static String getInnerNameFromInside() {
+        \\        return InnerNameTarget.class.getName();
+        \\    }
+        \\}
+        \\public class QualifiedInnerNameTest {
+        \\    public static String test() {
+        \\        return OuterNameHost.getInnerNameFromInside() + '|' + OuterNameHost.InnerNameTarget.class.getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedInnerNameTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget", result.value.string);
+}
+
+test "E2E: Type.forName(newInstance) preserves qualified inner class identity across duplicates" {
+    const source =
+        \\public abstract class SharedHandlerBase {
+        \\    public abstract String whoAmI();
+        \\}
+        \\public class HandlerHostA {
+        \\    public class SharedHandler extends SharedHandlerBase {
+        \\        public override String whoAmI() {
+        \\            return 'A';
+        \\        }
+        \\    }
+        \\    public static String getInnerHandlerName() {
+        \\        return SharedHandler.class.getName();
+        \\    }
+        \\}
+        \\public class HandlerHostB {
+        \\    public class SharedHandler extends SharedHandlerBase {
+        \\        public override String whoAmI() {
+        \\            return 'B';
+        \\        }
+        \\    }
+        \\}
+        \\public class QualifiedInnerInstanceTest {
+        \\    public static String test() {
+        \\        SharedHandlerBase inside = (SharedHandlerBase) Type.forName(HandlerHostA.getInnerHandlerName()).newInstance();
+        \\        SharedHandlerBase outside = (SharedHandlerBase) Type.forName(HandlerHostA.SharedHandler.class.getName()).newInstance();
+        \\        return inside.whoAmI() + outside.whoAmI();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedInnerInstanceTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("AA", result.value.string);
+}
+
 test "E2E: SObject.getSObject resolves parent records from a reference field token" {
     const source =
         \\public class GetSObjectParentTest {
