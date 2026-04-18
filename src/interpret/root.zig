@@ -106,7 +106,10 @@ const SampleAppFixturePaths = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const alloc = arena.allocator();
-        const fixture_path = try findSampleAppFixturePath(alloc);
+        const fixture_path = findSampleAppFixturePath(alloc) catch |err| switch (err) {
+            error.FileNotFound => return error.SkipZigTest,
+            else => return err,
+        };
         const paths = try alloc.alloc([]const u8, 1);
         paths[0] = fixture_path;
         return .{ .arena = arena, .paths = paths };
