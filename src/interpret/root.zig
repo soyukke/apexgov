@@ -4242,6 +4242,61 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
     try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
 }
 
+test "E2E: Apex metadata datetime compares against custom datetime fields" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <label>Thing</label>
+        \\</CustomObject>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/Timestamp__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Timestamp__c</fullName>
+        \\    <type>DateTime</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ApexMetadataDateComparisonTest {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(record));
+        \\        fields.put(field.toString(), value);
+        \\        return (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\    }
+        \\    public static String test() {
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        apexClassRecord = (Schema.ApexClass) setReadOnlyField(
+        \\            apexClassRecord,
+        \\            Schema.ApexClass.LastModifiedDate,
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
+        \\        Thing__c record = new Thing__c(Timestamp__c = Datetime.newInstance(2026, 3, 1, 0, 0, 0));
+        \\        return String.valueOf(((Datetime) ((SObject) apexClassRecord).get(Schema.ApexClass.LastModifiedDate)) > record.Timestamp__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "ApexMetadataDateComparisonTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: singleton mocks preserve virtual override dispatch" {
     const source =
         \\public virtual class SelectorBase {

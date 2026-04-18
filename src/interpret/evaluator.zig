@@ -12460,6 +12460,37 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
 }
 
 fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Allocator) !Value {
+    const TemporalComparable = struct {
+        fn normalize(raw: []const u8) []const u8 {
+            if (raw.len > 10 and std.mem.indexOf(u8, raw, "T") != null) {
+                if (std.mem.endsWith(u8, raw, ".000+0000")) return raw[0 .. raw.len - 9];
+                if (std.mem.endsWith(u8, raw, ".000Z")) return raw[0 .. raw.len - 4];
+                if (std.mem.endsWith(u8, raw, "Z")) return raw[0 .. raw.len - 1];
+            }
+            return raw;
+        }
+
+        fn fromValue(value: Value) ?[]const u8 {
+            return switch (value) {
+                .object => |obj| blk: {
+                    if (!std.ascii.eqlIgnoreCase(obj.class_name, "Date") and !std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) {
+                        break :blk null;
+                    }
+                    const raw = obj.fields.get("value") orelse break :blk null;
+                    if (raw != .string) break :blk null;
+                    break :blk normalize(raw.string);
+                },
+                .string => |raw| blk: {
+                    const normalized = normalize(raw);
+                    const is_date_like = normalized.len >= 10 and normalized[4] == '-' and normalized[7] == '-';
+                    if (!is_date_like) break :blk null;
+                    break :blk normalized;
+                },
+                else => null,
+            };
+        }
+    };
+
     switch (op) {
         .eq => return .{ .boolean = utils.valueEql(left, right) },
         .neq => return .{ .boolean = !utils.valueEql(left, right) },
@@ -12507,6 +12538,19 @@ fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Alloca
         const rs = try utils.coerceToString(right, arena);
         const result = try std.fmt.allocPrint(arena, "{s}{s}", .{ ls, rs });
         return .{ .string = result };
+    }
+
+    if (TemporalComparable.fromValue(left)) |lv| {
+        if (TemporalComparable.fromValue(right)) |rv| {
+            const cmp = std.mem.order(u8, lv, rv);
+            return switch (op) {
+                .lt => .{ .boolean = cmp == .lt },
+                .gt => .{ .boolean = cmp == .gt },
+                .lte => .{ .boolean = cmp != .gt },
+                .gte => .{ .boolean = cmp != .lt },
+                else => .null_val,
+            };
+        }
     }
 
     // Date/DateTime comparison (objects with "value" field containing ISO strings)
