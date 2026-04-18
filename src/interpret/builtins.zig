@@ -1740,7 +1740,7 @@ fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []cons
     return Value{ .object = rti };
 }
 
-fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
+pub fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
     return createFieldDescribeResultWithType(ctx, object_type, field_name, null);
 }
 
@@ -2316,8 +2316,16 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
     // Generic getDescribe
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or
-            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.DescribeFieldResult") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+        {
+            const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
+            const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
+            if (object_type_val == .string and field_name_val == .string) {
+                return try createFieldDescribeResultWithType(ctx, object_type_val.string, field_name_val.string, null);
+            }
+            return Value{ .object = obj };
+        }
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.DescribeFieldResult") or
             std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult"))
         {
             return Value{ .object = obj };
@@ -2998,7 +3006,18 @@ fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstan
         }
         return Value{ .list = list };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };
+    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+        {
+            const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
+            const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
+            if (object_type_val == .string and field_name_val == .string) {
+                return try createFieldDescribeResultWithType(ctx, object_type_val.string, field_name_val.string, null);
+            }
+        }
+        return Value{ .object = obj };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;
 }

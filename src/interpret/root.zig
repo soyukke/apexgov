@@ -4651,6 +4651,51 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
 }
 
+test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/ShortText__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ShortText__c</fullName>
+        \\    <label>Short Text</label>
+        \\    <length>5</length>
+        \\    <type>Text</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldDescribeLengthTest {
+        \\    public static Integer getFieldLength(Schema.SObjectField field) {
+        \\        return field.getDescribe().getLength();
+        \\    }
+        \\    public static String truncateFieldValue(Schema.SObjectField field, String value) {
+        \\        return value?.left(field.getDescribe().getLength());
+        \\    }
+        \\    public static String test() {
+        \\        Integer inlineMaxLength = Schema.Thing__c.ShortText__c.getDescribe().getLength();
+        \\        Integer tokenMaxLength = getFieldLength(Schema.Thing__c.ShortText__c);
+        \\        String truncatedValue = truncateFieldValue(Schema.Thing__c.ShortText__c, 'abcdef');
+        \\        return String.valueOf(inlineMaxLength) + ':' + String.valueOf(tokenMaxLength) + ':' + truncatedValue;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldDescribeLengthTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("5:5:abcde", result.value.string);
+}
+
 test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});

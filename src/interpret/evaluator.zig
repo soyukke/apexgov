@@ -5719,6 +5719,28 @@ pub const Evaluator = struct {
                     // If value is null_val, still check for instance getter (property may override)
                     if (val != .null_val) return val;
                 }
+                if (std.mem.startsWith(u8, id.name, "Schema.")) {
+                    const suffix = id.name["Schema.".len..];
+                    if (std.mem.lastIndexOfScalar(u8, suffix, '.')) |dot_idx| {
+                        const owner_name = suffix[0..dot_idx];
+                        const member_name = suffix[dot_idx + 1 ..];
+                        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
+                            const sot = try self.arena.create(types.ObjectInstance);
+                            sot.* = .{ .class_name = "Schema.SObjectType" };
+                            try sot.fields.put(self.arena, "name", Value{ .string = member_name });
+                            return Value{ .object = sot };
+                        }
+                        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
+                            const sot = try self.arena.create(types.ObjectInstance);
+                            sot.* = .{ .class_name = "Schema.SObjectType" };
+                            try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
+                            return Value{ .object = sot };
+                        }
+                        if (!std.ascii.eqlIgnoreCase(member_name, "class")) {
+                            return try self.makeSObjectFieldToken(owner_name, member_name);
+                        }
+                    }
+                }
                 // Check if this is a property with a getter on `this`
                 // (bare identifier in getter body referencing another property)
                 // Skip if we're already inside this property's getter to avoid infinite recursion
@@ -5862,7 +5884,9 @@ pub const Evaluator = struct {
                 var args: std.ArrayListUnmanaged(Value) = .empty;
                 var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
                 for (call.args) |*arg| {
-                    try args.append(self.arena, try self.evalExpr(arg, current_env));
+                    var arg_value = try self.evalExpr(arg, current_env);
+                    arg_value = try self.maybeCoerceSchemaExprValue(arg, arg_value);
+                    try args.append(self.arena, arg_value);
                     const hint = self.extractExprTypeHint(arg, current_env);
                     try call_type_hints.append(self.arena, hint);
                 }
@@ -6341,6 +6365,80 @@ pub const Evaluator = struct {
         }
     }
 
+    fn maybeCoerceSchemaExprValue(self: *Evaluator, expr: *const ast.Expr, value: Value) !Value {
+        if (value != .string) return value;
+
+        switch (expr.*) {
+            .identifier => |id| {
+                if (!std.mem.startsWith(u8, id.name, "Schema.")) return value;
+                const suffix = id.name["Schema.".len..];
+                const dot_idx = std.mem.lastIndexOfScalar(u8, suffix, '.') orelse return value;
+                const owner_name = suffix[0..dot_idx];
+                const member_name = suffix[dot_idx + 1 ..];
+                if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
+                    const sot = try self.arena.create(types.ObjectInstance);
+                    sot.* = .{ .class_name = "Schema.SObjectType" };
+                    try sot.fields.put(self.arena, "name", Value{ .string = member_name });
+                    return Value{ .object = sot };
+                }
+                if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
+                    const sot = try self.arena.create(types.ObjectInstance);
+                    sot.* = .{ .class_name = "Schema.SObjectType" };
+                    try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
+                    return Value{ .object = sot };
+                }
+                if (std.ascii.eqlIgnoreCase(member_name, "class")) return value;
+                return self.makeSObjectFieldToken(owner_name, member_name);
+            },
+            .field_access => |fa| {
+                if (fa.object.* == .field_access) {
+                    const inner_fa = fa.object.field_access;
+                    if (inner_fa.object.* == .identifier and
+                        std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
+                    {
+                        if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
+                            std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
+                        {
+                            const sot = try self.arena.create(types.ObjectInstance);
+                            sot.* = .{ .class_name = "Schema.SObjectType" };
+                            try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
+                            return Value{ .object = sot };
+                        }
+                        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                            const sot = try self.arena.create(types.ObjectInstance);
+                            sot.* = .{ .class_name = "Schema.SObjectType" };
+                            try sot.fields.put(self.arena, "name", Value{ .string = inner_fa.field });
+                            return Value{ .object = sot };
+                        }
+                        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                            return self.makeSObjectFieldToken(inner_fa.field, fa.field);
+                        }
+                    }
+                }
+                if (fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")) {
+                    const schema_name = fa.object.identifier.name["Schema.".len..];
+                    if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+                        const sot = try self.arena.create(types.ObjectInstance);
+                        sot.* = .{ .class_name = "Schema.SObjectType" };
+                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
+                        return Value{ .object = sot };
+                    }
+                    if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                        const sot = try self.arena.create(types.ObjectInstance);
+                        sot.* = .{ .class_name = "Schema.SObjectType" };
+                        try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
+                        return Value{ .object = sot };
+                    }
+                    if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                        return self.makeSObjectFieldToken(schema_name, fa.field);
+                    }
+                }
+                return value;
+            },
+            else => return value,
+        }
+    }
+
     fn renderTypeRef(self: *Evaluator, type_ref: types.TypeRef) []const u8 {
         if (type_ref.params.len == 0) return stripTypeNamespace(type_ref.name);
 
@@ -6578,7 +6676,9 @@ pub const Evaluator = struct {
         var args: std.ArrayListUnmanaged(Value) = .empty;
         var arg_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
         for (mc.args) |*arg| {
-            try args.append(self.arena, try self.evalExpr(arg, current_env));
+            var arg_value = try self.evalExpr(arg, current_env);
+            arg_value = try self.maybeCoerceSchemaExprValue(arg, arg_value);
+            try args.append(self.arena, arg_value);
             // Extract cast and declared-type hints for overload resolution.
             const hint = self.extractExprTypeHint(arg, current_env);
             try arg_type_hints.append(self.arena, hint);
@@ -6995,11 +7095,8 @@ pub const Evaluator = struct {
                     if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
                         std.ascii.eqlIgnoreCase(mc.method, "getDescribe"))
                     {
-                        const dfr = try self.arena.create(types.ObjectInstance);
-                        dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
-                        try dfr.fields.put(self.arena, "objectType", Value{ .string = type_name });
-                        try dfr.fields.put(self.arena, "fieldName", Value{ .string = fa.field });
-                        return Value{ .object = dfr };
+                        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                        return builtins.createFieldDescribeResult(&bctx, type_name, fa.field);
                     }
                 }
             }
@@ -7028,11 +7125,8 @@ pub const Evaluator = struct {
                         try sot.fields.put(self.arena, "name", Value{ .string = outer_class });
                         return self.evalInstanceMethod(Value{ .object = sot }, mc.method, args.items, current_env);
                     }
-                    const dfr = try self.arena.create(types.ObjectInstance);
-                    dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
-                    try dfr.fields.put(self.arena, "objectType", Value{ .string = outer_class });
-                    try dfr.fields.put(self.arena, "fieldName", Value{ .string = inner });
-                    return Value{ .object = dfr };
+                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                    return builtins.createFieldDescribeResult(&bctx, outer_class, inner);
                 }
 
                 // DataWeave.Script.createScript(scriptName)
@@ -8038,8 +8132,30 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "equalsIgnoreCase") and args.len > 0 and args[0] == .string) {
             return Value{ .boolean = std.ascii.eqlIgnoreCase(s, args[0].string) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "left") and args.len > 0 and args[0] == .integer) {
-            const n: usize = @intCast(@max(args[0].integer, 0));
+        if (std.ascii.eqlIgnoreCase(method, "left") and args.len > 0) {
+            const n: usize = switch (args[0]) {
+                .integer => |i| @intCast(@max(i, 0)),
+                .double => |d| if (d > 0) @intFromFloat(d) else 0,
+                .string => |arg_s| blk: {
+                    if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
+                        break :blk @intCast(@max(parsed, 0));
+                    } else |_| {}
+                    if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
+                        break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
+                    } else |_| {}
+                    return Value{ .string = s };
+                },
+                else => blk: {
+                    const arg_s = utils.coerceToString(args[0], self.arena) catch return Value{ .string = s };
+                    if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
+                        break :blk @intCast(@max(parsed, 0));
+                    } else |_| {}
+                    if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
+                        break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
+                    } else |_| {}
+                    return Value{ .string = s };
+                },
+            };
             const end = @min(n, s.len);
             return Value{ .string = s[0..end] };
         }
