@@ -51,8 +51,19 @@ pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
     var eval = try evaluator.Evaluator.init(arena.allocator());
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
+        for (opts.source_paths) |path| {
+            collectFieldDefaults(arena.allocator(), path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collectFieldSets(arena.allocator(), path, &eval.field_sets) catch {};
+        }
     }
     try eval.loadDecls(decls);
+    for (decls) |decl| {
+        switch (decl) {
+            .class_decl => |cd| try eval.registerClassSource(cd.name, source),
+            .trigger_decl => |td| try eval.registerTriggerSource(td.name, source),
+            else => {},
+        }
+    }
 
     const value = if (opts.entry_class.len > 0 and opts.entry_method.len > 0)
         try eval.callMethod(opts.entry_class, opts.entry_method, opts.args)
@@ -86,6 +97,81 @@ pub const TestSuiteResult = struct {
 };
 
 const SourceFile = struct { path: []const u8, content: []const u8 };
+
+const SampleAppFixturePaths = struct {
+    arena: std.heap.ArenaAllocator,
+    paths: []const []const u8,
+
+    fn init(gpa: std.mem.Allocator) !SampleAppFixturePaths {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer arena.deinit();
+        const alloc = arena.allocator();
+        const fixture_path = findSampleAppFixturePath(alloc) catch |err| switch (err) {
+            error.FileNotFound => return error.SkipZigTest,
+            else => return err,
+        };
+        const paths = try alloc.alloc([]const u8, 1);
+        paths[0] = fixture_path;
+        return .{ .arena = arena, .paths = paths };
+    }
+
+    fn deinit(self: *SampleAppFixturePaths) void {
+        self.arena.deinit();
+    }
+
+    fn slice(self: *const SampleAppFixturePaths) []const []const u8 {
+        return self.paths;
+    }
+};
+
+fn isSampleAppFixturePath(alloc: std.mem.Allocator, base_path: []const u8) bool {
+    const markers = [_][]const u8{
+        "core/tests/logger-engine/classes/LogEntryEventBuilder_Tests.cls",
+        "core/tests/logger-engine/classes/LoggerEngineDataSelector_Tests.cls",
+        "extra-tests/integration-tests/classes/LogManagementDataSelector_Tests_Flow.cls",
+    };
+    for (markers) |marker| {
+        const full_path = std.fs.path.join(alloc, &.{ base_path, marker }) catch continue;
+        defer alloc.free(full_path);
+        std.fs.cwd().access(full_path, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
+fn findSampleAppFixturePath(alloc: std.mem.Allocator) ![]const u8 {
+    const fixture_root = ".local-fixtures/apex/repos";
+    var root_dir = try std.fs.cwd().openDir(fixture_root, .{ .iterate = true });
+    defer root_dir.close();
+
+    var root_iter = root_dir.iterate();
+    while (try root_iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        const repo_path = try std.fs.path.join(alloc, &.{ fixture_root, entry.name });
+        if (isSampleAppFixturePath(alloc, repo_path)) return repo_path;
+
+        var repo_dir = std.fs.cwd().openDir(repo_path, .{ .iterate = true }) catch {
+            alloc.free(repo_path);
+            continue;
+        };
+        defer repo_dir.close();
+
+        var repo_iter = repo_dir.iterate();
+        while (try repo_iter.next()) |child_entry| {
+            if (child_entry.kind != .directory) continue;
+            const child_path = try std.fs.path.join(alloc, &.{ repo_path, child_entry.name });
+            if (isSampleAppFixturePath(alloc, child_path)) {
+                alloc.free(repo_path);
+                return child_path;
+            }
+            alloc.free(child_path);
+        }
+
+        alloc.free(repo_path);
+    }
+
+    return error.FileNotFound;
+}
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
 pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: anytype) !TestSuiteResult {
@@ -142,12 +228,16 @@ fn runTestsFiltered(
             parse_errors += 1;
             continue;
         };
-        // Register class source for ApexClass.Body queries
-        // Extract class name from file path (basename without .cls)
-        const basename = std.fs.path.basename(file.path);
-        if (std.mem.endsWith(u8, basename, ".cls")) {
-            const cls_name = basename[0 .. basename.len - 4];
-            eval.registerClassSource(cls_name, file.content) catch {};
+        for (decls) |decl| {
+            switch (decl) {
+                .class_decl => |cd| {
+                    eval.registerClassSource(cd.name, file.content) catch {};
+                },
+                .trigger_decl => |td| {
+                    eval.registerTriggerSource(td.name, file.content) catch {};
+                },
+                else => {},
+            }
         }
     }
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
@@ -156,13 +246,17 @@ fn runTestsFiltered(
     // Search the given paths AND their ancestor directories (up to 3 levels) to find objects/ dirs
     // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
     for (paths) |path| {
-        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types) catch {};
+        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+        collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
+        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types) catch {};
         // Walk parent directories to find sibling packages containing objects/
         var parent = std.fs.path.dirname(path);
         var depth: u8 = 0;
         while (parent != null and depth < 3) : (depth += 1) {
             const p = parent.?;
-            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types) catch {};
+            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
+            collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types) catch {};
             parent = std.fs.path.dirname(p);
         }
     }
@@ -248,9 +342,14 @@ fn runTestsFiltered(
                     test_eval.class_arena = parse_alloc; // classes map は parse_arena 上に確保
                     test_eval.triggers = eval.triggers;
                     test_eval.class_sources = eval.class_sources;
+                    test_eval.trigger_sources = eval.trigger_sources;
                     test_eval.source_paths = eval.source_paths;
                     test_eval.field_defaults = eval.field_defaults;
                     test_eval.field_types = eval.field_types;
+                    test_eval.field_metadata = eval.field_metadata;
+                    test_eval.child_relationships = eval.child_relationships;
+                    test_eval.custom_setting_types = eval.custom_setting_types;
+                    test_eval.field_sets = eval.field_sets;
 
                     // Check for @isTest(SeeAllData=true) annotation
                     test_eval.see_all_data = false;
@@ -281,6 +380,7 @@ fn runTestsFiltered(
 
                     // Reset Limits counters before test body (static inits may have caused DML/SOQL)
                     test_eval.limits_dml = 0;
+                    test_eval.limits_dml_rows = 0;
                     test_eval.limits_soql = 0;
                     test_eval.limits_publish_immediate = 0;
                     test_eval.limits_queueable = 0;
@@ -394,6 +494,12 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
     while (walker.next() catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
+        // Skip name-shadowing stub classes that intentionally shadow system classes
+        // (e.g., extra-tests/name-shadowing/System/JSON.cls). These empty classes
+        // exist only to verify that production code uses fully-qualified names in
+        // Salesforce, but they break the interpreter's built-in dispatch.
+        if (std.mem.indexOf(u8, entry.path, "name-shadowing/") != null or
+            std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null) continue;
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 10 * 1024 * 1024) catch continue;
@@ -408,6 +514,8 @@ fn collectFieldDefaults(
     path: []const u8,
     field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
     field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
+    field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
 ) !void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
     defer dir.close();
@@ -429,6 +537,60 @@ fn collectFieldDefaults(
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
 
+        var metadata = evaluator.FieldMetadata{};
+
+        if (std.mem.indexOf(u8, content, "<caseSensitive>")) |cs| {
+            const cs_start = cs + "<caseSensitive>".len;
+            if (std.mem.indexOfPos(u8, content, cs_start, "</caseSensitive>")) |ce| {
+                const value = std.mem.trim(u8, content[cs_start..ce], " \t\n\r");
+                metadata.case_sensitive = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<externalId>")) |es| {
+            const e_start = es + "<externalId>".len;
+            if (std.mem.indexOfPos(u8, content, e_start, "</externalId>")) |ee| {
+                const value = std.mem.trim(u8, content[e_start..ee], " \t\n\r");
+                metadata.is_external_id = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<unique>")) |us| {
+            const u_start = us + "<unique>".len;
+            if (std.mem.indexOfPos(u8, content, u_start, "</unique>")) |ue| {
+                const value = std.mem.trim(u8, content[u_start..ue], " \t\n\r");
+                metadata.is_unique = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<required>")) |rs| {
+            const r_start = rs + "<required>".len;
+            if (std.mem.indexOfPos(u8, content, r_start, "</required>")) |re| {
+                const value = std.mem.trim(u8, content[r_start..re], " \t\n\r");
+                metadata.is_required = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<length>")) |ls| {
+            const l_start = ls + "<length>".len;
+            if (std.mem.indexOfPos(u8, content, l_start, "</length>")) |le| {
+                const value = std.mem.trim(u8, content[l_start..le], " \t\n\r");
+                metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
+            }
+        }
+        if (extractXmlTagValue(content, "formula")) |formula| {
+            metadata.formula = decodeXmlText(alloc, formula, false) catch null;
+        }
+        if (extractXmlTagValue(content, "formulaTreatBlanksAs")) |blank_mode| {
+            metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(std.mem.trim(u8, blank_mode, " \t\n\r"), "BlankAsZero");
+        }
+        if (extractXmlTagValue(content, "summarizedField")) |summarized_field| {
+            metadata.summarized_field = alloc.dupe(u8, std.mem.trim(u8, summarized_field, " \t\n\r")) catch null;
+        }
+        if (extractXmlTagValue(content, "summaryForeignKey")) |summary_foreign_key| {
+            metadata.summary_foreign_key = alloc.dupe(u8, std.mem.trim(u8, summary_foreign_key, " \t\n\r")) catch null;
+        }
+        if (extractXmlTagValue(content, "summaryOperation")) |summary_operation| {
+            metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
+        }
+        metadata.summary_filters = parseSummaryFilters(alloc, content) catch &.{};
+
         // Extract <type>...</type> for field type info
         if (std.mem.indexOf(u8, content, "<type>")) |ts| {
             const t_start = ts + 6; // "<type>".len
@@ -440,6 +602,42 @@ fn collectFieldDefaults(
                 if (!ft_gop.found_existing) ft_gop.value_ptr.* = .empty;
                 ft_gop.value_ptr.put(alloc, fk, ft) catch {};
             }
+        }
+
+        if (std.mem.indexOf(u8, content, "<referenceTo>")) |rs| {
+            const r_start = rs + "<referenceTo>".len;
+            if (std.mem.indexOfPos(u8, content, r_start, "</referenceTo>")) |re| {
+                metadata.reference_to = alloc.dupe(u8, std.mem.trim(u8, content[r_start..re], " \t\n\r")) catch null;
+                if (std.mem.indexOf(u8, content, "<relationshipName>")) |ns| {
+                    const n_start = ns + "<relationshipName>".len;
+                    if (std.mem.indexOfPos(u8, content, n_start, "</relationshipName>")) |ne| {
+                        const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
+                        const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
+                        putChildRelationship(alloc, child_relationships, parent_type, relationship_name, type_name, field_name) catch {};
+                        if (!std.mem.endsWith(u8, relationship_name, "__r")) {
+                            const rel_with_suffix = std.fmt.allocPrint(alloc, "{s}__r", .{relationship_name}) catch "";
+                            if (rel_with_suffix.len > 0) {
+                                putChildRelationship(alloc, child_relationships, parent_type, rel_with_suffix, type_name, field_name) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (metadata.is_unique or
+            metadata.is_external_id or
+            metadata.is_required or
+            metadata.length != null or
+            metadata.reference_to != null or
+            metadata.formula != null or
+            metadata.summary_operation != null)
+        {
+            const type_key = alloc.dupe(u8, type_name) catch continue;
+            const field_key = alloc.dupe(u8, field_name) catch continue;
+            const meta_gop = field_metadata.getOrPut(alloc, type_key) catch continue;
+            if (!meta_gop.found_existing) meta_gop.value_ptr.* = .empty;
+            meta_gop.value_ptr.put(alloc, field_key, metadata) catch {};
         }
 
         // Extract <defaultValue>...</defaultValue>
@@ -474,9 +672,192 @@ fn collectFieldDefaults(
     }
 }
 
+fn extractXmlTagValue(content: []const u8, tag_name: []const u8) ?[]const u8 {
+    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
+    defer std.heap.page_allocator.free(start_tag);
+    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return null;
+    defer std.heap.page_allocator.free(end_tag);
+
+    const start_idx = std.mem.indexOf(u8, content, start_tag) orelse return null;
+    const value_start = start_idx + start_tag.len;
+    const end_idx = std.mem.indexOfPos(u8, content, value_start, end_tag) orelse return null;
+    return content[value_start..end_idx];
+}
+
+fn parseSummaryFilters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
+    var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
+        const block_start = block_start_idx + "<summaryFilterItems>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</summaryFilterItems>") orelse break;
+        const block = content[block_start..block_end];
+        const field = extractXmlTagValue(block, "field") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        const operation = extractXmlTagValue(block, "operation") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        const value = extractXmlTagValue(block, "value") orelse {
+            search_start = block_end + "</summaryFilterItems>".len;
+            continue;
+        };
+        try filters.append(alloc, .{
+            .field_path = try decodeXmlText(alloc, std.mem.trim(u8, field, " \t\n\r"), false),
+            .operation = try decodeXmlText(alloc, std.mem.trim(u8, operation, " \t\n\r"), false),
+            .value = try decodeXmlText(alloc, std.mem.trim(u8, value, " \t\n\r"), false),
+        });
+        search_start = block_end + "</summaryFilterItems>".len;
+    }
+    return try alloc.dupe(evaluator.SummaryFilter, filters.items);
+}
+
+fn putChildRelationship(
+    alloc: std.mem.Allocator,
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+    parent_type: []const u8,
+    relationship_name: []const u8,
+    child_type: []const u8,
+    fk_field: []const u8,
+) !void {
+    const raw_key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parent_type, relationship_name });
+    const key = try alloc.alloc(u8, raw_key.len);
+    _ = std.ascii.lowerString(key, raw_key);
+    try child_relationships.put(alloc, key, .{
+        .child_type = try alloc.dupe(u8, child_type),
+        .fk_field = try alloc.dupe(u8, fk_field),
+    });
+}
+
+/// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名を集める。
+/// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
+fn collectCustomSettingTypes(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
+) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".object-meta.xml")) continue;
+
+        const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 256 * 1024) catch continue;
+
+        if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
+        const type_key = alloc.dupe(u8, type_name) catch continue;
+        custom_setting_types.put(alloc, type_key, {}) catch {};
+    }
+}
+
+fn splitNamespacedMetadataName(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+    if (std.mem.indexOf(u8, name, "__")) |idx| {
+        return .{
+            .namespace = name[0..idx],
+            .local_name = name[idx + 2 ..],
+        };
+    }
+    return .{ .namespace = "", .local_name = name };
+}
+
+/// fieldSet-meta.xml を走査し field set metadata を読み込む。
+/// パス構造: .../objects/TypeName__c/fieldSets/FieldSetName.fieldSet-meta.xml
+fn collectFieldSets(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    field_sets: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata)),
+) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) continue;
+
+        const entry_path = entry.path;
+        const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+            std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
+        const after_objects = entry_path[objects_idx + 8 ..];
+        const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
+        const type_name = after_objects[0..sep_idx];
+
+        const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
+        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 128 * 1024) catch continue;
+
+        var full_name: []const u8 = entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
+        if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
+            const start = start_idx + "<fullName>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</fullName>")) |end_idx| {
+                full_name = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+            }
+        }
+
+        var label: []const u8 = full_name;
+        if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
+            const start = start_idx + "<label>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</label>")) |end_idx| {
+                label = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+            }
+        }
+
+        var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+            const block_start = block_start_idx + "<displayedFields>".len;
+            const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
+            const block = content[block_start..block_end];
+
+            const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
+                search_start = block_end + "</displayedFields>".len;
+                continue;
+            };
+            const field_start = field_start_idx + "<field>".len;
+            const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
+                search_start = block_end + "</displayedFields>".len;
+                continue;
+            };
+            const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
+
+            var is_required = false;
+            if (std.mem.indexOf(u8, block, "<isRequired>")) |req_idx| {
+                const req_start = req_idx + "<isRequired>".len;
+                if (std.mem.indexOfPos(u8, block, req_start, "</isRequired>")) |req_end| {
+                    const value = std.mem.trim(u8, block[req_start..req_end], " \t\r\n");
+                    is_required = std.ascii.eqlIgnoreCase(value, "true");
+                }
+            }
+
+            try members.append(alloc, .{
+                .field_path = try alloc.dupe(u8, field_path),
+                .is_required = is_required,
+            });
+            search_start = block_end + "</displayedFields>".len;
+        }
+
+        const names = splitNamespacedMetadataName(full_name);
+        const type_key = alloc.dupe(u8, type_name) catch continue;
+        const field_set_key = alloc.dupe(u8, full_name) catch continue;
+        const gop = field_sets.getOrPut(alloc, type_key) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        gop.value_ptr.put(alloc, field_set_key, .{
+            .name = alloc.dupe(u8, names.local_name) catch continue,
+            .qualified_name = field_set_key,
+            .label = alloc.dupe(u8, label) catch continue,
+            .namespace = alloc.dupe(u8, names.namespace) catch continue,
+            .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch continue,
+        }) catch {};
+    }
+}
+
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
 /// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
-fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+fn decodeXmlText(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
     // First pass: decode XML entities
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
@@ -508,10 +889,14 @@ fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 
     }
     const decoded = buf.items;
     // Strip surrounding single quotes (Apex string literal in metadata)
-    if (decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
+    if (strip_outer_quotes and decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
     return alloc.dupe(u8, decoded);
+}
+
+fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return decodeXmlText(alloc, raw, true);
 }
 
 /// arena 上の Value を gpa にコピーする。
@@ -520,6 +905,83 @@ fn copyValue(gpa: std.mem.Allocator, value: Value) !Value {
         .string => |s| Value{ .string = try gpa.dupe(u8, s) },
         else => value,
     };
+}
+
+fn writeGenericRollupMetadataFixture(dir: anytype) !void {
+    try dir.makePath("objects/Parent__c/fields");
+    try dir.makePath("objects/Child__c/fields");
+    try dir.makePath("objects/Grandchild__c/fields");
+    try dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/OpenChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>OpenChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Status__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>Open</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/ClosedChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ClosedChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Status__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>Closed</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/TotalChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>TotalChildren__c</fullName>
+        \\    <formula>OpenChildren__c
+        \\+ ClosedChildren__c</formula>
+        \\    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+        \\    <type>Number</type>
+        \\</CustomField>
+        ,
+    });
+    try dir.writeFile(.{
+        .sub_path = "objects/Grandchild__c/fields/Child__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Child__c</fullName>
+        \\    <referenceTo>Child__c</referenceTo>
+        \\    <relationshipName>Grandchildren</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
 }
 
 // サブモジュールのテストを参照
@@ -870,6 +1332,260 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
+test "E2E: Cache.Partition isAvailable returns true for existing org partition" {
+    const source =
+        \\public class CacheAvailabilityTest {
+        \\    public static String test() {
+        \\        Cache.OrgPartition p = Cache.Org.getPartition('LoggerCache');
+        \\        p.put('myKey', 'myValue');
+        \\        return String.valueOf(p.isAvailable()) + ':' + String.valueOf(p.contains('myKey'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CacheAvailabilityTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Flow metadata stubs support IN bind variables" {
+    const source =
+        \\public class FlowMetadataQueryTest {
+        \\    public static String test() {
+        \\        List<String> flowApiNames = new List<String>{ 'MockLogBatchPurgerPlugin' };
+        \\        List<Schema.FlowDefinitionView> defs = [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\        List<String> activeVersionIds = new List<String>{ defs.get(0).ActiveVersionId };
+        \\        List<Schema.FlowVersionView> vers = [
+        \\            SELECT DurableId, FlowDefinitionViewId
+        \\            FROM FlowVersionView
+        \\            WHERE DurableId IN :activeVersionIds
+        \\        ];
+        \\        return defs.get(0).ApiName + ':' +
+        \\            String.valueOf(vers.get(0).FlowDefinitionViewId == defs.get(0).DurableId) + ':' +
+        \\            String.valueOf(vers.get(0).DurableId == defs.get(0).ActiveVersionId);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowMetadataQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("MockLogBatchPurgerPlugin:true:true", result.value.string);
+}
+
+test "E2E: metadata stubs resolve static bind variables" {
+    const source =
+        \\public class StaticFlowBindTest {
+        \\    private static final String FLOW_API_NAME = 'LogEntryHandler_Tests_Flow';
+        \\    public static String test() {
+        \\        Schema.FlowDefinitionView def = [
+        \\            SELECT ApiName
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName = :FLOW_API_NAME AND IsActive = TRUE
+        \\        ];
+        \\        return def.ApiName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticFlowBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("LogEntryHandler_Tests_Flow", result.value.string);
+}
+
+test "E2E: FlowDefinitionView stub query works through helper method reuse" {
+    const source =
+        \\public class FlowSelector {
+        \\    public static List<Schema.FlowDefinitionView> getDefs(List<String> flowApiNames) {
+        \\        return [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\    }
+        \\}
+        \\
+        \\public class FlowSelectorTest {
+        \\    public static String test() {
+        \\        List<String> flowApiNames = new List<String>{ 'MockLogBatchPurgerPlugin' };
+        \\        List<Schema.FlowDefinitionView> directResults = [
+        \\            SELECT ActiveVersionId, ApiName, DurableId
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
+        \\        ];
+        \\        List<Schema.FlowDefinitionView> helperResults = FlowSelector.getDefs(flowApiNames);
+        \\        return String.valueOf(directResults.size()) + ':' + String.valueOf(helperResults.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowSelectorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Flow.Interview plugin mock exposes input and output variables" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    const source =
+        \\public class FlowInterviewTest {
+        \\    public static String test() {
+        \\        Map<String, Object> inputs = new Map<String, Object>();
+        \\        inputs.put('pluginConfiguration', 'cfg');
+        \\        inputs.put('pluginInput', 'input');
+        \\        Flow.Interview interview = Flow.Interview.createInterview('MockLogBatchPurgerPlugin', inputs);
+        \\        interview.start();
+        \\        return (String) interview.getVariableValue('pluginConfiguration') + ':' +
+        \\            (String) interview.getVariableValue('pluginInput') + ':' +
+        \\            (String) interview.getVariableValue('someExampleVariable');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowInterviewTest",
+        .entry_method = "test",
+        .source_paths = fixture_paths.slice(),
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("cfg:input:Hello, world", result.value.string);
+}
+
+test "E2E: FeatureManagement.checkPermission honors assigned custom permissions in runAs" {
+    const source =
+        \\public class FeaturePermissionTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'perm@example.com', Email = 'perm@example.com', Alias = 'pusr');
+        \\        insert u;
+        \\        PermissionSet ps = new PermissionSet(Name = 'CustomPermissionEnabled', Label = 'Custom Permission Enabled');
+        \\        insert ps;
+        \\        SetupEntityAccess sea = new SetupEntityAccess(
+        \\            ParentId = ps.Id,
+        \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName = 'CanModifyLoggerSettings'].Id
+        \\        );
+        \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        insert new List<SObject>{ sea, psa };
+        \\        Boolean hasPermission = false;
+        \\        System.runAs(u) {
+        \\            hasPermission = System.FeatureManagement.checkPermission('CanModifyLoggerSettings');
+        \\        }
+        \\        return hasPermission;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FeaturePermissionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: standard user custom object describe is not updateable by default" {
+    const source =
+        \\public class StandardUserCrudTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'crud@example.com', Email = 'crud@example.com', Alias = 'cusr');
+        \\        insert u;
+        \\        Boolean canUpdate = true;
+        \\        System.runAs(u) {
+        \\            canUpdate = Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable();
+        \\        }
+        \\        return canUpdate;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardUserCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(false, result.value.boolean);
+}
+
+test "E2E: schema-qualified standard user custom object describe is not updateable by default" {
+    const source =
+        \\public class SchemaQualifiedCrudTest {
+        \\    public static String test() {
+        \\        Schema.Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        Schema.User u = new Schema.User(ProfileId = p.Id, LastName = 'User', Username = 'schema-crud@example.com', Email = 'schema-crud@example.com', Alias = 'sqru');
+        \\        insert u;
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\                String.valueOf(System.FeatureManagement.checkPermission('CanModifyLoggerSettings'));
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaQualifiedCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false", result.value.string);
+}
+
+test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in runAs" {
+    const source =
+        \\public class ProfileInCrudTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\                String.valueOf(Schema.Log__c.SObjectType.getDescribe().isDeletable());
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ProfileInCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false", result.value.string);
+}
+
+test "E2E: standard user cannot access AccountBrand describe fields" {
+    const source =
+        \\public class AccountBrandAccessTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'accountbrand@example.com', Email = 'accountbrand@example.com', Alias = 'abrd');
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(Schema.AccountBrand.SObjectType.getDescribe().isAccessible()) + ':' +
+        \\                String.valueOf(Schema.AccountBrand.CompanyName.getDescribe().isAccessible()) + ':' +
+        \\                String.valueOf(Schema.AccountBrand.Name.getDescribe().isAccessible());
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AccountBrandAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:false:false", result.value.string);
+}
+
 test "E2E: StaticResource IN clause returns multiple stubs" {
     // Multi-line SOQL like in apex-recipes
     const source =
@@ -917,6 +1633,96 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: super method dispatch uses parent implementation" {
+    const source =
+        \\public virtual class BaseCounter {
+        \\    public Integer count = 0;
+        \\    public virtual void run() {
+        \\        this.count++;
+        \\    }
+        \\}
+        \\public class ChildCounter extends BaseCounter {
+        \\    public override void run() {
+        \\        this.count++;
+        \\        super.run();
+        \\    }
+        \\}
+        \\public class SuperDispatchTest {
+        \\    public static String test() {
+        \\        ChildCounter c = new ChildCounter();
+        \\        c.run();
+        \\        return String.valueOf(c.count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SuperDispatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: enqueueJob executes instance queueable method" {
+    const source =
+        \\public class InstanceQueueable implements Queueable {
+        \\    public static String lastMessage;
+        \\    private String message;
+        \\    public InstanceQueueable(String message) {
+        \\        this.message = message;
+        \\    }
+        \\    public void execute(QueueableContext qc) {
+        \\        InstanceQueueable.lastMessage = this.message;
+        \\    }
+        \\}
+        \\public class InstanceQueueableTest {
+        \\    public static String test() {
+        \\        System.enqueueJob(new InstanceQueueable('queued'));
+        \\        return InstanceQueueable.lastMessage;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InstanceQueueableTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("queued", result.value.string);
+}
+
+test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
+    const source =
+        \\public class UpsertExternalIdTest {
+        \\    public static String test() {
+        \\        insert new Thing__c(UniqueId__c = 'u1', Name = 'Original');
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(UniqueId__c = 'u1', Name = 'Updated'),
+        \\            new Thing__c(UniqueId__c = 'u2', Name = 'Created')
+        \\        };
+        \\        List<Database.UpsertResult> results = Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Thing__c> saved = [SELECT UniqueId__c, Name FROM Thing__c];
+        \\        String existingName = null;
+        \\        for (Thing__c row : saved) {
+        \\            if (row.UniqueId__c == 'u1') {
+        \\                existingName = row.Name;
+        \\            }
+        \\        }
+        \\        return String.valueOf(results.get(0).isCreated()) + ':' +
+        \\            String.valueOf(results.get(1).isCreated()) + ':' +
+        \\            existingName + ':' +
+        \\            String.valueOf(saved.size()) + ':' +
+        \\            String.valueOf(Schema.Thing__c.UniqueId__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UpsertExternalIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:true:Updated:2:UniqueId__c", result.value.string);
 }
 
 test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
@@ -1550,6 +2356,126 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
     ;
     const result = try run(std.testing.allocator, source, .{
         .entry_class = "FormulaFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: rollup summary fields resolve in WHERE clauses and selected records" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RollupSummaryRuntimeTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent');
+        \\        insert parent;
+        \\        insert new List<Child__c>{
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Open'),
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Closed'),
+        \\            new Child__c(Parent__c = parent.Id, Status__c = 'Closed')
+        \\        };
+        \\        Parent__c refreshed = [
+        \\            SELECT OpenChildren__c, ClosedChildren__c, TotalChildren__c
+        \\            FROM Parent__c
+        \\            WHERE TotalChildren__c = 3
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(refreshed.OpenChildren__c) + ':' +
+        \\            String.valueOf(refreshed.ClosedChildren__c) + ':' +
+        \\            String.valueOf(refreshed.TotalChildren__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RollupSummaryRuntimeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2:3", result.value.string);
+}
+
+test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class MultiHopCountQueryTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        insert parent;
+        \\        Child__c child = new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        insert child;
+        \\        insert new Grandchild__c(Child__c = child.Id);
+        \\        Integer grandchildCount = [
+        \\            SELECT COUNT()
+        \\            FROM Grandchild__c
+        \\            WHERE Child__r.Parent__r.RetentionDate__c <= :System.today()
+        \\            AND Child__r.Parent__r.RetentionDate__c != null
+        \\        ];
+        \\        Integer childCount = [
+        \\            SELECT COUNT()
+        \\            FROM Child__c
+        \\            WHERE Parent__r.RetentionDate__c <= :System.today()
+        \\            AND Parent__r.RetentionDate__c != null
+        \\        ];
+        \\        return String.valueOf(grandchildCount) + ':' + String.valueOf(childCount);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "MultiHopCountQueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: SObject.getSObject resolves parent records from a reference field token" {
+    const source =
+        \\public class GetSObjectParentTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
+        \\        insert contactRecord;
+        \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id = :contactRecord.Id];
+        \\        SObject parentRecord = queried.getSObject(Schema.Contact.AccountId);
+        \\        return String.valueOf(parentRecord.get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GetSObjectParentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: SObject.getSObject resolves unsaved relationship records assigned via __r" {
+    const source =
+        \\public class GetUnsavedParentTest {
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        SObject parentRecord = sessionRecord.getSObject(Schema.Session__c.Experience__c);
+        \\        return String.valueOf(parentRecord.get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GetUnsavedParentTest",
         .entry_method = "test",
     });
     defer result.deinit();
@@ -2608,6 +3534,517 @@ test "E2E: Custom metadata records loaded from .md-meta.xml files" {
     try std.testing.expectEqualStrings("Reservation_Status__c:Draft", result.value.string);
 }
 
+test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
+    const source =
+        \\public class DescribeFieldLocalNameTest {
+        \\    public class FieldSchema {
+        \\        public String localApiName;
+        \\    }
+        \\    public static String test() {
+        \\        Map<String, FieldSchema> fields = new Map<String, FieldSchema>();
+        \\        for (Schema.SObjectField field : Schema.User.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
+        \\            FieldSchema schema = new FieldSchema();
+        \\            schema.localApiName = fieldDescribe.getLocalName();
+        \\            fields.put(fieldDescribe.getLocalName(), schema);
+        \\        }
+        \\        return String.valueOf(fields.size()) + ':' + String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DescribeFieldLocalNameTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("6:true:Name", result.value.string);
+}
+
+test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Related_List_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>Name</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <displayedFields>
+        \\        <field>Status__c</field>
+        \\        <isRequired>true</isRequired>
+        \\    </displayedFields>
+        \\    <label>Related List Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldSetMetadataTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
+        \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
+        \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
+        \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
+        \\        List<Schema.FieldSetMember> members = fieldSet.getFields();
+        \\        return String.valueOf(byType.size()) + ':' +
+        \\            String.valueOf(describedFieldSet != null) + ':' +
+        \\            fieldSet.getLabel() + ':' +
+        \\            String.valueOf(members.size()) + ':' +
+        \\            members.get(0).getFieldPath() + ':' +
+        \\            members.get(0).getSObjectField().getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldSetMetadataTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
+}
+
+test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Related_List_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>Name</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <label>Related List Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ThingPicklist extends VisualEditor.DynamicPickList {
+        \\    public override VisualEditor.DataRow getDefaultValue() {
+        \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c.fieldSets.getMap().get('Related_List_Defaults');
+        \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName());
+        \\    }
+        \\    public override VisualEditor.DynamicPickListRows getValues() {
+        \\        VisualEditor.DynamicPickListRows rows = new VisualEditor.DynamicPickListRows();
+        \\        for (Schema.FieldSet fieldSet : Schema.SObjectType.Thing__c.fieldSets.getMap().values()) {
+        \\            rows.addRow(new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName()));
+        \\        }
+        \\        return rows;
+        \\    }
+        \\}
+        \\public class ThingPicklistTest {
+        \\    public static String test() {
+        \\        ThingPicklist picklist = new ThingPicklist();
+        \\        VisualEditor.DataRow row = picklist.getDefaultValue();
+        \\        List<VisualEditor.DataRow> rows = picklist.getValues().getDataRows();
+        \\        return (String) row.getLabel() + ':' + String.valueOf(rows.size()) + ':' + (String) rows.get(0).getValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "ThingPicklistTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
+}
+
+test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
+    const source =
+        \\public class PopulatedNullFieldQueryTest {
+        \\    public static String test() {
+        \\        Account record = new Account(Name = 'Acme');
+        \\        insert record;
+        \\        Account queried = [SELECT Name, Type FROM Account WHERE Id = :record.Id];
+        \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
+        \\        return String.valueOf(populated.containsKey('Type')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PopulatedNullFieldQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:true", result.value.string);
+}
+
+test "E2E: field set queries do not mark null summary fields as populated" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.makePath("objects/Thing__c/fieldSets");
+    try tmp_dir.dir.makePath("objects/ThingEntry__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/ThingEntry__c/fields/Thing__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Thing__c</fullName>
+        \\    <referenceTo>Thing__c</referenceTo>
+        \\    <relationshipName>ThingEntries</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/MaxChildScore__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>MaxChildScore__c</fullName>
+        \\    <summarizedField>ThingEntry__c.Score__c</summarizedField>
+        \\    <summaryForeignKey>ThingEntry__c.Thing__c</summaryForeignKey>
+        \\    <summaryOperation>max</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fieldSets/Notification_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Notification_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>MaxChildScore__c</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <displayedFields>
+        \\        <field>Name</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <label>Notification Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldSetNullSummaryQueryTest {
+        \\    public static String test() {
+        \\        Thing__c thing = new Thing__c(Name = 'Thing');
+        \\        insert thing;
+        \\        insert new ThingEntry__c(Thing__c = thing.Id);
+        \\        List<String> fieldNames = new List<String>{
+        \\            '(SELECT Id FROM ThingEntries__r LIMIT 1)',
+        \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
+        \\        };
+        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\            fieldNames.add(member.getFieldPath());
+        \\        }
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Thing__c WHERE Id = :thing.Id';
+        \\        Thing__c queried = ((List<Thing__c>) Database.query(query)).get(0);
+        \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
+        \\        return String.valueOf(populated.containsKey('MaxChildScore__c')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldSetNullSummaryQueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:true", result.value.string);
+}
+
+test "E2E: field set queries materialize formula fields built from rollup counts" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try tmp_dir.dir.makePath("objects/Parent__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fieldSets/Notification_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Notification_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>TotalChildren__c</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <label>Notification Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldSetFormulaQueryTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
+        \\        List<String> fieldNames = new List<String>{
+        \\            '(SELECT Id FROM Children__r LIMIT 1)',
+        \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
+        \\        };
+        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\            fieldNames.add(member.getFieldPath());
+        \\        }
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Parent__c WHERE Id = :parentRecord.Id';
+        \\        Parent__c queried = ((List<Parent__c>) Database.query(query)).get(0);
+        \\        return String.valueOf(queried.get('TotalChildren__c'));
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldSetFormulaQueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: List<SObject> preserves token-based field access for Apex metadata records" {
+    const source =
+        \\public class ApexMetadataListAccessTest {
+        \\    public static String test() {
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        apexClassRecord.put(Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ apexClassRecord };
+        \\        List<SObject> metadataRecords = typedRecords;
+        \\        SObject metadataRecord = metadataRecords.get(0);
+        \\        String body = (String) metadataRecord.get(Schema.ApexClass.Body);
+        \\        Boolean modified = ((Datetime) metadataRecord.get(Schema.ApexClass.LastModifiedDate)) > Datetime.newInstance(2026, 3, 1, 0, 0, 0);
+        \\        return body + ':' + String.valueOf(modified);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ApexMetadataListAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("public class ExampleClass {}:true", result.value.string);
+}
+
+test "E2E: Apex metadata describe is accessible by default" {
+    const source =
+        \\public class ApexMetadataDescribeAccessTest {
+        \\    public static String test() {
+        \\        return String.valueOf(Schema.ApexClass.SObjectType.getDescribe().isAccessible()) + ':' +
+        \\            String.valueOf(Schema.ApexTrigger.SObjectType.getDescribe().isAccessible());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ApexMetadataDescribeAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields" {
+    const source =
+        \\public class SObjectJsonRoundTripTest {
+        \\    public static String test() {
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        String serialized = JSON.serialize(originalRecord);
+        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(serialized);
+        \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        SObject roundTripped = (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        return String.valueOf(roundTripped.get('Name')) + ':' +
+        \\            String.valueOf(roundTripped.get('Body')) + ':' +
+        \\            String.valueOf(roundTripped.get('LastModifiedDate') != null) + ':' +
+        \\            String.valueOf(roundTripped.getSObjectType());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SObjectJsonRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ExampleClass:public class ExampleClass {}:true:ApexClass", result.value.string);
+}
+
+test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject type" {
+    const source =
+        \\public class CastedApexMetadataTypeTest {
+        \\    public static String test() {
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
+        \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ castedRecord };
+        \\        List<SObject> genericRecords = typedRecords;
+        \\        return String.valueOf(castedRecord.getSObjectType()) + ':' +
+        \\            String.valueOf(genericRecords.get(0).getSObjectType()) + ':' +
+        \\            String.valueOf(genericRecords.get(0).get(Schema.ApexClass.Body));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CastedApexMetadataTypeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
+}
+
+test "E2E: singleton mocks preserve virtual override dispatch" {
+    const source =
+        \\public virtual class SelectorBase {
+        \\    @TestVisible
+        \\    private static SelectorBase instance = new SelectorBase();
+        \\    public static SelectorBase getInstance() {
+        \\        return instance;
+        \\    }
+        \\    @TestVisible
+        \\    private static void setMock(SelectorBase mockInstance) {
+        \\        instance = mockInstance;
+        \\    }
+        \\    public virtual String fetch() {
+        \\        return 'base';
+        \\    }
+        \\}
+        \\public class SelectorDispatchTest {
+        \\    public class MockSelector extends SelectorBase {
+        \\        public override String fetch() {
+        \\            return 'mock';
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        SelectorBase.setMock(new MockSelector());
+        \\        return SelectorBase.getInstance().fetch();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SelectorDispatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("mock", result.value.string);
+}
+
+test "E2E: inner enum valueOf resolves declared enum members" {
+    const source =
+        \\public class EnumContainer {
+        \\    public enum Kind {
+        \\        Alpha,
+        \\        Beta
+        \\    }
+        \\}
+        \\public class InnerEnumValueOfTest {
+        \\    public static String test() {
+        \\        return String.valueOf(EnumContainer.Kind.valueOf('Alpha')) + ':' + String.valueOf(EnumContainer.Kind.values().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerEnumValueOfTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Alpha:2", result.value.string);
+}
+
+test "E2E: switch on inner enum values matches valueOf results" {
+    const source =
+        \\public class EnumSwitchContainer {
+        \\    public enum Kind {
+        \\        Alpha,
+        \\        Beta
+        \\    }
+        \\    public static String choose(String rawValue) {
+        \\        Kind selected = Kind.valueOf(rawValue);
+        \\        String result = 'Unknown';
+        \\        switch on selected {
+        \\            when Alpha {
+        \\                result = 'A';
+        \\            }
+        \\            when Beta {
+        \\                result = 'B';
+        \\            }
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+        \\public class InnerEnumSwitchTest {
+        \\    public static String test() {
+        \\        return EnumSwitchContainer.choose('Alpha') + ':' + EnumSwitchContainer.choose('Beta');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerEnumSwitchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("A:B", result.value.string);
+}
+
+test "E2E: Http headers round-trip through setHeader and getHeaderKeys" {
+    const source =
+        \\public class HttpHeaderRoundTripTest {
+        \\    public static String test() {
+        \\        HttpRequest request = new HttpRequest();
+        \\        HttpResponse response = new HttpResponse();
+        \\        request.setHeader('alpha', '1');
+        \\        response.setHeader('beta', '2');
+        \\        response.setHeader('gamma', '3');
+        \\        return String.valueOf(request.getHeader('alpha')) + ':' +
+        \\            String.valueOf(response.getHeaderKeys().size()) + ':' +
+        \\            String.valueOf(request.getCompressed());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "HttpHeaderRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2:false", result.value.string);
+}
+
+test "E2E: Rest headers default to empty maps and accept addHeader" {
+    const source =
+        \\public class RestHeaderRoundTripTest {
+        \\    public static String test() {
+        \\        RestRequest request = new RestRequest();
+        \\        RestResponse response = new RestResponse();
+        \\        request.addHeader('alpha', '1');
+        \\        response.addHeader('beta', '2');
+        \\        return String.valueOf(request.headers.size()) + ':' +
+        \\            String.valueOf(response.headers.get('beta')) + ':' +
+        \\            String.valueOf(request.params.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestHeaderRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2:0", result.value.string);
+}
+
 test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {
     // テストごとに新しい evaluator を作り、テストアリーナを reset(.retain_capacity) する。
     // テストアリーナの容量が線形に増加しないことを検証する。
@@ -2722,6 +4159,1047 @@ test "E2E: Database.insert empty list does not increment getDmlStatements" {
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
+test "E2E: Database.insert single record increments getDmlStatements" {
+    const source =
+        \\public class SingleDbDmlTest {
+        \\    public static String test() {
+        \\        Account row = new Account(Name = 'Inserted');
+        \\        Database.SaveResult result = Database.insert(row);
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf(Limits.getDmlStatements()) + ':' +
+        \\            String.valueOf(Limits.getDmlRows());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SingleDbDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:1:1", result.value.string);
+}
+
+test "E2E: Salesforce-style id strings satisfy instanceof Id" {
+    const source =
+        \\public class IdInstanceofTest {
+        \\    public static String test() {
+        \\        String userId = '005000000000000';
+        \\        String queueId = '00G000000000000005';
+        \\        return String.valueOf(userId instanceof Id) + ':' + String.valueOf(queueId instanceof Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IdInstanceofTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: StandardSetController preserves selected records" {
+    const source =
+        \\public class StandardSetControllerSelectionTest {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Name = 'A'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        ApexPages.StandardSetController controller = new ApexPages.StandardSetController(rows);
+        \\        controller.setSelected(new List<Account>{ rows[1] });
+        \\        List<Account> selected = (List<Account>) controller.getSelected();
+        \\        return String.valueOf(selected.size()) + ':' + selected[0].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardSetControllerSelectionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:B", result.value.string);
+}
+
+test "E2E: ApexPages.Message preserves summary when added to page state" {
+    const source =
+        \\public class ApexPagesMessageSummaryTest {
+        \\    public static String test() {
+        \\        ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR, 'Denied'));
+        \\        return ApexPages.getMessages().get(0).getSummary() + ':' + ApexPages.getMessages().get(0).getSeverity();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ApexPagesMessageSummaryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
+}
+
+test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
+    const source =
+        \\public class IdValueOfTest {
+        \\    public static String test() {
+        \\        return String.valueOf(Id.valueOf('005000000000000'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IdValueOfTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("005000000000000", result.value.string);
+}
+
+test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
+    const source =
+        \\global class QueryLocatorScopeBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([SELECT Id FROM Account WHERE Name = 'Keep']);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed = scope.size();
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class QueryLocatorScopeBatchTest {
+        \\    public static Integer test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'Keep'),
+        \\            new Account(Name = 'Skip')
+        \\        };
+        \\        Database.executeBatch(new QueryLocatorScopeBatch());
+        \\        return QueryLocatorScopeBatch.processed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QueryLocatorScopeBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: executeBatch queues chained jobs triggered from finish" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\global class ChainedCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public String phase = 'Children';
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
+        \\        }
+        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE TotalChildren__c = 0]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        Database.delete(scope);
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            phase = 'Parents';
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\}
+        \\public class ChainedCleanupBatchTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent');
+        \\        insert parent;
+        \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        Database.executeBatch(new ChainedCleanupBatch());
+        \\        return String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "ChainedCleanupBatchTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: direct batch finish does not synchronously run chained executeBatch" {
+    const source =
+        \\global class DeferredFinishBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public Integer startRuns = 0;
+        \\    public String phase = 'initial';
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        startRuns++;
+        \\        return Database.getQueryLocator(new List<Account>());
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {}
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (phase == 'initial') {
+        \\            phase = 'queued';
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\}
+        \\public class DeferredFinishBatchTest {
+        \\    public static String test() {
+        \\        DeferredFinishBatch batchJob = new DeferredFinishBatch();
+        \\        batchJob.finish(null);
+        \\        return batchJob.phase + ':' + String.valueOf(batchJob.startRuns);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DeferredFinishBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("queued:0", result.value.string);
+}
+
+test "E2E: executeBatch chained hard-delete works through a wrapper database class" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CleanupGateway {
+        \\    public class Database {
+        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
+        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            if (rows.isEmpty() == false) {
+        \\                System.Database.emptyRecycleBin(rows);
+        \\            }
+        \\            return results;
+        \\        }
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return new Database();
+        \\    }
+        \\}
+        \\global class WrappedHardDeleteBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public String phase = 'Children';
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
+        \\        }
+        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE RetentionDate__c <= :System.today()]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        CleanupGateway.getDatabase().hardDeleteRecords(scope);
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (phase == 'Children') {
+        \\            phase = 'Parents';
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\}
+        \\public class WrappedHardDeleteBatchTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        insert parent;
+        \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        Database.executeBatch(new WrappedHardDeleteBatch());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "WrappedHardDeleteBatchTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:0", result.value.string);
+}
+
+test "E2E: wrapper database instance can delete queried rows" {
+    const source =
+        \\public class CleanupGateway {
+        \\    public class Database {
+        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return new Database();
+        \\    }
+        \\}
+        \\public class WrapperDeleteProbe {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        List<SObject> rows = new List<SObject>([SELECT Id FROM Account]);
+        \\        CleanupGateway.getDatabase().deleteRecords(rows);
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "WrapperDeleteProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: wrapper database instance can hard-delete queried rows" {
+    const source =
+        \\public class CleanupGateway {
+        \\    public class Database {
+        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
+        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            if (rows.isEmpty() == false) {
+        \\                System.Database.emptyRecycleBin(rows);
+        \\            }
+        \\            return results;
+        \\        }
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return new Database();
+        \\    }
+        \\}
+        \\public class WrapperHardDeleteProbe {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        List<SObject> rows = new List<SObject>([SELECT Id FROM Account]);
+        \\        CleanupGateway.getDatabase().hardDeleteRecords(rows);
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "WrapperHardDeleteProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: executeBatch can hard-delete rows through a wrapper database class" {
+    const source =
+        \\public class CleanupGateway {
+        \\    public class Database {
+        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
+        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            if (rows.isEmpty() == false) {
+        \\                System.Database.emptyRecycleBin(rows);
+        \\            }
+        \\            return results;
+        \\        }
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return new Database();
+        \\    }
+        \\}
+        \\global class WrappedDeleteBatch implements Database.Batchable<SObject> {
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([SELECT Id FROM Account]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        CleanupGateway.getDatabase().hardDeleteRecords(scope);
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class WrappedDeleteBatchTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        Database.executeBatch(new WrappedDeleteBatch());
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "WrappedDeleteBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: aggregate query groups by multi-hop parent relationship fields" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class AggregateGroupByParentProbe {
+        \\    public static String test() {
+        \\        Parent__c first = new Parent__c(Name = 'Delete');
+        \\        Parent__c second = new Parent__c(Name = 'Custom');
+        \\        insert new List<Parent__c>{ first, second };
+        \\        Child__c firstChild = new Child__c(Parent__c = first.Id, Status__c = 'Open');
+        \\        Child__c secondChild = new Child__c(Parent__c = second.Id, Status__c = 'Open');
+        \\        insert new List<Child__c>{ firstChild, secondChild };
+        \\        insert new List<Grandchild__c>{
+        \\            new Grandchild__c(Child__c = firstChild.Id),
+        \\            new Grandchild__c(Child__c = secondChild.Id)
+        \\        };
+        \\        List<AggregateResult> rows = [
+        \\            SELECT Child__r.Parent__r.Name ParentName, COUNT(Id) RecordCount
+        \\            FROM Grandchild__c
+        \\            GROUP BY Child__r.Parent__r.Name
+        \\        ];
+        \\        Integer deleteCount = 0;
+        \\        Integer customCount = 0;
+        \\        for (AggregateResult row : rows) {
+        \\            if ((String) row.get('ParentName') == 'Delete') {
+        \\                deleteCount = (Integer) row.get('RecordCount');
+        \\            }
+        \\            if ((String) row.get('ParentName') == 'Custom') {
+        \\                customCount = (Integer) row.get('RecordCount');
+        \\            }
+        \\        }
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(deleteCount) + ':' + String.valueOf(customCount);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "AggregateGroupByParentProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:1:1", result.value.string);
+}
+
+test "E2E: executeBatch creates queryable AsyncApexJob records" {
+    const source =
+        \\global class AsyncJobProbeBatch implements Database.Batchable<SObject> {
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([SELECT Id FROM Account]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {}
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class AsyncJobProbeTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        String batchClassName = AsyncJobProbeBatch.class.getName();
+        \\        String namespacePrefix = batchClassName.contains('.') ? batchClassName.substringBefore('.') : null;
+        \\        String apexClassName = batchClassName.contains('.') ? batchClassName.substringAfter('.') : batchClassName;
+        \\        String jobId = Database.executeBatch(new AsyncJobProbeBatch());
+        \\        List<AsyncApexJob> jobs = [
+        \\            SELECT Id, JobType, Status, CreatedBy.Name
+        \\            FROM AsyncApexJob
+        \\            WHERE Id = :jobId AND ApexClass.NamespacePrefix = :namespacePrefix AND ApexClass.Name = :apexClassName
+        \\        ];
+        \\        AsyncApexJob job = jobs.get(0);
+        \\        return String.valueOf(jobs.size()) + ':' + job.JobType + ':' + job.Status + ':' + job.CreatedBy.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AsyncJobProbeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
+}
+
+test "E2E: chained batch with singleton database getter hard-deletes parent records after child cleanup" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CleanupStore {
+        \\    private static Database databaseInstance {
+        \\        get {
+        \\            if (databaseInstance == null) {
+        \\                databaseInstance = new Database();
+        \\            }
+        \\            return databaseInstance;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\        public virtual List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
+        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            if (rows.isEmpty() == false) {
+        \\                System.Database.emptyRecycleBin(rows);
+        \\            }
+        \\            return results;
+        \\        }
+        \\    }
+        \\}
+        \\global class SingletonCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    private static final Date RETENTION_END_DATE = System.today();
+        \\    public Schema.SObjectType currentSObjectType;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        this.currentSObjectType = this.getInitialSObjectType();
+        \\        return this.getQueryLocator(this.currentSObjectType);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        CleanupStore.getDatabase().hardDeleteRecords(scope);
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (this.currentSObjectType != Schema.Parent__c.SObjectType) {
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\    private Schema.SObjectType getInitialSObjectType() {
+        \\        Integer childCount = [
+        \\            SELECT COUNT()
+        \\            FROM Child__c
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\        ];
+        \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
+        \\    }
+        \\    private Database.QueryLocator getQueryLocator(Schema.SObjectType sobjectType) {
+        \\        Database.QueryLocator queryLocator;
+        \\        switch on sobjectType.newSObject() {
+        \\            when Child__c childRecord {
+        \\                queryLocator = System.Database.getQueryLocator([
+        \\                    SELECT Id
+        \\                    FROM Child__c
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                ]);
+        \\            }
+        \\            when Parent__c parentRecord {
+        \\                queryLocator = System.Database.getQueryLocator([
+        \\                    SELECT Id
+        \\                    FROM Parent__c
+        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                ]);
+        \\            }
+        \\        }
+        \\        return queryLocator;
+        \\    }
+        \\}
+        \\public class SingletonCleanupBatchTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        insert parent;
+        \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        Database.executeBatch(new SingletonCleanupBatch());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "SingletonCleanupBatchTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:0", result.value.string);
+}
+
+test "E2E: singleton database getter can hard-delete queried rows outside batch" {
+    const source =
+        \\public class CleanupStore {
+        \\    private static Database databaseInstance {
+        \\        get {
+        \\            if (databaseInstance == null) {
+        \\                databaseInstance = new Database();
+        \\            }
+        \\            return databaseInstance;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\            return System.Database.delete(rows);
+        \\        }
+        \\        public virtual List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
+        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            if (rows.isEmpty() == false) {
+        \\                System.Database.emptyRecycleBin(rows);
+        \\            }
+        \\            return results;
+        \\        }
+        \\    }
+        \\}
+        \\public class SingletonCleanupStoreProbe {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        List<SObject> rows = new List<SObject>([SELECT Id FROM Account]);
+        \\        CleanupStore.getDatabase().hardDeleteRecords(rows);
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SingletonCleanupStoreProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: chained batch with direct hard-delete removes parent records after child cleanup" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\global class DirectCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\    private static final Date RETENTION_END_DATE = System.today();
+        \\    public Schema.SObjectType currentSObjectType;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        this.currentSObjectType = this.getInitialSObjectType();
+        \\        return this.getQueryLocator(this.currentSObjectType);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        System.Database.delete(scope);
+        \\        if (scope.isEmpty() == false) {
+        \\            System.Database.emptyRecycleBin(scope);
+        \\        }
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (this.currentSObjectType != Schema.Parent__c.SObjectType) {
+        \\            Database.executeBatch(this);
+        \\        }
+        \\    }
+        \\    private Schema.SObjectType getInitialSObjectType() {
+        \\        Integer childCount = [
+        \\            SELECT COUNT()
+        \\            FROM Child__c
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\        ];
+        \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
+        \\    }
+        \\    private Database.QueryLocator getQueryLocator(Schema.SObjectType sobjectType) {
+        \\        Database.QueryLocator queryLocator;
+        \\        switch on sobjectType.newSObject() {
+        \\            when Child__c childRecord {
+        \\                queryLocator = System.Database.getQueryLocator([
+        \\                    SELECT Id
+        \\                    FROM Child__c
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                ]);
+        \\            }
+        \\            when Parent__c parentRecord {
+        \\                queryLocator = System.Database.getQueryLocator([
+        \\                    SELECT Id
+        \\                    FROM Parent__c
+        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                ]);
+        \\            }
+        \\        }
+        \\        return queryLocator;
+        \\    }
+        \\}
+        \\public class DirectCleanupBatchTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        insert parent;
+        \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
+        \\        Database.executeBatch(new DirectCleanupBatch());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "DirectCleanupBatchTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:0", result.value.string);
+}
+
+test "E2E: Database.insert null list throws by default without allOrNone false" {
+    const source =
+        \\public class DefaultDatabaseAllOrNothingTest {
+        \\    public static String test() {
+        \\        List<Account> rows = null;
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            Database.insert(rows);
+        \\        } catch (NullPointerException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException != null ? 'threw' : 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DefaultDatabaseAllOrNothingTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("threw", result.value.string);
+}
+
+test "E2E: switch when else executes for unmatched string subjects" {
+    const source =
+        \\public class SwitchElseRuntimeTest {
+        \\    public static String choose(String value) {
+        \\        switch on value {
+        \\            when 'A' {
+        \\                return 'match';
+        \\            }
+        \\            when else {
+        \\                throw new IllegalArgumentException('bad:' + value);
+        \\            }
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            choose('Z');
+        \\        } catch (IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SwitchElseRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:Z", result.value.string);
+}
+
+test "E2E: qualified system exception constructors are catchable" {
+    const source =
+        \\public class QualifiedExceptionCtorTest {
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            throw new System.IllegalArgumentException('bad');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getTypeName() + ':' + thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedExceptionCtorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("System.IllegalArgumentException:bad", result.value.string);
+}
+
+test "E2E: inner class switch else throws qualified system exceptions" {
+    const source =
+        \\public class InnerQualifiedExceptionSwitchTest {
+        \\    private class RuleRunner {
+        \\        public Boolean run(String operatorValue) {
+        \\            switch on operatorValue {
+        \\                when 'EQUAL_TO' {
+        \\                    return true;
+        \\                }
+        \\                when else {
+        \\                    throw new System.IllegalArgumentException('bad:' + operatorValue);
+        \\                }
+        \\            }
+        \\            return false;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            new RuleRunner().run('THIS_IS_AN_INVALID_OPERATOR');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerQualifiedExceptionSwitchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+}
+
+test "E2E: constructor exceptions propagate to callers" {
+    const source =
+        \\public class ConstructorExceptionPropagationTest {
+        \\    private class RuleRunner {
+        \\        public RuleRunner(String operatorValue) {
+        \\            switch on operatorValue {
+        \\                when 'EQUAL_TO' {
+        \\                }
+        \\                when else {
+        \\                    throw new System.IllegalArgumentException('bad:' + operatorValue);
+        \\                }
+        \\            }
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            new RuleRunner('THIS_IS_AN_INVALID_OPERATOR');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ConstructorExceptionPropagationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+}
+
+test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
+    const source =
+        \\public class TestSetCreatedDateRuntimeTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        Account otherRecord = new Account(Name = 'Other');
+        \\        insert new List<Account>{ accountRecord, otherRecord };
+        \\        Datetime target = Datetime.newInstance(2025, 1, 2, 3, 4, 5);
+        \\        Datetime otherTarget = Datetime.newInstance(2024, 1, 1, 0, 0, 0);
+        \\        System.Test.setCreatedDate(accountRecord.Id, target);
+        \\        System.Test.setCreatedDate(otherRecord.Id, otherTarget);
+        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id = :accountRecord.Id];
+        \\        Account otherRefreshed = [SELECT CreatedDate FROM Account WHERE Id = :otherRecord.Id];
+        \\        List<Account> matches = [SELECT Id FROM Account WHERE CreatedDate = :target];
+        \\        return String.valueOf(matches.size()) + ':' +
+        \\            String.valueOf(refreshed.CreatedDate == target) + ':' +
+        \\            String.valueOf(otherRefreshed.CreatedDate == target);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TestSetCreatedDateRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:false", result.value.string);
+}
+
+test "E2E: String.split supports escaped pipe delimiters with limit" {
+    const source =
+        \\public class SplitEscapedPipeTest {
+        \\    public static String test() {
+        \\        List<String> parts = 'true||false'.split('\\|\\|', 2);
+        \\        return String.valueOf(parts.size()) + ':' + parts.get(0) + ':' + parts.get(1);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SplitEscapedPipeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:true:false", result.value.string);
+}
+
+test "E2E: parent CreatedDate fields are materialized as Datetime values" {
+    const source =
+        \\public class ParentCreatedDateMaterializationTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Datetime target = Datetime.newInstance(2025, 1, 2, 3, 4, 5);
+        \\        System.Test.setCreatedDate(accountRecord.Id, target);
+        \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
+        \\        insert contactRecord;
+        \\        Contact queried = [SELECT AccountId, Account.CreatedDate FROM Contact WHERE Id = :contactRecord.Id];
+        \\        Datetime actual = (Datetime) queried.getSObject('Account').get('CreatedDate');
+        \\        return String.valueOf(actual == target);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ParentCreatedDateMaterializationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: instance overload resolves cast List<SObject> target" {
+    const source =
+        \\public class ListOverloadForwarder {
+        \\    public String run(List<Account> rows) {
+        \\        return this.run((List<SObject>) rows);
+        \\    }
+        \\    public String run(List<SObject> rows) {
+        \\        return 'sobject:' + rows.size();
+        \\    }
+        \\    public static String test() {
+        \\        ListOverloadForwarder forwarder = new ListOverloadForwarder();
+        \\        return forwarder.run(new List<Account>{ new Account(Name = 'A') });
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ListOverloadForwarder",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("sobject:1", result.value.string);
+}
+
+test "E2E: null collection variables preserve declared overload targets" {
+    const source =
+        \\public class NullCollectionOverloadTest {
+        \\    public String pick(List<SObject> rows) { return 'List'; }
+        \\    public String pick(Map<String, SObject> rows) { return 'Map'; }
+        \\    public String pick(Iterable<Id> ids) { return 'Iterable'; }
+        \\    public String pick(Object anything) { return anything == null ? 'null' : 'Object'; }
+        \\    public static String test() {
+        \\        NullCollectionOverloadTest helper = new NullCollectionOverloadTest();
+        \\        List<Account> rows = null;
+        \\        Map<String, Account> rowMap = null;
+        \\        Iterable<Id> ids = null;
+        \\        return helper.pick(rows) + ':' + helper.pick(rowMap) + ':' + helper.pick(ids);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullCollectionOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("List:Map:Iterable", result.value.string);
+}
+
+test "E2E: UserRecordAccess delete query returns only deletable records" {
+    const source =
+        \\public class UserRecordAccessDeleteQueryTest {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'CanDelete');
+        \\        insert account;
+        \\        List<Id> recordIds = new List<Id>{ account.Id, System.UserInfo.getUserId() };
+        \\        List<UserRecordAccess> accessRows = [
+        \\            SELECT RecordId
+        \\            FROM UserRecordAccess
+        \\            WHERE UserId = :System.UserInfo.getUserId() AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
+        \\        ];
+        \\        return String.valueOf(accessRows.size()) + ':' + String.valueOf(accessRows.get(0).RecordId == account.Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserRecordAccessDeleteQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true", result.value.string);
+}
+
+test "E2E: SOQL WHERE resolves multi-hop parent relationship fields" {
+    const source =
+        \\public class MultiHopParentWhereTest {
+        \\    public static Integer test() {
+        \\        Account account = new Account(Name = 'Parent');
+        \\        insert account;
+        \\        Contact contact = new Contact(LastName = 'Child', AccountId = account.Id);
+        \\        insert contact;
+        \\        return [SELECT COUNT() FROM Contact WHERE Account.Owner.Name = 'Test User'];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MultiHopParentWhereTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: Database DmlOptions allOrNone false returns partial save results" {
+    const source =
+        \\public class DatabaseDmlOptionsTest {
+        \\    public static String test() {
+        \\        Account existing = new Account(Name = 'Existing');
+        \\        insert existing;
+        \\
+        \\        List<Account> insertRows = new List<Account>{
+        \\            new Account(Name = 'Fresh'),
+        \\            existing
+        \\        };
+        \\        Database.DmlOptions insertOptions = new Database.DmlOptions();
+        \\        insertOptions.OptAllOrNone = false;
+        \\        List<Database.SaveResult> insertResults = Database.insert(insertRows, insertOptions);
+        \\
+        \\        List<Account> updateRows = new List<Account>{
+        \\            new Account(Id = existing.Id, Name = 'Updated'),
+        \\            new Account(Name = 'Missing Id')
+        \\        };
+        \\        Database.DmlOptions updateOptions = new Database.DmlOptions();
+        \\        updateOptions.OptAllOrNone = false;
+        \\        List<Database.SaveResult> updateResults = Database.update(updateRows, updateOptions);
+        \\
+        \\        return String.valueOf(insertResults[0].isSuccess()) + ':' +
+        \\            String.valueOf(insertResults[1].isSuccess()) + ':' +
+        \\            String.valueOf(updateResults[0].isSuccess()) + ':' +
+        \\            String.valueOf(updateResults[1].isSuccess());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseDmlOptionsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:false:true:false", result.value.string);
+}
+
+test "E2E: Database partial DML with null list returns empty results" {
+    const source =
+        \\public class DatabaseNullListDmlTest {
+        \\    public static String test() {
+        \\        List<Account> rows = null;
+        \\        Database.DmlOptions options = new Database.DmlOptions();
+        \\        options.OptAllOrNone = false;
+        \\        List<Database.SaveResult> results = Database.insert(rows, options);
+        \\        return String.valueOf(results.size()) + ':' + String.valueOf(Limits.getDmlStatements());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseNullListDmlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:0", result.value.string);
+}
+
 test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
     const source =
         \\public class TypeForNameSObjectTest {
@@ -2738,6 +5216,686 @@ test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Account", result.value.string);
+}
+
+test "E2E: fixture flow definition view selector test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogManagementDataSelector_Tests_Flow",
+        "it_returns_matching_flow_definition_view_for_specified_flow_api_name",
+        out.writer(std.testing.allocator),
+    );
+
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture cached organization selector test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LoggerEngineDataSelector_Tests",
+        "it_returns_cached_organization",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: sobject put rejects incompatible datetime string" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    const source =
+        \\public class InvalidDatetimePutProbe {
+        \\    public static Boolean test() {
+        \\        LogEntry__c logEntry = new LogEntry__c();
+        \\        try {
+        \\            logEntry.put('Timestamp__c', 'Some value');
+        \\            return false;
+        \\        } catch (System.Exception ex) {
+        \\            return true;
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidDatetimePutProbe",
+        .entry_method = "test",
+        .source_paths = fixture_paths.slice(),
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: fixture field mapping integration test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventHandler_Tests_FieldMappings",
+        "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry_when_mappings_have_been_configured",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture transaction limits builder test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_transaction_limits_fields_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture auth session builder test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_authSession_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture organization builder test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_organization_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture user builder test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_run_user_query_when_enabled_via_logger_parameter",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: custom object query by Name IN set finds existing record" {
+    const source =
+        \\public class NameInSetQueryProbe {
+        \\    public static String test() {
+        \\        insert new Thing__c(Name = 'Some tag!', UniqueId__c = 'Some tag!');
+        \\        Set<String> names = new Set<String>{ 'Some tag!' };
+        \\        List<Thing__c> rows = [SELECT Id, Name FROM Thing__c WHERE Name IN :names];
+        \\        return String.valueOf(rows.size()) + ':' + (rows.isEmpty() ? '' : rows.get(0).Name);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NameInSetQueryProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Some tag!", result.value.string);
+}
+
+test "E2E: custom object upsert by external id updates existing record" {
+    const source =
+        \\public class ExternalIdUpsertProbe {
+        \\    public static String test() {
+        \\        Thing__c firstRow = new Thing__c(Name = 'original', UniqueId__c = 'txn-1');
+        \\        Database.upsert(new List<SObject>{ firstRow }, Schema.Thing__c.UniqueId__c);
+        \\
+        \\        Thing__c secondRow = new Thing__c(Name = 'updated', UniqueId__c = 'txn-1');
+        \\        Database.upsert(new List<SObject>{ secondRow }, Schema.Thing__c.UniqueId__c);
+        \\
+        \\        List<Thing__c> rows = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'txn-1'];
+        \\        return String.valueOf(rows.size()) + ':' + rows.get(0).Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ExternalIdUpsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:updated", result.value.string);
+}
+
+test "E2E: fixture duplicate scenario guard test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LoggerScenarioHandler_Tests",
+        "it_should_not_allow_duplicate_scenario_to_be_inserted",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture tag creation test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventHandler_Tests",
+        "it_should_create_tag_records_when_tagging_is_enabled",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture tag reuse test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventHandler_Tests",
+        "it_should_reuse_existing_tag_records",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture event-uuid upsert test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventHandler_Tests",
+        "it_should_upsert_log_entries_when_event_uuid_is_populated",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: custom object upsert by external id inserts queryable row" {
+    const source =
+        \\public class ExternalIdInsertProbe {
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'Created', UniqueId__c = 'created-1')
+        \\        };
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'created-1'];
+        \\        return String.valueOf(saved.size()) + ':' + String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ExternalIdInsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:Created", result.value.string);
+}
+
+test "E2E: switch on newSObject matches custom object type-binding clause" {
+    const source =
+        \\public class SwitchOnNewSObjectProbe {
+        \\    public static String test() {
+        \\        switch on Schema.Thing__c.SObjectType.newSObject() {
+        \\            when Thing__c row {
+        \\                return 'custom';
+        \\            }
+        \\            when else {
+        \\                return 'else';
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SwitchOnNewSObjectProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("custom", result.value.string);
+}
+
+test "E2E: List constructor preserves SObjects from Set" {
+    const source =
+        \\public class SetToListProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Acme');
+        \\        Set<SObject> rows = new Set<SObject>();
+        \\        rows.add(account);
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        return copied.size() + ':' + copied.get(0).getSObjectType();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SetToListProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Account", result.value.string);
+}
+
+test "E2E: Set<SObject> keeps distinct unsaved records by field values" {
+    const source =
+        \\public class DistinctUnsavedSetProbe {
+        \\    public static String test() {
+        \\        Set<SObject> rows = new Set<SObject>();
+        \\        rows.add(new Thing__c(Name = 'first', UniqueId__c = 'u1'));
+        \\        rows.add(new Thing__c(Name = 'second', UniqueId__c = 'u2'));
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(copied.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DistinctUnsavedSetProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:2", result.value.string);
+}
+
+test "E2E: inner database gateway upsert writes Ids back to original rows" {
+    const source =
+        \\public class DataGateway {
+        \\    private static Database databaseInstance = new Database();
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\            return System.Database.upsert(records, externalIdField);
+        \\        }
+        \\    }
+        \\}
+        \\public class DataGatewayUpsertProbe {
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        DataGateway.getDatabase().upsertRecords(copied, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DataGatewayUpsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("DataGatewayUpsertProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call" {
+    const source =
+        \\public class TypedGatewayProbe {
+        \\    private static Database databaseInstance = new Database();
+        \\    public static Database getDatabase() {
+        \\        return databaseInstance;
+        \\    }
+        \\    public virtual class Database {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\            return System.Database.upsert(records, externalIdField);
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
+        \\        getDatabase().upsertRecords(rows, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypedGatewayProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: List<SObject> copy preserves SObject identity for DML" {
+    const source =
+        \\public class ListIdentityProbe {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{ new Account(Name = 'Acme') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        insert copied;
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ListIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "001")) {
+        std.debug.print("ListIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "001"));
+}
+
+test "E2E: Database.upsert list writes Id back to original row" {
+    const source =
+        \\public class DatabaseUpsertListIdentityProbe {
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DatabaseUpsertListIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("DatabaseUpsertListIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: wrapper method preserves list element identity for Database.upsert" {
+    const source =
+        \\public class WrapperIdentityProbe {
+        \\    public static void save(List<SObject> rows) {
+        \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\    }
+        \\    public static String test() {
+        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> copied = new List<SObject>(rows);
+        \\        save(copied);
+        \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "WrapperIdentityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("WrapperIdentityProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: inner class named Database can call System.Database.upsert" {
+    const source =
+        \\public class InnerDatabaseProbe {
+        \\    public class Database {
+        \\        public static void save(List<SObject> rows) {
+        \\            System.Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        Database.save(rows);
+        \\        return String.valueOf(rows.get(0).Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerDatabaseProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    if (!std.mem.startsWith(u8, result.value.string, "a")) {
+        std.debug.print("InnerDatabaseProbe => {s}\n", .{result.value.string});
+    }
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
+}
+
+test "E2E: fixture anonymous-mode-disabled user fields test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_user_fields_when_anonymous_mode_disabled",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture standard-object recordId test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_recordId_when_template_standard_object",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture custom-object recordId test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_recordId_when_custom_object",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture null record overload test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_record_when_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture null list overload test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_list_of_records_when_list_is_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture null map overload test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_map_of_sobject_records_when_map_is_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+}
+
+test "E2E: fixture null iterable overload test passes" {
+    var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
+    defer fixture_paths.deinit();
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const suite = try runSingleTest(
+        std.testing.allocator,
+        fixture_paths.slice(),
+        "LogEntryEventBuilder_Tests",
+        "it_should_set_record_fields_for_iterable_ids_when_null",
+        out.writer(std.testing.allocator),
+    );
+
+    if (suite.passed != 1) {
+        std.debug.print("{s}", .{out.items});
+    }
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
 
 test "E2E: Type.forName custom object __e returns sobject with put/get" {

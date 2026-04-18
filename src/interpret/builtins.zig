@@ -107,6 +107,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(class_name, "System")) return dispatchStaticSystem(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "String")) return dispatchStaticString(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Id")) return dispatchStaticId(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Integer")) return dispatchStaticInteger(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Long")) return dispatchStaticLong(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatchStaticBoolean(method_name, args);
@@ -117,7 +118,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatchStaticTime(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "DateTime")) return dispatchStaticDateTime(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatchStaticJson(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatchStaticUserInfo(method_name);
+    if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatchStaticUserInfo(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel")) return dispatchStaticLoggingLevel(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
     if (ci.eqlIgnoreCase(class_name, "UUID")) {
@@ -137,7 +138,27 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (ci.eqlIgnoreCase(method_name, "getMap")) {
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
-            // Return empty map — org limits are not tracked in the interpreter
+            // Seed known org limits with plausible defaults so that
+            // callers like `OrgLimits.getMap().get('SingleEmail').getValue()` work.
+            const known = [_]struct { name: []const u8, value: i64, limit: i64 }{
+                .{ .name = "SingleEmail", .value = 0, .limit = 5000 },
+                .{ .name = "MassEmail", .value = 0, .limit = 10 },
+                .{ .name = "DailyApiRequests", .value = 0, .limit = 100000 },
+                .{ .name = "DailyAsyncApexExecutions", .value = 0, .limit = 250000 },
+                .{ .name = "DailyBulkApiBatches", .value = 0, .limit = 15000 },
+                .{ .name = "HourlyAsyncReportRuns", .value = 0, .limit = 1200 },
+                .{ .name = "DailyDurableGenericStreamingApiEvents", .value = 0, .limit = 1000000 },
+                .{ .name = "DailyDurableStreamingApiEvents", .value = 0, .limit = 1000000 },
+                .{ .name = "DailyStreamingApiEvents", .value = 0, .limit = 1000000 },
+            };
+            for (known) |k| {
+                const ol = try ctx.arena.create(types.ObjectInstance);
+                ol.* = .{ .class_name = "System.OrgLimit" };
+                try ol.fields.put(ctx.arena, "name", Value{ .string = k.name });
+                try ol.fields.put(ctx.arena, "value", Value{ .integer = k.value });
+                try ol.fields.put(ctx.arena, "limit", Value{ .integer = k.limit });
+                try map.entries.put(ctx.arena, k.name, Value{ .object = ol });
+            }
             return Value{ .map = map };
         }
         return null;
@@ -156,7 +177,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         if (ctx.see_all_data) return Value.null_val;
         return ctx.throwException("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
     }
-    if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return .void_val;
+    if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return dispatchStaticFeatureManagement(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatchStaticLimits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Script") or
         (std.mem.startsWith(u8, class_name, "DataWeave") and ci.eqlIgnoreCase(method_name, "createScript")))
@@ -173,7 +194,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatchStaticEncodingUtil(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatchStaticMessaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatchStaticEventBus(method_name);
-    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatchStaticHttp(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatchStaticCanTheUser(ctx, method_name, args);
@@ -241,10 +262,11 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
         if (args.len >= 1 and args[0] == .set) {
             var result: std.ArrayListUnmanaged(u8) = .empty;
             var first = true;
-            for (args[0].set.entries.keys()) |key| {
+            for (args[0].set.entries.values()) |item| {
                 if (!first) try result.appendSlice(ctx.arena, sep);
                 first = false;
-                try result.appendSlice(ctx.arena, key);
+                const s = try utils.coerceToString(item, ctx.arena);
+                try result.appendSlice(ctx.arena, s);
             }
             return Value{ .string = try result.toOwnedSlice(ctx.arena) };
         }
@@ -312,6 +334,26 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
             if (args[0] == .string) return Value{ .boolean = args[0].string.len > 0 };
         }
         return Value{ .boolean = false };
+    }
+    return null;
+}
+
+fn isSalesforceIdString(value: []const u8) bool {
+    if (value.len != 15 and value.len != 18) return false;
+    for (value) |ch| {
+        if (!std.ascii.isAlphanumeric(ch)) return false;
+    }
+    return true;
+}
+
+fn dispatchStaticId(_: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
+        if (args.len == 0) return Value.null_val;
+        return switch (args[0]) {
+            .null_val => Value.null_val,
+            .string => |s| if (isSalesforceIdString(s)) Value{ .string = s } else Value{ .string = s },
+            else => Value.null_val,
+        };
     }
     return null;
 }
@@ -756,13 +798,30 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
     return null;
 }
 
-fn dispatchStaticUserInfo(method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) return Value{ .string = "005000000000001" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) return Value{ .string = "00e000000000001" };
+fn dispatchStaticUserInfo(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+    const current_user = blk: {
+        if (ctx.eval.store.get("User")) |users| {
+            for (users.items) |record| {
+                if (record != .sobject or record.sobject.id == null) continue;
+                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, ctx.eval.current_user_id)) break :blk record.sobject;
+            }
+        }
+        break :blk null;
+    };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) return Value{ .string = ctx.eval.current_user_id };
+    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) return Value{ .string = ctx.eval.current_profile_id };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = "Test User" };
     if (std.ascii.eqlIgnoreCase(method_name, "getUsername")) return Value{ .string = "testuser@example.com" };
     if (std.ascii.eqlIgnoreCase(method_name, "getFirstName")) return Value{ .string = "Test" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLastName")) return Value{ .string = "User" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUserType")) {
+        if (current_user) |user| {
+            if (utils.sobjectGet(&user.fields, "UserType")) |user_type| {
+                if (user_type == .string) return Value{ .string = user_type.string };
+            }
+        }
+        return Value{ .string = "Standard" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getLanguage")) return Value{ .string = "en_US" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocale")) return Value{ .string = "en_US" };
     if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) return Value{ .string = "America/Los_Angeles" };
@@ -772,6 +831,91 @@ fn dispatchStaticUserInfo(method_name: []const u8) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed")) return Value{ .string = "Theme4d" };
     if (std.ascii.eqlIgnoreCase(method_name, "getSessionId")) return Value{ .string = "mock-session-id" };
     return Value{ .string = "" };
+}
+
+fn dispatchStaticFeatureManagement(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    if (!std.ascii.eqlIgnoreCase(method_name, "checkPermission")) return Value{ .boolean = false };
+    if (args.len == 0 or args[0] != .string) return Value{ .boolean = false };
+
+    const permission_name = args[0].string;
+    var assigned_permission_set_ids: [32][]const u8 = undefined;
+    var assigned_permission_set_count: usize = 0;
+    var has_admin_permission_set = false;
+
+    if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
+        for (psa_records.items) |psa| {
+            if (psa != .sobject) continue;
+            const assignee_id = utils.sobjectGet(&psa.sobject.fields, "AssigneeId") orelse continue;
+            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) continue;
+            const permission_set_id = utils.sobjectGet(&psa.sobject.fields, "PermissionSetId") orelse continue;
+            if (permission_set_id != .string) continue;
+            if (assigned_permission_set_count < assigned_permission_set_ids.len) {
+                assigned_permission_set_ids[assigned_permission_set_count] = permission_set_id.string;
+                assigned_permission_set_count += 1;
+            }
+        }
+    }
+
+    if (assigned_permission_set_count == 0) return Value{ .boolean = false };
+
+    if (ctx.eval.store.get("PermissionSet")) |ps_records| {
+        for (ps_records.items) |ps| {
+            if (ps != .sobject or ps.sobject.id == null) continue;
+
+            var is_assigned = false;
+            for (assigned_permission_set_ids[0..assigned_permission_set_count]) |assigned_id| {
+                if (std.ascii.eqlIgnoreCase(ps.sobject.id.?, assigned_id)) {
+                    is_assigned = true;
+                    break;
+                }
+            }
+            if (!is_assigned) continue;
+
+            const ps_name_val = utils.sobjectGet(&ps.sobject.fields, "Name") orelse continue;
+            if (ps_name_val != .string) continue;
+            const ps_name = ps_name_val.string;
+
+            if (std.ascii.indexOfIgnoreCase(ps_name, "LoggerAdmin") != null or
+                std.ascii.indexOfIgnoreCase(ps_name, "Admin") != null)
+            {
+                has_admin_permission_set = true;
+            }
+            if (std.ascii.eqlIgnoreCase(ps_name, permission_name)) return Value{ .boolean = true };
+        }
+    }
+
+    if (has_admin_permission_set) return Value{ .boolean = true };
+
+    if (ctx.eval.store.get("SetupEntityAccess")) |sea_records| {
+        for (sea_records.items) |sea| {
+            if (sea != .sobject) continue;
+            const parent_id = utils.sobjectGet(&sea.sobject.fields, "ParentId") orelse continue;
+            const setup_entity_id = utils.sobjectGet(&sea.sobject.fields, "SetupEntityId") orelse continue;
+            if (parent_id != .string or setup_entity_id != .string) continue;
+
+            var parent_matches = false;
+            for (assigned_permission_set_ids[0..assigned_permission_set_count]) |assigned_id| {
+                if (std.ascii.eqlIgnoreCase(parent_id.string, assigned_id)) {
+                    parent_matches = true;
+                    break;
+                }
+            }
+            if (!parent_matches) continue;
+
+            if (ctx.eval.store.get("CustomPermission")) |cp_records| {
+                for (cp_records.items) |cp| {
+                    if (cp != .sobject or cp.sobject.id == null) continue;
+                    if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
+                    const developer_name = utils.sobjectGet(&cp.sobject.fields, "DeveloperName") orelse continue;
+                    if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
+                        return Value{ .boolean = true };
+                    }
+                }
+            }
+        }
+    }
+
+    return Value{ .boolean = false };
 }
 
 fn dispatchStaticLoggingLevel(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -847,8 +991,8 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
     }
     if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
         const known_types = [_][]const u8{
-            "account",  "contact",  "opportunity", "task",            "lead",           "case", "user",
-            "solution", "campaign", "event",       "contentdocument", "contentversion",
+            "account",  "contact",  "opportunity", "task",            "lead",           "case",               "user",
+            "solution", "campaign", "event",       "contentdocument", "contentversion", "flowdefinitionview", "flowversionview",
         };
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -865,7 +1009,8 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
                 }
                 if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
                     !std.mem.endsWith(u8, obj_name, "__e") and
-                    !std.mem.endsWith(u8, obj_name, "__mdt"))
+                    !std.mem.endsWith(u8, obj_name, "__mdt") and
+                    !std.mem.endsWith(u8, obj_name, "__b"))
                 {
                     return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
                 }
@@ -884,7 +1029,8 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
             }
             if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
                 !std.mem.endsWith(u8, obj_name, "__e") and
-                !std.mem.endsWith(u8, obj_name, "__mdt"))
+                !std.mem.endsWith(u8, obj_name, "__mdt") and
+                !std.mem.endsWith(u8, obj_name, "__b"))
             {
                 return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
             }
@@ -902,130 +1048,63 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
         obj.* = .{ .class_name = "SObjectAccessDecision" };
         const rm_map = try ctx.arena.create(types.MapValue);
         rm_map.* = .{};
+        const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+        const has_permset = hasAssignedPermissionSet(ctx.eval);
+        const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
+        const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
 
-        if (ctx.eval.is_restricted_user) {
-            const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
-            const has_permset = blk: {
-                if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
-                    break :blk psa_records.items.len > 0;
+        if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
+            return ctx.throwException("System.NoAccessException", "No access to entity");
+        }
+        if ((std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+            std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or
+            std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) and
+            ctx.eval.is_min_access_user and !has_permset)
+        {
+            return ctx.throwException("System.NoAccessException", "No access to entity");
+        }
+
+        if (input_records == .list) {
+            for (input_records.list.items.items) |item| {
+                if (item != .sobject) continue;
+                for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                    const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                        resolveFieldReadPermission(ctx.eval, item.sobject.type_name, field_name)
+                    else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
+                        resolveFieldWritePermission(ctx.eval, item.sobject.type_name, field_name, "create")
+                    else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                        resolveFieldWritePermission(ctx.eval, item.sobject.type_name, field_name, "edit")
+                    else
+                        true;
+                    if (!should_keep and field_value != .null_val) {
+                        try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
+                    }
                 }
-                break :blk false;
-            };
-            const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
-            if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
-                return ctx.throwException("System.NoAccessException", "No access to entity");
             }
-            if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) {
-                if (ctx.eval.is_min_access_user and !has_permset) {
-                    return ctx.throwException("System.NoAccessException", "No access to entity");
-                }
-                const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
-                if (input_records == .list and input_records.list.items.items.len > 0) {
-                    const standard_fields = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName", "CreatedBy", "LastModifiedBy" };
-                    for (input_records.list.items.items) |item| {
-                        if (item == .sobject) {
-                            for (item.sobject.fields.keys(), item.sobject.fields.values()) |k, fv| {
-                                if (fv == .list) continue;
-                                var is_std = false;
-                                for (standard_fields) |sf| {
-                                    if (std.ascii.eqlIgnoreCase(k, sf)) {
-                                        is_std = true;
-                                        break;
-                                    }
-                                }
-                                if (!is_std and ctx.eval.is_min_access_user and has_permset) {
-                                    if (isFieldAllowedByPermSets(ctx.eval, k)) is_std = true;
-                                }
-                                if (!is_std) try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
-                            }
-                        }
+        }
+
+        if (rm_map.entries.count() > 0 and input_records == .list) {
+            const stripped = try ctx.arena.create(types.ListValue);
+            stripped.* = .{};
+            for (input_records.list.items.items) |item| {
+                if (item == .sobject) {
+                    const clone = try ctx.arena.create(types.SObject);
+                    clone.* = .{ .type_name = item.sobject.type_name };
+                    clone.id = item.sobject.id;
+                    clone.is_stripped = true;
+                    for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                        if (rm_map.entries.get(field_name) == null) try clone.fields.put(ctx.arena, field_name, field_value);
                     }
-                }
-                if (rm_map.entries.count() > 0 and input_records == .list) {
-                    const stripped = try ctx.arena.create(types.ListValue);
-                    stripped.* = .{};
-                    for (input_records.list.items.items) |item| {
-                        if (item == .sobject) {
-                            const clone = try ctx.arena.create(types.SObject);
-                            clone.* = .{ .type_name = item.sobject.type_name };
-                            clone.id = item.sobject.id;
-                            clone.is_stripped = true;
-                            for (item.sobject.fields.keys(), item.sobject.fields.values()) |fk, fv| {
-                                if (rm_map.entries.get(fk) == null) try clone.fields.put(ctx.arena, fk, fv);
-                            }
-                            try stripped.items.append(ctx.arena, Value{ .sobject = clone });
-                        } else {
-                            try stripped.items.append(ctx.arena, item);
-                        }
-                    }
-                    try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
+                    try stripped.items.append(ctx.arena, Value{ .sobject = clone });
                 } else {
-                    try obj.fields.put(ctx.arena, "records", if (args.len >= 2) args[1] else Value.null_val);
+                    try stripped.items.append(ctx.arena, item);
                 }
-            } else if (std.ascii.eqlIgnoreCase(access_type, "READABLE")) {
-                if (ctx.eval.is_min_access_user and !has_permset) {
-                    return ctx.throwException("System.NoAccessException", "No access to entity");
-                }
-                if (ctx.eval.is_min_access_user and has_permset) {
-                    const input_records2 = if (args.len >= 2) args[1] else Value.null_val;
-                    if (input_records2 == .list) {
-                        const standard_fields2 = [_][]const u8{ "Id", "Name", "OwnerId", "CreatedDate", "LastModifiedDate", "IsDeleted", "CreatedById", "LastModifiedById", "SystemModstamp", "Description", "LastName", "FirstName", "CreatedBy", "LastModifiedBy" };
-                        for (input_records2.list.items.items) |item| {
-                            if (item == .sobject) {
-                                for (item.sobject.fields.keys(), item.sobject.fields.values()) |k, fv| {
-                                    if (fv == .list) {
-                                        if (!isFieldAllowedByPermSets(ctx.eval, k)) try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
-                                        continue;
-                                    }
-                                    var is_std = false;
-                                    for (standard_fields2) |sf| {
-                                        if (std.ascii.eqlIgnoreCase(k, sf)) {
-                                            is_std = true;
-                                            break;
-                                        }
-                                    }
-                                    if (!is_std and isFieldAllowedByPermSets(ctx.eval, k)) is_std = true;
-                                    if (!is_std) try rm_map.entries.put(ctx.arena, k, Value{ .boolean = true });
-                                }
-                            }
-                        }
-                    }
-                }
-                if (rm_map.entries.count() > 0) {
-                    const input_recs3 = if (args.len >= 2) args[1] else Value.null_val;
-                    if (input_recs3 == .list) {
-                        const stripped3 = try ctx.arena.create(types.ListValue);
-                        stripped3.* = .{};
-                        for (input_recs3.list.items.items) |item| {
-                            if (item == .sobject) {
-                                const clone = try ctx.arena.create(types.SObject);
-                                clone.* = .{ .type_name = item.sobject.type_name };
-                                clone.id = item.sobject.id;
-                                clone.is_stripped = true;
-                                for (item.sobject.fields.keys(), item.sobject.fields.values()) |fk, fv| {
-                                    if (rm_map.entries.get(fk) == null) try clone.fields.put(ctx.arena, fk, fv);
-                                }
-                                try stripped3.items.append(ctx.arena, Value{ .sobject = clone });
-                            } else {
-                                try stripped3.items.append(ctx.arena, item);
-                            }
-                        }
-                        try obj.fields.put(ctx.arena, "records", Value{ .list = stripped3 });
-                    } else if (args.len >= 2) {
-                        try obj.fields.put(ctx.arena, "records", args[1]);
-                    }
-                } else if (args.len >= 2) {
-                    try obj.fields.put(ctx.arena, "records", args[1]);
-                }
-            } else {
-                if (args.len >= 2) try obj.fields.put(ctx.arena, "records", args[1]);
             }
-        } else {
-            if (args.len >= 2) {
-                try obj.fields.put(ctx.arena, "records", args[1]);
-            } else if (args.len >= 1 and args[0] == .list) {
-                try obj.fields.put(ctx.arena, "records", args[0]);
-            }
+            try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
+        } else if (args.len >= 2) {
+            try obj.fields.put(ctx.arena, "records", args[1]);
+        } else if (args.len >= 1 and args[0] == .list) {
+            try obj.fields.put(ctx.arena, "records", args[0]);
         }
         try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
         return Value{ .object = obj };
@@ -1035,12 +1114,33 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
 
 fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     const ci = std.ascii;
+    // Usage counters
     if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
+    if (ci.eqlIgnoreCase(method_name, "getDmlRows")) return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
     if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
     if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    // Governor limit maximums (Salesforce default synchronous limits)
+    if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueries")) return Value{ .integer = 100 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueryRows")) return Value{ .integer = 50000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueryLocatorRows")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitAggregateQueries")) return Value{ .integer = 300 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitCallouts")) return Value{ .integer = 100 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitCpuTime")) return Value{ .integer = 10000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitHeapSize")) return Value{ .integer = 6000000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitEmailInvocations")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFutureCalls")) return Value{ .integer = 50 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitMobilePushApexCalls")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitQueueableJobs")) return Value{ .integer = 50 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitSoslQueries")) return Value{ .integer = 20 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitApexCursorRows")) return Value{ .integer = 50000 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitAsyncCalls")) return Value{ .integer = 50 };
     // All other Limits methods return 0
     return Value{ .integer = 0 };
 }
@@ -1265,16 +1365,40 @@ fn dispatchStaticEventBus(method_name: []const u8) !?Value {
     return .void_val;
 }
 
-fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+fn setCreatedDateForRecord(ctx: *BuiltinContext, args: []const Value) !Value {
+    if (args.len < 2) return .void_val;
+    const record_id = try utils.coerceToString(args[0], ctx.arena);
+    const created_date = extractDateString(args[1]) orelse try utils.coerceToString(args[1], ctx.arena);
+
+    var store_iter = ctx.eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        for (entry.value_ptr.items) |record| {
+            if (record != .sobject) continue;
+            if (record.sobject.id) |candidate_id| {
+                if (std.ascii.eqlIgnoreCase(candidate_id, record_id)) {
+                    try record.sobject.fields.put(ctx.arena, "CreatedDate", Value{ .string = created_date });
+                    return .void_val;
+                }
+            }
+        }
+    }
+    return .void_val;
+}
+
+fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "startTest")) {
         // Reset Limits counters (Salesforce resets governor limits at Test.startTest)
         ctx.eval.limits_dml = 0;
+        ctx.eval.limits_dml_rows = 0;
         ctx.eval.limits_soql = 0;
         ctx.eval.limits_publish_immediate = 0;
         ctx.eval.limits_queueable = 0;
         ctx.eval.limits_callouts = 0;
         return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setCreatedDate")) {
+        return try setCreatedDateForRecord(ctx, args);
     }
     return .void_val;
 }
@@ -1292,42 +1416,23 @@ fn dispatchStaticHttp(ctx: *BuiltinContext, method_name: []const u8) !?Value {
 
 fn dispatchStaticCanTheUser(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "read") or std.ascii.eqlIgnoreCase(method_name, "flsAccessible")) {
-        return Value{ .boolean = true };
+        const sobject_type = getSObjectTypeFromArgs(args);
+        if (sobject_type) |sot| return Value{ .boolean = resolveObjectCrudPermission(ctx.eval, sot, "read") };
+        return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "create") or std.ascii.eqlIgnoreCase(method_name, "edit") or std.ascii.eqlIgnoreCase(method_name, "crud")) {
-        if (ctx.eval.is_min_access_user) {
-            const sobject_type = getSObjectTypeFromArgs(args);
-            if (sobject_type) |sot| {
-                const perm = lookupObjectPermission(ctx.eval, sot, method_name);
-                if (perm) |p| return Value{ .boolean = p };
-            }
-            return Value{ .boolean = false };
-        }
-        return Value{ .boolean = true };
+        const sobject_type = getSObjectTypeFromArgs(args);
+        if (sobject_type) |sot| return Value{ .boolean = resolveObjectCrudPermission(ctx.eval, sot, method_name) };
+        return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "destroy")) {
-        if (ctx.eval.is_min_access_user) {
-            const sobject_type = getSObjectTypeFromArgs(args);
-            if (sobject_type) |sot| {
-                const perm = lookupObjectPermission(ctx.eval, sot, "destroy");
-                if (perm) |p| return Value{ .boolean = p };
-            }
-            return Value{ .boolean = false };
-        }
+        const sobject_type = getSObjectTypeFromArgs(args);
+        if (sobject_type) |sot| return Value{ .boolean = resolveObjectCrudPermission(ctx.eval, sot, "destroy") };
         return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
-        if (ctx.eval.is_min_access_user) return Value{ .boolean = false };
         if (args.len >= 2 and args[1] == .string) {
-            if (std.ascii.eqlIgnoreCase(args[1].string, "Id") or
-                std.ascii.eqlIgnoreCase(args[1].string, "CreatedDate") or
-                std.ascii.eqlIgnoreCase(args[1].string, "CreatedById") or
-                std.ascii.eqlIgnoreCase(args[1].string, "LastModifiedDate") or
-                std.ascii.eqlIgnoreCase(args[1].string, "LastModifiedById") or
-                std.ascii.eqlIgnoreCase(args[1].string, "SystemModstamp"))
-            {
-                return Value{ .boolean = false };
-            }
+            return Value{ .boolean = resolveFieldWritePermission(ctx.eval, null, args[1].string, "edit") };
         }
         return Value{ .boolean = true };
     }
@@ -1335,15 +1440,8 @@ fn dispatchStaticCanTheUser(ctx: *BuiltinContext, method_name: []const u8, args:
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         if (args.len >= 2 and args[1] == .set) {
-            const has_fp = ctx.eval.store.get("FieldPermissions") != null and
-                (if (ctx.eval.store.get("FieldPermissions")) |fp| fp.items.len > 0 else false);
             for (args[1].set.entries.keys()) |field_name| {
-                if (has_fp) {
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = checkFieldPermission(ctx.eval, field_name, "PermissionsRead") });
-                } else {
-                    const accessible = !std.mem.endsWith(u8, field_name, "__c") or isFieldAllowedByPermSets(ctx.eval, field_name);
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = accessible });
-                }
+                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolveFieldReadPermission(ctx.eval, null, field_name) });
             }
         }
         return Value{ .map = map };
@@ -1352,23 +1450,8 @@ fn dispatchStaticCanTheUser(ctx: *BuiltinContext, method_name: []const u8, args:
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         if (args.len >= 2 and args[1] == .set) {
-            const has_fp = ctx.eval.store.get("FieldPermissions") != null and
-                (if (ctx.eval.store.get("FieldPermissions")) |fp| fp.items.len > 0 else false);
             for (args[1].set.entries.keys()) |field_name| {
-                const is_system = std.ascii.eqlIgnoreCase(field_name, "Id") or
-                    std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
-                    std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
-                    std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
-                    std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
-                    std.ascii.eqlIgnoreCase(field_name, "SystemModstamp");
-                if (is_system) {
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = false });
-                } else if (has_fp) {
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = checkFieldPermission(ctx.eval, field_name, "PermissionsEdit") });
-                } else {
-                    const is_unknown_custom = std.mem.endsWith(u8, field_name, "__c") and !isFieldAllowedByPermSets(ctx.eval, field_name);
-                    try map.entries.put(ctx.arena, field_name, Value{ .boolean = !is_unknown_custom });
-                }
+                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolveFieldWritePermission(ctx.eval, null, field_name, "edit") });
             }
         }
         return Value{ .map = map };
@@ -1381,6 +1464,12 @@ fn dispatchStaticApexPages(ctx: *BuiltinContext, method_name: []const u8, args: 
         if (args.len > 0) {
             const msg_text = blk: {
                 if (args[0] == .object) {
+                    if (args[0].object.fields.get("summary")) |summary| {
+                        if (summary == .string) break :blk summary.string;
+                    }
+                    if (args[0].object.fields.get("detail")) |detail| {
+                        if (detail == .string) break :blk detail.string;
+                    }
                     if (args[0].object.fields.get("message")) |msg| {
                         if (msg == .string) break :blk msg.string;
                     }
@@ -1388,10 +1477,20 @@ fn dispatchStaticApexPages(ctx: *BuiltinContext, method_name: []const u8, args: 
                 if (args[0] == .string) break :blk args[0].string;
                 break :blk "Error";
             };
+            const severity = blk: {
+                if (args[0] == .object) {
+                    if (args[0].object.fields.get("severity")) |sev| {
+                        if (sev == .string) break :blk sev.string;
+                    }
+                }
+                break :blk "ERROR";
+            };
             const msg_obj = try ctx.arena.create(types.ObjectInstance);
             msg_obj.* = .{ .class_name = "ApexPages.Message" };
             try msg_obj.fields.put(ctx.arena, "summary", Value{ .string = msg_text });
-            try msg_obj.fields.put(ctx.arena, "severity", Value{ .string = "ERROR" });
+            try msg_obj.fields.put(ctx.arena, "detail", Value{ .string = msg_text });
+            try msg_obj.fields.put(ctx.arena, "message", Value{ .string = msg_text });
+            try msg_obj.fields.put(ctx.arena, "severity", Value{ .string = severity });
             try ctx.eval.apex_pages_messages.append(ctx.arena, Value{ .object = msg_obj });
         }
         return Value.void_val;
@@ -1441,48 +1540,111 @@ fn dispatchStaticUrl(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     return Value.null_val;
 }
 
+fn lookupFieldMetadata(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+    const type_meta = ctx.eval.field_metadata.get(object_type) orelse return null;
+    if (type_meta.get(field_name)) |meta| return meta;
+    var iter = type_meta.iterator();
+    while (iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+fn defaultFieldIsNillable(object_type: []const u8, field_name: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
+    if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "ContentVersion") and
+        (std.ascii.eqlIgnoreCase(field_name, "PathOnClient") or std.ascii.eqlIgnoreCase(field_name, "VersionData"))) return false;
+    return true;
+}
+
+fn splitQualifiedMetadataName(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+    if (std.mem.indexOf(u8, name, "__")) |idx| {
+        const suffix = name[idx..];
+        if (!std.mem.eql(u8, suffix, "__c") and
+            !std.mem.eql(u8, suffix, "__e") and
+            !std.mem.eql(u8, suffix, "__r") and
+            !std.mem.eql(u8, suffix, "__b") and
+            !std.mem.eql(u8, suffix, "__x") and
+            !std.mem.eql(u8, suffix, "__mdt") and
+            !std.mem.eql(u8, suffix, "__Share") and
+            !std.mem.eql(u8, suffix, "__History") and
+            !std.mem.eql(u8, suffix, "__ChangeEvent"))
+        {
+            return .{
+                .namespace = name[0..idx],
+                .local_name = name[idx + 2 ..],
+            };
+        }
+    }
+    return .{ .namespace = "", .local_name = name };
+}
+
+fn describeLocalName(name: []const u8) []const u8 {
+    return splitQualifiedMetadataName(name).local_name;
+}
+
+fn defaultDescribeLabelPlural(arena: std.mem.Allocator, obj_name: []const u8) ![]const u8 {
+    const local_name = describeLocalName(obj_name);
+    if (local_name.len == 0) return "";
+    if (std.mem.endsWith(u8, local_name, "s")) return try std.fmt.allocPrint(arena, "{s}es", .{local_name});
+    if (std.mem.endsWith(u8, local_name, "y")) return try std.fmt.allocPrint(arena, "{s}ies", .{local_name[0 .. local_name.len - 1]});
+    return try std.fmt.allocPrint(arena, "{s}s", .{local_name});
+}
+
+fn createSObjectFieldTokenValue(arena: std.mem.Allocator, object_type: []const u8, field_name: []const u8) !Value {
+    const token = try arena.create(types.ObjectInstance);
+    token.* = .{ .class_name = "Schema.SObjectField" };
+    try token.fields.put(arena, "objectType", Value{ .string = object_type });
+    try token.fields.put(arena, "fieldName", Value{ .string = field_name });
+    try token.fields.put(arena, "name", Value{ .string = field_name });
+    return Value{ .object = token };
+}
+
+pub fn createFieldSetCollectionValue(arena: std.mem.Allocator, eval: *evaluator_mod.Evaluator, obj_name: []const u8) !Value {
+    const collection = try arena.create(types.ObjectInstance);
+    collection.* = .{ .class_name = "Schema.FieldSetCollection" };
+    const map = try arena.create(types.MapValue);
+    map.* = .{};
+
+    if (eval.field_sets.get(obj_name)) |field_sets| {
+        for (field_sets.values()) |field_set_meta| {
+            const field_set = try arena.create(types.ObjectInstance);
+            field_set.* = .{ .class_name = "Schema.FieldSet" };
+            try field_set.fields.put(arena, "name", Value{ .string = field_set_meta.name });
+            try field_set.fields.put(arena, "label", Value{ .string = field_set_meta.label });
+            try field_set.fields.put(arena, "nameSpace", Value{ .string = field_set_meta.namespace });
+
+            const members = try arena.create(types.ListValue);
+            members.* = .{};
+            for (field_set_meta.members) |member_meta| {
+                const member = try arena.create(types.ObjectInstance);
+                member.* = .{ .class_name = "Schema.FieldSetMember" };
+                try member.fields.put(arena, "fieldPath", Value{ .string = member_meta.field_path });
+                try member.fields.put(arena, "required", Value{ .boolean = member_meta.is_required });
+                try member.fields.put(arena, "sObjectField", try createSObjectFieldTokenValue(arena, obj_name, member_meta.field_path));
+                try members.items.append(arena, Value{ .object = member });
+            }
+            try field_set.fields.put(arena, "fields", Value{ .list = members });
+            try map.entries.put(arena, field_set_meta.qualified_name, Value{ .object = field_set });
+        }
+    }
+
+    try collection.fields.put(arena, "map", Value{ .map = map });
+    return Value{ .object = collection };
+}
+
 fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const desc = try ctx.arena.create(types.ObjectInstance);
     desc.* = .{ .class_name = "DescribeSObjectResult" };
-    const is_restricted = ctx.eval.is_restricted_user;
-    // Standard User has no CRUD on setup/admin objects
-    const is_setup_denied = ctx.eval.is_standard_user and ctx.eval.isSetupObject(obj_name);
+    const is_custom = hasCustomObjectSuffix(obj_name);
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-
-    // Check ObjectPermissions for granular CRUD access when user has permission sets
-    var perm_accessible = !is_restricted and !is_setup_denied;
-    var perm_createable = !is_restricted and !is_setup_denied;
-    var perm_updateable = !is_restricted and !is_setup_denied;
-    var perm_deletable = !is_restricted and !is_setup_denied;
-    if (is_restricted) {
-        if (ctx.eval.store.get("ObjectPermissions")) |op_records| {
-            for (op_records.items) |op_item| {
-                if (op_item == .sobject) {
-                    const sobj_type = utils.sobjectGet(&op_item.sobject.fields, "SobjectType") orelse continue;
-                    if (sobj_type == .string and std.ascii.eqlIgnoreCase(sobj_type.string, obj_name)) {
-                        // Found ObjectPermissions for this object type
-                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsRead")) |v| {
-                            if (v == .boolean and v.boolean) perm_accessible = true;
-                        }
-                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsCreate")) |v| {
-                            if (v == .boolean and v.boolean) perm_createable = true;
-                        }
-                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsEdit")) |v| {
-                            if (v == .boolean and v.boolean) perm_updateable = true;
-                        }
-                        if (utils.sobjectGet(&op_item.sobject.fields, "PermissionsDelete")) |v| {
-                            if (v == .boolean and v.boolean) perm_deletable = true;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = perm_accessible });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = perm_createable });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = perm_updateable });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = perm_deletable });
+    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "read") });
+    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "create") });
+    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "edit") });
+    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "delete") });
     try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
@@ -1493,14 +1655,16 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
     for ([_][]const u8{ "Id", "Name", "CreatedDate", "LastModifiedDate", "OwnerId", "IsDeleted" }) |field_name| {
-        const fdr = try createFieldDescribeResult(ctx, field_name);
+        const fdr = try createFieldDescribeResult(ctx, obj_name, field_name);
+        if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = obj_name });
         try fields_kv.entries.put(ctx.arena, field_name, fdr);
     }
     // Add custom fields from field-meta.xml type info
     if (ctx.eval.field_types.get(obj_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |fname, ftype| {
             if (!fields_kv.entries.contains(fname)) {
-                const fdr = try createFieldDescribeResultWithType(ctx, fname, ftype);
+                const fdr = try createFieldDescribeResultWithType(ctx, obj_name, fname, ftype);
+                if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = obj_name });
                 try fields_kv.entries.put(ctx.arena, fname, fdr);
             }
         }
@@ -1508,12 +1672,17 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
-    // Label: use the name as label (real Apex returns a human-readable label)
-    try desc.fields.put(ctx.arena, "label", Value{ .string = obj_name });
+    const local_name = describeLocalName(obj_name);
+    try desc.fields.put(ctx.arena, "label", Value{ .string = local_name });
+    try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = try defaultDescribeLabelPlural(ctx.arena, obj_name) });
+    try desc.fields.put(ctx.arena, "fieldSets", try createFieldSetCollectionValue(ctx.arena, ctx.eval, obj_name));
 
-    // isCustom: objects ending with __c or __e are custom
-    const is_custom = std.mem.endsWith(u8, obj_name, "__c") or std.mem.endsWith(u8, obj_name, "__e") or std.mem.endsWith(u8, obj_name, "__mdt");
+    // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
+    // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
+    // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
+    const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.custom_setting_types.get(obj_name) != null;
+    try desc.fields.put(ctx.arena, "isCustomSetting", Value{ .boolean = is_custom_setting });
 
     // RecordTypeInfos: Every SObject has at least a Master RecordType.
     // IDs must be kept in sync with seedRecordTypeStore in evaluator.zig.
@@ -1569,14 +1738,18 @@ fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []cons
     return Value{ .object = rti };
 }
 
-fn createFieldDescribeResult(ctx: *BuiltinContext, field_name: []const u8) !Value {
-    return createFieldDescribeResultWithType(ctx, field_name, null);
+fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
+    return createFieldDescribeResultWithType(ctx, object_type, field_name, null);
 }
 
-fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u8, field_type: ?[]const u8) !Value {
+fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
     try fdr.fields.put(ctx.arena, "name", Value{ .string = field_name });
+    try fdr.fields.put(ctx.arena, "localName", Value{ .string = describeLocalName(field_name) });
+    try fdr.fields.put(ctx.arena, "label", Value{ .string = describeLocalName(field_name) });
+    try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
+    try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
     try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
     // Id and system fields are not updateable/createable
     const is_system_field = std.ascii.eqlIgnoreCase(field_name, "Id") or
@@ -1590,13 +1763,17 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u
     try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = true });
     // Set field length based on field type
-    const length: i64 = if (std.ascii.eqlIgnoreCase(field_name, "Id"))
+    const metadata = lookupFieldMetadata(ctx, object_type, field_name);
+    const length: i64 = if (metadata != null and metadata.?.length != null)
+        metadata.?.length.?
+    else if (std.ascii.eqlIgnoreCase(field_name, "Id"))
         18
     else if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
         255
     else
         131072;
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
+    try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = if (metadata) |meta| !meta.is_required else defaultFieldIsNillable(object_type, field_name) });
     // Set field type — map XML type to DisplayType enum name, infer from field name if not provided
     const raw_ft: []const u8 = field_type orelse inferFieldType(field_name);
     const ft: []const u8 = mapXmlTypeToDisplayType(raw_ft);
@@ -1612,6 +1789,8 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, field_name: []const u
         "DATE"
     else if (std.ascii.eqlIgnoreCase(ft, "DateTime"))
         "DATETIME"
+    else if (std.ascii.eqlIgnoreCase(ft, "ID") or std.ascii.eqlIgnoreCase(ft, "REFERENCE"))
+        "ID"
     else
         "STRING";
     try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
@@ -1669,63 +1848,130 @@ fn inferFieldType(field_name: []const u8) []const u8 {
     return "String";
 }
 
+pub fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
+    if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
+        for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
+            if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) {
+                return mapXmlTypeToDisplayType(raw_type);
+            }
+        }
+    }
+    return mapXmlTypeToDisplayType(inferFieldType(field_name));
+}
+
+fn normalizeSObjectFieldAssignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {
+    if (value == .null_val) return value;
+
+    const display_type = getSObjectFieldDisplayType(ctx, sob, field_name);
+
+    if (std.ascii.eqlIgnoreCase(display_type, "DATETIME")) {
+        if (extractDateString(value)) |date_str| {
+            if (isValidDateString(date_str)) return Value{ .string = date_str };
+        }
+        _ = try ctx.throwException("System.SObjectException", "Invalid Datetime value");
+        return error.ApexException;
+    }
+
+    if (std.ascii.eqlIgnoreCase(display_type, "DATE")) {
+        if (extractDateString(value)) |date_str| {
+            if (isValidDateString(date_str)) return Value{ .string = date_str[0..10] };
+        }
+        _ = try ctx.throwException("System.SObjectException", "Invalid Date value");
+        return error.ApexException;
+    }
+
+    if (std.ascii.eqlIgnoreCase(display_type, "BOOLEAN")) {
+        return switch (value) {
+            .boolean => value,
+            .string => |s| blk: {
+                if (std.ascii.eqlIgnoreCase(s, "true")) break :blk Value{ .boolean = true };
+                if (std.ascii.eqlIgnoreCase(s, "false")) break :blk Value{ .boolean = false };
+                _ = try ctx.throwException("System.SObjectException", "Invalid Boolean value");
+                return error.ApexException;
+            },
+            else => {
+                _ = try ctx.throwException("System.SObjectException", "Invalid Boolean value");
+                return error.ApexException;
+            },
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or std.ascii.eqlIgnoreCase(display_type, "LONG")) {
+        return switch (value) {
+            .integer => value,
+            .double => |d| Value{ .integer = @intFromFloat(d) },
+            .string => |s| blk: {
+                const parsed = std.fmt.parseInt(i64, s, 10) catch {
+                    _ = try ctx.throwException("System.SObjectException", "Invalid Integer value");
+                    return error.ApexException;
+                };
+                break :blk Value{ .integer = parsed };
+            },
+            else => {
+                _ = try ctx.throwException("System.SObjectException", "Invalid Integer value");
+                return error.ApexException;
+            },
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(display_type, "DOUBLE") or
+        std.ascii.eqlIgnoreCase(display_type, "CURRENCY") or
+        std.ascii.eqlIgnoreCase(display_type, "PERCENT"))
+    {
+        return switch (value) {
+            .integer => |i| Value{ .double = @floatFromInt(i) },
+            .double => value,
+            .string => |s| blk: {
+                const parsed = std.fmt.parseFloat(f64, s) catch {
+                    _ = try ctx.throwException("System.SObjectException", "Invalid Decimal value");
+                    return error.ApexException;
+                };
+                break :blk Value{ .double = parsed };
+            },
+            else => {
+                _ = try ctx.throwException("System.SObjectException", "Invalid Decimal value");
+                return error.ApexException;
+            },
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(display_type, "ID") or std.ascii.eqlIgnoreCase(display_type, "REFERENCE")) {
+        return switch (value) {
+            .string => value,
+            .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
+            else => {
+                _ = try ctx.throwException("System.SObjectException", "Invalid Id value");
+                return error.ApexException;
+            },
+        };
+    }
+
+    return value;
+}
+
 fn dispatchDatabase(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     // NOTE: evaluator.handleDatabaseMethod is the primary handler and is called first
     // in both callMethod and evalMethodCall paths. This builtin path is only reached as
     // a last-resort fallback (e.g. from dispatchStatic when class_name is "Database"
-    // but the evaluator path was not taken). The query method returns null to fall through.
-    //
-    // Database.insert / update / delete / upsert — execute real DML + return SaveResult list
+    // but the evaluator path was not taken). Route to the evaluator implementation so
+    // overloads like Database.insert(records, dmlOptions) keep the same behavior here.
     if (std.ascii.eqlIgnoreCase(method_name, "insert") or
         std.ascii.eqlIgnoreCase(method_name, "update") or
         std.ascii.eqlIgnoreCase(method_name, "upsert") or
-        std.ascii.eqlIgnoreCase(method_name, "delete"))
-    {
-        if (args.len > 0 and (args[0] == .sobject or args[0] == .list)) {
-            const dml_op: ast.DmlOp = if (std.ascii.eqlIgnoreCase(method_name, "insert"))
-                .insert
-            else if (std.ascii.eqlIgnoreCase(method_name, "update"))
-                .update
-            else if (std.ascii.eqlIgnoreCase(method_name, "upsert"))
-                .upsert
-            else
-                .delete;
-            ctx.eval.executeDml(dml_op, args[0]) catch |err| {
-                if (err == error.ApexException) return err;
-                // Non-exception DML errors: silently succeed for allOrNone=false
-            };
-        }
-        // Return a list of SaveResults matching the input records count
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        const count: usize = if (args.len > 0 and args[0] == .list) args[0].list.items.items.len else 1;
-        for (0..count) |_| {
-            const sr = try ctx.arena.create(types.ObjectInstance);
-            sr.* = .{ .class_name = "Database.SaveResult" };
-            try sr.fields.put(ctx.arena, "isSuccess", Value{ .boolean = true });
-            try sr.fields.put(ctx.arena, "Id", Value{ .string = "001000000000001" });
-            try list.items.append(ctx.arena, Value{ .object = sr });
-        }
-        return Value{ .list = list };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "query") or
+        std.ascii.eqlIgnoreCase(method_name, "delete") or
+        std.ascii.eqlIgnoreCase(method_name, "undelete") or
+        std.ascii.eqlIgnoreCase(method_name, "query") or
         std.ascii.eqlIgnoreCase(method_name, "countQuery") or
         std.ascii.eqlIgnoreCase(method_name, "countQueryWithBinds") or
-        std.ascii.eqlIgnoreCase(method_name, "queryWithBinds"))
+        std.ascii.eqlIgnoreCase(method_name, "queryWithBinds") or
+        std.ascii.eqlIgnoreCase(method_name, "getQueryLocator") or
+        std.ascii.eqlIgnoreCase(method_name, "setSavepoint") or
+        std.ascii.eqlIgnoreCase(method_name, "rollback") or
+        std.ascii.eqlIgnoreCase(method_name, "emptyRecycleBin") or
+        std.ascii.eqlIgnoreCase(method_name, "executeBatch") or
+        std.ascii.eqlIgnoreCase(method_name, "merge"))
     {
-        // Fall through to evaluator.handleDatabaseMethod which executes actual SOQL
-        return null;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getQueryLocator")) {
-        return Value.null_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "setSavepoint")) {
-        const sp = try ctx.arena.create(types.ObjectInstance);
-        sp.* = .{ .class_name = "Database.SavePoint" };
-        return Value{ .object = sp };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "rollback")) {
-        return .void_val;
+        return try ctx.eval.handleDatabaseMethodPublic(method_name, args, ctx.eval.global_env);
     }
     return Value.null_val;
 }
@@ -1830,14 +2076,31 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "DataWeave.Result") and ci.eqlIgnoreCase(method_name, "getValueAsString")) {
         return obj.fields.get("value") orelse Value{ .string = "" };
     }
-    if (ci.eqlIgnoreCase(cn, "RestResponse") and ci.eqlIgnoreCase(method_name, "addHeader")) return .void_val;
-    if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or ci.eqlIgnoreCase(cn, "DescribeFieldResult") or ci.eqlIgnoreCase(cn, "SObjectField")) {
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
+        (ci.eqlIgnoreCase(method_name, "addHeader") or ci.eqlIgnoreCase(method_name, "setHeader")))
+    {
+        if (args.len >= 2 and args[0] == .string) {
+            const headers = try ensureHeadersMap(ctx, obj);
+            try headers.entries.put(ctx.arena, args[0].string, args[1]);
+        }
+        return .void_val;
+    }
+    if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or
+        ci.eqlIgnoreCase(cn, "DescribeFieldResult") or
+        ci.eqlIgnoreCase(cn, "Schema.SObjectField") or
+        ci.eqlIgnoreCase(cn, "SObjectField"))
+    {
         if (try dispatchObjSchemaDescribeField(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.PicklistEntry")) {
         if (ci.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
         if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
         if (ci.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
+    }
+    if (ci.eqlIgnoreCase(cn, "System.OrgLimit") or ci.eqlIgnoreCase(cn, "OrgLimit")) {
+        if (ci.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
+        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .integer = 0 };
+        if (ci.eqlIgnoreCase(method_name, "getLimit")) return obj.fields.get("limit") orelse Value{ .integer = 0 };
     }
     if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
         if (try dispatchObjHttp(ctx, obj, method_name, args)) |v| return v;
@@ -1854,11 +2117,52 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
         if (try dispatchObjStandardSetController(ctx, obj, method_name, args)) |v| return v;
     }
+    if (ci.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or ci.eqlIgnoreCase(cn, "FieldSetCollection")) {
+        if (ci.eqlIgnoreCase(method_name, "getMap")) {
+            return obj.fields.get("map") orelse blk: {
+                const empty = try ctx.arena.create(types.MapValue);
+                empty.* = .{};
+                break :blk Value{ .map = empty };
+            };
+        }
+    }
+    if (ci.eqlIgnoreCase(cn, "Schema.FieldSet") or ci.eqlIgnoreCase(cn, "FieldSet")) {
+        if (ci.eqlIgnoreCase(method_name, "getFields")) {
+            return obj.fields.get("fields") orelse blk: {
+                const empty = try ctx.arena.create(types.ListValue);
+                empty.* = .{};
+                break :blk Value{ .list = empty };
+            };
+        }
+    }
+    if (ci.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") or ci.eqlIgnoreCase(cn, "DynamicPickListRows")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "addRow") and args.len > 0) {
+            const rows_val = obj.fields.get("dataRows") orelse blk: {
+                const rows = try ctx.arena.create(types.ListValue);
+                rows.* = .{};
+                const val = Value{ .list = rows };
+                try obj.fields.put(ctx.arena, "dataRows", val);
+                break :blk val;
+            };
+            if (rows_val == .list) try rows_val.list.items.append(ctx.arena, args[0]);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getDataRows")) {
+            return obj.fields.get("dataRows") orelse blk: {
+                const rows = try ctx.arena.create(types.ListValue);
+                rows.* = .{};
+                break :blk Value{ .list = rows };
+            };
+        }
+    }
     if (ci.eqlIgnoreCase(cn, "Type")) {
         if (try dispatchObjType(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Cache.Partition")) {
         if (try dispatchObjCachePartition(ctx, obj, method_name, args)) |v| return v;
+    }
+    if (ci.eqlIgnoreCase(cn, "Flow.Interview")) {
+        if (try dispatchObjFlowInterview(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult")) {
         if (try dispatchObjDescribeSObject(ctx, obj, method_name)) |v| return v;
@@ -1879,7 +2183,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
     }
     if (ci.eqlIgnoreCase(cn, "DescribeFieldResult")) {
-        if (try dispatchObjDescribeFieldResult(obj, method_name)) |v| return v;
+        if (try dispatchObjDescribeFieldResult(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.SObjectType")) {
         if (try dispatchObjSObjectType(ctx, obj, method_name, args)) |v| return v;
@@ -1913,12 +2217,13 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         const cn = obj.class_name;
         if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
             const system_exceptions = [_][]const u8{
-                "DMLException",      "DmlException",           "NullPointerException",           "TypeException",
-                "QueryException",    "JSONException",          "ListException",                  "MathException",
-                "SecurityException", "NoAccessException",      "InvalidParameterValueException", "CalloutException",
-                "StringException",   "NoSuchElementException", "NoDataFoundException",           "SearchException",
-                "SObjectException",  "HandledException",       "IllegalArgumentException",       "LimitException",
-                "AsyncException",    "SerializationException",
+                "DMLException",                  "DmlException",           "NullPointerException",           "TypeException",
+                "QueryException",                "JSONException",          "ListException",                  "MathException",
+                "SecurityException",             "NoAccessException",      "InvalidParameterValueException", "CalloutException",
+                "StringException",               "NoSuchElementException", "NoDataFoundException",           "SearchException",
+                "SObjectException",              "HandledException",       "IllegalArgumentException",       "LimitException",
+                "AsyncException",                "SerializationException", "FlowException",                  "FinalException",
+                "UnsupportedOperationException", "EventBusException",
             };
             for (system_exceptions) |se| {
                 if (std.ascii.eqlIgnoreCase(cn, se)) {
@@ -1953,7 +2258,11 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
 
     // Generic getDescribe
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
-        if (std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.DescribeFieldResult") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult"))
+        {
             return Value{ .object = obj };
         }
         const desc = try ctx.arena.create(types.ObjectInstance);
@@ -2125,19 +2434,27 @@ fn dispatchObjDataWeaveScript(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
 }
 
 fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+    const object_type = if (obj.fields.get("objectType")) |ov|
+        if (ov == .string) ov.string else null
+    else
+        null;
+    const field_name = if (obj.fields.get("fieldName")) |fv|
+        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
+    else if (obj.fields.get("name")) |nv|
+        if (nv == .string) nv.string else ""
+    else
+        "";
     if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        const obj_type = obj.fields.get("objectType") orelse Value{ .string = "" };
-        const field_name = obj.fields.get("fieldName") orelse Value{ .string = "" };
-        if (obj_type == .string and field_name == .string) {
+        if (object_type != null and field_name.len > 0) {
             var seen = std.StringHashMap(void).init(ctx.arena);
             var store_iter = ctx.eval.store.iterator();
             while (store_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_type.string)) {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type.?)) {
                     for (entry.value_ptr.items) |record| {
                         if (record == .sobject) {
-                            if (utils.sobjectGet(&record.sobject.fields, field_name.string)) |val| {
+                            if (utils.sobjectGet(&record.sobject.fields, field_name)) |val| {
                                 if (val == .string) {
                                     if (!seen.contains(val.string)) {
                                         try seen.put(val.string, {});
@@ -2155,8 +2472,8 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
                 }
             }
         }
-        if (list.items.items.len == 0 and obj_type == .string and field_name == .string) {
-            try loadPicklistFromMetadata(ctx, list, obj_type.string, field_name.string);
+        if (list.items.items.len == 0 and object_type != null and field_name.len > 0) {
+            try loadPicklistFromMetadata(ctx, list, object_type.?, field_name);
         }
         // Ensure at least one entry so that get(0) doesn't fail
         if (list.items.items.len == 0) {
@@ -2169,11 +2486,17 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
         }
         return Value{ .list = list };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or
-        std.ascii.eqlIgnoreCase(method_name, "isCreateable") or std.ascii.eqlIgnoreCase(method_name, "isFilterable"))
-        return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isFilterable")) {
+        return Value{ .boolean = resolveFieldReadPermission(ctx.eval, object_type, field_name) };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
+        return Value{ .boolean = resolveFieldWritePermission(ctx.eval, object_type, field_name, "edit") };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
+        return Value{ .boolean = resolveFieldWritePermission(ctx.eval, object_type, field_name, "create") };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
         const fn_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
@@ -2185,19 +2508,41 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        const name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+        if (name_val == .string) return Value{ .string = describeLocalName(name_val.string) };
+        return name_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;
+}
+
+fn ensureHeadersMap(ctx: *BuiltinContext, obj: *types.ObjectInstance) !*types.MapValue {
+    if (obj.fields.get("headers")) |existing| {
+        if (existing == .map) return existing.map;
+    }
+    const headers = try ctx.arena.create(types.MapValue);
+    headers.* = .{};
+    try obj.fields.put(ctx.arena, "headers", Value{ .map = headers });
+    return headers;
 }
 
 fn dispatchObjHttp(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
     if (std.ascii.eqlIgnoreCase(method_name, "getBody")) return obj.fields.get("body") orelse Value{ .string = "{}" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getCompressed")) return obj.fields.get("compressed") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "setStatusCode") and args.len > 0) {
         try obj.fields.put(ctx.arena, "statusCode", args[0]);
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setBody") and args.len > 0) {
         try obj.fields.put(ctx.arena, "body", args[0]);
+        return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setCompressed") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "compressed", args[0]);
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setStatus") and args.len > 0) {
@@ -2207,12 +2552,39 @@ fn dispatchObjHttp(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name
     if (std.ascii.eqlIgnoreCase(method_name, "getStatus")) return obj.fields.get("status") orelse Value{ .string = "OK" };
     if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint")) return obj.fields.get("endpoint") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getMethod")) return obj.fields.get("method") orelse Value{ .string = "GET" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getHeader")) return obj.fields.get("header") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeader") and args.len > 0 and args[0] == .string) {
+        if (obj.fields.get("headers")) |headers_val| {
+            if (headers_val == .map) {
+                if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
+                var iter = headers_val.map.entries.iterator();
+                while (iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+                }
+            }
+        }
+        return Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        if (obj.fields.get("headers")) |headers_val| {
+            if (headers_val == .map) {
+                for (headers_val.map.entries.keys()) |key| {
+                    try list.items.append(ctx.arena, Value{ .string = key });
+                }
+            }
+        }
+        return Value{ .list = list };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or std.ascii.eqlIgnoreCase(method_name, "setEndpoint") or
         std.ascii.eqlIgnoreCase(method_name, "setHeader") or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
     {
         if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0) try obj.fields.put(ctx.arena, "endpoint", args[0]);
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0) try obj.fields.put(ctx.arena, "method", args[0]);
+        if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and args.len >= 2 and args[0] == .string) {
+            const headers = try ensureHeadersMap(ctx, obj);
+            try headers.entries.put(ctx.arena, args[0].string, args[1]);
+        }
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "send")) {
@@ -2278,6 +2650,17 @@ fn dispatchObjStandardSetController(ctx: *BuiltinContext, obj: *types.ObjectInst
             break :blk Value{ .list = empty };
         };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "setSelected") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "selected", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSelected")) {
+        return obj.fields.get("selected") orelse blk: {
+            const empty = try ctx.arena.create(types.ListValue);
+            empty.* = .{};
+            break :blk Value{ .list = empty };
+        };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getResultSize")) {
         if (obj.fields.get("records")) |recs| {
             if (recs == .list) return Value{ .integer = @intCast(recs.list.items.items.len) };
@@ -2310,9 +2693,7 @@ fn dispatchObjType(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name
             set.* = .{};
             return Value{ .set = set };
         }
-        const inst = try ctx.arena.create(types.ObjectInstance);
-        inst.* = .{ .class_name = type_name };
-        return Value{ .object = inst };
+        return try ctx.eval.instantiateClassPublic(type_name);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
     return null;
@@ -2380,6 +2761,9 @@ fn dispatchObjCachePartition(ctx: *BuiltinContext, obj: *types.ObjectInstance, m
         }
         return .void_val;
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "isAvailable")) {
+        return obj.fields.get("_is_available") orelse Value{ .boolean = true };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getCapacity")) return Value{ .integer = 10000000 };
     if (std.ascii.eqlIgnoreCase(method_name, "getNumKeys")) {
         if (cache_map) |cm| return Value{ .integer = @intCast(cm.entries.count()) };
@@ -2389,24 +2773,47 @@ fn dispatchObjCachePartition(ctx: *BuiltinContext, obj: *types.ObjectInstance, m
         const set = try ctx.arena.create(types.SetValue);
         set.* = .{};
         if (cache_map) |cm| {
-            for (cm.entries.keys()) |key| try set.entries.put(ctx.arena, key, {});
+            for (cm.entries.keys()) |key| try set.entries.put(ctx.arena, key, Value{ .string = key });
         }
         return Value{ .set = set };
     }
     return null;
 }
 
+fn dispatchObjFlowInterview(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "start")) {
+        const flow_name = if (obj.fields.get("flowName")) |fv| if (fv == .string) fv.string else "" else "";
+        if (std.ascii.eqlIgnoreCase(flow_name, "MockLoggerSObjectHandlerPlugin") or
+            std.ascii.eqlIgnoreCase(flow_name, "MockLogBatchPurgerPlugin"))
+        {
+            try obj.fields.put(ctx.arena, "someExampleVariable", Value{ .string = "Hello, world" });
+        }
+        return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getVariableValue") and args.len > 0) {
+        const key = try utils.coerceToString(args[0], ctx.arena);
+        for (obj.fields.keys(), obj.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, key)) return v;
+        }
+        return Value.null_val;
+    }
+    return null;
+}
+
 fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
     const desc_name = if (obj.fields.get("name")) |n| n.string else "";
-    const crud_default = !ctx.eval.is_restricted_user and
-        !(ctx.eval.is_standard_user and desc_name.len > 0 and ctx.eval.isSetupObject(desc_name));
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return obj.fields.get("isAccessible") orelse Value{ .boolean = crud_default };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = crud_default };
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return obj.fields.get("isUpdateable") orelse Value{ .boolean = crud_default };
-    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return obj.fields.get("isDeletable") orelse Value{ .boolean = crud_default };
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return obj.fields.get("isAccessible") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "read") };
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "create") };
+    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "edit") };
+    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return obj.fields.get("isDeletable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "delete") };
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
+        if (name_val == .string) return Value{ .string = describeLocalName(name_val.string) };
+        return name_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
         const sot = try ctx.arena.create(types.ObjectInstance);
         sot.* = .{ .class_name = "Schema.SObjectType" };
@@ -2414,16 +2821,12 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
         return Value{ .object = sot };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabelPlural")) return obj.fields.get("labelPlural") orelse obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Objects" };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
         const name = if (obj.fields.get("name")) |n| n.string else "000";
-        var prefix: [3]u8 = .{ 'a', '0', '0' };
-        if (name.len >= 3) {
-            prefix[0] = if (std.ascii.isAlphabetic(name[0])) std.ascii.toLower(name[0]) else 'a';
-            prefix[1] = '0' + @as(u8, @intCast(name.len % 10));
-            prefix[2] = '0' + @as(u8, @intCast((name.len / 10) % 10));
-        }
+        const prefix = evaluator_mod.Evaluator.sobjectKeyPrefix(name);
         return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
@@ -2489,21 +2892,48 @@ fn dispatchObjSelectOption(ctx: *BuiltinContext, obj: *types.ObjectInstance, met
     return null;
 }
 
-fn dispatchObjDescribeFieldResult(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        const name_val = obj.fields.get("name") orelse Value{ .string = "" };
+        if (name_val == .string) return Value{ .string = describeLocalName(name_val.string) };
+        return name_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getReferenceTo")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        if (obj.fields.get("objectType")) |object_type_val| {
+            if (object_type_val == .string) {
+                const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+                if (field_name_val == .string) {
+                    if (lookupFieldMetadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
+                        if (metadata.reference_to) |reference_to| {
+                            const token = try ctx.arena.create(types.ObjectInstance);
+                            token.* = .{ .class_name = "Schema.SObjectType" };
+                            try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
+                            try list.items.append(ctx.arena, Value{ .object = token });
+                        }
+                    }
+                }
+            }
+        }
+        return Value{ .list = list };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) return Value{ .object = obj };
+    if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;
 }
 
@@ -2515,12 +2945,16 @@ fn dispatchObjSObjectType(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
         std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
     {
-        if (ctx.eval.is_restricted_user) return Value{ .boolean = false };
-        if (ctx.eval.is_standard_user) {
-            const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
-            if (ctx.eval.isSetupObject(sobj_name)) return Value{ .boolean = false };
-        }
-        return Value{ .boolean = true };
+        const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
+        const operation = if (std.ascii.eqlIgnoreCase(method_name, "isAccessible"))
+            "read"
+        else if (std.ascii.eqlIgnoreCase(method_name, "isCreateable"))
+            "create"
+        else if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable"))
+            "edit"
+        else
+            "delete";
+        return Value{ .boolean = resolveObjectCrudPermission(ctx.eval, sobj_name, operation) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
         return Value{ .boolean = true };
@@ -2616,20 +3050,21 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
-        // Case-insensitive field lookup
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, args[0].string)) return v;
+        if (ctx.eval.getSObjectFieldValueCaseInsensitive(sob, args[0].string)) |value| {
+            return value;
         }
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
-        try utils.sobjectPut(&sob.fields, ctx.arena, args[0].string, args[1]);
-        return args[1];
+        const normalized = try normalizeSObjectFieldAssignment(ctx, sob, args[0].string, args[1]);
+        try utils.sobjectPut(&sob.fields, ctx.arena, args[0].string, normalized);
+        return normalized;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap")) {
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
+            if (v == .null_val) continue;
             try map.entries.put(ctx.arena, k, v);
         }
         return Value{ .map = map };
@@ -2685,67 +3120,139 @@ fn blobToBytes(val: Value) []const u8 {
     return "";
 }
 
-/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
-fn checkFieldPermission(eval: *evaluator_mod.Evaluator, field_name: []const u8, perm_field: []const u8) bool {
-    const fp_records = eval.store.get("FieldPermissions") orelse return false;
-    for (fp_records.items) |fp| {
-        if (fp != .sobject) continue;
-        const fp_field = utils.sobjectGet(&fp.sobject.fields, "Field") orelse continue;
-        if (fp_field != .string) continue;
-        const fp_field_name = if (std.mem.lastIndexOfScalar(u8, fp_field.string, '.')) |dot|
-            fp_field.string[dot + 1 ..]
-        else
-            fp_field.string;
-        if (std.ascii.eqlIgnoreCase(fp_field_name, field_name)) {
-            const perm_val = utils.sobjectGet(&fp.sobject.fields, perm_field);
-            if (perm_val != null and perm_val.? == .boolean) return perm_val.?.boolean;
+fn hasCustomObjectSuffix(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, "__c") or
+        std.mem.endsWith(u8, name, "__e") or
+        std.mem.endsWith(u8, name, "__mdt") or
+        std.mem.endsWith(u8, name, "__b");
+}
+
+fn isIdField(field_name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field_name, "Id");
+}
+
+fn isSystemField(field_name: []const u8) bool {
+    return isIdField(field_name) or
+        std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
+        std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
+        std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
+        std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
+}
+
+fn collectAssignedPermissionSetIds(eval: *evaluator_mod.Evaluator, out: *[64][]const u8) usize {
+    var count: usize = 0;
+    if (eval.store.get("PermissionSetAssignment")) |psa_records| {
+        for (psa_records.items) |psa| {
+            if (psa != .sobject) continue;
+            const assignee_id = utils.sobjectGet(&psa.sobject.fields, "AssigneeId") orelse continue;
+            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) continue;
+            const permission_set_id = utils.sobjectGet(&psa.sobject.fields, "PermissionSetId") orelse continue;
+            if (permission_set_id != .string) continue;
+
+            var already_added = false;
+            for (out[0..count]) |existing_id| {
+                if (std.ascii.eqlIgnoreCase(existing_id, permission_set_id.string)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added and count < out.len) {
+                out[count] = permission_set_id.string;
+                count += 1;
+            }
         }
     }
+    return count;
+}
+
+fn hasAssignedPermissionSet(eval: *evaluator_mod.Evaluator) bool {
+    var assigned_ids: [64][]const u8 = undefined;
+    return collectAssignedPermissionSetIds(eval, &assigned_ids) > 0;
+}
+
+fn permissionRecordMatchesAssignedSet(eval: *evaluator_mod.Evaluator, parent_id_value: ?Value) bool {
+    if (parent_id_value == null) return true;
+    if (parent_id_value.? != .string) return false;
+
+    var assigned_ids: [64][]const u8 = undefined;
+    const assigned_count = collectAssignedPermissionSetIds(eval, &assigned_ids);
+    if (assigned_count == 0) return false;
+
+    for (assigned_ids[0..assigned_count]) |assigned_id| {
+        if (std.ascii.eqlIgnoreCase(assigned_id, parent_id_value.?.string)) return true;
+    }
     return false;
+}
+
+fn fieldPermissionMatches(object_type: ?[]const u8, permission_field: []const u8, field_name: []const u8) bool {
+    const fp_field_name = if (std.mem.lastIndexOfScalar(u8, permission_field, '.')) |dot|
+        permission_field[dot + 1 ..]
+    else
+        permission_field;
+    if (!std.ascii.eqlIgnoreCase(fp_field_name, field_name)) return false;
+
+    if (object_type) |obj_name| {
+        if (std.mem.lastIndexOfScalar(u8, permission_field, '.')) |dot| {
+            return std.ascii.eqlIgnoreCase(permission_field[0..dot], obj_name);
+        }
+    }
+    return true;
+}
+
+/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
+/// Returns null when no matching FieldPermissions record exists for the current user context.
+fn checkFieldPermission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, perm_field: []const u8) ?bool {
+    const fp_records = eval.store.get("FieldPermissions") orelse return null;
+    var matched_any = false;
+    var granted = false;
+    for (fp_records.items) |fp| {
+        if (fp != .sobject) continue;
+        if (!permissionRecordMatchesAssignedSet(eval, utils.sobjectGet(&fp.sobject.fields, "ParentId"))) continue;
+
+        const fp_field = utils.sobjectGet(&fp.sobject.fields, "Field") orelse continue;
+        if (fp_field != .string or !fieldPermissionMatches(object_type, fp_field.string, field_name)) continue;
+
+        matched_any = true;
+        const perm_val = utils.sobjectGet(&fp.sobject.fields, perm_field) orelse continue;
+        if (perm_val == .boolean and perm_val.boolean) granted = true;
+    }
+    if (!matched_any) return null;
+    return granted;
 }
 
 /// Check if a field is allowed by any PermissionSet assigned to the current user.
 ///
 /// Strategy (in priority order):
-/// 1. Check FieldPermissions records in store (authoritative if present)
-/// 2. Fallback: heuristic based on PermissionSet name containing the field name
-///    (necessary because FieldPermissions metadata is not always available in test context)
-fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const u8) bool {
-    // --- Strategy 1: Check FieldPermissions in store ---
-    if (eval.store.get("FieldPermissions")) |fp_records| {
-        if (fp_records.items.len > 0) {
-            // FieldPermissions exist: use them as authoritative source
-            for (fp_records.items) |fp| {
-                if (fp != .sobject) continue;
-                const fp_field = utils.sobjectGet(&fp.sobject.fields, "Field") orelse continue;
-                if (fp_field != .string) continue;
-                // Field format: "SObjectType.FieldName" → extract FieldName after dot
-                const fp_field_name = if (std.mem.lastIndexOfScalar(u8, fp_field.string, '.')) |dot|
-                    fp_field.string[dot + 1 ..]
-                else
-                    fp_field.string;
-                if (std.ascii.eqlIgnoreCase(fp_field_name, field_name)) {
-                    const perm_read = utils.sobjectGet(&fp.sobject.fields, "PermissionsRead");
-                    if (perm_read != null and perm_read.? == .boolean and perm_read.?.boolean) return true;
-                }
-            }
-            return false; // FieldPermissions exist but field not found → not allowed
-        }
-    }
+/// 1. Check assigned FieldPermissions records in store
+/// 2. Fallback: heuristic based on assigned PermissionSet names containing the field name
+fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8) bool {
+    if (checkFieldPermission(eval, object_type, field_name, "PermissionsRead")) |perm| return perm;
 
-    // --- Strategy 2: Heuristic from PermissionSet names ---
-    // When FieldPermissions are not available (common in test contexts where
-    // PermissionSets are referenced by name but their metadata isn't deployed),
-    // infer field access from the PermissionSet name.
+    var assigned_ids: [64][]const u8 = undefined;
+    const assigned_count = collectAssignedPermissionSetIds(eval, &assigned_ids);
+    if (assigned_count == 0) return false;
+
     const ps_records = eval.store.get("PermissionSet") orelse return false;
     for (ps_records.items) |item| {
-        if (item != .sobject) continue;
+        if (item != .sobject or item.sobject.id == null) continue;
+
+        var is_assigned = false;
+        for (assigned_ids[0..assigned_count]) |assigned_id| {
+            if (std.ascii.eqlIgnoreCase(item.sobject.id.?, assigned_id)) {
+                is_assigned = true;
+                break;
+            }
+        }
+        if (!is_assigned) continue;
+
         const name_val = utils.sobjectGet(&item.sobject.fields, "Name") orelse continue;
         if (name_val != .string) continue;
         const ps_name = name_val.string;
         const ps_lower = std.ascii.lowerString(eval.arena.alloc(u8, ps_name.len) catch return false, ps_name);
         const field_lower = std.ascii.lowerString(eval.arena.alloc(u8, field_name.len) catch return false, field_name);
-        // CamelCase → snake_case: "ActualCost" → "actual_cost"
+
         var snake_buf: [128]u8 = undefined;
         var snake_len: usize = 0;
         for (field_lower, 0..) |c, i| {
@@ -2761,7 +3268,6 @@ fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, field_name: []const 
         const snake_name = snake_buf[0..snake_len];
         if (std.mem.indexOf(u8, ps_lower, snake_name) != null) return true;
         if (std.mem.indexOf(u8, ps_lower, field_lower) != null) return true;
-        // Singular form: "contacts" → "contact"
         if (field_lower.len > 1 and field_lower[field_lower.len - 1] == 's') {
             const singular = field_lower[0 .. field_lower.len - 1];
             if (std.mem.indexOf(u8, ps_lower, singular) != null) return true;
@@ -2791,13 +3297,15 @@ fn getSObjectTypeFromArgs(args: []const Value) ?[]const u8 {
 /// Lookup ObjectPermissions in the store for a given SObject type and operation
 fn lookupObjectPermission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) ?bool {
     const op_records = eval.store.get("ObjectPermissions") orelse return null;
+    var matched_any = false;
+    var granted = false;
     for (op_records.items) |item| {
         if (item != .sobject) continue;
+        if (!permissionRecordMatchesAssignedSet(eval, utils.sobjectGet(&item.sobject.fields, "ParentId"))) continue;
         const sot_val = utils.sobjectGet(&item.sobject.fields, "SobjectType") orelse continue;
         if (sot_val != .string) continue;
         if (!std.ascii.eqlIgnoreCase(sot_val.string, sobject_type)) continue;
 
-        // Found matching ObjectPermissions record
         const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
             "PermissionsCreate"
         else if (std.ascii.eqlIgnoreCase(operation, "edit"))
@@ -2809,11 +3317,54 @@ fn lookupObjectPermission(eval: *evaluator_mod.Evaluator, sobject_type: []const 
         else
             "PermissionsRead";
 
-        const perm_val = utils.sobjectGet(&item.sobject.fields, perm_field) orelse return false;
-        if (perm_val == .boolean) return perm_val.boolean;
-        return false;
+        matched_any = true;
+        const perm_val = utils.sobjectGet(&item.sobject.fields, perm_field) orelse continue;
+        if (perm_val == .boolean and perm_val.boolean) granted = true;
     }
-    return null;
+    if (!matched_any) return null;
+    return granted;
+}
+
+fn defaultObjectCrudAccess(eval: *evaluator_mod.Evaluator, sobject_type: []const u8) bool {
+    if (eval.is_restricted_user) return false;
+    if (eval.is_standard_user and (eval.isSetupObject(sobject_type) or hasCustomObjectSuffix(sobject_type))) return false;
+    return true;
+}
+
+fn resolveObjectCrudPermission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+    var allowed = defaultObjectCrudAccess(eval, sobject_type);
+    if (lookupObjectPermission(eval, sobject_type, operation)) |perm| {
+        allowed = allowed or perm;
+    }
+    return allowed;
+}
+
+fn resolveFieldReadPermission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8) bool {
+    if (isIdField(field_name)) return true;
+    if (object_type) |obj_name| {
+        if (!resolveObjectCrudPermission(eval, obj_name, "read")) return false;
+    }
+    if (eval.is_restricted_user) {
+        if (checkFieldPermission(eval, object_type, field_name, "PermissionsRead")) |perm| return perm;
+        if (std.mem.endsWith(u8, field_name, "__c")) return isFieldAllowedByPermSets(eval, object_type, field_name);
+    }
+    return true;
+}
+
+fn resolveFieldWritePermission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+    if (isSystemField(field_name)) return false;
+    if (object_type) |obj_name| {
+        if (!resolveObjectCrudPermission(eval, obj_name, operation)) return false;
+    }
+    if (eval.is_restricted_user) {
+        const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
+            "PermissionsCreate"
+        else
+            "PermissionsEdit";
+        if (checkFieldPermission(eval, object_type, field_name, perm_field)) |perm| return perm;
+        if (std.mem.endsWith(u8, field_name, "__c")) return isFieldAllowedByPermSets(eval, object_type, field_name);
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
