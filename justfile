@@ -1,6 +1,23 @@
 _default:
     @just --list
 
+# CI 相当のローカル実行
+ci:
+    zig fmt --check src/
+    zig build
+    zig build test --summary all
+    cd editors/vscode && npm run compile
+
+# fixture-backed な回帰テストを明示実行
+test-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -d ".local-fixtures/apex/repos" ]]; then
+        echo "Missing .local-fixtures/apex/repos" >&2
+        exit 1
+    fi
+    APEXGOV_ENABLE_FIXTURE_TESTS=1 zig test src/root.zig --test-filter "fixture "
+
 # ReleaseFast ビルド
 build-fast:
     zig build -Doptimize=ReleaseFast

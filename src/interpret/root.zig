@@ -106,10 +106,8 @@ const SampleAppFixturePaths = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const alloc = arena.allocator();
-        const fixture_path = findSampleAppFixturePath(alloc) catch |err| switch (err) {
-            error.FileNotFound => return error.SkipZigTest,
-            else => return err,
-        };
+        if (!try fixtureTestsEnabled(alloc)) return error.SkipZigTest;
+        const fixture_path = try findSampleAppFixturePath(alloc);
         const paths = try alloc.alloc([]const u8, 1);
         paths[0] = fixture_path;
         return .{ .arena = arena, .paths = paths };
@@ -123,6 +121,18 @@ const SampleAppFixturePaths = struct {
         return self.paths;
     }
 };
+
+fn fixtureTestsEnabled(alloc: std.mem.Allocator) !bool {
+    const raw_value = std.process.getEnvVarOwned(alloc, "APEXGOV_ENABLE_FIXTURE_TESTS") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return err,
+    };
+    defer alloc.free(raw_value);
+    if (raw_value.len == 0) return false;
+    if (std.mem.eql(u8, raw_value, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(raw_value, "false")) return false;
+    return true;
+}
 
 fn isSampleAppFixturePath(alloc: std.mem.Allocator, base_path: []const u8) bool {
     const markers = [_][]const u8{
@@ -1435,7 +1445,7 @@ test "E2E: FlowDefinitionView stub query works through helper method reuse" {
     try std.testing.expectEqualStrings("1:1", result.value.string);
 }
 
-test "E2E: Flow.Interview plugin mock exposes input and output variables" {
+test "E2E: fixture Flow.Interview plugin mock exposes input and output variables" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
     defer fixture_paths.deinit();
     const source =
@@ -5257,7 +5267,7 @@ test "E2E: fixture cached organization selector test passes" {
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
 
-test "E2E: sobject put rejects incompatible datetime string" {
+test "E2E: fixture sobject put rejects incompatible datetime string" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
     defer fixture_paths.deinit();
     const source =
