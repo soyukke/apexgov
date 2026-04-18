@@ -2076,7 +2076,15 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "DataWeave.Result") and ci.eqlIgnoreCase(method_name, "getValueAsString")) {
         return obj.fields.get("value") orelse Value{ .string = "" };
     }
-    if (ci.eqlIgnoreCase(cn, "RestResponse") and ci.eqlIgnoreCase(method_name, "addHeader")) return .void_val;
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
+        (ci.eqlIgnoreCase(method_name, "addHeader") or ci.eqlIgnoreCase(method_name, "setHeader")))
+    {
+        if (args.len >= 2 and args[0] == .string) {
+            const headers = try ensureHeadersMap(ctx, obj);
+            try headers.entries.put(ctx.arena, args[0].string, args[1]);
+        }
+        return .void_val;
+    }
     if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or
         ci.eqlIgnoreCase(cn, "DescribeFieldResult") or
         ci.eqlIgnoreCase(cn, "Schema.SObjectField") or
@@ -2511,15 +2519,30 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     return null;
 }
 
+fn ensureHeadersMap(ctx: *BuiltinContext, obj: *types.ObjectInstance) !*types.MapValue {
+    if (obj.fields.get("headers")) |existing| {
+        if (existing == .map) return existing.map;
+    }
+    const headers = try ctx.arena.create(types.MapValue);
+    headers.* = .{};
+    try obj.fields.put(ctx.arena, "headers", Value{ .map = headers });
+    return headers;
+}
+
 fn dispatchObjHttp(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
     if (std.ascii.eqlIgnoreCase(method_name, "getBody")) return obj.fields.get("body") orelse Value{ .string = "{}" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getCompressed")) return obj.fields.get("compressed") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "setStatusCode") and args.len > 0) {
         try obj.fields.put(ctx.arena, "statusCode", args[0]);
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setBody") and args.len > 0) {
         try obj.fields.put(ctx.arena, "body", args[0]);
+        return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setCompressed") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "compressed", args[0]);
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setStatus") and args.len > 0) {
@@ -2529,12 +2552,39 @@ fn dispatchObjHttp(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name
     if (std.ascii.eqlIgnoreCase(method_name, "getStatus")) return obj.fields.get("status") orelse Value{ .string = "OK" };
     if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint")) return obj.fields.get("endpoint") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getMethod")) return obj.fields.get("method") orelse Value{ .string = "GET" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getHeader")) return obj.fields.get("header") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeader") and args.len > 0 and args[0] == .string) {
+        if (obj.fields.get("headers")) |headers_val| {
+            if (headers_val == .map) {
+                if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
+                var iter = headers_val.map.entries.iterator();
+                while (iter.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+                }
+            }
+        }
+        return Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        if (obj.fields.get("headers")) |headers_val| {
+            if (headers_val == .map) {
+                for (headers_val.map.entries.keys()) |key| {
+                    try list.items.append(ctx.arena, Value{ .string = key });
+                }
+            }
+        }
+        return Value{ .list = list };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or std.ascii.eqlIgnoreCase(method_name, "setEndpoint") or
         std.ascii.eqlIgnoreCase(method_name, "setHeader") or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
     {
         if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0) try obj.fields.put(ctx.arena, "endpoint", args[0]);
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0) try obj.fields.put(ctx.arena, "method", args[0]);
+        if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and args.len >= 2 and args[0] == .string) {
+            const headers = try ensureHeadersMap(ctx, obj);
+            try headers.entries.put(ctx.arena, args[0].string, args[1]);
+        }
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "send")) {
@@ -3000,9 +3050,8 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
-        // Case-insensitive field lookup
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, args[0].string)) return v;
+        if (ctx.eval.getSObjectFieldValueCaseInsensitive(sob, args[0].string)) |value| {
+            return value;
         }
         return Value.null_val;
     }
@@ -3015,6 +3064,7 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
+            if (v == .null_val) continue;
             try map.entries.put(ctx.arena, k, v);
         }
         return Value{ .map = map };

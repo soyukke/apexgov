@@ -739,6 +739,65 @@ pub const Evaluator = struct {
         return name;
     }
 
+    fn simpleClassName(name: []const u8) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, name, '.')) |di| return name[di + 1 ..];
+        return name;
+    }
+
+    fn hasTopLevelClass(self: *Evaluator, name: []const u8) bool {
+        for (self.class_sources.keys()) |class_name| {
+            if (std.ascii.eqlIgnoreCase(class_name, name)) return true;
+        }
+        return false;
+    }
+
+    fn findInnerClassFq(self: *Evaluator, outer_name: []const u8, simple_name: []const u8) ?[]const u8 {
+        const outer_decl = self.findClass(outer_name) orelse return null;
+        for (outer_decl.members) |member| {
+            switch (member) {
+                .class_decl => |inner_cd| {
+                    if (std.ascii.eqlIgnoreCase(inner_cd.name, simple_name)) {
+                        return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_cd.name }) catch null;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn resolveVisibleUserClassInScope(self: *Evaluator, current_env: ?*Env, simple_name: []const u8) ?[]const u8 {
+        if (std.mem.indexOfScalar(u8, simple_name, '.') != null) {
+            if (self.findClass(simple_name) != null) return simple_name;
+            return null;
+        }
+
+        const scope_class = blk: {
+            if (current_env) |env| {
+                if (env.get("this")) |this_val| {
+                    if (this_val == .object) break :blk this_val.object.class_name;
+                }
+            }
+            break :blk self.current_class;
+        };
+
+        if (scope_class) |scope_name| {
+            if (std.ascii.eqlIgnoreCase(simpleClassName(scope_name), simple_name)) {
+                return scope_name;
+            }
+            if (self.findInnerClassFq(scope_name, simple_name)) |fq| return fq;
+            if (self.findOuterClassName(scope_name)) |outer_name| {
+                if (std.ascii.eqlIgnoreCase(simpleClassName(outer_name), simple_name)) {
+                    return outer_name;
+                }
+                if (self.findInnerClassFq(outer_name, simple_name)) |fq| return fq;
+            }
+        }
+
+        if (self.hasTopLevelClass(simple_name)) return simple_name;
+        return null;
+    }
+
     /// Build a Salesforce-format stack trace string from the current call stack.
     /// Format: "Class.ClassName.methodName: line N, column 1\n..."
     /// Call stack frames are walked top-to-bottom. Each frame's `line` should
@@ -4437,33 +4496,11 @@ pub const Evaluator = struct {
 
     /// Resolve a dotted field path like "Log__r.LogPurgeAction__c" on a record.
     fn resolveFieldPath(self: *Evaluator, record: Value, path: []const u8) ?Value {
-        _ = self;
         if (record != .sobject) return null;
-        // Simple field (no dot)
         if (std.mem.indexOfScalar(u8, path, '.') == null) {
-            return utils.sobjectGet(&record.sobject.fields, path);
+            return self.getSObjectFieldValueCaseInsensitive(record.sobject, path);
         }
-        // Dotted path: walk relationships
-        var current = record;
-        var iter = std.mem.splitScalar(u8, path, '.');
-        while (iter.next()) |segment| {
-            if (current == .sobject) {
-                if (utils.sobjectGet(&current.sobject.fields, segment)) |v| {
-                    current = v;
-                } else {
-                    return null;
-                }
-            } else if (current == .object) {
-                if (current.object.fields.get(segment)) |v| {
-                    current = v;
-                } else {
-                    return null;
-                }
-            } else {
-                return null;
-            }
-        }
-        return current;
+        return self.resolveFieldPathValue(record.sobject, path);
     }
 
     /// Execute a SOSL query using fixed search results.
@@ -4873,6 +4910,15 @@ pub const Evaluator = struct {
 
         if (is_neq) return !utils.valueEql(field_val, cmp_val);
         if (is_gt or is_gte or is_lt or is_lte) {
+            if (builtins.extractDateString(field_val)) |lhs_date| {
+                if (builtins.extractDateString(cmp_val)) |rhs_date| {
+                    const cmp = std.mem.order(u8, lhs_date, rhs_date);
+                    if (is_gt) return cmp == .gt;
+                    if (is_gte) return cmp == .gt or cmp == .eq;
+                    if (is_lt) return cmp == .lt;
+                    if (is_lte) return cmp == .lt or cmp == .eq;
+                }
+            }
             // Numeric comparison
             var lhs: ?f64 = null;
             var rhs: ?f64 = null;
@@ -5012,7 +5058,7 @@ pub const Evaluator = struct {
                                         }
                                         // Copy the requested field from the parent
                                         if (parent_rec == .sobject) {
-                                            if (utils.sobjectGet(&parent_rec.sobject.fields, child_field)) |field_val| {
+                                            if (self.getSObjectFieldValueCaseInsensitive(parent_rec.sobject, child_field)) |field_val| {
                                                 try parent_sob.fields.put(self.arena, child_field, field_val);
                                             }
                                             // Also copy Id
@@ -5197,7 +5243,7 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+    pub fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
         var matched_value: ?Value = null;
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, field_name)) {
@@ -6633,10 +6679,19 @@ pub const Evaluator = struct {
             }
 
             // Let a user-defined class named Database shadow the platform Database
-            // namespace for unqualified calls. Builtin Database dispatch remains
-            // available via System.Database or when no such class exists.
-            if (std.ascii.eqlIgnoreCase(class_name, "Database") and self.findClass(class_name) != null) {
-                return self.callMethod(class_name, mc.method, args.items);
+            // namespace only when that class is actually visible at this call-site.
+            // Unrelated inner classes named Database must not hijack platform
+            // Database.executeBatch()/delete()/etc. in other classes.
+            if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
+                if (self.resolveVisibleUserClassInScope(current_env, class_name)) |visible_class| {
+                    return self.callMethod(visible_class, mc.method, args.items);
+                }
+            }
+
+            // Database methods need the current lexical environment so dynamic SOQL
+            // bind variables resolve local variables and method parameters.
+            if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
+                return self.handleDatabaseMethod(mc.method, args.items, current_env);
             }
 
             // Builtin static dispatch (only reached when no local variable matched)
@@ -6740,15 +6795,8 @@ pub const Evaluator = struct {
             }
 
             // User-defined class method (check before stubs/getSObjectType fallback)
-            if (self.findClass(class_name) != null) {
+            if (!std.ascii.eqlIgnoreCase(class_name, "Database") and self.findClass(class_name) != null) {
                 return self.callMethod(class_name, mc.method, args.items);
-            }
-
-            // Database methods that need store access. This must come after user-defined
-            // class lookup so an inner or local class named Database can shadow the
-            // platform Database namespace, with System.Database remaining available.
-            if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-                return self.handleDatabaseMethod(mc.method, args.items, current_env);
             }
 
             // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
@@ -7378,6 +7426,7 @@ pub const Evaluator = struct {
                 const map = try self.arena.create(types.MapValue);
                 map.* = .{};
                 for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
+                    if (v == .null_val) continue;
                     try map.entries.put(self.arena, k, v);
                 }
                 return Value{ .map = map };
@@ -7768,24 +7817,47 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "split") and args.len > 0 and args[0] == .string) {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
-            // Handle simple regex patterns: \. → literal dot, etc.
             const pattern = args[0].string;
-            const split_str = blk: {
-                // Common regex escapes: \. → ., \* → *, etc.
-                if (pattern.len == 2 and pattern[0] == '\\') {
-                    break :blk pattern[1..2];
+            const split_limit: ?usize = if (args.len >= 2 and args[1] == .integer and args[1].integer > 0)
+                @intCast(args[1].integer)
+            else
+                null;
+            var unescaped_buf = std.ArrayListUnmanaged(u8).empty;
+            var pi: usize = 0;
+            while (pi < pattern.len) : (pi += 1) {
+                if (pattern[pi] == '\\' and pi + 1 < pattern.len) {
+                    pi += 1;
+                    try unescaped_buf.append(self.arena, pattern[pi]);
+                    continue;
                 }
-                break :blk pattern;
-            };
+                try unescaped_buf.append(self.arena, pattern[pi]);
+            }
+            const split_str = unescaped_buf.items;
             if (split_str.len == 0) {
                 // 空デリミタ: 各文字を要素として返す (Apex の String.split('') 挙動)
                 for (0..s.len) |ci| {
                     try list.items.append(self.arena, Value{ .string = s[ci .. ci + 1] });
                 }
             } else {
-                var iter = std.mem.splitSequence(u8, s, split_str);
-                while (iter.next()) |part| {
-                    try list.items.append(self.arena, Value{ .string = part });
+                if (split_limit) |limit| {
+                    if (limit <= 1) {
+                        try list.items.append(self.arena, Value{ .string = s });
+                    } else {
+                        var start: usize = 0;
+                        var splits_done: usize = 0;
+                        while (splits_done + 1 < limit) {
+                            const next = std.mem.indexOfPos(u8, s, start, split_str) orelse break;
+                            try list.items.append(self.arena, Value{ .string = s[start..next] });
+                            start = next + split_str.len;
+                            splits_done += 1;
+                        }
+                        try list.items.append(self.arena, Value{ .string = s[start..] });
+                    }
+                } else {
+                    var iter = std.mem.splitSequence(u8, s, split_str);
+                    while (iter.next()) |part| {
+                        try list.items.append(self.arena, Value{ .string = part });
+                    }
                 }
             }
             return Value{ .list = list };
@@ -8585,6 +8657,9 @@ pub const Evaluator = struct {
                     const params = try self.arena.create(types.MapValue);
                     params.* = .{};
                     try instance.fields.put(self.arena, "params", Value{ .map = params });
+                    const headers = try self.arena.create(types.MapValue);
+                    headers.* = .{};
+                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
                     return Value{ .object = instance };
                 }
                 // RestResponse: initialize responseBody as Blob
@@ -8593,6 +8668,9 @@ pub const Evaluator = struct {
                     blob.* = .{ .class_name = "Blob" };
                     try blob.fields.put(self.arena, "value", Value{ .string = "" });
                     try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
+                    const headers = try self.arena.create(types.MapValue);
+                    headers.* = .{};
+                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
                     return Value{ .object = instance };
                 }
 
@@ -10196,14 +10274,16 @@ pub const Evaluator = struct {
                 self.limits_callouts = sb_call;
             }
             if (args.len > 0 and args[0] == .object) {
-                const job_id = try self.allocId();
                 if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
+                    const job_id = try std.fmt.allocPrint(self.arena, "707{d:0>15}", .{self.next_id});
+                    self.next_id += 1;
                     if (self.batch_job_runner_active) {
                         try self.pending_batch_jobs.append(self.arena, args[0]);
                     }
                     return Value{ .string = job_id };
                 }
 
+                const job_id = try self.createAsyncApexJob("BatchApex", args[0].object.class_name, "execute");
                 self.batch_job_runner_active = true;
                 self.pending_batch_jobs = .empty;
                 defer {
@@ -11469,34 +11549,34 @@ pub const Evaluator = struct {
         }
     }
 
-    fn enqueueJob(self: *Evaluator, job_obj: *types.ObjectInstance) !Value {
-        self.limits_queueable += 1;
-        const saved_dml = self.limits_dml;
-        const saved_dml_rows = self.limits_dml_rows;
-        const saved_soql = self.limits_soql;
-        const saved_pub = self.limits_publish_immediate;
-        const saved_callouts = self.limits_callouts;
-
+    fn createAsyncApexJob(self: *Evaluator, apex_job_type: []const u8, class_name: []const u8, method_name: ?[]const u8) ![]const u8 {
         const job_id = try std.fmt.allocPrint(self.arena, "707{d:0>15}", .{self.next_id});
         self.next_id += 1;
 
-        const top_level_class = self.findOuterClassName(job_obj.class_name) orelse job_obj.class_name;
+        const top_level_class = self.findOuterClassName(class_name) orelse class_name;
         const apex_class_name = if (std.mem.lastIndexOfScalar(u8, top_level_class, '.')) |di| top_level_class[di + 1 ..] else top_level_class;
         const apex_class = try self.arena.create(types.SObject);
         apex_class.* = .{ .type_name = "ApexClass" };
         try apex_class.fields.put(self.arena, "Id", Value{ .string = try std.fmt.allocPrint(self.arena, "01p{d:0>15}", .{self.next_id}) });
         try apex_class.fields.put(self.arena, "Name", Value{ .string = apex_class_name });
-        try apex_class.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
+        try apex_class.fields.put(self.arena, "NamespacePrefix", Value.null_val);
 
         const async_job = try self.arena.create(types.SObject);
         async_job.* = .{ .type_name = "AsyncApexJob", .id = job_id };
         try async_job.fields.put(self.arena, "Id", Value{ .string = job_id });
         try async_job.fields.put(self.arena, "Status", Value{ .string = "Completed" });
-        try async_job.fields.put(self.arena, "JobType", Value{ .string = "Queueable" });
-        try async_job.fields.put(self.arena, "MethodName", Value.null_val);
+        try async_job.fields.put(self.arena, "JobType", Value{ .string = apex_job_type });
+        try async_job.fields.put(self.arena, "MethodName", if (method_name) |name| Value{ .string = name } else Value.null_val);
+        try async_job.fields.put(self.arena, "JobItemsProcessed", Value{ .integer = 0 });
+        try async_job.fields.put(self.arena, "NumberOfErrors", Value{ .integer = 0 });
         try async_job.fields.put(self.arena, "ApexClass", Value{ .sobject = apex_class });
         if (utils.sobjectGet(&apex_class.fields, "Id")) |apex_class_id| {
             try async_job.fields.put(self.arena, "ApexClassId", apex_class_id);
+        }
+        try async_job.fields.put(self.arena, "CreatedById", Value{ .string = self.current_user_id });
+        const created_by = try self.createCurrentUserRecord();
+        if (created_by == .sobject) {
+            try async_job.fields.put(self.arena, "CreatedBy", created_by);
         }
         const now_str = builtins.currentDateTimeString(self.arena) catch "2026-01-01T00:00:00Z";
         try async_job.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
@@ -11505,6 +11585,18 @@ pub const Evaluator = struct {
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(self.arena, Value{ .sobject = async_job });
         try self.id_type_map.put(self.arena, job_id, "AsyncApexJob");
+        return job_id;
+    }
+
+    fn enqueueJob(self: *Evaluator, job_obj: *types.ObjectInstance) !Value {
+        self.limits_queueable += 1;
+        const saved_dml = self.limits_dml;
+        const saved_dml_rows = self.limits_dml_rows;
+        const saved_soql = self.limits_soql;
+        const saved_pub = self.limits_publish_immediate;
+        const saved_callouts = self.limits_callouts;
+
+        const job_id = try self.createAsyncApexJob("Queueable", job_obj.class_name, null);
 
         if (self.findClass(job_obj.class_name)) |job_class| {
             const queueable_context = try self.arena.create(types.ObjectInstance);
