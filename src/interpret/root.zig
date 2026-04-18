@@ -2387,6 +2387,24 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
+test "E2E: SObject.getSObject resolves unsaved relationship records assigned via __r" {
+    const source =
+        \\public class GetUnsavedParentTest {
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        SObject parentRecord = sessionRecord.getSObject(Schema.Session__c.Experience__c);
+        \\        return String.valueOf(parentRecord.get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GetUnsavedParentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
 test "E2E: SOQL parent relationship field in WHERE" {
     const source =
         \\public class SoqlParentRefTest {
@@ -3943,6 +3961,124 @@ test "E2E: switch when else executes for unmatched string subjects" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("bad:Z", result.value.string);
+}
+
+test "E2E: qualified system exception constructors are catchable" {
+    const source =
+        \\public class QualifiedExceptionCtorTest {
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            throw new System.IllegalArgumentException('bad');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getTypeName() + ':' + thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QualifiedExceptionCtorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("System.IllegalArgumentException:bad", result.value.string);
+}
+
+test "E2E: inner class switch else throws qualified system exceptions" {
+    const source =
+        \\public class InnerQualifiedExceptionSwitchTest {
+        \\    private class RuleRunner {
+        \\        public Boolean run(String operatorValue) {
+        \\            switch on operatorValue {
+        \\                when 'EQUAL_TO' {
+        \\                    return true;
+        \\                }
+        \\                when else {
+        \\                    throw new System.IllegalArgumentException('bad:' + operatorValue);
+        \\                }
+        \\            }
+        \\            return false;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            new RuleRunner().run('THIS_IS_AN_INVALID_OPERATOR');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerQualifiedExceptionSwitchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+}
+
+test "E2E: constructor exceptions propagate to callers" {
+    const source =
+        \\public class ConstructorExceptionPropagationTest {
+        \\    private class RuleRunner {
+        \\        public RuleRunner(String operatorValue) {
+        \\            switch on operatorValue {
+        \\                when 'EQUAL_TO' {
+        \\                }
+        \\                when else {
+        \\                    throw new System.IllegalArgumentException('bad:' + operatorValue);
+        \\                }
+        \\            }
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Exception thrownException = null;
+        \\        try {
+        \\            new RuleRunner('THIS_IS_AN_INVALID_OPERATOR');
+        \\        } catch (System.IllegalArgumentException ex) {
+        \\            thrownException = ex;
+        \\        }
+        \\        return thrownException == null ? 'missing' : thrownException.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ConstructorExceptionPropagationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+}
+
+test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
+    const source =
+        \\public class TestSetCreatedDateRuntimeTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        Account otherRecord = new Account(Name = 'Other');
+        \\        insert new List<Account>{ accountRecord, otherRecord };
+        \\        Datetime target = Datetime.newInstance(2025, 1, 2, 3, 4, 5);
+        \\        Datetime otherTarget = Datetime.newInstance(2024, 1, 1, 0, 0, 0);
+        \\        System.Test.setCreatedDate(accountRecord.Id, target);
+        \\        System.Test.setCreatedDate(otherRecord.Id, otherTarget);
+        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id = :accountRecord.Id];
+        \\        Account otherRefreshed = [SELECT CreatedDate FROM Account WHERE Id = :otherRecord.Id];
+        \\        List<Account> matches = [SELECT Id FROM Account WHERE CreatedDate = :target];
+        \\        return String.valueOf(matches.size()) + ':' +
+        \\            String.valueOf(refreshed.CreatedDate == target) + ':' +
+        \\            String.valueOf(otherRefreshed.CreatedDate == target);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TestSetCreatedDateRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:true:false", result.value.string);
 }
 
 test "E2E: instance overload resolves cast List<SObject> target" {

@@ -5105,6 +5105,33 @@ pub const Evaluator = struct {
         return ref;
     }
 
+    /// Convert a FK field name back to its relationship name.
+    /// AccountId → Account, parent__c → parent__r
+    fn fkToParentRef(self: *Evaluator, fk_field: []const u8) []const u8 {
+        if (fk_field.len > 3 and std.ascii.eqlIgnoreCase(fk_field[fk_field.len - 3 ..], "__c")) {
+            const rel = std.fmt.allocPrint(self.arena, "{s}__r", .{fk_field[0 .. fk_field.len - 3]}) catch return fk_field;
+            return rel;
+        }
+        const common = .{
+            .{ "AccountId", "Account" },
+            .{ "ContactId", "Contact" },
+            .{ "OpportunityId", "Opportunity" },
+            .{ "CaseId", "Case" },
+            .{ "LeadId", "Lead" },
+            .{ "OwnerId", "Owner" },
+            .{ "CreatedById", "CreatedBy" },
+            .{ "LastModifiedById", "LastModifiedBy" },
+            .{ "ParentId", "Parent" },
+            .{ "ProfileId", "Profile" },
+            .{ "UserRoleId", "UserRole" },
+            .{ "UserLicenseId", "UserLicense" },
+        };
+        inline for (common) |m| {
+            if (std.ascii.eqlIgnoreCase(fk_field, m[0])) return m[1];
+        }
+        return fk_field;
+    }
+
     /// Convert a parent reference to SObject type name.
     /// Account → Account, parent__r → look up FK value's type in store
     fn parentRefToType(self: *Evaluator, ref: []const u8) ?[]const u8 {
@@ -5179,7 +5206,20 @@ pub const Evaluator = struct {
             }
         }
         if (matched_value) |value| {
-            if (value != .null_val) return value;
+            if (value != .null_val) {
+                if (value == .string) {
+                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                    const display_type = builtins.getSObjectFieldDisplayType(&bctx, sob, field_name);
+                    if (std.ascii.eqlIgnoreCase(display_type, "DATETIME")) {
+                        return builtins.makeDatetimeValue(self.arena, value.string) catch value;
+                    }
+                    if (std.ascii.eqlIgnoreCase(display_type, "DATE")) {
+                        const date_str = if (value.string.len >= 10) value.string[0..10] else value.string;
+                        return builtins.makeDateValue(self.arena, date_str) catch value;
+                    }
+                }
+                return value;
+            }
         }
         if (self.resolveDerivedFieldValue(sob, field_name)) |derived| return derived;
         return matched_value;
@@ -5613,7 +5653,7 @@ pub const Evaluator = struct {
                             if (ctor_class) |cd| {
                                 if (cd.super_class) |sc| {
                                     if (self.findClass(sc.name)) |parent_decl| {
-                                        self.runConstructor(parent_decl, this_val.object, args.items) catch {};
+                                        try self.runConstructor(parent_decl, this_val.object, args.items);
                                     }
                                 }
                             }
@@ -5627,7 +5667,7 @@ pub const Evaluator = struct {
                         if (this_val == .object) {
                             const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
                             if (self.findClass(ctor_class_name)) |cd| {
-                                self.runConstructor(cd, this_val.object, args.items) catch {};
+                                try self.runConstructor(cd, this_val.object, args.items);
                             }
                         }
                     }
@@ -7234,6 +7274,16 @@ pub const Evaluator = struct {
                     if (loaded == .sobject) return loaded;
                 }
 
+                const relationship_name = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+                    self.fkToParentRef(raw_name)
+                else
+                    raw_name;
+                if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
+                    if (self.getSObjectFieldValueCaseInsensitive(obj.sobject, relationship_name)) |loaded| {
+                        if (loaded == .sobject) return loaded;
+                    }
+                }
+
                 const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
                     raw_name
                 else
@@ -8379,6 +8429,47 @@ pub const Evaluator = struct {
             return Value{ .set = set };
         }
 
+        const builtin_exception_types = [_][]const u8{
+            "Exception",
+            "DMLException",
+            "DmlException",
+            "NullPointerException",
+            "TypeException",
+            "QueryException",
+            "JSONException",
+            "ListException",
+            "MathException",
+            "SecurityException",
+            "NoAccessException",
+            "InvalidParameterValueException",
+            "CalloutException",
+            "StringException",
+            "NoSuchElementException",
+            "NoDataFoundException",
+            "SearchException",
+            "SObjectException",
+            "HandledException",
+            "IllegalArgumentException",
+            "LimitException",
+            "AsyncException",
+            "SerializationException",
+            "FlowException",
+            "FinalException",
+            "UnsupportedOperationException",
+            "EventBusException",
+        };
+        inline for (builtin_exception_types) |exc_type| {
+            if (std.ascii.eqlIgnoreCase(type_name, exc_type)) {
+                const instance = try self.arena.create(types.ObjectInstance);
+                instance.* = .{ .class_name = exc_type };
+                if (ne.args.len > 0) {
+                    var arg_copy = ne.args[0];
+                    try instance.fields.put(self.arena, "message", try self.evalExpr(&arg_copy, current_env));
+                }
+                return Value{ .object = instance };
+            }
+        }
+
         // ApexPages.StandardController constructor
         if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardController") or
             std.ascii.eqlIgnoreCase(type_name, "StandardController"))
@@ -8627,12 +8718,12 @@ pub const Evaluator = struct {
             // Execute parent constructor first (if has super_class and parent has constructor)
             if (class_decl.super_class) |sc| {
                 if (self.findClass(sc.name)) |parent_decl| {
-                    self.runConstructor(parent_decl, instance, &.{}) catch {};
+                    try self.runConstructor(parent_decl, instance, &.{});
                 }
             }
 
             // Execute own constructor
-            self.runConstructor(class_decl, instance, eval_args.items) catch {};
+            try self.runConstructor(class_decl, instance, eval_args.items);
 
             return Value{ .object = instance };
         }
@@ -9608,6 +9699,11 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) {
             return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "setCreatedDate")) {
+            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            _ = try builtins.dispatchStatic(&bctx, "Test", method, args);
+            return .void_val;
         }
         // Test.getEventBus() → return an EventBus stub with deliver() method
         if (std.ascii.eqlIgnoreCase(method, "getEventBus")) {
@@ -11989,11 +12085,11 @@ pub const Evaluator = struct {
             // Execute parent constructor
             if (class_decl.super_class) |sc| {
                 if (self.findClass(sc.name)) |parent_decl| {
-                    self.runConstructor(parent_decl, instance, &.{}) catch {};
+                    try self.runConstructor(parent_decl, instance, &.{});
                 }
             }
             // Execute own constructor
-            self.runConstructor(class_decl, instance, &.{}) catch {};
+            try self.runConstructor(class_decl, instance, &.{});
             return Value{ .object = instance };
         }
         // SObject type name → return .sobject instead of .object

@@ -194,7 +194,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatchStaticEncodingUtil(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatchStaticMessaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatchStaticEventBus(method_name);
-    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatchStaticHttp(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatchStaticCanTheUser(ctx, method_name, args);
@@ -1365,16 +1365,40 @@ fn dispatchStaticEventBus(method_name: []const u8) !?Value {
     return .void_val;
 }
 
-fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+fn setCreatedDateForRecord(ctx: *BuiltinContext, args: []const Value) !Value {
+    if (args.len < 2) return .void_val;
+    const record_id = try utils.coerceToString(args[0], ctx.arena);
+    const created_date = extractDateString(args[1]) orelse try utils.coerceToString(args[1], ctx.arena);
+
+    var store_iter = ctx.eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        for (entry.value_ptr.items) |record| {
+            if (record != .sobject) continue;
+            if (record.sobject.id) |candidate_id| {
+                if (std.ascii.eqlIgnoreCase(candidate_id, record_id)) {
+                    try record.sobject.fields.put(ctx.arena, "CreatedDate", Value{ .string = created_date });
+                    return .void_val;
+                }
+            }
+        }
+    }
+    return .void_val;
+}
+
+fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "startTest")) {
         // Reset Limits counters (Salesforce resets governor limits at Test.startTest)
         ctx.eval.limits_dml = 0;
+        ctx.eval.limits_dml_rows = 0;
         ctx.eval.limits_soql = 0;
         ctx.eval.limits_publish_immediate = 0;
         ctx.eval.limits_queueable = 0;
         ctx.eval.limits_callouts = 0;
         return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setCreatedDate")) {
+        return try setCreatedDateForRecord(ctx, args);
     }
     return .void_val;
 }
@@ -1824,7 +1848,7 @@ fn inferFieldType(field_name: []const u8) []const u8 {
     return "String";
 }
 
-fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
+pub fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
     if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
             if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) {
