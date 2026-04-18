@@ -9522,9 +9522,13 @@ pub const Evaluator = struct {
 
         // OuterClass.InnerClass.class → Type object (when obj is string class name)
         if (obj == .string and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            const type_name: []const u8 = if (self.current_class) |cc| blk: {
+                const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, obj.string }) catch obj.string;
+                break :blk if (self.findClass(fq) != null) fq else self.resolveFullClassName(obj.string);
+            } else self.resolveFullClassName(obj.string);
             const type_obj = try self.arena.create(types.ObjectInstance);
             type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = obj.string });
+            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
             return Value{ .object = type_obj };
         }
 
@@ -9953,6 +9957,19 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) {
             return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "testInstall") and args.len >= 1 and args[0] == .object) {
+            if (self.findClass(args[0].object.class_name)) |install_handler_class| {
+                const install_context = try self.arena.create(types.ObjectInstance);
+                install_context.* = .{ .class_name = "System.InstallContext" };
+                if (args.len >= 2) try install_context.fields.put(self.arena, "previousVersion", args[1]);
+                if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
+                if (args.len >= 3 and args[2] == .boolean) {
+                    try install_context.fields.put(self.arena, "firstInstall", Value{ .boolean = !args[2].boolean });
+                }
+                _ = try self.callInstanceMethod(install_handler_class, args[0].object, "onInstall", &.{Value{ .object = install_context }});
+            }
+            return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setCreatedDate")) {
             var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
@@ -10729,13 +10746,7 @@ pub const Evaluator = struct {
         }
         // System.Test.startTest / System.Test.stopTest / setMock / etc.
         if (std.ascii.eqlIgnoreCase(inner, "Test")) {
-            // setMock needs to be handled by handleTest (not builtins)
-            if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
-                self.callout_mock = args[1];
-                return .void_val;
-            }
-            var bctx3 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatchStatic(&bctx3, "Test", method, args)) |result| return result;
+            return self.handleTest(method, args);
         }
         // System.Database.insert / update / delete / upsert / undelete
         if (std.ascii.eqlIgnoreCase(inner, "Database")) {

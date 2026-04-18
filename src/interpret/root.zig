@@ -2838,6 +2838,28 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
     try std.testing.expectEqualStrings("AA", result.value.string);
 }
 
+test "E2E: System.Test.testInstall invokes install handlers" {
+    const source =
+        \\global class PackageInstallHook implements System.InstallHandler {
+        \\    global void onInstall(System.InstallContext installContext) {
+        \\        insert new Account(Name = 'Installed');
+        \\    }
+        \\}
+        \\public class InstallHandlerTest {
+        \\    public static String test() {
+        \\        System.Test.testInstall(new PackageInstallHook(), null, false);
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InstallHandlerTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
 test "E2E: SObject.getSObject resolves parent records from a reference field token" {
     const source =
         \\public class GetSObjectParentTest {
