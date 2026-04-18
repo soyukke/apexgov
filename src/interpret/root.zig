@@ -1612,6 +1612,53 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
     try std.testing.expectEqualStrings("false:false", result.value.string);
 }
 
+test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildcards" {
+    const source =
+        \\public class ProfileLikeSearchTest {
+        \\    public static String test() {
+        \\        Profile currentProfile = [SELECT Id, Name FROM Profile WHERE Id = :UserInfo.getProfileId()];
+        \\        String noMatchSearch = '%definitely-no-match%';
+        \\        List<Profile> noMatches = [SELECT Id FROM Profile WHERE Name LIKE :noMatchSearch];
+        \\        String innerSearch = '%' + currentProfile.Name.left(4) + '%';
+        \\        String wrappedSearch = '%' + innerSearch + '%';
+        \\        List<Profile> matches = [SELECT Id, Name, UserLicense.Name FROM Profile WHERE Name LIKE :wrappedSearch];
+        \\        return String.valueOf(noMatches.size()) + ':' + matches.get(0).Name + ':' + matches.get(0).UserLicense.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ProfileLikeSearchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:System Administrator:Salesforce", result.value.string);
+}
+
+test "E2E: synthetic User LIKE collapses repeated wildcards" {
+    const source =
+        \\public class UserLikeSearchTest {
+        \\    public static String test() {
+        \\        String innerSearch = '%' + UserInfo.getLastName() + '%';
+        \\        String wrappedSearch = '%' + innerSearch + '%';
+        \\        List<User> matches = [
+        \\            SELECT Id, Name, Username
+        \\            FROM User
+        \\            WHERE Name LIKE :wrappedSearch OR Username LIKE :wrappedSearch
+        \\            ORDER BY Username
+        \\            LIMIT 20
+        \\        ];
+        \\        return matches.get(0).Name + ':' + matches.get(0).Username;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserLikeSearchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Test User:testuser@example.com", result.value.string);
+}
+
 test "E2E: standard user cannot access AccountBrand describe fields" {
     const source =
         \\public class AccountBrandAccessTest {

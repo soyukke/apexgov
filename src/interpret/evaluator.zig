@@ -311,18 +311,27 @@ pub const Evaluator = struct {
     }
 
     /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
-    pub fn createDefaultProfileRecord(self: *Evaluator) !Value {
+    pub fn createCurrentProfileRecord(self: *Evaluator) !Value {
         const profile = try self.arena.create(types.SObject);
-        profile.* = .{ .type_name = "Profile" };
-        profile.id = "00e000000000001";
-        try profile.fields.put(self.arena, "Id", Value{ .string = "00e000000000001" });
+        profile.* = .{ .type_name = "Profile", .id = self.current_profile_id };
+        try profile.fields.put(self.arena, "Id", Value{ .string = self.current_profile_id });
         try self.populateSyntheticProfile(profile, "System Administrator");
         return Value{ .sobject = profile };
+    }
+
+    /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
+    pub fn createDefaultProfileRecord(self: *Evaluator) !Value {
+        return self.createCurrentProfileRecord();
     }
 
     /// Create a synthetic Profile matching the WHERE clause Name — used by SOQL seeding.
     /// Falls back to "System Administrator" if no Name condition is found.
     fn createProfileForQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
+        if (self.extractWhereFieldValue(soql, "Id", current_env)) |profile_id| {
+            if (std.ascii.eqlIgnoreCase(profile_id, self.current_profile_id)) {
+                return self.createCurrentProfileRecord();
+            }
+        }
         const profile = try self.arena.create(types.SObject);
         profile.* = .{ .type_name = "Profile" };
         // Extract Name value from WHERE clause: WHERE Name = 'Xyz' or WHERE Name = :var
@@ -403,6 +412,52 @@ pub const Evaluator = struct {
             if (j < where_clause.len and where_clause[j] == '=') return true;
         }
         return false;
+    }
+
+    fn hasWhereFieldLikeComparison(self: *Evaluator, soql: []const u8, field_name: []const u8) bool {
+        _ = self;
+        const where_clause = extractWhereClause(soql) orelse return false;
+        var pos: usize = 0;
+        while (pos + field_name.len <= where_clause.len) : (pos += 1) {
+            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
+            if (!(pos == 0 or where_clause[pos - 1] == ' ' or where_clause[pos - 1] == '(')) continue;
+            var j = pos + field_name.len;
+            while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+            if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) return true;
+        }
+        return false;
+    }
+
+    fn collapseLikeWildcards(self: *Evaluator, pattern: []const u8) []const u8 {
+        var has_repeated_percent = false;
+        var prev_was_percent = false;
+        for (pattern) |ch| {
+            if (ch == '%') {
+                if (prev_was_percent) {
+                    has_repeated_percent = true;
+                    break;
+                }
+                prev_was_percent = true;
+            } else {
+                prev_was_percent = false;
+            }
+        }
+        if (!has_repeated_percent) return pattern;
+
+        const buf = self.arena.alloc(u8, pattern.len) catch return pattern;
+        var write_idx: usize = 0;
+        prev_was_percent = false;
+        for (pattern) |ch| {
+            if (ch == '%') {
+                if (prev_was_percent) continue;
+                prev_was_percent = true;
+            } else {
+                prev_was_percent = false;
+            }
+            buf[write_idx] = ch;
+            write_idx += 1;
+        }
+        return buf[0..write_idx];
     }
 
     fn createUserForQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
@@ -3369,14 +3424,19 @@ pub const Evaluator = struct {
                     }
                 }
             } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-                // Create a Profile matching the WHERE clause Name
-                const profile_record = try self.createProfileForQuery(soql, current_env);
-                try records.append(self.arena, profile_record);
-                // Also store in the data store so getUserProfileName can resolve ProfileId later
-                if (profile_record == .sobject) {
-                    const gop = try self.store.getOrPut(self.arena, "Profile");
-                    if (!gop.found_existing) gop.value_ptr.* = .empty;
-                    try gop.value_ptr.append(self.arena, profile_record);
+                const use_query_specific_profile = !self.hasWhereFieldLikeComparison(soql, "Name");
+                const profile_record = if (use_query_specific_profile)
+                    try self.createProfileForQuery(soql, current_env)
+                else
+                    try self.createDefaultProfileRecord();
+                if (self.matchesWhere(profile_record, soql, current_env)) {
+                    try records.append(self.arena, profile_record);
+                    // Also store in the data store so getUserProfileName can resolve ProfileId later
+                    if (profile_record == .sobject) {
+                        const gop = try self.store.getOrPut(self.arena, "Profile");
+                        if (!gop.found_existing) gop.value_ptr.* = .empty;
+                        try gop.value_ptr.append(self.arena, profile_record);
+                    }
                 }
             } else if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
                 // Seed RecordType records into the store, then filter by WHERE clause
@@ -3802,17 +3862,19 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "Profile" };
-            const id = try self.allocId();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try self.populateSyntheticProfile(sob, name_val);
-            // Store in the store so isRestrictedUser can look it up later
-            const gop = try self.store.getOrPut(self.arena, "Profile");
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            return Value{ .sobject = sob };
+            const use_query_specific_profile = !self.hasWhereFieldLikeComparison(soql, "Name");
+            const profile_record = if (use_query_specific_profile)
+                try self.createProfileForQuery(soql, current_env)
+            else
+                try self.createCurrentProfileRecord();
+            if (!self.matchesWhere(profile_record, soql, current_env)) return null;
+            if (profile_record == .sobject) {
+                // Store in the store so isRestrictedUser can look it up later
+                const gop = try self.store.getOrPut(self.arena, "Profile");
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(self.arena, profile_record);
+            }
+            return profile_record;
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "ContentVersion")) {
@@ -4748,6 +4810,13 @@ pub const Evaluator = struct {
             }
             if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
             if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'') pattern = pattern[0 .. pattern.len - 1];
+            pattern = self.collapseLikeWildcards(pattern);
+            if (pattern.len == 0) return field_val.string.len == 0;
+            var non_wildcard_len: usize = 0;
+            for (pattern) |ch| {
+                if (ch != '%') non_wildcard_len += 1;
+            }
+            if (non_wildcard_len == 0) return true;
             const starts_wild = pattern.len > 0 and pattern[0] == '%';
             const ends_wild = pattern.len > 0 and pattern[pattern.len - 1] == '%';
             const inner = pattern[@intFromBool(starts_wild) .. pattern.len - @intFromBool(ends_wild)];
