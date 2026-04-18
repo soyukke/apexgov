@@ -6664,6 +6664,33 @@ test "E2E: custom object upsert by external id updates existing record" {
     try std.testing.expectEqualStrings("1:updated", result.value.string);
 }
 
+test "E2E: SOQL IN bind resolves map values expression" {
+    const source =
+        \\public class InBindValuesProbe {
+        \\    public static String test() {
+        \\        Map<String, Thing__c> rowsByKey = new Map<String, Thing__c>();
+        \\        rowsByKey.put('txn-1', new Thing__c(Name = 'first', UniqueId__c = 'txn-1'));
+        \\        rowsByKey.put('txn-2', new Thing__c(Name = 'second', UniqueId__c = 'txn-2'));
+        \\
+        \\        Database.upsert(rowsByKey.values(), Schema.Thing__c.UniqueId__c);
+        \\
+        \\        List<Thing__c> rows = [
+        \\            SELECT Id, Name
+        \\            FROM Thing__c
+        \\            WHERE Id IN :rowsByKey.values()
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rowsByKey.get('txn-1').Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InBindValuesProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, result.value.string, "2:a"));
+}
+
 test "E2E: fixture duplicate scenario guard test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
     defer fixture_paths.deinit();

@@ -576,7 +576,7 @@ pub const Evaluator = struct {
         if (std.ascii.indexOfIgnoreCase(where_clause, "RecordId IN :")) |in_pos| {
             var j = in_pos + "RecordId IN :".len;
             const start = j;
-            while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+            j = scanBindExpressionEnd(where_clause, j);
             if (j > start) {
                 if (self.lookupBindValue(current_env, where_clause[start..j])) |bind_val| {
                     try self.appendRecordIdsFromValue(bind_val, &record_ids);
@@ -618,18 +618,10 @@ pub const Evaluator = struct {
         if (std.ascii.indexOfIgnoreCase(where_clause, " IN :")) |in_pos| {
             var j = in_pos + 5; // skip " IN :"
             const start = j;
-            while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+            j = scanBindExpressionEnd(where_clause, j);
             if (j > start) {
                 const var_name = where_clause[start..j];
-                // Try env lookup, then class-qualified static field
-                const v = current_env.get(var_name) orelse blk: {
-                    if (self.current_class) |cc| {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch break :blk null;
-                        break :blk self.global_env.get(key);
-                    }
-                    break :blk null;
-                };
-                if (v) |val| {
+                if (self.lookupBindValue(current_env, var_name)) |val| {
                     if (val == .set) {
                         for (val.set.entries.values()) |item| {
                             if (item == .string) try names.append(self.arena, item.string);
@@ -4048,8 +4040,46 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn scanBindExpressionEnd(source: []const u8, start: usize) usize {
+        var j = start;
+        var paren_depth: usize = 0;
+        var bracket_depth: usize = 0;
+        while (j < source.len) : (j += 1) {
+            const ch = source[j];
+            if (std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '.') continue;
+            if (ch == '(') {
+                paren_depth += 1;
+                continue;
+            }
+            if (ch == '[') {
+                bracket_depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (paren_depth == 0 and bracket_depth == 0) break;
+                paren_depth -|= 1;
+                continue;
+            }
+            if (ch == ']') {
+                if (paren_depth == 0 and bracket_depth == 0) break;
+                bracket_depth -|= 1;
+                continue;
+            }
+            break;
+        }
+        return j;
+    }
+
+    fn lookupEvaluatedBindExpression(self: *Evaluator, current_env: *Env, bind_expr: []const u8) ?Value {
+        if (std.mem.indexOfAny(u8, bind_expr, ".([") == null) return null;
+        const tokens = lexer_mod.tokenize(bind_expr, self.arena) catch return null;
+        const expr = parser_mod.parseExpr(tokens, self.arena) catch return null;
+        return self.evalExpr(expr, current_env) catch null;
+    }
+
     fn lookupBindValue(self: *Evaluator, current_env: *Env, var_name: []const u8) ?Value {
         if (current_env.get(var_name)) |bv| return bv;
+        if (self.lookupEvaluatedBindExpression(current_env, var_name)) |bv| return bv;
 
         if (self.current_class) |cc| {
             const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch null;
@@ -4139,7 +4169,7 @@ pub const Evaluator = struct {
                 if (j < where_clause.len and where_clause[j] == ':') {
                     j += 1;
                     const start = j;
-                    while (j < where_clause.len and (std.ascii.isAlphanumeric(where_clause[j]) or where_clause[j] == '_')) j += 1;
+                    j = scanBindExpressionEnd(where_clause, j);
                     const var_name = where_clause[start..j];
                     if (self.lookupBindValue(current_env, var_name)) |v| {
                         switch (v) {
@@ -4812,10 +4842,8 @@ pub const Evaluator = struct {
             // Check if the comparison value is a null bind variable → skip condition
             if (value_str.len > 0 and value_str[0] == ':') {
                 const bv_name = value_str[1..];
-                if (std.mem.indexOf(u8, bv_name, ".")) |_| {} else {
-                    if (current_env.get(bv_name)) |bv| {
-                        if (bv == .null_val) return true; // null bind → include record
-                    }
+                if (self.lookupBindValue(current_env, bv_name)) |bv| {
+                    if (bv == .null_val) return true; // null bind → include record
                 }
             }
             return if (is_neq) true else false;
@@ -4828,7 +4856,7 @@ pub const Evaluator = struct {
             // バインド変数 :type → 環境から値を解決
             if (pattern.len > 0 and pattern[0] == ':') {
                 const var_name = pattern[1..];
-                if (current_env.get(var_name)) |bind_val| {
+                if (self.lookupBindValue(current_env, var_name)) |bind_val| {
                     if (bind_val == .string) {
                         pattern = bind_val.string;
                     } else return false;
@@ -4862,7 +4890,7 @@ pub const Evaluator = struct {
             // Handle :bindVar for IN clause
             if (in_str.len > 0 and in_str[0] == ':') {
                 const var_name = in_str[1..];
-                if (current_env.get(var_name)) |bind_val| {
+                if (self.lookupBindValue(current_env, var_name)) |bind_val| {
                     if (bind_val == .list) {
                         for (bind_val.list.items.items) |item| {
                             if (utils.valueEql(field_val, item)) return true;
@@ -4927,8 +4955,12 @@ pub const Evaluator = struct {
         } else if (value_str.len > 0 and value_str[0] == ':') {
             // Bind variable
             const var_name = value_str[1..];
-            // Handle dotted: :insertedAccount.Id or :list[0].Id
-            if (std.mem.indexOf(u8, var_name, ".")) |dot_pos| {
+            if (self.lookupBindValue(current_env, var_name)) |bind_val| {
+                cmp_val = bind_val;
+                if (cmp_val == .null_val and !is_neq) return true;
+            } else if (std.mem.indexOf(u8, var_name, ".")) |dot_pos| {
+                // Fallback for older dotted bind handling when expression parsing
+                // does not resolve the value directly.
                 const base_name = var_name[0..dot_pos];
                 const prop_name = var_name[dot_pos + 1 ..];
                 // Resolve base value, handling array index access (e.g. "list[0]")
@@ -4954,33 +4986,7 @@ pub const Evaluator = struct {
                     return true;
                 }
             } else {
-                cmp_val = current_env.get(var_name) orelse blk: {
-                    // Try current_class static field
-                    if (self.current_class) |cc| {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch break :blk @as(?Value, null);
-                        if (self.global_env.get(key)) |v| break :blk v;
-                        // Check outer class static field
-                        if (self.findOuterClassName(cc)) |oc| {
-                            const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch break :blk @as(?Value, null);
-                            if (self.global_env.get(okey)) |v| break :blk v;
-                        }
-                    }
-                    // Try "this" class and outer class static fields
-                    if (current_env.get("this")) |tv| {
-                        if (tv == .object) {
-                            const this_cn = tv.object.class_name;
-                            const tkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, var_name }) catch break :blk @as(?Value, null);
-                            if (self.global_env.get(tkey)) |v| break :blk v;
-                            if (self.findOuterClassName(this_cn)) |oc| {
-                                const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch break :blk @as(?Value, null);
-                                if (self.global_env.get(okey)) |v| break :blk v;
-                            }
-                        }
-                    }
-                    break :blk @as(?Value, null);
-                } orelse return true;
-                // Salesforce: WHERE field = :nullVar skips the condition (includes all records)
-                if (cmp_val == .null_val and !is_neq) return true;
+                return true;
             }
         } else if (std.fmt.parseInt(i64, std.mem.trim(u8, value_str, " \t\n\r"), 10)) |int_val| {
             cmp_val = Value{ .integer = int_val };
