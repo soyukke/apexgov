@@ -3679,6 +3679,124 @@ test "E2E: SObject.getSObject resolves unsaved relationship records assigned via
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
+test "E2E: direct property access resolves unsaved relationship records assigned via __r" {
+    const source =
+        \\public class DirectUnsavedParentTest {
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        return sessionRecord.Experience__r.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DirectUnsavedParentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: member-held direct property access resolves unsaved relationship records assigned via __r" {
+    const source =
+        \\public class MemberHeldUnsavedParentTest {
+        \\    private Session__c sessionRecord;
+        \\    public MemberHeldUnsavedParentTest(Session__c sessionRecord) {
+        \\        this.sessionRecord = sessionRecord;
+        \\    }
+        \\    public String getName() {
+        \\        return this.sessionRecord.Experience__r.Name;
+        \\    }
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        return new MemberHeldUnsavedParentTest(sessionRecord).getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MemberHeldUnsavedParentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: subquery child records preserve parent relationship fields" {
+    const source =
+        \\public class ChildParentSubqueryTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        insert new Contact(LastName = 'Tester', AccountId = accountRecord.Id);
+        \\        Account queried = [
+        \\            SELECT Id, (SELECT Id, Account.Name FROM Contacts ORDER BY Id)
+        \\            FROM Account
+        \\            WHERE Id = :accountRecord.Id
+        \\        ];
+        \\        return queried.Contacts[0].Account.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChildParentSubqueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: subquery custom child records preserve custom parent relationship fields" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CustomChildParentSubqueryTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
+        \\        Parent__c queried = [
+        \\            SELECT Id, (SELECT Id, Parent__r.Name FROM Children__r ORDER BY Id)
+        \\            FROM Parent__c
+        \\            WHERE Id = :parentRecord.Id
+        \\        ];
+        \\        return queried.Children__r[0].Parent__r.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CustomChildParentSubqueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: top-level custom child queries preserve custom parent relationship fields" {
+    const source =
+        \\public class TopLevelCustomChildParentQueryTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        insert parentRecord;
+        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
+        \\        insert childRecord;
+        \\        Child__c queried = [SELECT Id, Parent__r.Name FROM Child__c WHERE Id = :childRecord.Id];
+        \\        return queried.Parent__r.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TopLevelCustomChildParentQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
 test "E2E: SOQL parent relationship field in WHERE" {
     const source =
         \\public class SoqlParentRefTest {

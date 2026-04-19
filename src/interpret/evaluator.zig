@@ -3687,6 +3687,8 @@ pub const Evaluator = struct {
                                     break;
                                 }
                             }
+                            try self.applyParentFieldLookups(sub_info.query, ct, &child_records);
+                            try self.resolveFormulaFields(sub_info.query, &child_records);
                         }
                         const child_list = try self.arena.create(types.ListValue);
                         child_list.* = .{ .items = child_records };
@@ -13229,27 +13231,36 @@ fn extractLimit(soql: []const u8) ?usize {
 
 const SubQueryInfo = struct {
     relationship: []const u8,
+    query: []const u8,
 };
 
 fn extractSubQuery(soql: []const u8) ?SubQueryInfo {
     // Find pattern: (SELECT ... FROM RelationshipName)
-    // We only need the relationship name from the inner FROM
     var i: usize = 0;
     while (i < soql.len) : (i += 1) {
         if (soql[i] == '(' and i + 8 < soql.len) {
-            const after_paren = std.mem.trim(u8, soql[i + 1 ..], " \t\n\r");
-            if (after_paren.len > 6 and std.ascii.eqlIgnoreCase(after_paren[0..6], "SELECT")) {
-                // Find the FROM in this sub-query
-                if (std.ascii.indexOfIgnoreCase(after_paren, "FROM")) |from_pos| {
+            var depth: u32 = 1;
+            var close_idx = i + 1;
+            while (close_idx < soql.len) : (close_idx += 1) {
+                if (soql[close_idx] == '(') depth += 1;
+                if (soql[close_idx] == ')') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (close_idx >= soql.len or depth != 0) continue;
+            const inner_query = std.mem.trim(u8, soql[i + 1 .. close_idx], " \t\n\r");
+            if (inner_query.len > 6 and std.ascii.eqlIgnoreCase(inner_query[0..6], "SELECT")) {
+                if (std.ascii.indexOfIgnoreCase(inner_query, "FROM")) |from_pos| {
                     var start = from_pos + 4;
-                    while (start < after_paren.len and (after_paren[start] == ' ' or after_paren[start] == '\t' or after_paren[start] == '\n')) start += 1;
+                    while (start < inner_query.len and (inner_query[start] == ' ' or inner_query[start] == '\t' or inner_query[start] == '\n')) start += 1;
                     var end = start;
-                    while (end < after_paren.len and after_paren[end] != ' ' and after_paren[end] != ')' and after_paren[end] != '\n' and after_paren[end] != '\t') end += 1;
+                    while (end < inner_query.len and inner_query[end] != ' ' and inner_query[end] != ')' and inner_query[end] != '\n' and inner_query[end] != '\t') end += 1;
                     if (end > start) {
-                        const raw_rel = after_paren[start..end];
+                        const raw_rel = inner_query[start..end];
                         // Strip parent prefix: "Account.Contacts" → "Contacts"
                         const rel = if (std.mem.lastIndexOfScalar(u8, raw_rel, '.')) |dot_pos| raw_rel[dot_pos + 1 ..] else raw_rel;
-                        return SubQueryInfo{ .relationship = rel };
+                        return SubQueryInfo{ .relationship = rel, .query = inner_query };
                     }
                 }
             }
