@@ -976,14 +976,22 @@ pub const Evaluator = struct {
         return null;
     }
 
-    /// Build a Salesforce-format stack trace string from the current call stack.
+    /// Build a Salesforce-format stack trace string for a constructed Exception.
     /// Format: "Class.ClassName.methodName: line N, column 1\n..."
-    /// Call stack frames are walked top-to-bottom. Each frame's `line` should
-    /// already reflect the line of the call-site expression (set by evalMethodCall/evalNewExpr).
+    /// Exceptions created inside constructors only expose the constructor and
+    /// its immediate caller; otherwise Apex preserves the surrounding call
+    /// stack and appends the synthetic anonymous entry point.
     pub fn buildStackTraceString(self: *Evaluator) ![]const u8 {
         var buf = std.ArrayListUnmanaged(u8){};
         var i: usize = self.call_stack.items.len;
-        while (i > 0) {
+        const max_frames = blk: {
+            if (self.call_stack.items.len == 0) break :blk @as(usize, 0);
+            const top = self.call_stack.items[self.call_stack.items.len - 1];
+            if (std.mem.eql(u8, top.method_name, "<init>")) break :blk @as(usize, 2);
+            break :blk self.call_stack.items.len;
+        };
+        var emitted_frames: usize = 0;
+        while (i > 0 and emitted_frames < max_frames) {
             i -= 1;
             const f = self.call_stack.items[i];
             if (buf.items.len > 0) try buf.append(self.arena, '\n');
@@ -991,7 +999,10 @@ pub const Evaluator = struct {
             const line = if (f.line > 0) f.line else 1;
             const entry = try std.fmt.allocPrint(self.arena, "Class.{s}.{s}: line {d}, column 1", .{ fq, f.method_name, line });
             try buf.appendSlice(self.arena, entry);
+            emitted_frames += 1;
         }
+        if (buf.items.len > 0) try buf.append(self.arena, '\n');
+        try buf.appendSlice(self.arena, "AnonymousBlock: line 1, column 1");
         return buf.items;
     }
 

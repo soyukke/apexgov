@@ -4815,6 +4815,56 @@ test "Type.forName returns null for non-existent class" {
     try std.testing.expect(eval.assertion_failure == null);
 }
 
+test "E2E: constructed DmlException stack trace ends at anonymous block" {
+    const source =
+        \\public class ConstructedStackTraceTopLevelTest {
+        \\    public static String test() {
+        \\        return new DmlException().getStackTraceString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ConstructedStackTraceTopLevelTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\nAnonymousBlock: line 1, column 1",
+        result.value.string,
+    );
+}
+
+test "E2E: constructor-built DmlException stack trace keeps only immediate caller" {
+    const source =
+        \\public class ConstructedStackTraceCtorTest {
+        \\    public class Holder {
+        \\        private Exception created;
+        \\        public Holder() {
+        \\            this.created = new DmlException();
+        \\        }
+        \\        public String capture() {
+        \\            return this.created.getStackTraceString();
+        \\        }
+        \\    }
+        \\    public static String wrapper() {
+        \\        return new Holder().capture();
+        \\    }
+        \\    public static String test() {
+        \\        return wrapper();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ConstructedStackTraceCtorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\nClass.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\nAnonymousBlock: line 1, column 1",
+        result.value.string,
+    );
+}
+
 test "Trigger recursion does not StackOverflow" {
     const source =
         \\trigger AccountTrigger on Account (after insert, after update) {
