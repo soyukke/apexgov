@@ -6134,6 +6134,33 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn resolveBareStaticValue(self: *Evaluator, current_env: *Env, name: []const u8) ?Value {
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object) {
+                const this_cn = this_val.object.class_name;
+                if (self.resolveStaticFieldValueOnClass(this_cn, name)) |val| return val;
+                if (self.findClass(this_cn)) |cd| {
+                    if (cd.super_class) |sc| {
+                        if (self.resolveStaticFieldValueOnClass(sc.name, name)) |val| return val;
+                    }
+                }
+                if (self.resolveOuterStaticField(this_cn, name)) |val| return val;
+            }
+        }
+
+        if (self.current_class) |cc| {
+            if (self.resolveStaticFieldValueOnClass(cc, name)) |val| return val;
+            if (self.findClass(cc)) |cd| {
+                if (cd.super_class) |sc| {
+                    if (self.resolveStaticFieldValueOnClass(sc.name, name)) |val| return val;
+                }
+            }
+            if (self.resolveOuterStaticField(cc, name)) |val| return val;
+        }
+
+        return null;
+    }
+
     fn handleCustomSettingStaticMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
         if (!std.mem.endsWith(u8, class_name, "__c")) return null;
 
@@ -7159,7 +7186,10 @@ pub const Evaluator = struct {
                     return self.evalAssignment(nca, coerced_val, current_env);
                 }
                 const final_val = if (asgn.op != .assign) blk: {
-                    const cur = current_env.get(id.name) orelse Value.null_val;
+                    const cur = if (current_env.has(id.name))
+                        (current_env.get(id.name) orelse Value.null_val)
+                    else
+                        (self.resolveBareStaticValue(current_env, id.name) orelse Value.null_val);
                     var result = evalCompoundAssign(cur, asgn.op, coerced_val, self.arena);
                     // Handle string concatenation for +=
                     if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {

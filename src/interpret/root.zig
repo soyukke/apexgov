@@ -3893,6 +3893,28 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
     try std.testing.expectEqualStrings("AA", result.value.string);
 }
 
+test "E2E: postfix increment updates static field through bare identifier" {
+    const source =
+        \\public class StaticCounterProbe {
+        \\    private static Integer counter = 1;
+        \\    private static Integer nextValue() {
+        \\        return counter++;
+        \\    }
+        \\    public static String run() {
+        \\        Integer first = nextValue();
+        \\        Integer second = nextValue();
+        \\        return String.valueOf(first) + ':' + String.valueOf(second) + ':' + String.valueOf(counter);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticCounterProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2:3", result.value.string);
+}
+
 test "E2E: Type.forName null-safe fluent execute preserves constructor-initialized fields" {
     const source =
         \\public abstract class TriggerableHost {
