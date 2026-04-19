@@ -6422,9 +6422,15 @@ pub const Evaluator = struct {
                 // Try as instance method on `this` first
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        if (self.findClass(this_val.object.class_name)) |class_decl| {
+                        const dispatch_decl = blk: {
+                            if (self.current_class) |current_class_name| {
+                                if (self.findClass(current_class_name)) |owner_decl| break :blk owner_decl;
+                            }
+                            break :blk self.findClass(this_val.object.class_name) orelse return Value.null_val;
+                        };
+                        {
                             // Look for method in class hierarchy
-                            const md = self.findMethodInHierarchy(null, class_decl, call.callee, args.items.len);
+                            const md = self.findMethodInHierarchy(null, dispatch_decl, call.callee, args.items.len);
                             if (md != null) {
                                 // Snapshot field values before the call
                                 var pre_fields: [16]Value = undefined;
@@ -6433,7 +6439,7 @@ pub const Evaluator = struct {
                                 for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
                                     pre_fields[fi] = v;
                                 }
-                                const result = try self.callInstanceMethod(class_decl, this_val.object, call.callee, args.items);
+                                const result = try self.callInstanceMethod(dispatch_decl, this_val.object, call.callee, args.items);
                                 // Sync back only fields that were MODIFIED by the called method
                                 for (this_val.object.fields.keys(), this_val.object.fields.values(), 0..) |fk, fv, fi| {
                                     if (fi < n_snap) {
@@ -7816,7 +7822,7 @@ pub const Evaluator = struct {
         return self.evalInstanceMethod(obj, mc.method, args.items, current_env);
     }
 
-    fn evalInstanceMethod(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, _: *Env) anyerror!Value {
+    fn evalInstanceMethod(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, current_env: *Env) anyerror!Value {
         // Null dereference → return null gracefully (some tests depend on this)
         if (obj == .null_val) return Value.null_val;
 
@@ -8114,7 +8120,17 @@ pub const Evaluator = struct {
 
         // For ObjectInstance with a user-defined class, try class methods first
         if (obj == .object) {
-            if (self.findClass(obj.object.class_name)) |class_decl| {
+            const dispatch_decl = blk: {
+                if (current_env.get("this")) |this_val| {
+                    if (this_val == .object and this_val.object == obj.object) {
+                        if (self.current_class) |current_class_name| {
+                            if (self.findClass(current_class_name)) |owner_decl| break :blk owner_decl;
+                        }
+                    }
+                }
+                break :blk self.findClass(obj.object.class_name) orelse null;
+            };
+            if (dispatch_decl) |class_decl| {
                 const md = self.findMethodInHierarchyTyped(null, class_decl, method, args) orelse
                     self.findMethodInHierarchy(null, class_decl, method, args.len);
                 if (md != null) {
@@ -11941,7 +11957,7 @@ pub const Evaluator = struct {
     fn findResolvedMethodInHierarchyTyped(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?ResolvedInstanceMethod {
         if (actual_class) |ac| {
             if (ac != class_decl) {
-                if (self.findBestMethodInClass(ac, method_name, args)) |md| return .{ .owner = ac, .method = md };
+                if (self.findCompatibleMethodInClass(ac, method_name, args)) |md| return .{ .owner = ac, .method = md };
             }
         }
         if (self.findBestMethodInClass(class_decl, method_name, args)) |md| return .{ .owner = class_decl, .method = md };
@@ -12181,6 +12197,85 @@ pub const Evaluator = struct {
             }
         }
         return best orelse candidates[0];
+    }
+
+    fn findCompatibleMethodInClass(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
+        var candidates: [64]*ast.MethodDecl = undefined;
+        var count: usize = 0;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .method_decl => |md| {
+                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and md.params.len == args.len) {
+                        if (count < candidates.len) {
+                            candidates[count] = md;
+                            count += 1;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (count == 0) return null;
+
+        const arg_type_hints = self.cast_type_hints;
+        var best: ?*ast.MethodDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |md| {
+            if (self.singleMethodCandidateScore(md, args, arg_type_hints)) |score| {
+                if (best == null or score > best_score) {
+                    best = md;
+                    best_score = score;
+                }
+            }
+        }
+        return best;
+    }
+
+    fn singleMethodCandidateScore(self: *Evaluator, md: *ast.MethodDecl, args: []const Value, arg_type_hints: ?[]const ?[]const u8) ?i32 {
+        var score: i32 = 0;
+        for (md.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const arg = args[i];
+            const rendered_param_type = self.renderTypeRef(param.type_ref);
+            const param_base = typeBaseName(rendered_param_type);
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+
+            if (arg_hint) |hint| {
+                const hint_score = self.overloadScoreForTypeHint(hint, rendered_param_type);
+                if (hint_score > 0) {
+                    score += hint_score;
+                    if (arg == .null_val) continue;
+                }
+            }
+
+            if (arg == .null_val) continue;
+
+            var arg_score: i32 = 0;
+            if (arg == .sobject and std.ascii.eqlIgnoreCase(param_base, "List")) {
+                return null;
+            } else if (arg == .list) {
+                if (std.ascii.eqlIgnoreCase(param_base, "List") or std.ascii.eqlIgnoreCase(param_base, "Iterable")) {
+                    arg_score = self.scoreListArgumentForParam(arg.list, arg_hint, param.type_ref);
+                } else if (std.ascii.eqlIgnoreCase(param_base, "Object")) {
+                    arg_score = 1;
+                } else {
+                    return null;
+                }
+            } else {
+                arg_score = overloadScoreForArg(arg, param.type_ref.name);
+                if (arg_score == 0 and arg == .string and std.ascii.eqlIgnoreCase(param_base, "Blob")) {
+                    arg_score = 1;
+                }
+                if (arg_score == 0 and arg == .object and self.isSubclassOf(arg.object.class_name, param.type_ref.name)) {
+                    arg_score = 2;
+                }
+            }
+
+            if (arg_score <= 0) return null;
+            score += arg_score;
+        }
+        return score;
     }
 
     fn overloadScoreForTypeHint(self: *Evaluator, raw_hint: []const u8, raw_param_type: []const u8) i32 {

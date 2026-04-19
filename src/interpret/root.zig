@@ -4064,6 +4064,48 @@ test "E2E: nested field access preserves null overload selection" {
     try std.testing.expectEqualStrings("2|true", result.value.string);
 }
 
+test "E2E: base overload dispatch skips incompatible child override" {
+    const source =
+        \\public class OverloadDispatchRecorder {
+        \\    public static List<String> seen = new List<String>();
+        \\}
+        \\public virtual class OverloadDispatchBase {
+        \\    public void run(List<SObject> rows, Map<Id, SObject> rowMap) {
+        \\        this.handle(rows);
+        \\        this.handle(rowMap);
+        \\    }
+        \\    protected virtual void handle(List<SObject> rows) {
+        \\        OverloadDispatchRecorder.seen.add('base-list');
+        \\    }
+        \\    protected virtual void handle(Map<Id, SObject> rowMap) {
+        \\        OverloadDispatchRecorder.seen.add('base-map');
+        \\    }
+        \\}
+        \\public class OverloadDispatchChild extends OverloadDispatchBase {
+        \\    protected override void handle(List<SObject> rows) {
+        \\        OverloadDispatchRecorder.seen.add('child-list');
+        \\    }
+        \\}
+        \\public class OverloadDispatchChildTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'dispatch');
+        \\        insert accountRecord;
+        \\        Map<Id, SObject> rowMap = new Map<Id, SObject>();
+        \\        rowMap.put(accountRecord.Id, accountRecord);
+        \\        OverloadDispatchRecorder.seen = new List<String>();
+        \\        new OverloadDispatchChild().run(new List<SObject>{ accountRecord }, rowMap);
+        \\        return OverloadDispatchRecorder.seen[0] + '|' + OverloadDispatchRecorder.seen[1];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "OverloadDispatchChildTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("child-list|base-map", result.value.string);
+}
+
 test "E2E: Object-wrapped primitive values support null-safe toString" {
     const source =
         \\public class PrimitiveObjectToStringTest {
