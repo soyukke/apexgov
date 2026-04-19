@@ -1130,6 +1130,7 @@ fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
     if (ci.eqlIgnoreCase(method_name, "getDmlRows")) return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
     if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
+    if (ci.eqlIgnoreCase(method_name, "getAsyncCalls")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };

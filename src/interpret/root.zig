@@ -1805,6 +1805,27 @@ test "E2E: enqueueJob executes instance queueable method" {
     try std.testing.expectEqualStrings("queued", result.value.string);
 }
 
+test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
+    const source =
+        \\public class AsyncLimitQueueable implements Queueable {
+        \\    public void execute(QueueableContext qc) {}
+        \\}
+        \\public class AsyncLimitQueueableTest {
+        \\    public static String test() {
+        \\        Integer beforeCalls = Limits.getAsyncCalls();
+        \\        System.enqueueJob(new AsyncLimitQueueable());
+        \\        return String.valueOf(beforeCalls) + ':' + String.valueOf(Limits.getAsyncCalls());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AsyncLimitQueueableTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:1", result.value.string);
+}
+
 test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
     const source =
         \\public class UpsertExternalIdTest {
