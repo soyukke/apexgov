@@ -137,6 +137,8 @@ pub const Evaluator = struct {
     limits_publish_immediate: u32 = 0,
     limits_queueable: u32 = 0,
     limits_callouts: u32 = 0,
+    limits_email_invocations: u32 = 0,
+    reserved_single_email_capacity: i64 = 0,
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
     // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
@@ -7879,6 +7881,15 @@ pub const Evaluator = struct {
                 return utils.sobjectGet(&obj.sobject.fields, "Id") orelse
                     utils.sobjectGet(&obj.sobject.fields, "id") orelse Value.null_val;
             }
+            if (std.ascii.eqlIgnoreCase(method, "getMessage")) {
+                return self.getSObjectFieldValueCaseInsensitive(obj.sobject, "message") orelse Value{ .string = "" };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
+                return self.getSObjectFieldValueCaseInsensitive(obj.sobject, "statusCode") orelse Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getFields")) {
+                return self.getSObjectFieldValueCaseInsensitive(obj.sobject, "fields") orelse try self.makeEmptyList();
+            }
             // getPopulatedFieldsAsMap()
             if (std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap")) {
                 const map = try self.arena.create(types.MapValue);
@@ -10296,6 +10307,8 @@ pub const Evaluator = struct {
             self.limits_publish_immediate = 0;
             self.limits_queueable = 0;
             self.limits_callouts = 0;
+            self.limits_email_invocations = 0;
+            self.reserved_single_email_capacity = 0;
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "stopTest")) {

@@ -156,7 +156,11 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
                 const ol = try ctx.arena.create(types.ObjectInstance);
                 ol.* = .{ .class_name = "System.OrgLimit" };
                 try ol.fields.put(ctx.arena, "name", Value{ .string = k.name });
-                try ol.fields.put(ctx.arena, "value", Value{ .integer = k.value });
+                const current_value: i64 = if (std.ascii.eqlIgnoreCase(k.name, "SingleEmail"))
+                    ctx.eval.reserved_single_email_capacity
+                else
+                    k.value;
+                try ol.fields.put(ctx.arena, "value", Value{ .integer = current_value });
                 try ol.fields.put(ctx.arena, "limit", Value{ .integer = k.limit });
                 try map.entries.put(ctx.arena, k.name, Value{ .object = ol });
             }
@@ -1176,6 +1180,7 @@ fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    if (ci.eqlIgnoreCase(method_name, "getEmailInvocations")) return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
     // Governor limit maximums (Salesforce default synchronous limits)
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
@@ -1401,13 +1406,30 @@ fn dispatchStaticEncodingUtil(ctx: *BuiltinContext, method_name: []const u8, arg
 }
 
 fn dispatchStaticMessaging(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    _ = args;
+    if (std.ascii.eqlIgnoreCase(method_name, "reserveSingleEmailCapacity")) {
+        const requested: i64 = if (args.len > 0) switch (args[0]) {
+            .integer => |i| i,
+            .double => |d| @intFromFloat(d),
+            else => 0,
+        } else 0;
+        const limit: i64 = 5000;
+        if (requested < 0 or ctx.eval.reserved_single_email_capacity + requested >= limit) {
+            return ctx.throwException("HandledException", "Single email capacity exceeded");
+        }
+        ctx.eval.reserved_single_email_capacity += requested;
+        return .void_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "sendEmail")) {
+        ctx.eval.limits_email_invocations += 1;
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         const sr = try ctx.arena.create(types.ObjectInstance);
         sr.* = .{ .class_name = "Messaging.SendEmailResult" };
         try sr.fields.put(ctx.arena, "isSuccess", Value{ .boolean = true });
+        try sr.fields.put(ctx.arena, "success", Value{ .boolean = true });
+        const errors = try ctx.arena.create(types.ListValue);
+        errors.* = .{};
+        try sr.fields.put(ctx.arena, "errors", Value{ .list = errors });
         try list.items.append(ctx.arena, Value{ .object = sr });
         return Value{ .list = list };
     }
@@ -1449,6 +1471,8 @@ fn dispatchStaticTest(ctx: *BuiltinContext, method_name: []const u8, args: []con
         ctx.eval.limits_publish_immediate = 0;
         ctx.eval.limits_queueable = 0;
         ctx.eval.limits_callouts = 0;
+        ctx.eval.limits_email_invocations = 0;
+        ctx.eval.reserved_single_email_capacity = 0;
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setCreatedDate")) {
@@ -2360,11 +2384,11 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
     if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) return obj.fields.get("isSuccess") orelse obj.fields.get("success") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCreated")) return obj.fields.get("isCreated") orelse obj.fields.get("created") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) return obj.fields.get("Id") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getErrors")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getErrors")) return obj.fields.get("errors") orelse blk: {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        return Value{ .list = list };
-    }
+        break :blk Value{ .list = list };
+    };
 
     // Date-like methods
     if (std.ascii.eqlIgnoreCase(method_name, "addDays") or std.ascii.eqlIgnoreCase(method_name, "addMonths")) {

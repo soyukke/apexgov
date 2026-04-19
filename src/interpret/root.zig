@@ -7023,6 +7023,55 @@ test "E2E: Database partial DML with null list returns empty results" {
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
+test "E2E: JSON-deserialized DML errors expose message status and fields" {
+    const source =
+        \\public class JsonDmlErrorAccessTest {
+        \\    public static String test() {
+        \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
+        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name","Industry"]}]}',
+        \\            Database.SaveResult.class
+        \\        );
+        \\        Database.Error errorRow = result.getErrors().get(0);
+        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() + ':' + String.join(errorRow.getFields(), ',');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonDmlErrorAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry", result.value.string);
+}
+
+test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws when exhausted" {
+    const source =
+        \\public class MessagingSingleEmailCapacityTest {
+        \\    public static String test() {
+        \\        Integer startingValue = OrgLimits.getMap().get('SingleEmail').getValue();
+        \\        Integer limitValue = OrgLimits.getMap().get('SingleEmail').getLimit();
+        \\        Messaging.reserveSingleEmailCapacity(limitValue - startingValue - 1);
+        \\        Integer reservedValue = OrgLimits.getMap().get('SingleEmail').getValue();
+        \\        try {
+        \\            Messaging.reserveSingleEmailCapacity(1);
+        \\            return 'missed';
+        \\        } catch (HandledException e) {
+        \\            Messaging.SingleEmailMessage message = new Messaging.SingleEmailMessage();
+        \\            message.setHtmlBody('hello');
+        \\            Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ message });
+        \\            return String.valueOf(reservedValue == limitValue - 1) + ':' + message.getHtmlBody() + ':' + String.valueOf(Limits.getEmailInvocations());
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MessagingSingleEmailCapacityTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:hello:1", result.value.string);
+}
+
 test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
     const source =
         \\public class TypeForNameSObjectTest {
