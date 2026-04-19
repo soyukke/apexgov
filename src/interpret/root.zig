@@ -7044,6 +7044,74 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
     try std.testing.expectEqualStrings("FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry", result.value.string);
 }
 
+test "E2E: direct chained access on JSON-deserialized DML errors keeps getter semantics" {
+    const source =
+        \\public class JsonDmlErrorDirectAccessTest {
+        \\    public static String test() {
+        \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
+        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
+        \\            Database.SaveResult.class
+        \\        );
+        \\        return result.errors.get(0).getMessage() + ':' + String.join(result.errors.get(0).getFields(), ',');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonDmlErrorDirectAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Could not save...:Name", result.value.string);
+}
+
+test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
+    const source =
+        \\public class PartialUndeleteOrderTest {
+        \\    public class DataStore {
+        \\        private static Database databaseInstance {
+        \\            get {
+        \\                if (databaseInstance == null) {
+        \\                    databaseInstance = new Database();
+        \\                }
+        \\                return databaseInstance;
+        \\            }
+        \\            set;
+        \\        }
+        \\        public static Database getDatabase() {
+        \\            return databaseInstance;
+        \\        }
+        \\        public virtual class Database {
+        \\            public virtual List<Database.UndeleteResult> undeleteRecords(List<SObject> records, Boolean allOrNone) {
+        \\                return System.Database.undelete(records, allOrNone);
+        \\            }
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Name = 'one'),
+        \\            new Account(Name = 'two')
+        \\        };
+        \\        insert rows;
+        \\        delete rows.get(0);
+        \\        rows = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
+        \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undeleteRecords(rows, false);
+        \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
+        \\        return String.valueOf(results.size()) + '|' +
+        \\            String.valueOf(results.get(0).isSuccess()) + '|' +
+        \\            String.valueOf(results.get(1).isSuccess()) + '|' +
+        \\            String.valueOf(persisted.get(0).IsDeleted) + '|' +
+        \\            String.valueOf(persisted.get(1).IsDeleted);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PartialUndeleteOrderTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|true|false|false|false", result.value.string);
+}
+
 test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws when exhausted" {
     const source =
         \\public class MessagingSingleEmailCapacityTest {

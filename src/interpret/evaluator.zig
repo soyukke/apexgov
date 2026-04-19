@@ -3318,6 +3318,9 @@ pub const Evaluator = struct {
                     if (self.matchesWhere(record, soql, current_env)) {
                         if (record == .sobject) {
                             const copy = try self.cloneSObject(record.sobject);
+                            if (include_all_rows) {
+                                try utils.sobjectPut(&copy.fields, self.arena, "IsDeleted", Value{ .boolean = false });
+                            }
                             try records.append(self.arena, Value{ .sobject = copy });
                         } else {
                             try records.append(self.arena, record);
@@ -3362,6 +3365,9 @@ pub const Evaluator = struct {
                             if (self.matchesWhere(record, soql, current_env)) {
                                 if (record == .sobject) {
                                     const copy = try self.cloneSObject(record.sobject);
+                                    if (include_all_rows) {
+                                        try utils.sobjectPut(&copy.fields, self.arena, "IsDeleted", Value{ .boolean = false });
+                                    }
                                     try records.append(self.arena, Value{ .sobject = copy });
                                 } else {
                                     try records.append(self.arena, record);
@@ -3730,6 +3736,16 @@ pub const Evaluator = struct {
 
         // Resolve formula-like fields: <Relationship>_Name__c → parent.Name
         try self.resolveFormulaFields(soql, &records);
+
+        // When a query filters by `Field IN :bindList`, preserve the bind order
+        // for the matching records unless the query specifies ORDER BY.
+        if (extractOrderByField(soql) == null) {
+            if (self.extractWhereInBindInfo(soql)) |bind_info| {
+                if (self.lookupBindValue(current_env, bind_info.bind_name)) |bind_val| {
+                    try self.reorderRecordsByInBind(&records, bind_info.field_name, bind_val);
+                }
+            }
+        }
 
         // Apply ORDER BY
         if (extractOrderByField(soql)) |order_info| {
@@ -4860,6 +4876,80 @@ pub const Evaluator = struct {
         const where_clause = extractWhereClause(soql) orelse return true;
         if (record != .sobject) return true;
         return self.evalWhereCondition(record.sobject, where_clause, current_env);
+    }
+
+    fn extractWhereInBindInfo(self: *Evaluator, soql: []const u8) ?struct { field_name: []const u8, bind_name: []const u8 } {
+        _ = self;
+        const where_clause = extractWhereClause(soql) orelse return null;
+        const in_pos = std.ascii.indexOfIgnoreCase(where_clause, " IN :") orelse return null;
+
+        var field_end = in_pos;
+        while (field_end > 0 and isSoqlWhitespace(where_clause[field_end - 1])) : (field_end -= 1) {}
+        var field_start = field_end;
+        while (field_start > 0) {
+            const ch = where_clause[field_start - 1];
+            if (std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '.') {
+                field_start -= 1;
+            } else break;
+        }
+        if (field_start == field_end) return null;
+
+        var bind_start = in_pos + " IN :".len;
+        while (bind_start < where_clause.len and isSoqlWhitespace(where_clause[bind_start])) : (bind_start += 1) {}
+        var bind_end = bind_start;
+        while (bind_end < where_clause.len and (std.ascii.isAlphanumeric(where_clause[bind_end]) or where_clause[bind_end] == '_')) : (bind_end += 1) {}
+        if (bind_end == bind_start) return null;
+
+        return .{
+            .field_name = where_clause[field_start..field_end],
+            .bind_name = where_clause[bind_start..bind_end],
+        };
+    }
+
+    fn reorderRecordsByInBind(self: *Evaluator, records: *std.ArrayListUnmanaged(Value), field_name: []const u8, bind_val: Value) !void {
+        if (records.items.len <= 1) return;
+
+        const bind_items: []const Value = switch (bind_val) {
+            .list => bind_val.list.items.items,
+            .set => bind_val.set.entries.values(),
+            else => return,
+        };
+        if (bind_items.len == 0) return;
+
+        const consumed = try self.arena.alloc(bool, records.items.len);
+        @memset(consumed, false);
+
+        var reordered: std.ArrayListUnmanaged(Value) = .empty;
+
+        for (bind_items) |bind_item| {
+            const expected = if (bind_item == .sobject and std.ascii.eqlIgnoreCase(field_name, "Id")) blk: {
+                if (self.sobjectIdForResult(bind_item.sobject)) |record_id| {
+                    break :blk Value{ .string = record_id };
+                }
+                break :blk bind_item;
+            } else bind_item;
+
+            for (records.items, 0..) |record, idx| {
+                if (consumed[idx] or record != .sobject) continue;
+                const actual = if (std.ascii.eqlIgnoreCase(field_name, "Id")) blk: {
+                    if (self.sobjectIdForResult(record.sobject)) |record_id| {
+                        break :blk Value{ .string = record_id };
+                    }
+                    break :blk self.getSObjectFieldValueCaseInsensitive(record.sobject, field_name) orelse Value.null_val;
+                } else self.getSObjectFieldValueCaseInsensitive(record.sobject, field_name) orelse Value.null_val;
+                if (utils.valueEql(actual, expected)) {
+                    try reordered.append(self.arena, record);
+                    consumed[idx] = true;
+                    break;
+                }
+            }
+        }
+
+        for (records.items, 0..) |record, idx| {
+            if (!consumed[idx]) try reordered.append(self.arena, record);
+        }
+
+        records.* = reordered;
     }
 
     fn bindCollectionContains(self: *Evaluator, field_val: Value, bind_val: Value) bool {
@@ -8156,6 +8246,13 @@ pub const Evaluator = struct {
                 try new_map.key_values.put(self.arena, k, original_key);
             }
             return Value{ .map = new_map };
+        }
+        if (args.len == 0 and std.mem.startsWith(u8, method, "get") and method.len > 3) {
+            const field_name = method[3..];
+            for (map.entries.keys(), map.entries.values()) |k, v| {
+                if (std.ascii.eqlIgnoreCase(k, field_name)) return v;
+            }
+            return Value.null_val;
         }
         return Value.null_val;
     }
