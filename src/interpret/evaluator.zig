@@ -159,6 +159,10 @@ pub const Evaluator = struct {
     pending_batch_jobs: std.ArrayListUnmanaged(Value) = .empty,
     batch_job_runner_active: bool = false,
     batch_lifecycle_depth: u32 = 0,
+    active_batch_context: ?*types.ObjectInstance = null,
+    active_batch_job_id: ?[]const u8 = null,
+    active_queueable_job_id: ?[]const u8 = null,
+    attached_finalizer: ?*types.ObjectInstance = null,
 
     pub const CallFrame = struct {
         class_name: []const u8,
@@ -210,6 +214,10 @@ pub const Evaluator = struct {
         self.apex_pages_messages = .empty;
         self.current_user_id = "005000000000001";
         self.current_profile_id = "00e000000000001";
+        self.active_batch_context = null;
+        self.active_batch_job_id = null;
+        self.active_queueable_job_id = null;
+        self.attached_finalizer = null;
 
         // Clear cache partitions and ApexPages state
         _ = self.global_env.bindings.orderedRemove("Cache.Session.partition");
@@ -10805,8 +10813,11 @@ pub const Evaluator = struct {
             }
             if (args.len > 0 and args[0] == .object) {
                 if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
-                    const job_id = try std.fmt.allocPrint(self.arena, "707{d:0>15}", .{self.next_id});
-                    self.next_id += 1;
+                    const job_id = try self.createAsyncApexJob("BatchApex", args[0].object.class_name, "execute");
+                    try args[0].object.fields.put(self.arena, "__batchJobId", Value{ .string = job_id });
+                    if (self.active_batch_context) |batch_context| {
+                        try batch_context.fields.put(self.arena, "ChildJobId", Value{ .string = job_id });
+                    }
                     if (self.batch_job_runner_active) {
                         try self.pending_batch_jobs.append(self.arena, args[0]);
                     }
@@ -10814,6 +10825,7 @@ pub const Evaluator = struct {
                 }
 
                 const job_id = try self.createAsyncApexJob("BatchApex", args[0].object.class_name, "execute");
+                try args[0].object.fields.put(self.arena, "__batchJobId", Value{ .string = job_id });
                 self.batch_job_runner_active = true;
                 self.pending_batch_jobs = .empty;
                 defer {
@@ -10826,48 +10838,7 @@ pub const Evaluator = struct {
                 while (job_index < self.pending_batch_jobs.items.len) : (job_index += 1) {
                     const batch_value = self.pending_batch_jobs.items[job_index];
                     if (batch_value != .object) continue;
-                    const batch_obj = batch_value.object;
-                    if (self.findClass(batch_obj.class_name)) |batch_class| {
-                        const scope = try self.callInstanceMethod(batch_class, batch_obj, "start", &.{Value.null_val});
-                        var all_records: std.ArrayListUnmanaged(Value) = .empty;
-                        if (scope == .object) {
-                            if (scope.object.fields.get("query")) |query_val| {
-                                if (query_val == .string) {
-                                    const batch_env = try self.global_env.child();
-                                    const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
-                                    if (query_result == .list) {
-                                        for (query_result.list.items.items) |item| {
-                                            try all_records.append(self.arena, item);
-                                        }
-                                    }
-                                }
-                            } else if (scope.object.fields.get("records")) |records_val| {
-                                if (records_val == .list) {
-                                    for (records_val.list.items.items) |item| {
-                                        try all_records.append(self.arena, item);
-                                    }
-                                }
-                            } else {
-                                var store_iter = self.store.iterator();
-                                while (store_iter.next()) |entry| {
-                                    for (entry.value_ptr.items) |item| {
-                                        try all_records.append(self.arena, item);
-                                    }
-                                }
-                            }
-                        } else {
-                            var store_iter = self.store.iterator();
-                            while (store_iter.next()) |entry| {
-                                for (entry.value_ptr.items) |item| {
-                                    try all_records.append(self.arena, item);
-                                }
-                            }
-                        }
-                        const record_list = try self.arena.create(types.ListValue);
-                        record_list.* = .{ .items = all_records };
-                        _ = try self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ Value.null_val, Value{ .list = record_list } });
-                        _ = try self.callInstanceMethod(batch_class, batch_obj, "finish", &.{Value.null_val});
-                    }
+                    try self.executePendingBatchJob(batch_value.object);
                 }
                 return Value{ .string = job_id };
             }
@@ -10954,6 +10925,12 @@ pub const Evaluator = struct {
             return self.enqueueJob(args[0].object);
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "attachFinalizer")) {
+            if (self.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
+                self.attached_finalizer = args[0].object;
+            }
+            return .void_val;
+        }
         // System.runAs → now handled by run_as_stmt in the AST; this is a fallback no-op
         if (std.ascii.eqlIgnoreCase(inner, "runAs")) {
             return .void_val;
@@ -12112,6 +12089,216 @@ pub const Evaluator = struct {
         return job_id;
     }
 
+    fn updateAsyncApexJob(self: *Evaluator, job_id: []const u8, status: []const u8, number_of_errors: i64) void {
+        const jobs = self.store.getPtr("AsyncApexJob") orelse return;
+        for (jobs.items) |item| {
+            if (item != .sobject or item.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(item.sobject.id.?, job_id)) continue;
+            item.sobject.fields.put(self.arena, "Status", Value{ .string = status }) catch {};
+            item.sobject.fields.put(self.arena, "NumberOfErrors", Value{ .integer = number_of_errors }) catch {};
+            break;
+        }
+    }
+
+    fn buildBatchableContext(self: *Evaluator, job_id: []const u8, child_job_id: ?[]const u8) !Value {
+        const ctx = try self.arena.create(types.ObjectInstance);
+        ctx.* = .{ .class_name = "Database.BatchableContext" };
+        try ctx.fields.put(self.arena, "JobId", Value{ .string = job_id });
+        try ctx.fields.put(self.arena, "ChildJobId", if (child_job_id) |child| Value{ .string = child } else Value.null_val);
+        return Value{ .object = ctx };
+    }
+
+    fn buildQueueableContext(self: *Evaluator, job_id: []const u8) !Value {
+        const ctx = try self.arena.create(types.ObjectInstance);
+        ctx.* = .{ .class_name = "System.QueueableContext" };
+        try ctx.fields.put(self.arena, "JobId", Value{ .string = job_id });
+        return Value{ .object = ctx };
+    }
+
+    fn buildFinalizerContext(self: *Evaluator, job_id: []const u8, exception_value: ?Value) !Value {
+        const ctx = try self.arena.create(types.ObjectInstance);
+        ctx.* = .{ .class_name = "System.FinalizerContext" };
+        try ctx.fields.put(self.arena, "AsyncApexJobId", Value{ .string = job_id });
+        try ctx.fields.put(self.arena, "Exception", exception_value orelse Value.null_val);
+        try ctx.fields.put(self.arena, "Result", Value{ .string = if (exception_value == null) "SUCCESS" else "UNHANDLED_EXCEPTION" });
+        try ctx.fields.put(self.arena, "RequestId", Value{ .string = "4eR000000000001" });
+        return Value{ .object = ctx };
+    }
+
+    fn publishBatchApexErrorEvent(self: *Evaluator, batch_obj: *types.ObjectInstance, job_id: []const u8, phase: []const u8, exception_value: Value) !void {
+        if (!(self.classImplementsInterface(batch_obj.class_name, "Database.RaisesPlatformEvents") or
+            self.classImplementsInterface(batch_obj.class_name, "RaisesPlatformEvents")))
+        {
+            return;
+        }
+
+        const evt = try self.arena.create(types.SObject);
+        evt.* = .{ .type_name = "BatchApexErrorEvent" };
+        try evt.fields.put(self.arena, "AsyncApexJobId", Value{ .string = job_id });
+        try evt.fields.put(self.arena, "Phase", Value{ .string = phase });
+
+        var message_value: Value = Value.null_val;
+        var exception_type: []const u8 = "System.Exception";
+        var stack_trace: []const u8 = "stacktrace";
+        switch (exception_value) {
+            .object => |obj| {
+                message_value = obj.fields.get("message") orelse Value.null_val;
+                exception_type = obj.class_name;
+                if (std.mem.indexOfScalar(u8, exception_type, '.') == null) {
+                    const builtin_exception_types = [_][]const u8{
+                        "Exception",
+                        "DMLException",
+                        "DmlException",
+                        "NullPointerException",
+                        "TypeException",
+                        "QueryException",
+                        "JSONException",
+                        "ListException",
+                        "MathException",
+                        "SecurityException",
+                        "NoAccessException",
+                        "InvalidParameterValueException",
+                        "CalloutException",
+                        "StringException",
+                        "NoSuchElementException",
+                        "NoDataFoundException",
+                        "SearchException",
+                        "SObjectException",
+                        "HandledException",
+                        "IllegalArgumentException",
+                        "LimitException",
+                        "AsyncException",
+                        "SerializationException",
+                        "FlowException",
+                        "FinalException",
+                        "UnsupportedOperationException",
+                        "EventBusException",
+                    };
+                    inline for (builtin_exception_types) |builtin_exception_type| {
+                        if (std.ascii.eqlIgnoreCase(exception_type, builtin_exception_type)) {
+                            exception_type = try std.fmt.allocPrint(self.arena, "System.{s}", .{builtin_exception_type});
+                            break;
+                        }
+                    }
+                }
+                if (obj.fields.get("stackTraceString")) |stack_val| {
+                    if (stack_val == .string and stack_val.string.len > 0) stack_trace = stack_val.string;
+                }
+            },
+            .string => |s| {
+                message_value = Value{ .string = s };
+            },
+            else => {
+                message_value = Value{ .string = try utils.coerceToString(exception_value, self.arena) };
+            },
+        }
+        try evt.fields.put(self.arena, "ExceptionType", Value{ .string = exception_type });
+        try evt.fields.put(self.arena, "Message", message_value);
+        try evt.fields.put(self.arena, "StackTrace", Value{ .string = stack_trace });
+        _ = self.callMethod("EventBus", "publish", &.{Value{ .sobject = evt }}) catch {};
+    }
+
+    fn invokeAttachedFinalizer(self: *Evaluator, job_id: []const u8, exception_value: ?Value) !void {
+        const finalizer_obj = self.attached_finalizer orelse return;
+        const finalizer_class = self.findClass(finalizer_obj.class_name) orelse return;
+        const finalizer_context = try self.buildFinalizerContext(job_id, exception_value);
+        const saved_pending_exception = self.pending_exception;
+        self.pending_exception = null;
+        _ = self.callInstanceMethod(finalizer_class, finalizer_obj, "execute", &.{finalizer_context}) catch |err| {
+            if (exception_value != null) {
+                self.pending_exception = exception_value;
+                return;
+            }
+            if (self.pending_exception == null) self.pending_exception = saved_pending_exception;
+            return err;
+        };
+        self.pending_exception = saved_pending_exception;
+    }
+
+    fn executePendingBatchJob(self: *Evaluator, batch_obj: *types.ObjectInstance) !void {
+        const batch_class = self.findClass(batch_obj.class_name) orelse return;
+        const batch_job_id = if (batch_obj.fields.get("__batchJobId")) |job_id_val|
+            switch (job_id_val) {
+                .string => job_id_val.string,
+                else => try self.createAsyncApexJob("BatchApex", batch_obj.class_name, "execute"),
+            }
+        else
+            try self.createAsyncApexJob("BatchApex", batch_obj.class_name, "execute");
+
+        const batch_context_value = try self.buildBatchableContext(batch_job_id, null);
+        const batch_context = batch_context_value.object;
+        const saved_batch_context = self.active_batch_context;
+        const saved_batch_job_id = self.active_batch_job_id;
+        self.active_batch_context = batch_context;
+        self.active_batch_job_id = batch_job_id;
+        defer {
+            self.active_batch_context = saved_batch_context;
+            self.active_batch_job_id = saved_batch_job_id;
+        }
+
+        const start_scope = self.callInstanceMethod(batch_class, batch_obj, "start", &.{batch_context_value}) catch |err| {
+            self.updateAsyncApexJob(batch_job_id, "Failed", 1);
+            if (self.pending_exception) |exception_value| {
+                try self.publishBatchApexErrorEvent(batch_obj, batch_job_id, "START", exception_value);
+            }
+            return err;
+        };
+
+        var all_records: std.ArrayListUnmanaged(Value) = .empty;
+        if (start_scope == .object) {
+            if (start_scope.object.fields.get("query")) |query_val| {
+                if (query_val == .string) {
+                    const batch_env = try self.global_env.child();
+                    const query_result = self.executeSoql(query_val.string, batch_env) catch Value.null_val;
+                    if (query_result == .list) {
+                        for (query_result.list.items.items) |item| {
+                            try all_records.append(self.arena, item);
+                        }
+                    }
+                }
+            } else if (start_scope.object.fields.get("records")) |records_val| {
+                if (records_val == .list) {
+                    for (records_val.list.items.items) |item| {
+                        try all_records.append(self.arena, item);
+                    }
+                }
+            } else {
+                var store_iter = self.store.iterator();
+                while (store_iter.next()) |entry| {
+                    for (entry.value_ptr.items) |item| {
+                        try all_records.append(self.arena, item);
+                    }
+                }
+            }
+        } else {
+            var store_iter = self.store.iterator();
+            while (store_iter.next()) |entry| {
+                for (entry.value_ptr.items) |item| {
+                    try all_records.append(self.arena, item);
+                }
+            }
+        }
+
+        const record_list = try self.arena.create(types.ListValue);
+        record_list.* = .{ .items = all_records };
+        _ = self.callInstanceMethod(batch_class, batch_obj, "execute", &.{ batch_context_value, Value{ .list = record_list } }) catch |err| {
+            self.updateAsyncApexJob(batch_job_id, "Failed", 1);
+            if (self.pending_exception) |exception_value| {
+                try self.publishBatchApexErrorEvent(batch_obj, batch_job_id, "EXECUTE", exception_value);
+            }
+            return err;
+        };
+        _ = self.callInstanceMethod(batch_class, batch_obj, "finish", &.{batch_context_value}) catch |err| {
+            self.updateAsyncApexJob(batch_job_id, "Failed", 1);
+            if (self.pending_exception) |exception_value| {
+                try self.publishBatchApexErrorEvent(batch_obj, batch_job_id, "FINISH", exception_value);
+            }
+            return err;
+        };
+
+        self.updateAsyncApexJob(batch_job_id, "Completed", 0);
+    }
+
     fn enqueueJob(self: *Evaluator, job_obj: *types.ObjectInstance) !Value {
         self.limits_queueable += 1;
         const saved_dml = self.limits_dml;
@@ -12119,25 +12306,43 @@ pub const Evaluator = struct {
         const saved_soql = self.limits_soql;
         const saved_pub = self.limits_publish_immediate;
         const saved_callouts = self.limits_callouts;
+        const saved_attached_finalizer = self.attached_finalizer;
+        const saved_active_queueable_job_id = self.active_queueable_job_id;
 
         const job_id = try self.createAsyncApexJob("Queueable", job_obj.class_name, null);
+        self.attached_finalizer = null;
+        self.active_queueable_job_id = job_id;
 
-        if (self.findClass(job_obj.class_name)) |job_class| {
-            const queueable_context = try self.arena.create(types.ObjectInstance);
-            queueable_context.* = .{ .class_name = "System.QueueableContext" };
-            try queueable_context.fields.put(self.arena, "jobId", Value{ .string = job_id });
-            if (self.findBestMethodInClassFiltered(job_class, "execute", &.{Value{ .object = queueable_context }}, true) != null) {
-                _ = self.callMethod(job_obj.class_name, "execute", &.{Value{ .object = queueable_context }}) catch {};
-            } else {
-                _ = self.callInstanceMethod(job_class, job_obj, "execute", &.{Value{ .object = queueable_context }}) catch {};
-            }
+        defer {
+            self.attached_finalizer = saved_attached_finalizer;
+            self.active_queueable_job_id = saved_active_queueable_job_id;
+            self.limits_dml = saved_dml;
+            self.limits_dml_rows = saved_dml_rows;
+            self.limits_soql = saved_soql;
+            self.limits_publish_immediate = saved_pub;
+            self.limits_callouts = saved_callouts;
         }
 
-        self.limits_dml = saved_dml;
-        self.limits_dml_rows = saved_dml_rows;
-        self.limits_soql = saved_soql;
-        self.limits_publish_immediate = saved_pub;
-        self.limits_callouts = saved_callouts;
+        if (self.findClass(job_obj.class_name)) |job_class| {
+            const queueable_context = try self.buildQueueableContext(job_id);
+            const execute_args = [_]Value{queueable_context};
+            const execute_result = if (self.findBestMethodInClassFiltered(job_class, "execute", &execute_args, true) != null)
+                self.callMethod(job_obj.class_name, "execute", &execute_args)
+            else
+                self.callInstanceMethod(job_class, job_obj, "execute", &execute_args);
+            _ = execute_result catch |err| {
+                if (err == error.ApexException) {
+                    const thrown_exception = self.pending_exception;
+                    self.updateAsyncApexJob(job_id, "Failed", 1);
+                    try self.invokeAttachedFinalizer(job_id, thrown_exception);
+                    self.pending_exception = thrown_exception;
+                }
+                return err;
+            };
+        }
+
+        self.updateAsyncApexJob(job_id, "Completed", 0);
+        try self.invokeAttachedFinalizer(job_id, null);
         return Value{ .string = job_id };
     }
 

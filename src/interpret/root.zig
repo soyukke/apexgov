@@ -1935,6 +1935,43 @@ test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
     try std.testing.expectEqualStrings("0:1", result.value.string);
 }
 
+test "E2E: queueable finalizer sees unhandled exception result" {
+    const source =
+        \\public class ProbeFinalizer implements System.Finalizer {
+        \\    public static String resultName;
+        \\    public static String exceptionMessage;
+        \\    public void execute(System.FinalizerContext fc) {
+        \\        ProbeFinalizer.resultName = fc.getResult().name();
+        \\        if (fc.getException() != null) {
+        \\            ProbeFinalizer.exceptionMessage = fc.getException().getMessage();
+        \\        }
+        \\    }
+        \\}
+        \\public class FailingQueueable implements System.Queueable {
+        \\    public void execute(System.QueueableContext qc) {
+        \\        System.attachFinalizer(new ProbeFinalizer());
+        \\        throw new System.IllegalArgumentException('boom');
+        \\    }
+        \\}
+        \\public class QueueableFinalizerTest {
+        \\    public static String test() {
+        \\        try {
+        \\            System.enqueueJob(new FailingQueueable());
+        \\            return 'no-error';
+        \\        } catch (System.Exception ex) {
+        \\            return ProbeFinalizer.resultName + ':' + ProbeFinalizer.exceptionMessage + ':' + ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QueueableFinalizerTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("UNHANDLED_EXCEPTION:boom:boom", result.value.string);
+}
+
 test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
     const source =
         \\public class UpsertExternalIdTest {
@@ -6267,6 +6304,65 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
+}
+
+test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events batches" {
+    const source =
+        \\trigger BatchFailureTrigger on BatchApexErrorEvent (after insert) {
+        \\    List<Account> insertedAccounts = new List<Account>();
+        \\    for (BatchApexErrorEvent evt : Trigger.new) {
+        \\        insertedAccounts.add(new Account(Name = evt.Phase + ':' + evt.ExceptionType + ':' + evt.Message));
+        \\    }
+        \\    insert insertedAccounts;
+        \\}
+        \\global class EventedBatch implements Database.Batchable<SObject>, Database.RaisesPlatformEvents {
+        \\    private String phase;
+        \\    global EventedBatch(String phase) {
+        \\        this.phase = phase;
+        \\    }
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        if (this.phase == 'START') {
+        \\            throw new System.IllegalArgumentException('START');
+        \\        }
+        \\        return Database.getQueryLocator([SELECT Id FROM User LIMIT 1]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        if (this.phase == 'EXECUTE') {
+        \\            throw new System.IllegalArgumentException('EXECUTE');
+        \\        }
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        if (this.phase == 'FINISH') {
+        \\            throw new System.IllegalArgumentException('FINISH');
+        \\        }
+        \\    }
+        \\}
+        \\public class BatchFailureEventTest {
+        \\    public static String test() {
+        \\        for (String phase : new List<String>{ 'START', 'EXECUTE', 'FINISH' }) {
+        \\            try {
+        \\                Database.executeBatch(new EventedBatch(phase));
+        \\            } catch (System.Exception ex) {
+        \\            }
+        \\        }
+        \\        List<Account> rows = [SELECT Name FROM Account ORDER BY Name];
+        \\        List<String> names = new List<String>();
+        \\        for (Account row : rows) {
+        \\            names.add(row.Name);
+        \\        }
+        \\        return String.join(names, '|');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BatchFailureEventTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "EXECUTE:System.IllegalArgumentException:EXECUTE|FINISH:System.IllegalArgumentException:FINISH|START:System.IllegalArgumentException:START",
+        result.value.string,
+    );
 }
 
 test "E2E: chained batch with singleton database getter hard-deletes parent records after child cleanup" {

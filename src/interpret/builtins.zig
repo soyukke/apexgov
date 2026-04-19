@@ -222,9 +222,15 @@ fn dispatchStaticSystem(ctx: *BuiltinContext, method_name: []const u8, args: []c
     if (std.ascii.eqlIgnoreCase(method_name, "now")) return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "today")) return try makeDateValue(ctx.arena, try currentDateString(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = ctx.eval.active_batch_job_id != null };
+    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) return Value{ .boolean = ctx.eval.active_queueable_job_id != null };
     if (std.ascii.eqlIgnoreCase(method_name, "isScheduled")) return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "attachFinalizer")) {
+        if (ctx.eval.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
+            ctx.eval.attached_finalizer = args[0].object;
+        }
+        return .void_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "runAs")) {
         if (args.len > 0 and args[0] == .sobject) {
             const profile_name = ctx.eval.getUserProfileName(args[0].sobject);
