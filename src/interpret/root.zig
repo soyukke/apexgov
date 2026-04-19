@@ -5084,6 +5084,33 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
     try std.testing.expectEqualStrings("true:false", result.value.string);
 }
 
+test "E2E: implicit standard Name fields are treated as required" {
+    const source =
+        \\public class StandardNameFieldRequirementTest {
+        \\    public static String test() {
+        \\        List<String> requiredFields = new List<String>();
+        \\        SObject record = Schema.Campaign.SObjectType.newSObject(null, true);
+        \\        for (Schema.SObjectField field : Schema.Campaign.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
+        \\            if (fieldDescribe.isCreateable() && !fieldDescribe.isNillable()) {
+        \\                requiredFields.add(fieldDescribe.getName());
+        \\                if (fieldDescribe.getType() == Schema.DisplayType.STRING) {
+        \\                    record.put(fieldDescribe.getName(), fieldDescribe.getName() + ' value');
+        \\                }
+        \\            }
+        \\        }
+        \\        return String.valueOf(requiredFields.contains('Name')) + ':' + System.JSON.serializePretty(record);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardNameFieldRequirementTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}", result.value.string);
+}
+
 test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});

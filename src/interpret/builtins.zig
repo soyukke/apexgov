@@ -1600,6 +1600,7 @@ fn lookupFieldMetadata(ctx: *BuiltinContext, object_type: []const u8, field_name
 
 fn defaultFieldIsNillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") and hasImplicitNameField(object_type) and !hasCustomObjectSuffix(object_type)) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
     if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
