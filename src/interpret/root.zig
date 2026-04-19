@@ -7478,6 +7478,37 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: synthetic Organization query exposes CreatedBy and CreatedDate details" {
+    const source =
+        \\public class OrganizationMetadataAccessTest {
+        \\    public static String test() {
+        \\        Organization orgRecord = [
+        \\            SELECT
+        \\                CreatedById,
+        \\                CreatedBy.Name,
+        \\                CreatedBy.Username,
+        \\                CreatedDate,
+        \\                TrialExpirationDate
+        \\            FROM Organization
+        \\            LIMIT 1
+        \\        ];
+        \\        String formattedCreatedDate = orgRecord.CreatedDate.format();
+        \\        return String.valueOf(orgRecord.CreatedById != null) + ':' +
+        \\            String.valueOf(orgRecord.CreatedBy != null) + ':' +
+        \\            String.valueOf(String.isNotBlank(orgRecord.CreatedBy.Username)) + ':' +
+        \\            String.valueOf(String.isNotBlank(formattedCreatedDate)) + ':' +
+        \\            String.valueOf(orgRecord.TrialExpirationDate == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "OrganizationMetadataAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:true:true:true", result.value.string);
+}
+
 test "E2E: instance overload resolves cast List<SObject> target" {
     const source =
         \\public class ListOverloadForwarder {

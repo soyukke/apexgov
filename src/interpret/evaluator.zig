@@ -4145,10 +4145,18 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(from_type, "Organization")) {
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = "Organization" };
+            const created_by = try self.createCurrentUserRecord();
+            const created_by_id = if (created_by == .sobject and created_by.sobject.id != null)
+                created_by.sobject.id.?
+            else
+                self.current_user_id;
             // Use a fixed ID for Organization (singleton object)
             const id = "00D000000000001";
             sob.id = id;
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
+            try sob.fields.put(self.arena, "CreatedById", Value{ .string = created_by_id });
+            try sob.fields.put(self.arena, "CreatedBy", created_by);
+            try sob.fields.put(self.arena, "CreatedDate", Value{ .string = "2024-01-01T00:00:00Z" });
             try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = true });
             try sob.fields.put(self.arena, "OrganizationType", Value{ .string = "Developer Edition" });
             try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
@@ -4159,6 +4167,7 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "FiscalYearStartMonth", Value{ .integer = 1 });
             try sob.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
             try sob.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+            try sob.fields.put(self.arena, "TrialExpirationDate", Value.null_val);
             // Store so subsequent queries return the same record
             const gop = try self.store.getOrPut(self.arena, "Organization");
             if (!gop.found_existing) gop.value_ptr.* = .empty;
