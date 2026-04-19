@@ -8709,6 +8709,28 @@ pub const Evaluator = struct {
             }
             return Value{ .string = s };
         }
+        if (std.ascii.eqlIgnoreCase(method, "unescapeJava")) {
+            var buf = std.ArrayListUnmanaged(u8).empty;
+            var i: usize = 0;
+            while (i < s.len) : (i += 1) {
+                if (s[i] == '\\' and i + 1 < s.len) {
+                    i += 1;
+                    const escaped = switch (s[i]) {
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        else => s[i],
+                    };
+                    try buf.append(self.arena, escaped);
+                    continue;
+                }
+                try buf.append(self.arena, s[i]);
+            }
+            return Value{ .string = try buf.toOwnedSlice(self.arena) };
+        }
         if (std.ascii.eqlIgnoreCase(method, "format")) {
             // String.format(formatString, List<String>) — replace {0}, {1}, ... with args
             if (args.len > 0 and args[0] == .list) {

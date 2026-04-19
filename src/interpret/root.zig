@@ -6850,6 +6850,23 @@ test "E2E: String.split supports escaped pipe delimiters with limit" {
     try std.testing.expectEqualStrings("2:true:false", result.value.string);
 }
 
+test "E2E: String.unescapeJava decodes escaped control sequences" {
+    const source =
+        \\public class UnescapeJavaTest {
+        \\    public static String test() {
+        \\        String value = 'Line 1\\nLine 2\\tTabbed';
+        \\        return value.unescapeJava();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UnescapeJavaTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Line 1\nLine 2\tTabbed", result.value.string);
+}
+
 test "E2E: parent CreatedDate fields are materialized as Datetime values" {
     const source =
         \\public class ParentCreatedDateMaterializationTest {
