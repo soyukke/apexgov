@@ -602,6 +602,7 @@ fn collectFieldDefaults(
             metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
         }
         metadata.summary_filters = parseSummaryFilters(alloc, content) catch &.{};
+        metadata.picklist_values = parsePicklistValues(alloc, content) catch &.{};
 
         // Extract <type>...</type> for field type info
         if (std.mem.indexOf(u8, content, "<type>")) |ts| {
@@ -643,7 +644,8 @@ fn collectFieldDefaults(
             metadata.length != null or
             metadata.reference_to != null or
             metadata.formula != null or
-            metadata.summary_operation != null)
+            metadata.summary_operation != null or
+            metadata.picklist_values.len > 0)
         {
             const type_key = alloc.dupe(u8, type_name) catch continue;
             const field_key = alloc.dupe(u8, field_name) catch continue;
@@ -723,6 +725,27 @@ fn parseSummaryFilters(alloc: std.mem.Allocator, content: []const u8) ![]const e
         search_start = block_end + "</summaryFilterItems>".len;
     }
     return try alloc.dupe(evaluator.SummaryFilter, filters.items);
+}
+
+fn parsePicklistValues(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.PicklistValueMetadata {
+    var values = std.ArrayListUnmanaged(evaluator.PicklistValueMetadata).empty;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_start, "<value>")) |block_start_idx| {
+        const block_start = block_start_idx + "<value>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</value>") orelse break;
+        const block = content[block_start..block_end];
+        const raw_label = extractXmlTagValue(block, "label") orelse {
+            search_start = block_end + "</value>".len;
+            continue;
+        };
+        const raw_value = extractXmlTagValue(block, "fullName") orelse raw_label;
+        try values.append(alloc, .{
+            .label = try decodeXmlText(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
+            .value = try decodeXmlText(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
+        });
+        search_start = block_end + "</value>".len;
+    }
+    return try alloc.dupe(evaluator.PicklistValueMetadata, values.items);
 }
 
 fn putChildRelationship(
@@ -2950,6 +2973,61 @@ test "E2E: required field population preserves explicitly set picklist-like valu
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("ERROR:filled", result.value.string);
+}
+
+test "E2E: picklist describe preserves metadata order when records only use a subset" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <label>Thing</label>
+        \\</CustomObject>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/Priority__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Priority__c</fullName>
+        \\    <type>Picklist</type>
+        \\    <valueSet>
+        \\        <valueSetDefinition>
+        \\            <value><fullName>High</fullName><default>false</default><label>High</label></value>
+        \\            <value><fullName>Medium</fullName><default>false</default><label>Medium</label></value>
+        \\            <value><fullName>Low</fullName><default>true</default><label>Low</label></value>
+        \\        </valueSetDefinition>
+        \\    </valueSet>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class PicklistMetadataOrderTest {
+        \\    public static String test() {
+        \\        insert new Thing__c(Name = 'One', Priority__c = 'Low');
+        \\        List<Schema.PicklistEntry> values = Schema.Thing__c.Priority__c.getDescribe().getPicklistValues();
+        \\        return String.valueOf(values.size()) + ':' +
+        \\            values.get(0).getValue() + ':' +
+        \\            values.get(1).getValue() + ':' +
+        \\            values.get(2).getValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "PicklistMetadataOrderTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3:High:Medium:Low", result.value.string);
 }
 
 test "E2E: filtered rollup survives builder-populated child inserts" {

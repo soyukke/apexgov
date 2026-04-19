@@ -2599,41 +2599,19 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         if (object_type != null and field_name.len > 0) {
-            var seen = std.StringHashMap(void).init(ctx.arena);
-            var store_iter = ctx.eval.store.iterator();
-            while (store_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type.?)) {
-                    for (entry.value_ptr.items) |record| {
-                        if (record == .sobject) {
-                            if (utils.sobjectGet(&record.sobject.fields, field_name)) |val| {
-                                if (val == .string) {
-                                    if (!seen.contains(val.string)) {
-                                        try seen.put(val.string, {});
-                                        const pe = try ctx.arena.create(types.ObjectInstance);
-                                        pe.* = .{ .class_name = "Schema.PicklistEntry" };
-                                        try pe.fields.put(ctx.arena, "label", val);
-                                        try pe.fields.put(ctx.arena, "value", val);
-                                        try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
-                                        try list.items.append(ctx.arena, Value{ .object = pe });
-                                    }
-                                }
-                            }
-                        }
-                    }
+            if (lookupFieldMetadata(ctx, object_type.?, field_name)) |metadata| {
+                for (metadata.picklist_values) |picklist_value| {
+                    try appendPicklistEntry(ctx, list, picklist_value.label, picklist_value.value);
                 }
             }
-        }
-        if (list.items.items.len == 0 and object_type != null and field_name.len > 0) {
-            try loadPicklistFromMetadata(ctx, list, object_type.?, field_name);
+            if (list.items.items.len == 0) {
+                _ = try loadPicklistFromMetadata(ctx, list, object_type.?, field_name);
+            }
+            try appendPicklistValuesFromStore(ctx, list, object_type.?, field_name);
         }
         // Ensure at least one entry so that get(0) doesn't fail
         if (list.items.items.len == 0) {
-            const pe = try ctx.arena.create(types.ObjectInstance);
-            pe.* = .{ .class_name = "Schema.PicklistEntry" };
-            try pe.fields.put(ctx.arena, "label", Value{ .string = "Default" });
-            try pe.fields.put(ctx.arena, "value", Value{ .string = "Default" });
-            try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
-            try list.items.append(ctx.arena, Value{ .object = pe });
+            try appendPicklistEntry(ctx, list, "Default", "Default");
         }
         return Value{ .list = list };
     }
@@ -4098,7 +4076,36 @@ test "String.length instance method" {
 
 /// SFDX メタデータ XML からピックリスト値を読み取る。
 /// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
-fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !void {
+fn appendPicklistEntry(ctx: *BuiltinContext, list: *types.ListValue, label: []const u8, value: []const u8) !void {
+    for (list.items.items) |existing| {
+        if (existing != .object) continue;
+        const existing_value = existing.object.fields.get("value") orelse existing.object.fields.get("label") orelse Value.null_val;
+        if (existing_value == .string and std.ascii.eqlIgnoreCase(existing_value.string, value)) return;
+    }
+
+    const pe = try ctx.arena.create(types.ObjectInstance);
+    pe.* = .{ .class_name = "Schema.PicklistEntry" };
+    try pe.fields.put(ctx.arena, "label", Value{ .string = label });
+    try pe.fields.put(ctx.arena, "value", Value{ .string = value });
+    try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+    try list.items.append(ctx.arena, Value{ .object = pe });
+}
+
+fn appendPicklistValuesFromStore(ctx: *BuiltinContext, list: *types.ListValue, object_type: []const u8, field_name: []const u8) !void {
+    var store_iter = ctx.eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) continue;
+        for (entry.value_ptr.items) |record| {
+            if (record != .sobject) continue;
+            if (utils.sobjectGet(&record.sobject.fields, field_name)) |val| {
+                if (val == .string) try appendPicklistEntry(ctx, list, val.string, val.string);
+            }
+        }
+    }
+}
+
+fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !bool {
+    const initial_len = list.items.items.len;
     for (ctx.eval.source_paths) |path| {
         // Try multiple path patterns to find the field-meta.xml
         const candidates = [_][]const u8{
@@ -4110,7 +4117,7 @@ fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_ty
             try std.fs.path.join(ctx.arena, &.{ path, "objects", obj_type, "fields", field_name }),
         };
         for (candidates) |meta_path| {
-            if (try tryLoadFieldMeta(ctx, list, meta_path)) return;
+            if (try tryLoadFieldMeta(ctx, list, meta_path)) return true;
         }
 
         // Pattern 4: マルチパッケージ SFDX — サブディレクトリを走査
@@ -4121,9 +4128,10 @@ fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_ty
         while (it.next() catch null) |entry| {
             if (entry.kind != .directory) continue;
             const sub_path = std.fs.path.join(ctx.arena, &.{ path, entry.name, "main", "default", "objects", obj_type, "fields", field_name }) catch continue;
-            if (try tryLoadFieldMeta(ctx, list, sub_path)) return;
+            if (try tryLoadFieldMeta(ctx, list, sub_path)) return true;
         }
     }
+    return list.items.items.len > initial_len;
 }
 
 /// field-meta.xml を読み込んでパースする。成功したら true を返す。
@@ -4165,12 +4173,7 @@ fn parsePicklistXml(ctx: *BuiltinContext, list: *types.ListValue, content: []con
         }
 
         if (label) |lbl| {
-            const pe = try ctx.arena.create(types.ObjectInstance);
-            pe.* = .{ .class_name = "Schema.PicklistEntry" };
-            try pe.fields.put(ctx.arena, "label", Value{ .string = lbl });
-            try pe.fields.put(ctx.arena, "value", Value{ .string = api_name orelse lbl });
-            try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
-            try list.items.append(ctx.arena, Value{ .object = pe });
+            try appendPicklistEntry(ctx, list, lbl, api_name orelse lbl);
         }
 
         pos = value_end + value_end_tag.len;

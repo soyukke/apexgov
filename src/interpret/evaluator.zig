@@ -31,6 +31,11 @@ pub const SummaryFilter = struct {
     value: []const u8,
 };
 
+pub const PicklistValueMetadata = struct {
+    label: []const u8,
+    value: []const u8,
+};
+
 pub const FieldMetadata = struct {
     is_unique: bool = false,
     is_external_id: bool = false,
@@ -44,6 +49,7 @@ pub const FieldMetadata = struct {
     summary_foreign_key: ?[]const u8 = null,
     summary_operation: ?[]const u8 = null,
     summary_filters: []const SummaryFilter = &.{},
+    picklist_values: []const PicklistValueMetadata = &.{},
 };
 
 pub const FieldSetMemberMetadata = struct {
@@ -377,6 +383,11 @@ pub const Evaluator = struct {
 
     /// Resolve picklist API name to label using field-meta.xml
     fn resolvePicklistLabel(self: *Evaluator, obj_type: []const u8, field_name: []const u8, api_name: []const u8) ?[]const u8 {
+        if (self.getFieldMetadata(obj_type, field_name)) |metadata| {
+            for (metadata.picklist_values) |picklist_value| {
+                if (std.mem.eql(u8, picklist_value.value, api_name)) return picklist_value.label;
+            }
+        }
         const suffix = std.fmt.allocPrint(self.arena, "objects/{s}/fields/{s}.field-meta.xml", .{ obj_type, field_name }) catch return null;
         for (self.source_paths) |base_path| {
             // Try to find the field-meta.xml by walking common SFDX paths
