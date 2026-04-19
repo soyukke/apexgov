@@ -8336,12 +8336,14 @@ pub const Evaluator = struct {
                     }
                     break :blk try utils.coerceToString(args[0], self.arena);
                 } else try utils.coerceToString(args[0], self.arena);
-                try utils.sobjectPut(&obj.sobject.fields, self.arena, field_name, args[1]);
+                var put_bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                const normalized = try builtins.normalizeSObjectFieldAssignment(&put_bctx, obj.sobject, field_name, args[1]);
+                try utils.sobjectPut(&obj.sobject.fields, self.arena, field_name, normalized);
                 // Sync Id field
-                if (std.ascii.eqlIgnoreCase(field_name, "Id") and args[1] == .string) {
-                    obj.sobject.id = args[1].string;
+                if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) {
+                    obj.sobject.id = normalized.string;
                 }
-                return args[1];
+                return normalized;
             }
             // clone()
             if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {

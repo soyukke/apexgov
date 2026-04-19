@@ -1918,7 +1918,14 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
     try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = if (metadata) |meta| !meta.is_required else defaultFieldIsNillable(object_type, field_name) });
     // Set field type — map XML type to DisplayType enum name, infer from field name if not provided
-    const raw_ft: []const u8 = field_type orelse inferFieldType(field_name);
+    const raw_ft: []const u8 = field_type orelse blk: {
+        if (ctx.eval.field_types.get(object_type)) |type_map| {
+            for (type_map.keys(), type_map.values()) |known_field_name, known_type| {
+                if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) break :blk known_type;
+            }
+        }
+        break :blk inferFieldType(field_name);
+    };
     const ft: []const u8 = mapXmlTypeToDisplayType(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
     // Set SoapType based on field type
@@ -2002,7 +2009,7 @@ pub fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, fie
     return mapXmlTypeToDisplayType(inferFieldType(field_name));
 }
 
-fn normalizeSObjectFieldAssignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {
+pub fn normalizeSObjectFieldAssignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {
     if (value == .null_val) return value;
 
     const display_type = getSObjectFieldDisplayType(ctx, sob, field_name);

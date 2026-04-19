@@ -5841,6 +5841,85 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
     try std.testing.expectEqualStrings("5:5:abcde", result.value.string);
 }
 
+test "E2E: direct field token describe uses metadata-backed soap type" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/OrganizationId__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>OrganizationId__c</fullName>
+        \\    <label>Organization ID</label>
+        \\    <length>18</length>
+        \\    <required>false</required>
+        \\    <type>Text</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldTokenSoapTypeMetadataTest {
+        \\    public static String test() {
+        \\        return String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getSoapType()) +
+        \\            ':' + String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getLength());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldTokenSoapTypeMetadataTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("STRING:18", result.value.string);
+}
+
+test "E2E: SObject put with field token validates datetime metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/When__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>When__c</fullName>
+        \\    <label>When</label>
+        \\    <required>false</required>
+        \\    <type>DateTime</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldTokenDatetimeValidationTest {
+        \\    public static String test() {
+        \\        Thing__c row = new Thing__c();
+        \\        try {
+        \\            row.put(Schema.Thing__c.When__c, 'not a datetime');
+        \\        } catch (System.SObjectException ex) {
+        \\        }
+        \\        return row.get(Schema.Thing__c.When__c) == null ? 'null' : 'value';
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldTokenDatetimeValidationTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("null", result.value.string);
+}
+
 test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
