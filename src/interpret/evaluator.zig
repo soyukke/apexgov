@@ -12313,11 +12313,19 @@ pub const Evaluator = struct {
                     } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
                         score += 2;
                     } else if (arg == .sobject) {
-                        // Prefer SObject parameter type over non-SObject
-                        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.mem.endsWith(u8, pt, "__c") or std.mem.endsWith(u8, pt, "__e")) {
-                            score += 3;
+                        const arg_type = arg.sobject.type_name;
+                        if (std.ascii.eqlIgnoreCase(arg_type, pt)) {
+                            score += 4;
+                        } else if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+                            if (std.ascii.eqlIgnoreCase(arg_type, pt[di + 1 ..])) {
+                                score += 4;
+                            } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "sObject") or std.ascii.eqlIgnoreCase(pt, "Sobject")) {
+                                score += 2;
+                            }
+                        } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "sObject") or std.ascii.eqlIgnoreCase(pt, "Sobject")) {
+                            score += 2;
                         } else {
-                            score += 1;
+                            score += 0;
                         }
                     } else if (arg == .null_val) {
                         // Null prefers primitive types (String/Id/Integer/etc) over Exception,

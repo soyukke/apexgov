@@ -7267,6 +7267,34 @@ test "E2E: instance overload resolves cast List<SObject> target" {
     try std.testing.expectEqualStrings("sobject:1", result.value.string);
 }
 
+test "E2E: constructor overload prefers exact SObject type" {
+    const source =
+        \\public class SObjectConstructorOverloadTest {
+        \\    private String selected;
+        \\    public SObjectConstructorOverloadTest(Signal__e eventRecord) {
+        \\        this.selected = 'event';
+        \\    }
+        \\    public SObjectConstructorOverloadTest(Signal__c customRecord) {
+        \\        this.selected = 'record';
+        \\    }
+        \\    public String getSelected() {
+        \\        return this.selected;
+        \\    }
+        \\    public static String test() {
+        \\        return new SObjectConstructorOverloadTest(new Signal__c()).getSelected()
+        \\            + ':'
+        \\            + new SObjectConstructorOverloadTest(new Signal__e()).getSelected();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SObjectConstructorOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("record:event", result.value.string);
+}
+
 test "E2E: null collection variables preserve declared overload targets" {
     const source =
         \\public class NullCollectionOverloadTest {
