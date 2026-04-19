@@ -7431,6 +7431,26 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
+test "E2E: describe-derived SObject field map keys stay distinct across multiple fields" {
+    const source =
+        \\public class DescribeDerivedFieldKeyTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> describeFields = Schema.Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<Schema.SObjectField, String> valuesByField = new Map<Schema.SObjectField, String>();
+        \\        valuesByField.put(describeFields.get('Name'), 'name');
+        \\        valuesByField.put(describeFields.get('OwnerId'), 'owner');
+        \\        return valuesByField.size() + ':' + valuesByField.get(describeFields.get('Name')) + ':' + valuesByField.get(describeFields.get('OwnerId'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DescribeDerivedFieldKeyTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:name:owner", result.value.string);
+}
+
 test "E2E: UserRecordAccess delete query returns only deletable records" {
     const source =
         \\public class UserRecordAccessDeleteQueryTest {

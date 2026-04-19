@@ -204,6 +204,14 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
                     if (n == .string) break :blk n.string;
                 }
             }
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
+                if (obj.fields.get("fieldName")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+            }
             // Date/Datetime/Blob → return the stored value string
             if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
                 std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
