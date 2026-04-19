@@ -8037,6 +8037,7 @@ pub const Evaluator = struct {
             // Apex Map<String,X> stores null keys as empty string
             const key = if (args[0] == .null_val) "" else try utils.coerceToString(args[0], self.arena);
             try map.entries.put(self.arena, key, args[1]);
+            try map.key_values.put(self.arena, key, args[0]);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
@@ -8063,7 +8064,8 @@ pub const Evaluator = struct {
             const set = try self.arena.create(types.SetValue);
             set.* = .{};
             for (map.entries.keys()) |key| {
-                try set.entries.put(self.arena, key, Value{ .string = key });
+                const original_key = map.key_values.get(key) orelse Value{ .string = key };
+                try set.entries.put(self.arena, key, original_key);
             }
             return Value{ .set = set };
         }
@@ -8087,12 +8089,15 @@ pub const Evaluator = struct {
             if (args[0] == .map) {
                 for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
                     try map.entries.put(self.arena, k, v);
+                    const original_key = args[0].map.key_values.get(k) orelse Value{ .string = k };
+                    try map.key_values.put(self.arena, k, original_key);
                 }
             } else if (args[0] == .list) {
                 // putAll from list of SObjects: key=Id, value=record
                 for (args[0].list.items.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
                         try map.entries.put(self.arena, item.sobject.id.?, item);
+                        try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
                     }
                 }
             }
@@ -8111,6 +8116,8 @@ pub const Evaluator = struct {
                     break :blk Value{ .sobject = clone };
                 } else v;
                 try new_map.entries.put(self.arena, k, cloned_val);
+                const original_key = map.key_values.get(k) orelse Value{ .string = k };
+                try new_map.key_values.put(self.arena, k, original_key);
             }
             return Value{ .map = new_map };
         }
@@ -8910,6 +8917,7 @@ pub const Evaluator = struct {
                     const val_val = try self.evalExpr(asgn.value, current_env);
                     const key_str = if (key_val == .null_val) "" else try utils.coerceToString(key_val, self.arena);
                     try map.entries.put(self.arena, key_str, val_val);
+                    try map.key_values.put(self.arena, key_str, key_val);
                 }
             }
             // If single non-assignment arg is a list, construct map from SObject list
@@ -8920,6 +8928,7 @@ pub const Evaluator = struct {
                     for (arg_val.list.items.items) |item| {
                         if (item == .sobject and item.sobject.id != null) {
                             try map.entries.put(self.arena, item.sobject.id.?, item);
+                            try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
                         }
                     }
                 }

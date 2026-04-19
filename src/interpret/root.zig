@@ -3462,6 +3462,32 @@ test "E2E: static method returned map supports chained get size and index access
     try std.testing.expectEqualStrings("2|a", result.value.string);
 }
 
+test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys in loop bodies" {
+    const source =
+        \\public class SObjectTypeKeySetLoopTest {
+        \\    public static String test() {
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Id = :System.UserInfo.getUserId()];
+        \\        Map<Schema.SObjectType, List<Id>> idsByType = new Map<Schema.SObjectType, List<Id>>();
+        \\        idsByType.put(currentUser.Id.getSObjectType(), new List<Id>{ currentUser.Id });
+        \\        for (Schema.SObjectType sobjectType : idsByType.keySet()) {
+        \\            List<Id> recordIds = idsByType.get(sobjectType);
+        \\            List<SObject> results = Database.query(
+        \\                String.format('SELECT Username FROM {0} WHERE Id IN :recordIds', new List<Object>{ sobjectType })
+        \\            );
+        \\            return sobjectType.getDescribe().getName() + ':' + (String) results.get(0).get('Username');
+        \\        }
+        \\        return 'empty';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SObjectTypeKeySetLoopTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("User:testuser@example.com", result.value.string);
+}
+
 test "E2E: static method returned map preserves list values keyed by Schema SObjectType" {
     const source =
         \\public class ChainedHandlerBase {
@@ -3718,6 +3744,54 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Hiking", result.value.string);
+}
+
+test "E2E: member-held direct property access resolves custom fields on unsaved relationship records" {
+    const source =
+        \\public class MemberHeldUnsavedCustomFieldTest {
+        \\    private Session__c sessionRecord;
+        \\    public MemberHeldUnsavedCustomFieldTest(Session__c sessionRecord) {
+        \\        this.sessionRecord = sessionRecord;
+        \\    }
+        \\    public String getType() {
+        \\        return this.sessionRecord.Experience__r.Type__c;
+        \\    }
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        return new MemberHeldUnsavedCustomFieldTest(sessionRecord).getType();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MemberHeldUnsavedCustomFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Adventure", result.value.string);
+}
+
+test "E2E: SObject initializer can read custom fields from member-held relationship records" {
+    const source =
+        \\public class RelatedInitializerReadTest {
+        \\    private Session__c sessionRecord;
+        \\    public RelatedInitializerReadTest(Session__c sessionRecord) {
+        \\        this.sessionRecord = sessionRecord;
+        \\    }
+        \\    public Account build() {
+        \\        return new Account(Name = this.sessionRecord.Experience__r.Type__c);
+        \\    }
+        \\    public static String test() {
+        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        return new RelatedInitializerReadTest(sessionRecord).build().Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RelatedInitializerReadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Adventure", result.value.string);
 }
 
 test "E2E: subquery child records preserve parent relationship fields" {

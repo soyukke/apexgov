@@ -65,6 +65,7 @@ pub const ListValue = struct {
 
 pub const MapValue = struct {
     entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
+    key_values: std.StringArrayHashMapUnmanaged(Value) = .empty,
 };
 
 pub const SetValue = struct {
