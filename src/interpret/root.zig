@@ -6661,6 +6661,32 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
     try std.testing.expectEqualStrings("1:true:false", result.value.string);
 }
 
+test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {
+    const source =
+        \\public class TestSetCreatedDateOrderByTest {
+        \\    public static String test() {
+        \\        Account olderRecord = new Account(Name = 'Older');
+        \\        Account newerRecord = new Account(Name = 'Newer');
+        \\        insert new List<Account>{ olderRecord, newerRecord };
+        \\        System.Test.setCreatedDate(olderRecord.Id, System.now().addMinutes(-5));
+        \\        Account returnedRecord = [
+        \\            SELECT Id, Name
+        \\            FROM Account
+        \\            ORDER BY CreatedDate DESC
+        \\            LIMIT 1
+        \\        ];
+        \\        return returnedRecord.Id + ':' + returnedRecord.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TestSetCreatedDateOrderByTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("001000000000000002:Newer", result.value.string);
+}
+
 test "E2E: String.split supports escaped pipe delimiters with limit" {
     const source =
         \\public class SplitEscapedPipeTest {

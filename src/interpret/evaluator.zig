@@ -12198,18 +12198,14 @@ pub const Evaluator = struct {
         if (av == .null_val and bv == .null_val) return 0;
         if (av == .null_val) return 1;
         if (bv == .null_val) return -1;
+        if (builtins.extractDateString(av)) |a_date| {
+            if (builtins.extractDateString(bv)) |b_date| {
+                return compareCaseInsensitiveStrings(a_date, b_date);
+            }
+        }
         // String comparison (case-insensitive)
         if (av == .string and bv == .string) {
-            const len = @min(av.string.len, bv.string.len);
-            for (0..len) |i| {
-                const ca = std.ascii.toLower(av.string[i]);
-                const cb = std.ascii.toLower(bv.string[i]);
-                if (ca < cb) return -1;
-                if (ca > cb) return 1;
-            }
-            if (av.string.len < bv.string.len) return -1;
-            if (av.string.len > bv.string.len) return 1;
-            return 0;
+            return compareCaseInsensitiveStrings(av.string, bv.string);
         }
         // Integer comparison
         if (av == .integer and bv == .integer) {
@@ -12233,18 +12229,14 @@ pub const Evaluator = struct {
         if (a == .null_val and b == .null_val) return 0;
         if (a == .null_val) return -1;
         if (b == .null_val) return 1;
+        if (builtins.extractDateString(a)) |a_date| {
+            if (builtins.extractDateString(b)) |b_date| {
+                return compareCaseInsensitiveStrings(a_date, b_date);
+            }
+        }
         // String comparison
         if (a == .string and b == .string) {
-            const len = @min(a.string.len, b.string.len);
-            for (0..len) |i| {
-                const ca = std.ascii.toLower(a.string[i]);
-                const cb = std.ascii.toLower(b.string[i]);
-                if (ca < cb) return -1;
-                if (ca > cb) return 1;
-            }
-            if (a.string.len < b.string.len) return -1;
-            if (a.string.len > b.string.len) return 1;
-            return 0;
+            return compareCaseInsensitiveStrings(a.string, b.string);
         }
         // Integer comparison
         if (a == .integer and b == .integer) {
@@ -12264,6 +12256,19 @@ pub const Evaluator = struct {
             if (a.boolean and !b.boolean) return 1;
             return 0;
         }
+        return 0;
+    }
+
+    fn compareCaseInsensitiveStrings(left: []const u8, right: []const u8) i32 {
+        const len = @min(left.len, right.len);
+        for (0..len) |i| {
+            const lhs = std.ascii.toLower(left[i]);
+            const rhs = std.ascii.toLower(right[i]);
+            if (lhs < rhs) return -1;
+            if (lhs > rhs) return 1;
+        }
+        if (left.len < right.len) return -1;
+        if (left.len > right.len) return 1;
         return 0;
     }
 
