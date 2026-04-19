@@ -550,6 +550,9 @@ fn collectFieldDefaults(
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
 
         var metadata = evaluator.FieldMetadata{};
+        if (extractXmlTagValue(content, "label")) |label| {
+            metadata.label = alloc.dupe(u8, std.mem.trim(u8, label, " \t\n\r")) catch null;
+        }
 
         if (std.mem.indexOf(u8, content, "<caseSensitive>")) |cs| {
             const cs_start = cs + "<caseSensitive>".len;
@@ -638,7 +641,8 @@ fn collectFieldDefaults(
             }
         }
 
-        if (metadata.is_unique or
+        if (metadata.label != null or
+            metadata.is_unique or
             metadata.is_external_id or
             metadata.is_required or
             metadata.length != null or
@@ -3893,6 +3897,41 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
     try std.testing.expectEqualStrings("AA", result.value.string);
 }
 
+test "E2E: nested inner constructors resolve sibling inner classes in outer scope" {
+    const source =
+        \\public class ScopedInnerCtorHostA {
+        \\    public class Item {
+        \\        public String origin;
+        \\        public Item(String value) {
+        \\            origin = 'A:' + value;
+        \\        }
+        \\    }
+        \\    public class Holder {
+        \\        public String build() {
+        \\            return new Item('x').origin;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return new Holder().build();
+        \\    }
+        \\}
+        \\public class ScopedInnerCtorHostB {
+        \\    public class Item {
+        \\        public String origin;
+        \\        public Item(String value) {
+        \\            origin = 'B:' + value;
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ScopedInnerCtorHostA",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("A:x", result.value.string);
+}
+
 test "E2E: postfix increment updates static field through bare identifier" {
     const source =
         \\public class StaticCounterProbe {
@@ -5994,6 +6033,65 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
+}
+
+test "E2E: field set members expose lookup labels and relationship describe metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try tmp_dir.dir.makePath("objects/Child__c/fieldSets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <label>Parent</label>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<FieldSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Related_List_Defaults</fullName>
+        \\    <displayedFields>
+        \\        <field>Parent__c</field>
+        \\        <isRequired>false</isRequired>
+        \\    </displayedFields>
+        \\    <label>Related List Defaults</label>
+        \\</FieldSet>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FieldSetLookupMetadataTest {
+        \\    public static String test() {
+        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults').getFields().get(0);
+        \\        Schema.DescribeFieldResult describe = member.getSObjectField().getDescribe();
+        \\        return member.getLabel()
+        \\            + ':' + describe.getLabel()
+        \\            + ':' + describe.getRelationshipName()
+        \\            + ':' + String.valueOf(describe.isSortable())
+        \\            + ':' + String.valueOf(describe.getReferenceTo().size())
+        \\            + ':' + describe.getType().name().toLowerCase();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "FieldSetLookupMetadataTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Parent:Parent:Parent__r:true:1:reference", result.value.string);
 }
 
 test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {

@@ -37,6 +37,7 @@ pub const PicklistValueMetadata = struct {
 };
 
 pub const FieldMetadata = struct {
+    label: ?[]const u8 = null,
     is_unique: bool = false,
     is_external_id: bool = false,
     case_sensitive: bool = false,
@@ -9797,9 +9798,10 @@ pub const Evaluator = struct {
             }
         }
 
-        // Check if it's a user-defined class or exception
-        // Also try the simple name (after last dot) for dotted type names
-        // Prioritize inner classes of the current class (e.g., MockDatabase in LoggerDataStore_Tests)
+        // Check if it's a user-defined class or exception.
+        // Resolve simple names against the current lexical scope first so
+        // nested inner classes instantiate sibling inner classes from the
+        // correct outer class instead of drifting to an unrelated duplicate.
         const simple_name = if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |di| type_name[di + 1 ..] else type_name;
         const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
             (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
@@ -9811,6 +9813,9 @@ pub const Evaluator = struct {
         const allow_simple_name_fallback = !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
         const resolved_class_name: ?[]const u8 = blk: {
             if (!is_platform_qualified) {
+                if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
+                    if (self.resolveVisibleUserClassInScope(current_env, type_name)) |visible_class| break :blk visible_class;
+                }
                 if (fq_inner_name) |fqn| {
                     if (self.findClass(fqn) != null) break :blk fqn;
                 }

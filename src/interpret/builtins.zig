@@ -1628,6 +1628,37 @@ fn lookupFieldMetadata(ctx: *BuiltinContext, object_type: []const u8, field_name
     return null;
 }
 
+fn lookupEvalFieldMetadata(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+    const type_meta = eval.field_metadata.get(object_type) orelse return null;
+    if (type_meta.get(field_name)) |meta| return meta;
+    var iter = type_meta.iterator();
+    while (iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+fn defaultFieldLabel(field_name: []const u8) []const u8 {
+    const leaf = if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |idx| field_name[idx + 1 ..] else field_name;
+    if (std.mem.endsWith(u8, leaf, "__c") or
+        std.mem.endsWith(u8, leaf, "__r") or
+        std.mem.endsWith(u8, leaf, "__e"))
+    {
+        return leaf[0 .. leaf.len - 3];
+    }
+    return leaf;
+}
+
+fn defaultRelationshipName(arena: std.mem.Allocator, field_name: []const u8) !?[]const u8 {
+    if (std.mem.endsWith(u8, field_name, "__c")) {
+        return try std.fmt.allocPrint(arena, "{s}__r", .{field_name[0 .. field_name.len - 3]});
+    }
+    if (std.mem.endsWith(u8, field_name, "Id") and field_name.len > 2) {
+        return field_name[0 .. field_name.len - 2];
+    }
+    return null;
+}
+
 fn defaultFieldIsNillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
     if (std.ascii.eqlIgnoreCase(field_name, "Name") and hasImplicitNameField(object_type) and !hasCustomObjectSuffix(object_type)) return false;
@@ -1701,7 +1732,12 @@ pub fn createFieldSetCollectionValue(arena: std.mem.Allocator, eval: *evaluator_
             for (field_set_meta.members) |member_meta| {
                 const member = try arena.create(types.ObjectInstance);
                 member.* = .{ .class_name = "Schema.FieldSetMember" };
+                const member_label = if (lookupEvalFieldMetadata(eval, obj_name, member_meta.field_path)) |meta|
+                    meta.label orelse defaultFieldLabel(member_meta.field_path)
+                else
+                    defaultFieldLabel(member_meta.field_path);
                 try member.fields.put(arena, "fieldPath", Value{ .string = member_meta.field_path });
+                try member.fields.put(arena, "label", Value{ .string = member_label });
                 try member.fields.put(arena, "required", Value{ .boolean = member_meta.is_required });
                 try member.fields.put(arena, "sObjectField", try createSObjectFieldTokenValue(arena, obj_name, member_meta.field_path));
                 try members.items.append(arena, Value{ .object = member });
@@ -1888,9 +1924,10 @@ fn addDescribeFieldsFromStore(ctx: *BuiltinContext, fields_kv: *types.MapValue, 
 fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
+    const metadata = lookupFieldMetadata(ctx, object_type, field_name);
     try fdr.fields.put(ctx.arena, "name", Value{ .string = field_name });
     try fdr.fields.put(ctx.arena, "localName", Value{ .string = describeLocalName(field_name) });
-    try fdr.fields.put(ctx.arena, "label", Value{ .string = describeLocalName(field_name) });
+    try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse defaultFieldLabel(field_name) else defaultFieldLabel(field_name) });
     try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
     try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
@@ -1906,7 +1943,6 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
     try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field });
     try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = true });
     // Set field length based on field type
-    const metadata = lookupFieldMetadata(ctx, object_type, field_name);
     const length: i64 = if (metadata != null and metadata.?.length != null)
         metadata.?.length.?
     else if (std.ascii.eqlIgnoreCase(field_name, "Id"))
@@ -1928,6 +1964,12 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
     };
     const ft: []const u8 = mapXmlTypeToDisplayType(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
+    try fdr.fields.put(ctx.arena, "isSortable", Value{ .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA") });
+    if (std.ascii.eqlIgnoreCase(ft, "REFERENCE")) {
+        if (try defaultRelationshipName(ctx.arena, field_name)) |relationship_name| {
+            try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
+        }
+    }
     // Set SoapType based on field type
     const soap: []const u8 = if (std.ascii.eqlIgnoreCase(ft, "Boolean"))
         "BOOLEAN"
