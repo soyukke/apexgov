@@ -1684,6 +1684,12 @@ pub fn createFieldSetCollectionValue(arena: std.mem.Allocator, eval: *evaluator_
     return Value{ .object = collection };
 }
 
+fn hasImplicitNameField(object_type: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "EmailMessageRelation")) return false;
+    return true;
+}
+
 fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const desc = try ctx.arena.create(types.ObjectInstance);
     desc.* = .{ .class_name = "DescribeSObjectResult" };
@@ -1703,6 +1709,7 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
     for ([_][]const u8{ "Id", "Name", "CreatedDate", "LastModifiedDate", "OwnerId", "IsDeleted" }) |field_name| {
+        if (std.ascii.eqlIgnoreCase(field_name, "Name") and !hasImplicitNameField(obj_name)) continue;
         const fdr = try createFieldDescribeResult(ctx, obj_name, field_name);
         if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = obj_name });
         try fields_kv.entries.put(ctx.arena, field_name, fdr);

@@ -2140,6 +2140,12 @@ pub const Evaluator = struct {
         return "SObject";
     }
 
+    fn hasImplicitNameField(type_name: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(type_name, "EmailMessage")) return false;
+        if (std.ascii.eqlIgnoreCase(type_name, "EmailMessageRelation")) return false;
+        return true;
+    }
+
     fn getTargetObjectType(self: *Evaluator, target: Value) ?[]const u8 {
         _ = self;
         if (target == .sobject) return target.sobject.type_name;
@@ -2577,7 +2583,7 @@ pub const Evaluator = struct {
 
         // Synthesize Name when it was omitted or explicitly set to null.
         const existing_name = utils.sobjectGet(&obj.fields, "Name");
-        if (existing_name == null or existing_name.? == .null_val) {
+        if (hasImplicitNameField(obj.type_name) and (existing_name == null or existing_name.? == .null_val)) {
             if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or std.ascii.eqlIgnoreCase(obj.type_name, "Lead")) {
                 const first = if (utils.sobjectGet(&obj.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "";
                 const last = if (utils.sobjectGet(&obj.fields, "LastName")) |v| (if (v == .string) v.string else "") else "";

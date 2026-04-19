@@ -3488,6 +3488,56 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
     try std.testing.expectEqualStrings("User:testuser@example.com", result.value.string);
 }
 
+test "E2E: EmailMessage display field selection prefers Subject when Name is absent" {
+    const source =
+        \\public class EmailMessageDisplayFieldTest {
+        \\    private static String getDisplayFieldApiName(Schema.SObjectType sobjectType) {
+        \\        if (sobjectType == Schema.User.SObjectType) {
+        \\            return Schema.User.Username.toString();
+        \\        }
+        \\        List<String> educatedGuesses = new List<String>{ 'Name', 'DeveloperName', 'ApiName', 'Title', 'Subject' };
+        \\        String displayFieldApiName;
+        \\        List<String> fallbackFieldApiNames = new List<String>();
+        \\        for (String fieldName : educatedGuesses) {
+        \\            Schema.SObjectField field = sobjectType.getDescribe().fields.getMap().get(fieldName);
+        \\            if (field == null) {
+        \\                continue;
+        \\            }
+        \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
+        \\            if (fieldDescribe.isNameField()) {
+        \\                displayFieldApiName = fieldDescribe.getName();
+        \\                break;
+        \\            } else {
+        \\                fallbackFieldApiNames.add(fieldDescribe.getName());
+        \\            }
+        \\        }
+        \\        if (String.isBlank(displayFieldApiName) && fallbackFieldApiNames.size() == 1) {
+        \\            displayFieldApiName = fallbackFieldApiNames.get(0);
+        \\        }
+        \\        return displayFieldApiName;
+        \\    }
+        \\    public static String test() {
+        \\        Case supportCase = new Case(Subject = 'Support');
+        \\        insert supportCase;
+        \\        EmailMessage emailMessage = new EmailMessage(ParentId = supportCase.Id, Subject = 'Some subject');
+        \\        insert emailMessage;
+        \\        String displayField = getDisplayFieldApiName(emailMessage.Id.getSObjectType());
+        \\        List<Id> recordIds = new List<Id>{ emailMessage.Id };
+        \\        List<SObject> results = Database.query(
+        \\            String.format('SELECT {0} FROM {1} WHERE Id IN :recordIds', new List<Object>{ displayField, emailMessage.Id.getSObjectType() })
+        \\        );
+        \\        return displayField + ':' + (String) results.get(0).get(displayField);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EmailMessageDisplayFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Subject:Some subject", result.value.string);
+}
+
 test "E2E: static method returned map preserves list values keyed by Schema SObjectType" {
     const source =
         \\public class ChainedHandlerBase {
