@@ -2814,6 +2814,323 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
     try std.testing.expectEqualStrings("2:1:1", result.value.string);
 }
 
+test "E2E: filtered rollup matches enum name string values" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Parent__c/fields");
+    try tmp_dir.dir.makePath("objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Level__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Level__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/ErrorChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ErrorChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Level__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>ERROR</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class EnumFilteredRollupTest {
+        \\    public enum LogLevel { INFO, ERROR }
+        \\    public static Integer test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
+        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        return Integer.valueOf(refreshed.ErrorChildren__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "EnumFilteredRollupTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: required field population preserves explicitly set picklist-like values" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Example__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Example__c/fields/RequiredName__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>RequiredName__c</fullName>
+        \\    <required>true</required>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Example__c/fields/Level__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Level__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class PreserveExplicitValueTest {
+        \\    public class RequiredFieldBuilder {
+        \\        public static Example__c fill(Example__c record) {
+        \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
+        \\            for (Schema.SObjectField field : Example__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\                Schema.DescribeFieldResult describe = field.getDescribe();
+        \\                if (describe.isCreateable() == false) {
+        \\                    continue;
+        \\                }
+        \\                if (populated.containsKey(describe.getName())) {
+        \\                    continue;
+        \\                }
+        \\                if (describe.isNillable() == false) {
+        \\                    record.put(field, 'filled');
+        \\                }
+        \\            }
+        \\            return record;
+        \\        }
+        \\    }
+        \\    public enum LogLevel { INFO, ERROR }
+        \\    public static String test() {
+        \\        Example__c record = new Example__c(Level__c = LogLevel.ERROR.name());
+        \\        record = RequiredFieldBuilder.fill(record);
+        \\        return (String) record.Level__c + ':' + (String) record.RequiredName__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "PreserveExplicitValueTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ERROR:filled", result.value.string);
+}
+
+test "E2E: filtered rollup survives builder-populated child inserts" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Parent__c/fields");
+    try tmp_dir.dir.makePath("objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Level__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Level__c</fullName>
+        \\    <type>Picklist</type>
+        \\    <valueSet>
+        \\        <valueSetDefinition>
+        \\            <value><fullName>INFO</fullName><default>false</default></value>
+        \\            <value><fullName>ERROR</fullName><default>false</default></value>
+        \\        </valueSetDefinition>
+        \\    </valueSet>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/RequiredText__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>RequiredText__c</fullName>
+        \\    <required>true</required>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/ErrorChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ErrorChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Level__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>ERROR</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class BuilderFilteredRollupTest {
+        \\    public enum LogLevel { INFO, ERROR }
+        \\    public class Builder {
+        \\        public static Child__c fill(Child__c record) {
+        \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
+        \\            for (Schema.SObjectField field : Child__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\                Schema.DescribeFieldResult describe = field.getDescribe();
+        \\                if (describe.isCreateable() == false || populated.containsKey(describe.getName())) {
+        \\                    continue;
+        \\                }
+        \\                if (describe.isNillable() == false) {
+        \\                    record.put(field, 'filled');
+        \\                }
+        \\            }
+        \\            return record;
+        \\        }
+        \\    }
+        \\    public static Integer test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
+        \\        insert Builder.fill(childRecord);
+        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        return Integer.valueOf(refreshed.ErrorChildren__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "BuilderFilteredRollupTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: trigger old snapshot preserves pre-rollup summary values" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Parent__c/fields");
+    try tmp_dir.dir.makePath("objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Child__c/fields/Level__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Level__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Parent__c/fields/ErrorChildren__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ErrorChildren__c</fullName>
+        \\    <summaryFilterItems>
+        \\        <field>Child__c.Level__c</field>
+        \\        <operation>equals</operation>
+        \\        <value>ERROR</value>
+        \\    </summaryFilterItems>
+        \\    <summaryForeignKey>Child__c.Parent__c</summaryForeignKey>
+        \\    <summaryOperation>count</summaryOperation>
+        \\    <type>Summary</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RollupOldSnapshotProbe {
+        \\    public static String seen = '';
+        \\}
+        \\trigger ParentOldSnapshotTrigger on Parent__c (before update) {
+        \\    Parent__c oldRecord = Trigger.old[0];
+        \\    Parent__c newRecord = Trigger.new[0];
+        \\    RollupOldSnapshotProbe.seen = String.valueOf(oldRecord.ErrorChildren__c) + ':' + String.valueOf(newRecord.ErrorChildren__c);
+        \\}
+        \\public class RollupOldSnapshotTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, Level__c = 'ERROR');
+        \\        return RollupOldSnapshotProbe.seen;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RollupOldSnapshotTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:1", result.value.string);
+}
+
 test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});

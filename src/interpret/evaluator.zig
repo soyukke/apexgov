@@ -1869,14 +1869,21 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     pub fn executeDml(self: *Evaluator, op: ast.DmlOp, target: Value) anyerror!void {
-        try self.executeDmlWithExternalIdInternal(op, target, null, true);
+        try self.executeDmlWithExternalIdInternal(op, target, null, true, null);
     }
 
     fn executeDmlWithExternalId(self: *Evaluator, op: ast.DmlOp, target: Value, external_id_field: ?[]const u8) anyerror!void {
-        try self.executeDmlWithExternalIdInternal(op, target, external_id_field, true);
+        try self.executeDmlWithExternalIdInternal(op, target, external_id_field, true, null);
     }
 
-    fn executeDmlWithExternalIdInternal(self: *Evaluator, op: ast.DmlOp, target: Value, external_id_field: ?[]const u8, count_limits: bool) anyerror!void {
+    fn executeDmlWithExternalIdInternal(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        target: Value,
+        external_id_field: ?[]const u8,
+        count_limits: bool,
+        old_records_override: ?std.ArrayListUnmanaged(Value),
+    ) anyerror!void {
         // Salesforce: empty list DML does not count as a DML statement
         if (target == .list and target.list.items.items.len == 0) return;
         if (count_limits) {
@@ -1919,7 +1926,9 @@ pub const Evaluator = struct {
 
         // Build old records for update/delete triggers
         var old_records: ?std.ArrayListUnmanaged(Value) = null;
-        if (op == .update or op == .delete) {
+        if (old_records_override) |override| {
+            old_records = override;
+        } else if (op == .update or op == .delete) {
             old_records = .empty;
             for (record_list.items) |item| {
                 if (item == .sobject and item.sobject.id != null) {
@@ -5737,6 +5746,7 @@ pub const Evaluator = struct {
 
             const parent_updates = try self.arena.create(types.ListValue);
             parent_updates.* = .{};
+            var parent_old_records: std.ArrayListUnmanaged(Value) = .empty;
 
             var impacted_iter = impacted_ids.iterator();
             while (impacted_iter.next()) |impacted_entry| {
@@ -5745,6 +5755,7 @@ pub const Evaluator = struct {
                 if (parent_record != .sobject) continue;
 
                 const updated_parent = try self.cloneSObject(parent_record.sobject);
+                const old_parent = try self.cloneSObject(parent_record.sobject);
                 var changed = false;
 
                 var summary_iter = type_meta.iterator();
@@ -5756,19 +5767,21 @@ pub const Evaluator = struct {
                     if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
 
                     const new_value = self.computeSummaryFieldValue(updated_parent, metadata) orelse Value.null_val;
-                    const old_value = utils.sobjectGet(&parent_record.sobject.fields, field_name) orelse Value.null_val;
+                    const old_value = self.computeSummaryFieldValueBeforeDelta(parent_record.sobject, metadata, new_records, old_records) orelse Value.null_val;
+                    try old_parent.fields.put(self.arena, field_name, old_value);
+                    try updated_parent.fields.put(self.arena, field_name, new_value);
                     if (utils.valueEql(old_value, new_value)) continue;
 
                     changed = true;
-                    try updated_parent.fields.put(self.arena, field_name, new_value);
                 }
 
                 if (!changed) continue;
                 try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
+                try parent_old_records.append(self.arena, Value{ .sobject = old_parent });
             }
 
             if (parent_updates.items.items.len > 0) {
-                try self.executeDmlWithExternalIdInternal(.update, Value{ .list = parent_updates }, null, false);
+                try self.executeDmlWithExternalIdInternal(.update, Value{ .list = parent_updates }, null, false, parent_old_records);
             }
         }
     }
@@ -5819,6 +5832,139 @@ pub const Evaluator = struct {
         return false;
     }
 
+    fn findSObjectByIdInValues(_: *Evaluator, records: []const Value, id: []const u8) ?*types.SObject {
+        for (records) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            if (std.mem.eql(u8, record.sobject.id.?, id)) return record.sobject;
+        }
+        return null;
+    }
+
+    fn summaryRecordMatches(
+        self: *Evaluator,
+        child: *types.SObject,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+    ) bool {
+        const fk_val = self.getSObjectFieldValueCaseInsensitive(child, fk_field) orelse return false;
+        if (fk_val != .string or !std.ascii.eqlIgnoreCase(fk_val.string, parent_id)) return false;
+
+        for (metadata.summary_filters) |filter| {
+            if (!self.summaryFilterMatches(child, child_type, filter)) return false;
+        }
+        return true;
+    }
+
+    fn accumulateSummaryValue(
+        self: *Evaluator,
+        child: *types.SObject,
+        child_type: []const u8,
+        metadata: FieldMetadata,
+        count: *i64,
+        aggregate: *?Value,
+    ) void {
+        const summary_operation = metadata.summary_operation orelse return;
+        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) {
+            count.* += 1;
+            return;
+        }
+
+        const summarized_field = if (metadata.summarized_field) |field_path|
+            self.normalizeSummaryFieldPath(child_type, field_path)
+        else
+            "";
+        if (summarized_field.len == 0) return;
+
+        const child_value = blk: {
+            if (std.mem.indexOfScalar(u8, summarized_field, '.')) |_| {
+                break :blk self.resolveFieldPathValue(child, summarized_field) orelse Value.null_val;
+            }
+            break :blk self.getSObjectFieldValueCaseInsensitive(child, summarized_field) orelse Value.null_val;
+        };
+        if (child_value == .null_val) return;
+
+        if (aggregate.* == null) {
+            aggregate.* = child_value;
+            return;
+        }
+
+        const cmp = self.compareValues(aggregate.*.?, child_value);
+        if (std.ascii.eqlIgnoreCase(summary_operation, "min")) {
+            if (cmp > 0) aggregate.* = child_value;
+        } else if (std.ascii.eqlIgnoreCase(summary_operation, "max")) {
+            if (cmp < 0) aggregate.* = child_value;
+        }
+    }
+
+    fn computeSummaryFieldValueBeforeDelta(
+        self: *Evaluator,
+        sob: *types.SObject,
+        metadata: FieldMetadata,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) ?Value {
+        const summary_operation = metadata.summary_operation orelse return null;
+        const summary_fk = metadata.summary_foreign_key orelse return null;
+        const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse return null;
+        const child_type = summary_fk[0..dot_idx];
+        const fk_field = summary_fk[dot_idx + 1 ..];
+
+        const parent_id = sob.id orelse blk: {
+            if (utils.sobjectGet(&sob.fields, "Id")) |id_val| {
+                if (id_val == .string) break :blk id_val.string;
+            }
+            break :blk null;
+        };
+        if (parent_id == null) {
+            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
+            return Value.null_val;
+        }
+
+        const child_records = self.store.get(child_type) orelse {
+            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
+            return Value.null_val;
+        };
+
+        var count: i64 = 0;
+        var aggregate: ?Value = null;
+
+        for (child_records.items) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            const record_id = record.sobject.id.?;
+
+            if (old_records) |previous_records| {
+                if (self.findSObjectByIdInValues(previous_records.items, record_id)) |old_child| {
+                    if (self.summaryRecordMatches(old_child, child_type, fk_field, parent_id.?, metadata)) {
+                        self.accumulateSummaryValue(old_child, child_type, metadata, &count, &aggregate);
+                    }
+                    continue;
+                }
+            }
+
+            const inserted_now = self.findSObjectByIdInValues(new_records, record_id) != null;
+            if (inserted_now) continue;
+
+            if (self.summaryRecordMatches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
+                self.accumulateSummaryValue(record.sobject, child_type, metadata, &count, &aggregate);
+            }
+        }
+
+        if (old_records) |previous_records| {
+            for (previous_records.items) |record| {
+                if (record != .sobject or record.sobject.id == null) continue;
+                if (self.findRecordInStore(child_type, record.sobject.id.?)) |_| continue;
+                if (self.summaryRecordMatches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
+                    self.accumulateSummaryValue(record.sobject, child_type, metadata, &count, &aggregate);
+                }
+            }
+        }
+
+        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
+        return aggregate orelse Value.null_val;
+    }
+
     fn computeSummaryFieldValue(self: *Evaluator, sob: *types.SObject, metadata: FieldMetadata) ?Value {
         const summary_operation = metadata.summary_operation orelse return null;
         const summary_fk = metadata.summary_foreign_key orelse return null;
@@ -5845,50 +5991,11 @@ pub const Evaluator = struct {
 
         var count: i64 = 0;
         var aggregate: ?Value = null;
-        const summarized_field = if (metadata.summarized_field) |field_path|
-            self.normalizeSummaryFieldPath(child_type, field_path)
-        else
-            "";
 
         for (child_records.items) |record| {
             if (record != .sobject) continue;
-            const fk_val = self.getSObjectFieldValueCaseInsensitive(record.sobject, fk_field) orelse continue;
-            if (fk_val != .string or !std.ascii.eqlIgnoreCase(fk_val.string, parent_id.?)) continue;
-
-            var passes_filters = true;
-            for (metadata.summary_filters) |filter| {
-                if (!self.summaryFilterMatches(record.sobject, child_type, filter)) {
-                    passes_filters = false;
-                    break;
-                }
-            }
-            if (!passes_filters) continue;
-
-            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) {
-                count += 1;
-                continue;
-            }
-
-            if (summarized_field.len == 0) continue;
-            const child_value = blk: {
-                if (std.mem.indexOfScalar(u8, summarized_field, '.')) |_| {
-                    break :blk self.resolveFieldPathValue(record.sobject, summarized_field) orelse Value.null_val;
-                }
-                break :blk self.getSObjectFieldValueCaseInsensitive(record.sobject, summarized_field) orelse Value.null_val;
-            };
-            if (child_value == .null_val) continue;
-
-            if (aggregate == null) {
-                aggregate = child_value;
-                continue;
-            }
-
-            const cmp = self.compareValues(aggregate.?, child_value);
-            if (std.ascii.eqlIgnoreCase(summary_operation, "min")) {
-                if (cmp > 0) aggregate = child_value;
-            } else if (std.ascii.eqlIgnoreCase(summary_operation, "max")) {
-                if (cmp < 0) aggregate = child_value;
-            }
+            if (!self.summaryRecordMatches(record.sobject, child_type, fk_field, parent_id.?, metadata)) continue;
+            self.accumulateSummaryValue(record.sobject, child_type, metadata, &count, &aggregate);
         }
 
         if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
@@ -10790,24 +10897,24 @@ pub const Evaluator = struct {
                 self.limits_dml_rows += 1;
                 return switch (op) {
                     .insert => blk: {
-                        try self.executeDmlWithExternalIdInternal(.insert, target, null, false);
+                        try self.executeDmlWithExternalIdInternal(.insert, target, null, false, null);
                         break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(target.sobject), null);
                     },
                     .update => blk: {
-                        try self.executeDmlWithExternalIdInternal(.update, target, null, false);
+                        try self.executeDmlWithExternalIdInternal(.update, target, null, false, null);
                         break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(target.sobject), null);
                     },
                     .upsert => blk: {
                         const was_created = self.willUpsertCreateRecord(target.sobject, external_id_field);
-                        try self.executeDmlWithExternalIdInternal(.upsert, target, external_id_field, false);
+                        try self.executeDmlWithExternalIdInternal(.upsert, target, external_id_field, false, null);
                         break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(target.sobject), was_created);
                     },
                     .delete => blk: {
-                        try self.executeDmlWithExternalIdInternal(.delete, target, null, false);
+                        try self.executeDmlWithExternalIdInternal(.delete, target, null, false, null);
                         break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(target.sobject), null);
                     },
                     .undelete => blk: {
-                        try self.executeDmlWithExternalIdInternal(.undelete, target, null, false);
+                        try self.executeDmlWithExternalIdInternal(.undelete, target, null, false, null);
                         break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(target.sobject), null);
                     },
                     else => Value.null_val,
@@ -10830,35 +10937,35 @@ pub const Evaluator = struct {
                     const was_created = op == .upsert and self.willUpsertCreateRecord(item.sobject, external_id_field);
                     const result = switch (op) {
                         .insert => blk: {
-                            self.executeDmlWithExternalIdInternal(.insert, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.insert, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .update => blk: {
-                            self.executeDmlWithExternalIdInternal(.update, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.update, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .upsert => blk: {
-                            self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false) catch {
+                            self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), was_created);
                         },
                         .delete => blk: {
-                            self.executeDmlWithExternalIdInternal(.delete, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.delete, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .undelete => blk: {
-                            self.executeDmlWithExternalIdInternal(.undelete, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.undelete, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
@@ -10887,35 +10994,35 @@ pub const Evaluator = struct {
                     const was_created = op == .upsert and self.willUpsertCreateRecord(item.sobject, external_id_field);
                     const result = switch (op) {
                         .insert => blk: {
-                            self.executeDmlWithExternalIdInternal(.insert, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.insert, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .update => blk: {
-                            self.executeDmlWithExternalIdInternal(.update, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.update, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .upsert => blk: {
-                            self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false) catch {
+                            self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), was_created);
                         },
                         .delete => blk: {
-                            self.executeDmlWithExternalIdInternal(.delete, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.delete, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .undelete => blk: {
-                            self.executeDmlWithExternalIdInternal(.undelete, item, null, false) catch {
+                            self.executeDmlWithExternalIdInternal(.undelete, item, null, false, null) catch {
                                 self.pending_exception = null;
                                 break :blk try appendFailure.build(self, result_class, item, op);
                             };
