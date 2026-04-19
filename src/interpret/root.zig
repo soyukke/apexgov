@@ -7321,6 +7321,80 @@ test "E2E: cross-class static initializer can read singleton instance" {
     try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
+test "E2E: schema-qualified SObjectType ignores local shadowing after nested static overloads" {
+    const source =
+        \\public class SchemaQualifiedSObjectTypeShadowTest {
+        \\    public static User createUser() {
+        \\        return createUser(UserInfo.getProfileId());
+        \\    }
+        \\
+        \\    public static User createUser(Id profileId) {
+        \\        return new User(
+        \\            Alias = 'u',
+        \\            Email = 'u@test.com',
+        \\            EmailEncodingKey = 'ISO-8859-1',
+        \\            FederationIdentifier = 'shadow-test',
+        \\            LanguageLocaleKey = 'en_US',
+        \\            LastName = 'User',
+        \\            LocaleSidKey = 'en_US',
+        \\            ProfileId = profileId,
+        \\            TimeZoneSidKey = 'America/Los_Angeles',
+        \\            Username = 'u@test.com'
+        \\        );
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        User user = createUser();
+        \\        Integer len = Schema.User.SObjectType.getDescribe().fields.getMap().get('Id').getDescribe().getLength();
+        \\        return user == null ? 'null' : String.valueOf(len > 0);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaQualifiedSObjectTypeShadowTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: schema-qualified SObjectType standalone assignment ignores local shadowing" {
+    const source =
+        \\public class SchemaQualifiedSObjectTypeStandaloneAssignmentTest {
+        \\    public static User createUser() {
+        \\        return createUser(UserInfo.getProfileId());
+        \\    }
+        \\
+        \\    public static User createUser(Id profileId) {
+        \\        return new User(
+        \\            Alias = 'u',
+        \\            Email = 'u@test.com',
+        \\            EmailEncodingKey = 'ISO-8859-1',
+        \\            FederationIdentifier = 'shadow-test',
+        \\            LanguageLocaleKey = 'en_US',
+        \\            LastName = 'User',
+        \\            LocaleSidKey = 'en_US',
+        \\            ProfileId = profileId,
+        \\            TimeZoneSidKey = 'America/Los_Angeles',
+        \\            Username = 'u@test.com'
+        \\        );
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        User user = createUser();
+        \\        Schema.SObjectType sobjectType = Schema.User.SObjectType;
+        \\        return sobjectType.getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaQualifiedSObjectTypeStandaloneAssignmentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("User", result.value.string);
+}
+
 test "E2E: switch when else executes for unmatched string subjects" {
     const source =
         \\public class SwitchElseRuntimeTest {
