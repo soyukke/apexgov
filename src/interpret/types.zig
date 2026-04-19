@@ -61,6 +61,7 @@ pub const SObject = struct {
 
 pub const ListValue = struct {
     items: std.ArrayListUnmanaged(Value) = .empty,
+    element_type: ?[]const u8 = null,
 };
 
 pub const MapValue = struct {

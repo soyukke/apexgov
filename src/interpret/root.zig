@@ -6921,6 +6921,26 @@ test "E2E: null collection variables preserve declared overload targets" {
     try std.testing.expectEqualStrings("List:Map:Iterable", result.value.string);
 }
 
+test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
+    const source =
+        \\public class IterableIdOverloadTest {
+        \\    public String pick(List<SObject> rows) { return 'List'; }
+        \\    public String pick(System.Iterable<Id> ids) { return 'Iterable'; }
+        \\    public static String test() {
+        \\        IterableIdOverloadTest helper = new IterableIdOverloadTest();
+        \\        List<Id> ids = new List<Id>{ UserInfo.getUserId() };
+        \\        return helper.pick(ids);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IterableIdOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Iterable", result.value.string);
+}
+
 test "E2E: UserRecordAccess delete query returns only deletable records" {
     const source =
         \\public class UserRecordAccessDeleteQueryTest {
@@ -7586,6 +7606,43 @@ test "E2E: List constructor preserves SObjects from Set" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:Account", result.value.string);
+}
+
+test "E2E: List<SObject>.getSObjectType stays null for concrete members" {
+    const source =
+        \\public class GenericListTypeProbe {
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>();
+        \\        rows.add(new Account(Name = 'Acme'));
+        \\        return String.valueOf(rows.getSObjectType() == null) + ':' +
+        \\            String.valueOf(rows.get(0).getSObjectType());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GenericListTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:Account", result.value.string);
+}
+
+test "E2E: concrete typed list reports its SObjectType" {
+    const source =
+        \\public class ConcreteListTypeProbe {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{ new Account(Name = 'Acme') };
+        \\        return String.valueOf(rows.getSObjectType()) + ':' +
+        \\            String.valueOf(rows.getSObjectType() != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ConcreteListTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Account:true", result.value.string);
 }
 
 test "E2E: Set<SObject> keeps distinct unsaved records by field values" {

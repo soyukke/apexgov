@@ -1417,7 +1417,8 @@ pub const Evaluator = struct {
 
         for (method.params, 0..) |param, i| {
             const val = if (i < args.len) args[i] else Value.null_val;
-            try method_env.defineTyped(param.name, val, param.type_ref.name);
+            const declared_type = self.renderTypeRef(param.type_ref);
+            try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);
         }
 
         const saved_rv = self.return_value;
@@ -1459,7 +1460,9 @@ pub const Evaluator = struct {
                 else
                     defaultValue(vd.type_ref);
                 val = try self.coerceSoqlAssignmentToDeclaredType(val, vd.initializer, vd.type_ref.name);
-                try current_env.defineTyped(vd.name, val, vd.type_ref.name);
+                const declared_type = self.renderTypeRef(vd.type_ref);
+                val = self.annotateDeclaredCollectionType(val, declared_type);
+                try current_env.defineTyped(vd.name, val, declared_type);
                 return .normal;
             },
             .block => |stmts| {
@@ -6564,16 +6567,122 @@ pub const Evaluator = struct {
     }
 
     fn isCollectionTypeName(type_name: []const u8) bool {
-        return std.ascii.eqlIgnoreCase(type_name, "List") or
-            std.ascii.eqlIgnoreCase(type_name, "Set") or
-            std.ascii.eqlIgnoreCase(type_name, "Iterable") or
-            std.ascii.eqlIgnoreCase(type_name, "Map");
+        const base = typeBaseName(stripTypeNamespace(type_name));
+        return std.ascii.eqlIgnoreCase(base, "List") or
+            std.ascii.eqlIgnoreCase(base, "Set") or
+            std.ascii.eqlIgnoreCase(base, "Iterable") or
+            std.ascii.eqlIgnoreCase(base, "Map");
     }
 
     fn stripTypeNamespace(type_name: []const u8) []const u8 {
         if (std.ascii.startsWithIgnoreCase(type_name, "System.")) return type_name["System.".len..];
         if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) return type_name["Schema.".len..];
         return type_name;
+    }
+
+    fn extractCollectionElementTypeName(type_name: []const u8) ?[]const u8 {
+        const stripped = stripTypeNamespace(type_name);
+        if (std.ascii.startsWithIgnoreCase(stripped, "List<") or
+            std.ascii.startsWithIgnoreCase(stripped, "Set<") or
+            std.ascii.startsWithIgnoreCase(stripped, "Iterable<"))
+        {
+            const lt = std.mem.indexOfScalar(u8, stripped, '<') orelse return null;
+            const gt = std.mem.lastIndexOfScalar(u8, stripped, '>') orelse return null;
+            if (gt <= lt + 1) return null;
+            return std.mem.trim(u8, stripped[lt + 1 .. gt], " \t");
+        }
+        if (std.mem.endsWith(u8, stripped, "[]")) return stripped[0 .. stripped.len - 2];
+        return null;
+    }
+
+    fn extractMapTypeArgs(type_name: []const u8) ?struct { key: []const u8, value: []const u8 } {
+        const stripped = stripTypeNamespace(type_name);
+        if (!std.ascii.startsWithIgnoreCase(stripped, "Map<")) return null;
+        const lt = std.mem.indexOfScalar(u8, stripped, '<') orelse return null;
+        const gt = std.mem.lastIndexOfScalar(u8, stripped, '>') orelse return null;
+        if (gt <= lt + 1) return null;
+
+        const inner = stripped[lt + 1 .. gt];
+        var depth: usize = 0;
+        for (inner, 0..) |ch, idx| {
+            switch (ch) {
+                '<' => depth += 1,
+                '>' => {
+                    if (depth > 0) depth -= 1;
+                },
+                ',' => if (depth == 0) {
+                    return .{
+                        .key = std.mem.trim(u8, inner[0..idx], " \t"),
+                        .value = std.mem.trim(u8, inner[idx + 1 ..], " \t"),
+                    };
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn annotateDeclaredCollectionType(self: *Evaluator, value: Value, declared_type: ?[]const u8) Value {
+        if (declared_type) |type_name| {
+            if (value == .list) {
+                if (value.list.element_type == null) {
+                    if (extractCollectionElementTypeName(type_name)) |elem_type| {
+                        value.list.element_type = stripTypeNamespace(elem_type);
+                    }
+                }
+            }
+        }
+        _ = self;
+        return value;
+    }
+
+    fn namesMatchBySimpleName(left: []const u8, right: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(left, right)) return true;
+        const left_simple = if (std.mem.lastIndexOfScalar(u8, left, '.')) |idx| left[idx + 1 ..] else left;
+        const right_simple = if (std.mem.lastIndexOfScalar(u8, right, '.')) |idx| right[idx + 1 ..] else right;
+        return std.ascii.eqlIgnoreCase(left_simple, right_simple);
+    }
+
+    fn inferListElementType(self: *Evaluator, list: *types.ListValue, arg_hint: ?[]const u8) ?[]const u8 {
+        _ = self;
+        if (list.element_type) |element_type| return stripTypeNamespace(element_type);
+        if (arg_hint) |hint| {
+            if (extractCollectionElementTypeName(hint)) |element_type| return stripTypeNamespace(element_type);
+        }
+        if (list.items.items.len == 0) return null;
+
+        return switch (list.items.items[0]) {
+            .sobject => |sob| stripTypeNamespace(sob.type_name),
+            .object => |obj| stripTypeNamespace(obj.class_name),
+            .string => |s| if (Evaluator.isSalesforceIdString(s)) "Id" else null,
+            else => null,
+        };
+    }
+
+    fn scoreListArgumentForParam(self: *Evaluator, list: *types.ListValue, arg_hint: ?[]const u8, param_type: types.TypeRef) i32 {
+        const param_base = typeBaseName(param_type.name);
+        if (!std.ascii.eqlIgnoreCase(param_base, "List") and !std.ascii.eqlIgnoreCase(param_base, "Iterable")) {
+            return overloadScoreForArg(Value{ .list = list }, param_type.name);
+        }
+        if (param_type.params.len == 0) return 2;
+
+        const param_elem_type = stripTypeNamespace(self.renderTypeRef(param_type.params[0]));
+        const param_elem_base = typeBaseName(param_elem_type);
+        const actual_elem_type = self.inferListElementType(list, arg_hint);
+        if (actual_elem_type == null) return 2;
+
+        const actual_elem_base = typeBaseName(actual_elem_type.?);
+        if (std.ascii.eqlIgnoreCase(param_elem_base, "SObject")) {
+            if (std.ascii.eqlIgnoreCase(actual_elem_base, "SObject") or self.isSObjectTypeName(actual_elem_base)) {
+                return 3;
+            }
+            return 0;
+        }
+        if (namesMatchBySimpleName(actual_elem_base, param_elem_base)) return 3;
+        if (self.isSObjectTypeName(actual_elem_base) and self.isSObjectTypeName(param_elem_base) and self.isSubclassOf(actual_elem_base, param_elem_base)) {
+            return 2;
+        }
+        return 0;
     }
 
     fn typeBaseName(type_name: []const u8) []const u8 {
@@ -6764,6 +6873,7 @@ pub const Evaluator = struct {
         var coerced_val = val;
         if (self.resolveAssignmentTargetType(asgn.target, current_env)) |target_type| {
             coerced_val = try self.coerceSoqlAssignmentToDeclaredType(coerced_val, asgn.value, target_type);
+            coerced_val = self.annotateDeclaredCollectionType(coerced_val, target_type);
         }
         switch (asgn.target.*) {
             .identifier => |id| {
@@ -8129,6 +8239,7 @@ pub const Evaluator = struct {
             const is_deep = std.ascii.eqlIgnoreCase(method, "deepClone");
             const new_list = try self.arena.create(types.ListValue);
             new_list.* = .{};
+            new_list.element_type = list.element_type;
             for (list.items.items) |item| {
                 const cloned = if (is_deep and item == .sobject) blk: {
                     const clone = try self.cloneSObject(item.sobject);
@@ -8145,7 +8256,21 @@ pub const Evaluator = struct {
             return Value{ .integer = -1 };
         }
         if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-            // Return type of first element, or null for empty/non-SObject lists
+            if (list.element_type) |element_type| {
+                const base_type = typeBaseName(element_type);
+                if (std.ascii.eqlIgnoreCase(base_type, "SObject") or
+                    std.ascii.eqlIgnoreCase(base_type, "Object") or
+                    isCollectionTypeName(base_type))
+                {
+                    return Value.null_val;
+                }
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = base_type });
+                return Value{ .object = sot };
+            }
+
+            // Fall back to the first runtime element when there is no declared element type.
             if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
                 const sot = try self.arena.create(types.ObjectInstance);
                 sot.* = .{ .class_name = "Schema.SObjectType" };
@@ -9011,6 +9136,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "List")) {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
+            if (ne.type_name.params.len > 0) {
+                list.element_type = stripTypeNamespace(self.renderTypeRef(ne.type_name.params[0]));
+            }
             // Single arg that is a Set → convert to list
             if (ne.args.len == 1) {
                 var arg_copy = ne.args[0];
@@ -11511,7 +11639,8 @@ pub const Evaluator = struct {
             for (method.params, 0..) |param, i| {
                 const val = if (i < args.len) args[i] else Value.null_val;
                 method_env.set(param.name, val) catch {
-                    try method_env.defineTyped(param.name, val, param.type_ref.name);
+                    const declared_type = self.renderTypeRef(param.type_ref);
+                    try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);
                 };
             }
             const saved_class = self.current_class;
@@ -11722,13 +11851,12 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                if (arg_type_hints != null and i < arg_type_hints.?.len) {
-                    if (arg_type_hints.?[i]) |hint| {
-                        const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
-                        if (hint_score > 0) {
-                            score += hint_score;
-                            if (arg == .null_val) continue;
-                        }
+                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+                if (arg_hint) |hint| {
+                    const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
+                    if (hint_score > 0) {
+                        score += hint_score;
+                        if (arg == .null_val) continue;
                     }
                 }
                 var arg_score = overloadScoreForArg(arg, pt);
@@ -11738,31 +11866,9 @@ pub const Evaluator = struct {
                         arg_score = 2;
                     }
                 }
-                // For List args, check generic element type
+                // For List args, score generic element compatibility using declared element types.
                 if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
-                    const elem_type = param.type_ref.params[0].name;
-                    // SObject is a generic parent — any SObject matches List<SObject>
-                    if (std.ascii.eqlIgnoreCase(elem_type, "SObject")) {
-                        if (arg.list.items.items.len > 0) {
-                            if (arg.list.items.items[0] == .sobject) arg_score = 3;
-                        } else {
-                            arg_score = 2; // empty list matches
-                        }
-                    } else if (arg.list.items.items.len > 0) {
-                        const first = arg.list.items.items[0];
-                        if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
-                            arg_score = 3;
-                        } else if (first == .sobject) {
-                            // Simple name match
-                            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) arg_score = 3;
-                            } else if (std.mem.lastIndexOfScalar(u8, first.sobject.type_name, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name[di + 1 ..], elem_type)) arg_score = 3;
-                            }
-                        } else if (first == .object and std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) {
-                            arg_score = 3;
-                        }
-                    }
+                    arg_score = self.scoreListArgumentForParam(arg.list, arg_hint, param.type_ref);
                 }
                 score += arg_score;
             }
@@ -11812,13 +11918,12 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                if (arg_type_hints != null and i < arg_type_hints.?.len) {
-                    if (arg_type_hints.?[i]) |hint| {
-                        const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
-                        if (hint_score > 0) {
-                            score += hint_score;
-                            if (arg == .null_val) continue;
-                        }
+                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+                if (arg_hint) |hint| {
+                    const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
+                    if (hint_score > 0) {
+                        score += hint_score;
+                        if (arg == .null_val) continue;
                     }
                 }
                 // Score: higher is better match (with special cases for collection mismatches)
@@ -11837,27 +11942,7 @@ pub const Evaluator = struct {
                     }
                     // List generic element type check
                     if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
-                        const elem_type = param.type_ref.params[0].name;
-                        if (std.ascii.eqlIgnoreCase(elem_type, "SObject")) {
-                            if (arg.list.items.items.len > 0) {
-                                if (arg.list.items.items[0] == .sobject) arg_score = 3;
-                            } else {
-                                arg_score = 2;
-                            }
-                        } else if (arg.list.items.items.len > 0) {
-                            const first = arg.list.items.items[0];
-                            if (first == .sobject and std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) {
-                                arg_score = 3;
-                            } else if (first == .sobject) {
-                                if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-                                    if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) arg_score = 3;
-                                } else if (std.mem.lastIndexOfScalar(u8, first.sobject.type_name, '.')) |di| {
-                                    if (std.ascii.eqlIgnoreCase(first.sobject.type_name[di + 1 ..], elem_type)) arg_score = 3;
-                                }
-                            } else if (first == .object and std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) {
-                                arg_score = 3;
-                            }
-                        }
+                        arg_score = self.scoreListArgumentForParam(arg.list, arg_hint, param.type_ref);
                     }
                     score += arg_score;
                 }
@@ -11879,12 +11964,40 @@ pub const Evaluator = struct {
         const hint_has_generics = std.mem.indexOfScalar(u8, hint, '<') != null;
         const pt_has_generics = std.mem.indexOfScalar(u8, pt, '<') != null;
         if (std.ascii.eqlIgnoreCase(hint, pt)) return 3;
+        if (hint_has_generics and pt_has_generics and std.ascii.eqlIgnoreCase(hint_base, pt_base)) {
+            if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
+                const hint_args = extractMapTypeArgs(hint);
+                const param_args = extractMapTypeArgs(pt);
+                if (hint_args != null and param_args != null and namesMatchBySimpleName(stripTypeNamespace(hint_args.?.key), stripTypeNamespace(param_args.?.key))) {
+                    const hint_value = stripTypeNamespace(hint_args.?.value);
+                    const param_value = stripTypeNamespace(param_args.?.value);
+                    if (namesMatchBySimpleName(hint_value, param_value)) return 3;
+                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_value), "SObject") and self.isSObjectTypeName(typeBaseName(hint_value))) return 3;
+                }
+            } else if (extractCollectionElementTypeName(hint)) |hint_elem_type| {
+                if (extractCollectionElementTypeName(pt)) |param_elem_type| {
+                    const hint_elem = stripTypeNamespace(hint_elem_type);
+                    const param_elem = stripTypeNamespace(param_elem_type);
+                    if (namesMatchBySimpleName(hint_elem, param_elem)) return 3;
+                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_elem), "SObject") and self.isSObjectTypeName(typeBaseName(hint_elem))) return 3;
+                }
+            }
+        }
         if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
 
         if (isCollectionTypeName(hint_base)) {
-            if (std.ascii.eqlIgnoreCase(hint_base, "Set") and std.ascii.eqlIgnoreCase(pt_base, "Iterable")) return 2;
-            if (std.ascii.eqlIgnoreCase(hint_base, "List") and std.ascii.eqlIgnoreCase(pt_base, "Iterable")) return 1;
+            if (std.ascii.eqlIgnoreCase(pt_base, "Iterable")) {
+                if (hint_has_generics and pt_has_generics) {
+                    const hint_elem_type = extractCollectionElementTypeName(hint);
+                    const param_elem_type = extractCollectionElementTypeName(pt);
+                    if (hint_elem_type != null and param_elem_type != null and namesMatchBySimpleName(stripTypeNamespace(hint_elem_type.?), stripTypeNamespace(param_elem_type.?))) {
+                        return if (std.ascii.eqlIgnoreCase(hint_base, "Set")) 4 else 3;
+                    }
+                }
+                if (std.ascii.eqlIgnoreCase(hint_base, "Set")) return 2;
+                if (std.ascii.eqlIgnoreCase(hint_base, "List")) return 1;
+            }
             return 0;
         }
 
@@ -12007,7 +12120,8 @@ pub const Evaluator = struct {
             }
             for (cd.params, 0..) |param, pi| {
                 const pval = if (pi < args.len) args[pi] else Value.null_val;
-                try ctor_env.defineTyped(param.name, pval, param.type_ref.name);
+                const declared_type = self.renderTypeRef(param.type_ref);
+                try ctor_env.defineTyped(param.name, self.annotateDeclaredCollectionType(pval, declared_type), declared_type);
             }
             // Push call frame for constructor (use current_call_line from new-expression site)
             const ctor_line = if (self.current_call_line > 0) self.current_call_line else if (cd.loc.line > 0) cd.loc.line else 1;
