@@ -1675,6 +1675,115 @@ test "E2E: synthetic User LIKE collapses repeated wildcards" {
     try std.testing.expectEqualStrings("Test User:testuser@example.com", result.value.string);
 }
 
+test "E2E: synthetic automated-process User query works when the User store is non-empty" {
+    const source =
+        \\public class AutomatedProcessUserQueryTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        insert new User(ProfileId = p.Id, LastName = 'StoreUser', Username = 'store-user@example.com', Email = 'store-user@example.com', Alias = 'stor');
+        \\        User autoproc = [SELECT Alias, Username, UserType FROM User WHERE Alias = 'autoproc'];
+        \\        return autoproc.Alias + ':' + autoproc.Username + ':' + autoproc.UserType;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AutomatedProcessUserQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("autoproc:autoproc@example.com:AutomatedProcess", result.value.string);
+}
+
+test "E2E: UserInfo getters reflect the current runAs user" {
+    const source =
+        \\public class RunAsUserInfoTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            FirstName = 'Casey',
+        \\            LastName = 'Runner',
+        \\            Username = 'casey.runner@example.com',
+        \\            Email = 'casey.runner@example.com',
+        \\            Alias = 'crun',
+        \\            TimeZoneSidKey = 'Asia/Tokyo'
+        \\        );
+        \\        insert u;
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = UserInfo.getUsername() + ':' + UserInfo.getFirstName() + ':' + UserInfo.getLastName() + ':' + UserInfo.getTimeZone().getId();
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RunAsUserInfoTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("casey.runner@example.com:Casey:Runner:Asia/Tokyo", result.value.string);
+}
+
+test "E2E: User query by UserInfo username resolves the current user when other users exist" {
+    const source =
+        \\public class CurrentUserUsernameQueryTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        insert new User(ProfileId = p.Id, LastName = 'Other', Username = 'other.user@example.com', Email = 'other.user@example.com', Alias = 'othr');
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        return currentUser.Id + ':' + currentUser.Username;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CurrentUserUsernameQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+}
+
+test "E2E: User query by UserInfo username resolves the current user before any User records exist" {
+    const source =
+        \\public class SeededCurrentUserUsernameQueryTest {
+        \\    public static String test() {
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        return currentUser.Id + ':' + currentUser.Username;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SeededCurrentUserUsernameQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+}
+
+test "E2E: runAs can query the original current user by username" {
+    const source =
+        \\public class RunAsCurrentUserQueryTest {
+        \\    public static String test() {
+        \\        String originalUsername = UserInfo.getUsername();
+        \\        User autoproc = [SELECT Id FROM User WHERE Alias = 'autoproc'];
+        \\        String result = '';
+        \\        System.runAs(new User(Id = autoproc.Id)) {
+        \\            User originalUser = [SELECT Id, Username FROM User WHERE Username = :originalUsername];
+        \\            result = originalUser.Id + ':' + originalUser.Username;
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RunAsCurrentUserQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+}
+
 test "E2E: standard user cannot access AccountBrand describe fields" {
     const source =
         \\public class AccountBrandAccessTest {
@@ -2490,6 +2599,23 @@ test "E2E: Datetime.valueOf accepts epoch milliseconds" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("2025-01-01:1735689600000", result.value.string);
+}
+
+test "E2E: TimeZone.getTimeZone returns an object-like value with id and display name" {
+    const source =
+        \\public class TimeZoneLookupTest {
+        \\    public static String test() {
+        \\        TimeZone tz = TimeZone.getTimeZone('Asia/Tokyo');
+        \\        return tz.getId() + ':' + tz.getDisplayName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TimeZoneLookupTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Asia/Tokyo:Asia/Tokyo", result.value.string);
 }
 
 test "E2E: String.toLowerCase and trim" {

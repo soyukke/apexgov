@@ -116,6 +116,7 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "Date")) return dispatchStaticDate(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Math")) return dispatchStaticMath(method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatchStaticTime(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "TimeZone")) return dispatchStaticTimeZone(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "DateTime")) return dispatchStaticDateTime(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatchStaticJson(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatchStaticUserInfo(ctx, method_name);
@@ -521,6 +522,15 @@ fn dispatchStaticTime(ctx: *BuiltinContext, method_name: []const u8, args: []con
     return Value.null_val;
 }
 
+fn dispatchStaticTimeZone(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    _ = ctx;
+    if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
+        if (args.len > 0 and args[0] == .string) return Value{ .string = args[0].string };
+        return Value{ .string = "America/Los_Angeles" };
+    }
+    return Value.null_val;
+}
+
 fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     const fromEpochMillis = struct {
         fn convert(ctx2: *BuiltinContext, ms: i64) !Value {
@@ -820,12 +830,34 @@ fn dispatchStaticUserInfo(ctx: *BuiltinContext, method_name: []const u8) !?Value
         }
         break :blk null;
     };
+    const current_user_string = struct {
+        fn get(user: ?*types.SObject, field_name: []const u8) ?[]const u8 {
+            const u = user orelse return null;
+            const value = utils.sobjectGet(&u.fields, field_name) orelse return null;
+            return switch (value) {
+                .string => |s| s,
+                else => null,
+            };
+        }
+    }.get;
     if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) return Value{ .string = ctx.eval.current_user_id };
     if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) return Value{ .string = ctx.eval.current_profile_id };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = "Test User" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getUsername")) return Value{ .string = "testuser@example.com" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getFirstName")) return Value{ .string = "Test" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLastName")) return Value{ .string = "User" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+        if (current_user_string(current_user, "Name")) |name| return Value{ .string = name };
+        return Value{ .string = "Test User" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getUsername")) {
+        if (current_user_string(current_user, "Username")) |username| return Value{ .string = username };
+        return Value{ .string = "testuser@example.com" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getFirstName")) {
+        if (current_user_string(current_user, "FirstName")) |first_name| return Value{ .string = first_name };
+        return Value{ .string = "Test" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLastName")) {
+        if (current_user_string(current_user, "LastName")) |last_name| return Value{ .string = last_name };
+        return Value{ .string = "User" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getUserType")) {
         if (current_user) |user| {
             if (utils.sobjectGet(&user.fields, "UserType")) |user_type| {
@@ -836,7 +868,10 @@ fn dispatchStaticUserInfo(ctx: *BuiltinContext, method_name: []const u8) !?Value
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLanguage")) return Value{ .string = "en_US" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocale")) return Value{ .string = "en_US" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) return Value{ .string = "America/Los_Angeles" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
+        if (current_user_string(current_user, "TimeZoneSidKey")) |time_zone| return Value{ .string = time_zone };
+        return Value{ .string = "America/Los_Angeles" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationId")) return Value{ .string = "00D000000000001" };
     if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationName")) return Value{ .string = "Mock Org" };
     if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };

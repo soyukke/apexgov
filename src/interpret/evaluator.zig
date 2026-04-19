@@ -228,32 +228,141 @@ pub const Evaluator = struct {
         _ = self.global_env.bindings.orderedRemove("ApexPages.currentPageRef");
     }
 
-    /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
-    pub fn createCurrentUserRecord(self: *Evaluator) !Value {
+    fn createBuiltinUserRecord(
+        self: *Evaluator,
+        user_id: []const u8,
+        profile_id: []const u8,
+        username: []const u8,
+        alias: []const u8,
+        first_name: []const u8,
+        last_name: []const u8,
+        display_name: []const u8,
+    ) !Value {
         const user = try self.arena.create(types.SObject);
         user.* = .{ .type_name = "User" };
-        user.id = self.current_user_id;
-        try user.fields.put(self.arena, "Id", Value{ .string = self.current_user_id });
-        try user.fields.put(self.arena, "FirstName", Value{ .string = "Test" });
-        try user.fields.put(self.arena, "LastName", Value{ .string = "User" });
-        try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-        try user.fields.put(self.arena, "Email", Value{ .string = "testuser@example.com" });
-        try user.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
-        try user.fields.put(self.arena, "ProfileId", Value{ .string = self.current_profile_id });
+        user.id = user_id;
+        try user.fields.put(self.arena, "Id", Value{ .string = user_id });
+        try user.fields.put(self.arena, "FirstName", Value{ .string = first_name });
+        try user.fields.put(self.arena, "LastName", Value{ .string = last_name });
+        try user.fields.put(self.arena, "Name", Value{ .string = display_name });
+        try user.fields.put(self.arena, "Email", Value{ .string = username });
+        try user.fields.put(self.arena, "Username", Value{ .string = username });
+        try user.fields.put(self.arena, "ProfileId", Value{ .string = profile_id });
         const profile = try self.arena.create(types.SObject);
-        profile.* = .{ .type_name = "Profile", .id = self.current_profile_id };
-        try profile.fields.put(self.arena, "Id", Value{ .string = self.current_profile_id });
+        profile.* = .{ .type_name = "Profile", .id = profile_id };
+        try profile.fields.put(self.arena, "Id", Value{ .string = profile_id });
         try self.populateSyntheticProfile(profile, "System Administrator");
         try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
         try user.fields.put(self.arena, "UserType", Value{ .string = "Standard" });
         try user.fields.put(self.arena, "IsActive", Value{ .boolean = true });
-        try user.fields.put(self.arena, "Alias", Value{ .string = "tuser" });
+        try user.fields.put(self.arena, "Alias", Value{ .string = alias });
         try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
         try user.fields.put(self.arena, "LocaleSidKey", Value{ .string = "en_US" });
         try user.fields.put(self.arena, "EmailEncodingKey", Value{ .string = "UTF-8" });
         try user.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
-        try user.fields.put(self.arena, "CommunityNickname", Value{ .string = "testuser" });
+        try user.fields.put(self.arena, "CommunityNickname", Value{ .string = alias });
         return Value{ .sobject = user };
+    }
+
+    fn createDefaultUserRecord(self: *Evaluator) !Value {
+        if (self.store.get("User")) |users| {
+            for (users.items) |existing| {
+                if (existing != .sobject or existing.sobject.id == null) continue;
+                if (std.ascii.eqlIgnoreCase(existing.sobject.id.?, "005000000000001")) {
+                    const clone = try self.cloneSObject(existing.sobject);
+                    return Value{ .sobject = clone };
+                }
+            }
+        }
+        return self.createBuiltinUserRecord(
+            "005000000000001",
+            "00e000000000001",
+            "testuser@example.com",
+            "tuser",
+            "Test",
+            "User",
+            "Test User",
+        );
+    }
+
+    /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
+    pub fn createCurrentUserRecord(self: *Evaluator) !Value {
+        if (self.store.get("User")) |users| {
+            for (users.items) |existing| {
+                if (existing != .sobject or existing.sobject.id == null) continue;
+                if (std.ascii.eqlIgnoreCase(existing.sobject.id.?, self.current_user_id)) {
+                    const clone = try self.cloneSObject(existing.sobject);
+                    return Value{ .sobject = clone };
+                }
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(self.current_user_id, "005000000000001")) {
+            return self.createDefaultUserRecord();
+        }
+        return self.createBuiltinUserRecord(
+            self.current_user_id,
+            self.current_profile_id,
+            "testuser@example.com",
+            "tuser",
+            "Test",
+            "User",
+            "Test User",
+        );
+    }
+
+    fn shouldSynthesizeBuiltinUser(self: *Evaluator, soql: []const u8, current_env: *Env) bool {
+        if (self.extractWhereFieldValue(soql, "Id", current_env)) |user_id| {
+            if (std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Alias", current_env)) |alias| {
+            if (std.ascii.startsWithIgnoreCase(alias, "autoproc") or std.ascii.eqlIgnoreCase(alias, "tuser")) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Username", current_env)) |username| {
+            if (std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.eqlIgnoreCase(username, "testuser@example.com")) return true;
+            if (std.ascii.startsWithIgnoreCase(username, "autoproc")) return true;
+        }
+        return false;
+    }
+
+    fn currentUserFieldValue(self: *Evaluator, field_name: []const u8, fallback: []const u8) []const u8 {
+        if (self.store.get("User")) |users| {
+            for (users.items) |existing| {
+                if (existing != .sobject or existing.sobject.id == null) continue;
+                if (!std.ascii.eqlIgnoreCase(existing.sobject.id.?, self.current_user_id)) continue;
+                if (utils.sobjectGet(&existing.sobject.fields, field_name)) |field_value| {
+                    if (field_value == .string) return field_value.string;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    fn queryMatchesDefaultSyntheticUser(self: *Evaluator, soql: []const u8, current_env: *Env) bool {
+        if (self.extractWhereFieldValue(soql, "Id", current_env)) |user_id| {
+            if (std.ascii.eqlIgnoreCase(user_id, "005000000000001")) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Alias", current_env)) |alias| {
+            if (std.ascii.eqlIgnoreCase(alias, "tuser")) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Username", current_env)) |username| {
+            if (std.ascii.eqlIgnoreCase(username, "testuser@example.com")) return true;
+        }
+        return false;
+    }
+
+    fn queryMatchesCurrentUser(self: *Evaluator, soql: []const u8, current_env: *Env) bool {
+        if (self.extractWhereFieldValue(soql, "Id", current_env)) |user_id| {
+            if (std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Alias", current_env)) |alias| {
+            const current_alias = self.currentUserFieldValue("Alias", "tuser");
+            if (std.ascii.eqlIgnoreCase(alias, current_alias)) return true;
+        }
+        if (self.extractWhereFieldValue(soql, "Username", current_env)) |username| {
+            const current_username = self.currentUserFieldValue("Username", "testuser@example.com");
+            if (std.ascii.eqlIgnoreCase(username, current_username)) return true;
+        }
+        return false;
     }
 
     /// Resolve picklist API name to label using field-meta.xml
@@ -462,6 +571,12 @@ pub const Evaluator = struct {
     }
 
     fn createUserForQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
+        if (self.queryMatchesDefaultSyntheticUser(soql, current_env)) {
+            return self.createDefaultUserRecord();
+        }
+        if (self.queryMatchesCurrentUser(soql, current_env)) {
+            return self.createCurrentUserRecord();
+        }
         const user = try self.arena.create(types.SObject);
         const alias = self.extractWhereFieldValue(soql, "Alias", current_env) orelse "tuser";
         const username = self.extractWhereFieldValue(soql, "Username", current_env) orelse if (std.ascii.startsWithIgnoreCase(alias, "autoproc"))
@@ -3468,6 +3583,23 @@ pub const Evaluator = struct {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "User") and self.shouldSynthesizeBuiltinUser(soql, current_env)) {
+            const user_record = if (self.queryMatchesCurrentUser(soql, current_env))
+                try self.createCurrentUserRecord()
+            else if (self.hasExactWhereFieldComparison(soql, "Alias") or self.hasExactWhereFieldComparison(soql, "Username"))
+                try self.createUserForQuery(soql, current_env)
+            else
+                try self.createCurrentUserRecord();
+            if (self.matchesWhere(user_record, soql, current_env)) {
+                try records.append(self.arena, user_record);
+                if (user_record == .sobject) {
+                    const gop = try self.store.getOrPut(self.arena, "User");
+                    if (!gop.found_existing) gop.value_ptr.* = .empty;
+                    try gop.value_ptr.append(self.arena, user_record);
                 }
             }
         }
@@ -8686,6 +8818,10 @@ pub const Evaluator = struct {
         }
         // getID() — TimeZone の ID 文字列
         if (std.ascii.eqlIgnoreCase(method, "getID") or std.ascii.eqlIgnoreCase(method, "getId")) {
+            return Value{ .string = s };
+        }
+        // getDisplayName() — TimeZone 表示名は ID をそのまま返す。
+        if (std.ascii.eqlIgnoreCase(method, "getDisplayName")) {
             return Value{ .string = s };
         }
         // isSameDay(otherDate) — Date/DateTime が同じ日かどうか
