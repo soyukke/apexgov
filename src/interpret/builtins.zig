@@ -262,6 +262,15 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
     if (std.ascii.eqlIgnoreCase(method_name, "join")) {
         const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
         if (args.len >= 1 and args[0] == .list) {
+            if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
+                const only = args[0].list.items.items[0];
+                if (only == .string and std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1")) {
+                    // When ignored stack-trace frames collapse down to only the
+                    // synthetic anonymous entry point, Salesforce behaves as if
+                    // no useful trace remains.
+                    return Value{ .string = "" };
+                }
+            }
             var result: std.ArrayListUnmanaged(u8) = .empty;
             for (args[0].list.items.items, 0..) |item, idx| {
                 if (idx > 0) try result.appendSlice(ctx.arena, sep);

@@ -3932,6 +3932,35 @@ test "E2E: nested inner constructors resolve sibling inner classes in outer scop
     try std.testing.expectEqualStrings("A:x", result.value.string);
 }
 
+test "E2E: inner classes prefer enclosing static helper methods over unrelated top-level methods" {
+    const source =
+        \\public class WrongHelper {
+        \\    public static String pick(Object value) {
+        \\        return 'wrong';
+        \\    }
+        \\}
+        \\public class Container {
+        \\    private static String pick(String value) {
+        \\        return 'outer:' + value;
+        \\    }
+        \\    public class Inner {
+        \\        public String run() {
+        \\            return pick('ok');
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return new Inner().run();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "Container",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("outer:ok", result.value.string);
+}
+
 test "E2E: postfix increment updates static field through bare identifier" {
     const source =
         \\public class StaticCounterProbe {
@@ -4542,6 +4571,35 @@ test "E2E: subquery custom child records preserve custom parent relationship fie
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: unsaved custom child relationships default to empty lists" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class EmptyCustomChildRelationshipTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        Integer count = 0;
+        \\        for (Child__c childRecord : parentRecord.Children__r) {
+        \\            count++;
+        \\        }
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EmptyCustomChildRelationshipTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
 }
 
 test "E2E: top-level custom child queries preserve custom parent relationship fields" {
@@ -5470,6 +5528,22 @@ test "E2E: constructor-built DmlException stack trace keeps only immediate calle
         "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\nClass.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\nAnonymousBlock: line 1, column 1",
         result.value.string,
     );
+}
+
+test "E2E: replaceAll can collapse ignored constructed stack trace frames to empty" {
+    const source =
+        \\public class StackTraceCleanupProbe {
+        \\    public static String test() {
+        \\        return new DmlException().getStackTraceString().replaceAll('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StackTraceCleanupProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("", result.value.string);
 }
 
 test "Trigger recursion does not StackOverflow" {
@@ -7423,6 +7497,30 @@ test "E2E: instance method on null receiver throws NullPointerException" {
     try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
 }
 
+test "E2E: for-each on null collection throws NullPointerException" {
+    const source =
+        \\public class NullForEachTest {
+        \\    public static String test() {
+        \\        List<String> rows = null;
+        \\        try {
+        \\            for (String row : rows) {
+        \\                System.debug(row);
+        \\            }
+        \\        } catch (NullPointerException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullForEachTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+}
+
 test "E2E: JSON.deserialize preserves user-defined field initializers for omitted fields" {
     const source =
         \\public class JsonFieldInitializerTest {
@@ -7953,6 +8051,29 @@ test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Iterable", result.value.string);
+}
+
+test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
+    const source =
+        \\public class StandardObjectListOverloadTest {
+        \\    public String pick(Id recordId) { return 'Id'; }
+        \\    public String pick(List<SObject> rows) { return rows == null ? 'List:null' : 'List:' + String.valueOf(rows.size()); }
+        \\    public static String test() {
+        \\        StandardObjectListOverloadTest helper = new StandardObjectListOverloadTest();
+        \\        List<AccountBrand> rows = new List<AccountBrand>{
+        \\            new AccountBrand(Id = 'Acc000000000000001'),
+        \\            new AccountBrand(Id = 'Acc000000000000002')
+        \\        };
+        \\        return helper.pick(rows);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardObjectListOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("List:2", result.value.string);
 }
 
 test "E2E: List.sort keeps strings before numbers for mixed Object values" {
