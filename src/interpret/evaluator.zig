@@ -2042,6 +2042,12 @@ pub const Evaluator = struct {
             }
         }
 
+        // Roll-up summary fields on parent records are recalculated after child DML
+        // and can indirectly fire parent update triggers.
+        if (obj_type) |ot| {
+            try self.applyRollupSummarySideEffects(ot, record_list.items, old_records);
+        }
+
         // Auto-cleanup orphaned DuplicateRecordSets after DRI delete/update triggers complete
         if (op == .delete or op == .update) {
             if (obj_type) |ot| {
@@ -5684,6 +5690,89 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn collectSummaryImpactIdsFromRecords(
+        self: *Evaluator,
+        impacted_ids: *std.StringArrayHashMapUnmanaged(void),
+        records: []const Value,
+        fk_field: []const u8,
+    ) !void {
+        for (records) |record| {
+            if (record != .sobject) continue;
+            const fk_val = self.getSObjectFieldValueCaseInsensitive(record.sobject, fk_field) orelse continue;
+            if (fk_val != .string or fk_val.string.len == 0) continue;
+            try impacted_ids.put(self.arena, fk_val.string, {});
+        }
+    }
+
+    fn applyRollupSummarySideEffects(
+        self: *Evaluator,
+        child_type: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        var parent_iter = self.field_metadata.iterator();
+        while (parent_iter.next()) |parent_entry| {
+            const parent_type = parent_entry.key_ptr.*;
+            const type_meta = parent_entry.value_ptr.*;
+
+            var impacted_ids: std.StringArrayHashMapUnmanaged(void) = .empty;
+            var has_matching_rollups = false;
+
+            var field_iter = type_meta.iterator();
+            while (field_iter.next()) |field_entry| {
+                const metadata = field_entry.value_ptr.*;
+                const summary_fk = metadata.summary_foreign_key orelse continue;
+                const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
+                if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+
+                has_matching_rollups = true;
+                const fk_field = summary_fk[dot_idx + 1 ..];
+                try self.collectSummaryImpactIdsFromRecords(&impacted_ids, new_records, fk_field);
+                if (old_records) |previous_records| {
+                    try self.collectSummaryImpactIdsFromRecords(&impacted_ids, previous_records.items, fk_field);
+                }
+            }
+
+            if (!has_matching_rollups or impacted_ids.count() == 0) continue;
+
+            const parent_updates = try self.arena.create(types.ListValue);
+            parent_updates.* = .{};
+
+            var impacted_iter = impacted_ids.iterator();
+            while (impacted_iter.next()) |impacted_entry| {
+                const parent_id = impacted_entry.key_ptr.*;
+                const parent_record = self.findRecordById(parent_type, parent_id) orelse continue;
+                if (parent_record != .sobject) continue;
+
+                const updated_parent = try self.cloneSObject(parent_record.sobject);
+                var changed = false;
+
+                var summary_iter = type_meta.iterator();
+                while (summary_iter.next()) |summary_entry| {
+                    const field_name = summary_entry.key_ptr.*;
+                    const metadata = summary_entry.value_ptr.*;
+                    const summary_fk = metadata.summary_foreign_key orelse continue;
+                    const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
+                    if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+
+                    const new_value = self.computeSummaryFieldValue(updated_parent, metadata) orelse Value.null_val;
+                    const old_value = utils.sobjectGet(&parent_record.sobject.fields, field_name) orelse Value.null_val;
+                    if (utils.valueEql(old_value, new_value)) continue;
+
+                    changed = true;
+                    try updated_parent.fields.put(self.arena, field_name, new_value);
+                }
+
+                if (!changed) continue;
+                try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
+            }
+
+            if (parent_updates.items.items.len > 0) {
+                try self.executeDmlWithExternalIdInternal(.update, Value{ .list = parent_updates }, null, false);
+            }
+        }
+    }
+
     fn normalizeSummaryFieldPath(_: *Evaluator, child_type: []const u8, field_path: []const u8) []const u8 {
         if (std.mem.startsWith(u8, field_path, child_type) and field_path.len > child_type.len and field_path[child_type.len] == '.') {
             return field_path[child_type.len + 1 ..];
@@ -6989,10 +7078,20 @@ pub const Evaluator = struct {
                         // Lazy static init: ensure the class is initialized before writing
                         self.ensureStaticInit(cls);
                         const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cls, fa.field });
-                        self.global_env.set(key, coerced_val) catch {
-                            try self.global_env.define(key, coerced_val);
+                        var final_val = coerced_val;
+                        if (asgn.op != .assign) {
+                            const cur = self.global_env.get(key) orelse Value.null_val;
+                            final_val = evalCompoundAssign(cur, asgn.op, coerced_val, self.arena);
+                            if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
+                                const ls = try utils.coerceToString(cur, self.arena);
+                                const rs = try utils.coerceToString(coerced_val, self.arena);
+                                final_val = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ ls, rs }) };
+                            }
+                        }
+                        self.global_env.set(key, final_val) catch {
+                            try self.global_env.define(key, final_val);
                         };
-                        return coerced_val;
+                        return final_val;
                     }
                 }
                 const obj = try self.evalExpr(fa.object, current_env);

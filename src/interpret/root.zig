@@ -2778,6 +2778,42 @@ test "E2E: rollup summary fields resolve in WHERE clauses and selected records" 
     try std.testing.expectEqualStrings("1:2:3", result.value.string);
 }
 
+test "E2E: child insert recomputes rollup summaries and fires parent update triggers" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RollupUpdateCounter {
+        \\    public static Integer updates = 0;
+        \\}
+        \\trigger ParentRollupTrigger on Parent__c (before update, after update) {
+        \\    RollupUpdateCounter.updates++;
+        \\}
+        \\public class RollupTriggerCascadeTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
+        \\        Parent__c refreshed = [SELECT OpenChildren__c, TotalChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        return String.valueOf(RollupUpdateCounter.updates) + ':' +
+        \\            String.valueOf(refreshed.OpenChildren__c) + ':' +
+        \\            String.valueOf(refreshed.TotalChildren__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RollupTriggerCascadeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:1:1", result.value.string);
+}
+
 test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -6992,6 +7028,62 @@ test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
+}
+
+test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching overload" {
+    const source =
+        \\public class FieldMapOverloadTest {
+        \\    public String apply(Schema.SObjectField field, Object value) {
+        \\        return 'single';
+        \\    }
+        \\    public String apply(Map<Schema.SObjectField, Object> fieldToValue) {
+        \\        return (String) fieldToValue.get(Schema.Account.Name);
+        \\    }
+        \\    public static Map<Schema.SObjectField, Object> makeFieldMap() {
+        \\        Map<Schema.SObjectField, Object> fieldToValue = new Map<Schema.SObjectField, Object>();
+        \\        fieldToValue.put(Schema.Account.Name, 'matched');
+        \\        return fieldToValue;
+        \\    }
+        \\    public static String test() {
+        \\        FieldMapOverloadTest helper = new FieldMapOverloadTest();
+        \\        return helper.apply(makeFieldMap());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FieldMapOverloadTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("matched", result.value.string);
+}
+
+test "E2E: Schema field token strings resolve describe map entries for put" {
+    const source =
+        \\public class FieldStringLookupTest {
+        \\    public static String test() {
+        \\        Map<String, Object> valuesByFieldName = new Map<String, Object>{
+        \\            Schema.Account.Name.toString() => 'Acme'
+        \\        };
+        \\        Map<Schema.SObjectField, Object> resolvedFieldToValue = new Map<Schema.SObjectField, Object>();
+        \\        for (String fieldName : valuesByFieldName.keySet()) {
+        \\            Schema.SObjectField field = Schema.Account.SObjectType.getDescribe().fields.getMap().get(fieldName);
+        \\            resolvedFieldToValue.put(field, valuesByFieldName.get(fieldName));
+        \\        }
+        \\        Account accountRecord = new Account();
+        \\        for (Schema.SObjectField field : resolvedFieldToValue.keySet()) {
+        \\            accountRecord.put(field, resolvedFieldToValue.get(field));
+        \\        }
+        \\        return accountRecord.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FieldStringLookupTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
 test "E2E: UserRecordAccess delete query returns only deletable records" {
