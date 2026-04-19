@@ -3396,6 +3396,79 @@ test "E2E: safe navigation preserves chained fluent instance calls" {
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
+test "E2E: safe navigation short-circuits remaining method chain on null" {
+    const source =
+        \\public class SafeNavNullChainTest {
+        \\    public static String test() {
+        \\        String raw = null;
+        \\        List<String> parts = raw?.replaceAll('x', 'y').split(',');
+        \\        return parts == null ? 'null' : String.valueOf(parts.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SafeNavNullChainTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("null", result.value.string);
+}
+
+test "E2E: safe navigation short-circuits remaining field chain on null" {
+    const source =
+        \\public class SafeNavNullFieldChainTest {
+        \\    public class Holder {
+        \\        public Holder child;
+        \\        public String name;
+        \\    }
+        \\    public static String test() {
+        \\        Holder root = null;
+        \\        return root?.child.name == null ? 'null' : 'value';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SafeNavNullFieldChainTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("null", result.value.string);
+}
+
+test "E2E: logical OR short-circuits null receiver checks" {
+    const source =
+        \\public class LogicalOrShortCircuitTest {
+        \\    public static String test() {
+        \\        List<String> values = null;
+        \\        return values == null || values.isEmpty() ? 'ok' : 'bad';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "LogicalOrShortCircuitTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: logical AND short-circuits null receiver checks" {
+    const source =
+        \\public class LogicalAndShortCircuitTest {
+        \\    public static String test() {
+        \\        List<String> values = null;
+        \\        return values != null && values.isEmpty() ? 'bad' : 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "LogicalAndShortCircuitTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
 test "E2E: Type.forName inner handler retains SObjectType map keys after execute" {
     const source =
         \\public abstract class HandlerBase {
@@ -7049,6 +7122,125 @@ test "E2E: Database.insert null list throws by default without allOrNone false" 
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("threw", result.value.string);
+}
+
+test "E2E: instance method on null receiver throws NullPointerException" {
+    const source =
+        \\public class NullReceiverMethodTest {
+        \\    public static String test() {
+        \\        String value = null;
+        \\        try {
+        \\            value.length();
+        \\        } catch (NullPointerException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NullReceiverMethodTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+}
+
+test "E2E: JSON.deserialize preserves user-defined field initializers for omitted fields" {
+    const source =
+        \\public class JsonFieldInitializerTest {
+        \\    public class Payload {
+        \\        public String mode = 'debug';
+        \\        public Boolean saveLog = false;
+        \\    }
+        \\    public static String test() {
+        \\        Payload payload = (Payload) JSON.deserialize('{"saveLog":true}', Payload.class);
+        \\        if (payload.mode == 'debug' && payload.saveLog == true) {
+        \\            return 'ok';
+        \\        }
+        \\        return String.valueOf(payload.mode) + ':' + String.valueOf(payload.saveLog);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonFieldInitializerTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: static singleton field initializer constructs the instance" {
+    const source =
+        \\public class StaticSingletonFieldTest {
+        \\    private static final StaticSingletonFieldTest INSTANCE = new StaticSingletonFieldTest();
+        \\    private String mode;
+        \\
+        \\    private StaticSingletonFieldTest() {
+        \\        mode = 'ready';
+        \\    }
+        \\
+        \\    public static StaticSingletonFieldTest getInstance() {
+        \\        return INSTANCE;
+        \\    }
+        \\
+        \\    public String getMode() {
+        \\        return mode;
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        StaticSingletonFieldTest instance = getInstance();
+        \\        return instance == null ? 'null' : instance.getMode();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticSingletonFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ready", result.value.string);
+}
+
+test "E2E: cross-class static initializer can read singleton instance" {
+    const source =
+        \\public class StaticInitCrossClassSingletonTest {
+        \\    public class Config {
+        \\        private static final Config INSTANCE = new Config();
+        \\        private String mode;
+        \\
+        \\        private Config() {
+        \\            mode = 'ready';
+        \\        }
+        \\
+        \\        public static Config getInstance() {
+        \\            return INSTANCE;
+        \\        }
+        \\
+        \\        public String getMode() {
+        \\            return mode;
+        \\        }
+        \\    }
+        \\
+        \\    public class Consumer {
+        \\        private static final String MODE = Config.getInstance().getMode();
+        \\
+        \\        public static String getMode() {
+        \\            return MODE;
+        \\        }
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        return Consumer.getMode();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticInitCrossClassSingletonTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
 test "E2E: switch when else executes for unmatched string subjects" {

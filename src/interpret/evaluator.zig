@@ -6347,6 +6347,19 @@ pub const Evaluator = struct {
 
             .binary => |bin| {
                 const left = try self.evalExpr(bin.left, current_env);
+                switch (bin.op) {
+                    .and_op => {
+                        if (!(utils.coerceToBool(left) catch false)) {
+                            return Value{ .boolean = false };
+                        }
+                    },
+                    .or_op => {
+                        if (utils.coerceToBool(left) catch false) {
+                            return Value{ .boolean = true };
+                        }
+                    },
+                    else => {},
+                }
                 const right = try self.evalExpr(bin.right, current_env);
                 return evalBinary(left, bin.op, right, self.arena);
             },
@@ -7582,6 +7595,9 @@ pub const Evaluator = struct {
                 },
                 else => {},
             }
+            if (resolved_var == .null_val and current_env.has(class_name)) {
+                return self.evalInstanceMethod(resolved_var, mc.method, args.items, current_env);
+            }
 
             // Let a user-defined class named Database shadow the platform Database
             // namespace only when that class is actually visible at this call-site.
@@ -7823,8 +7839,13 @@ pub const Evaluator = struct {
     }
 
     fn evalInstanceMethod(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, current_env: *Env) anyerror!Value {
-        // Null dereference → return null gracefully (some tests depend on this)
-        if (obj == .null_val) return Value.null_val;
+        if (obj == .null_val) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NullPointerException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
 
         if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = if (obj.boolean) "true" else "false" };
@@ -13219,6 +13240,14 @@ pub const Evaluator = struct {
             if (is_user_class) {
                 const obj = self.arena.create(types.ObjectInstance) catch return null;
                 obj.* = .{ .class_name = type_hint };
+                if (self.findClass(type_hint)) |class_decl| {
+                    if (class_decl.super_class) |sc| {
+                        if (self.findClass(sc.name)) |parent_decl| {
+                            self.initInstanceFields(parent_decl, obj) catch {};
+                        }
+                    }
+                    self.initInstanceFields(class_decl, obj) catch {};
+                }
                 // Parse key-value pairs into fields
                 var jd: i32 = 0;
                 var js: usize = 1;

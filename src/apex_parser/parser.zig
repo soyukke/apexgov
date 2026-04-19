@@ -1119,6 +1119,7 @@ const Parser = struct {
 
     fn parsePostfix(self: *Parser) !*ast.Expr {
         var expr = try self.parsePrimary();
+        var chain_is_null_safe = false;
 
         // super(args) / this(args) → constructor delegation
         if ((expr.* == .super_expr or expr.* == .this_expr) and self.matchKind(.lparen)) {
@@ -1133,8 +1134,11 @@ const Parser = struct {
         }
 
         while (true) {
-            const is_null_safe = self.check(.question_dot);
-            if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
+            const saw_question_dot = self.matchKind(.question_dot);
+            const saw_dot = if (!saw_question_dot) self.matchKind(.dot) else false;
+            if (saw_dot or saw_question_dot) {
+                const is_null_safe = saw_question_dot or chain_is_null_safe;
+                if (saw_question_dot) chain_is_null_safe = true;
                 const field_name = try self.expectIdentifierOrKeyword();
 
                 // method call: obj.method(args)
