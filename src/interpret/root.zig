@@ -6941,6 +6941,42 @@ test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
     try std.testing.expectEqualStrings("Iterable", result.value.string);
 }
 
+test "E2E: List.sort keeps strings before numbers for mixed Object values" {
+    const source =
+        \\public class MixedObjectSortTest {
+        \\    public static String test() {
+        \\        List<Object> values = new List<Object>{ 'some-tag', 'another-tag', 1 };
+        \\        values.sort();
+        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + String.valueOf(values.get(2));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MixedObjectSortTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
+}
+
+test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
+    const source =
+        \\public class StringSortTest {
+        \\    public static String test() {
+        \\        List<String> values = new List<String>{ 'some-tag', 'another-tag', '1' };
+        \\        values.sort();
+        \\        return String.join(values, '|');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StringSortTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
+}
+
 test "E2E: UserRecordAccess delete query returns only deletable records" {
     const source =
         \\public class UserRecordAccessDeleteQueryTest {

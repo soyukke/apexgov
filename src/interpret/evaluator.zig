@@ -12696,6 +12696,20 @@ pub const Evaluator = struct {
             if (a.boolean and !b.boolean) return 1;
             return 0;
         }
+        const a_rank: i32 = switch (a) {
+            .string => 0,
+            .integer, .double => 1,
+            .boolean => 2,
+            else => 3,
+        };
+        const b_rank: i32 = switch (b) {
+            .string => 0,
+            .integer, .double => 1,
+            .boolean => 2,
+            else => 3,
+        };
+        if (a_rank < b_rank) return -1;
+        if (a_rank > b_rank) return 1;
         return 0;
     }
 
@@ -12704,6 +12718,20 @@ pub const Evaluator = struct {
         for (0..len) |i| {
             const lhs = std.ascii.toLower(left[i]);
             const rhs = std.ascii.toLower(right[i]);
+            const lhs_rank: u8 = if (std.ascii.isAlphabetic(lhs))
+                0
+            else if (std.ascii.isDigit(lhs))
+                1
+            else
+                2;
+            const rhs_rank: u8 = if (std.ascii.isAlphabetic(rhs))
+                0
+            else if (std.ascii.isDigit(rhs))
+                1
+            else
+                2;
+            if (lhs_rank < rhs_rank) return -1;
+            if (lhs_rank > rhs_rank) return 1;
             if (lhs < rhs) return -1;
             if (lhs > rhs) return 1;
         }
