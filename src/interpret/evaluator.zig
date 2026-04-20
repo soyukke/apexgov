@@ -6878,8 +6878,17 @@ pub const Evaluator = struct {
 
             .instanceof => |ie| {
                 const val = try self.evalExpr(ie.operand, current_env);
-                if (val == .sobject) return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
+                if (val == .sobject) {
+                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "SObject") or
+                        std.ascii.eqlIgnoreCase(ie.type_name.name, "Sobject") or
+                        std.ascii.eqlIgnoreCase(ie.type_name.name, "sObject"))
+                    {
+                        return Value{ .boolean = true };
+                    }
+                    return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
+                }
                 if (val == .object) {
+                    if (instanceofMatchesPrimitive(val, ie.type_name.name)) return Value{ .boolean = true };
                     // Check class name and superclass/interface hierarchy
                     if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
                     // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name is the simple name
@@ -6922,10 +6931,13 @@ pub const Evaluator = struct {
                     // Check element type against actual list items
                     // Note: type params are validated to have non-empty names
                     const elem_type = ie.type_name.params[0].name;
+                    if (std.ascii.eqlIgnoreCase(elem_type, "Object")) return Value{ .boolean = true };
                     if (elem_type.len > 0 and elem_type.len <= 128) {
                         for (val.list.items.items) |item| {
                             if (item == .null_val) continue;
-                            return Value{ .boolean = instanceofMatchesPrimitive(item, elem_type) };
+                            if (instanceofMatchesPrimitive(item, elem_type)) return Value{ .boolean = true };
+                            if (item == .object and self.isSubclassOf(item.object.class_name, elem_type)) return Value{ .boolean = true };
+                            return Value{ .boolean = false };
                         }
                     }
                     return Value{ .boolean = true }; // empty list or unknown element type matches any
@@ -10598,6 +10610,10 @@ pub const Evaluator = struct {
                 return Value{ .object = type_obj };
             }
 
+            if (self.isSObjectTypeName(class_name)) {
+                return try self.makeSObjectFieldToken(class_name, fa.field);
+            }
+
             // Trigger context
             if (std.ascii.eqlIgnoreCase(class_name, "Trigger")) {
                 if (self.trigger_context) |tc| {
@@ -10882,18 +10898,33 @@ pub const Evaluator = struct {
 
     /// instanceof チェック: Value がプリミティブ型名にマッチするか。
     fn instanceofMatchesPrimitive(val: Value, tn: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(tn, "Object")) return val != .null_val and val != .void_val;
         if (val == .integer or val == .double) return instanceofMatchesNumericType(tn);
         if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
         if (val == .string) {
             return std.ascii.eqlIgnoreCase(tn, "String") or
                 (std.ascii.eqlIgnoreCase(tn, "Id") and Evaluator.isSalesforceIdString(val.string));
         }
-        if (val == .sobject) return std.ascii.eqlIgnoreCase(tn, "SObject") or std.ascii.eqlIgnoreCase(tn, "Sobject") or std.ascii.eqlIgnoreCase(tn, "sObject");
+        if (val == .sobject) {
+            return std.ascii.eqlIgnoreCase(tn, "SObject") or
+                std.ascii.eqlIgnoreCase(tn, "Sobject") or
+                std.ascii.eqlIgnoreCase(tn, "sObject") or
+                std.ascii.eqlIgnoreCase(tn, val.sobject.type_name);
+        }
         if (val == .object) {
             const cn = val.object.class_name;
             if (cn.len > 0 and cn.len < 256) {
-                if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date");
+                if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date") or std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
                 if (std.ascii.eqlIgnoreCase(cn, "Datetime")) return std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
+                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(cn, "SObjectField")) {
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(tn, "SObjectField");
+                }
+                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectType")) {
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectType") or std.ascii.eqlIgnoreCase(tn, "SObjectType");
+                }
+                if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet")) {
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.FieldSet") or std.ascii.eqlIgnoreCase(tn, "FieldSet");
+                }
             }
         }
         return false;
@@ -15475,4 +15506,26 @@ test "List.add with explicit index inserts the provided value" {
     var r = try evalSource(source, "IndexedListInsertProbe", "run");
     defer r.deinit();
     try std.testing.expectEqualStrings("head|tail|2", r.value.string);
+}
+
+test "instanceof supports Apex collection and schema token semantics" {
+    const source =
+        \\public class InstanceofProbe {
+        \\    public static String run() {
+        \\        List<String> names = new List<String>{ 'bob' };
+        \\        return String.valueOf(Date.today() instanceof Datetime)
+        \\            + '|'
+        \\            + String.valueOf(new Account() instanceof SObject)
+        \\            + '|'
+        \\            + String.valueOf(names instanceof List<Object>)
+        \\            + '|'
+        \\            + String.valueOf(Account.Id instanceof SObjectField)
+        \\            + '|'
+        \\            + String.valueOf(Account.SObjectType instanceof SObjectType);
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "InstanceofProbe", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("true|true|true|true|true", r.value.string);
 }
