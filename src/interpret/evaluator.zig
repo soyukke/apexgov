@@ -3885,6 +3885,33 @@ pub const Evaluator = struct {
             }
         }
 
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "OpportunityStage")) {
+            const Stage = struct { label: []const u8, api: []const u8, is_closed: bool, is_won: bool };
+            const stages = [_]Stage{
+                .{ .label = "Prospecting", .api = "Prospecting", .is_closed = false, .is_won = false },
+                .{ .label = "Qualification", .api = "Qualification", .is_closed = false, .is_won = false },
+                .{ .label = "Closed Won", .api = "Closed Won", .is_closed = true, .is_won = true },
+                .{ .label = "Closed Lost", .api = "Closed Lost", .is_closed = true, .is_won = false },
+            };
+            for (stages, 0..) |s, idx| {
+                const rec = try self.arena.create(types.SObject);
+                const stage_id = try std.fmt.allocPrint(self.arena, "0BF00000000000{d:0>1}AAA", .{idx + 1});
+                rec.* = .{ .type_name = "OpportunityStage", .id = stage_id };
+                try rec.fields.put(self.arena, "Id", Value{ .string = stage_id });
+                try rec.fields.put(self.arena, "MasterLabel", Value{ .string = s.label });
+                try rec.fields.put(self.arena, "ApiName", Value{ .string = s.api });
+                try rec.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+                try rec.fields.put(self.arena, "IsClosed", Value{ .boolean = s.is_closed });
+                try rec.fields.put(self.arena, "IsWon", Value{ .boolean = s.is_won });
+                try rec.fields.put(self.arena, "DefaultProbability", Value{ .double = if (s.is_won) 100.0 else if (s.is_closed) 0.0 else 10.0 });
+                try rec.fields.put(self.arena, "SortOrder", Value{ .integer = @intCast(idx + 1) });
+                const rec_value = Value{ .sobject = rec };
+                if (self.matchesWhere(rec_value, soql, current_env)) {
+                    try records.append(self.arena, rec_value);
+                }
+            }
+        }
+
         // If no records found from store or metadata stubs, and the object type
         // is not recognized at all, throw QueryException (unknown SObject type).
         // Known types: anything in the store, known metadata stubs, or common Salesforce objects.
@@ -3904,6 +3931,7 @@ pub const Evaluator = struct {
                     "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
                     "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
                     "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",          "AppMenuItem",
+                    "OpportunityStage",           "FiscalYearSettings",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
