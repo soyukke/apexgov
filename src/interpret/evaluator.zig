@@ -6504,7 +6504,7 @@ pub const Evaluator = struct {
                     else => {},
                 }
                 const right = try self.evalExpr(bin.right, current_env);
-                return evalBinary(left, bin.op, right, self.arena);
+                return evalBinary(self, left, bin.op, right, self.arena);
             },
 
             .unary => |un| {
@@ -8073,11 +8073,20 @@ pub const Evaluator = struct {
         if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = if (obj.boolean) "true" else "false" };
         }
+        if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = if (obj.boolean) 1231 else 1237 };
+        }
         if (obj == .integer and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerceToString(obj, self.arena) };
         }
+        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return obj;
+        }
         if (obj == .double and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerceToString(obj, self.arena) };
+        }
+        if (obj == .double and std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = @intFromFloat(obj.double) };
         }
 
         // Http.send() mock interception
@@ -8616,6 +8625,23 @@ pub const Evaluator = struct {
             if (args.len > 0) try list.items.append(self.arena, args[0]);
             return .void_val;
         }
+        if (std.ascii.eqlIgnoreCase(method, "toString")) {
+            var buffer = std.ArrayListUnmanaged(u8).empty;
+            try buffer.append(self.arena, '(');
+            for (list.items.items, 0..) |item, idx| {
+                if (idx > 0) try buffer.appendSlice(self.arena, ", ");
+                const item_string = try self.valueToString(item);
+                try buffer.appendSlice(self.arena, item_string);
+            }
+            try buffer.append(self.arena, ')');
+            return Value{ .string = buffer.items };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = try self.valueHashCode(Value{ .list = list }) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
+            return Value{ .boolean = self.valuesEqual(Value{ .list = list }, args[0]) };
+        }
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(list.items.items.len) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = list.items.items.len == 0 };
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0 and args[0] == .integer) {
@@ -8636,7 +8662,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
             for (list.items.items) |item| {
-                if (utils.valueEql(item, args[0])) return Value{ .boolean = true };
+                if (self.valuesEqual(item, args[0])) return Value{ .boolean = true };
             }
             return Value{ .boolean = false };
         }
@@ -8719,7 +8745,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
             for (list.items.items, 0..) |item, idx| {
-                if (utils.valueEql(item, args[0])) return Value{ .integer = @intCast(idx) };
+                if (self.valuesEqual(item, args[0])) return Value{ .integer = @intCast(idx) };
             }
             return Value{ .integer = -1 };
         }
@@ -8751,31 +8777,69 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
+    fn usesUniqueCollectionKey(_: *Evaluator, value: Value) bool {
+        return switch (value) {
+            .object => |obj| !(std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "Blob")),
+            .list, .map, .set => true,
+            else => false,
+        };
+    }
+
+    fn allocUniqueCollectionKey(self: *Evaluator) ![]const u8 {
+        const key = try std.fmt.allocPrint(self.arena, "__key__:{d}", .{self.next_id});
+        self.next_id += 1;
+        return key;
+    }
+
+    fn findMapEntryKey(self: *Evaluator, map: *types.MapValue, key_value: Value) ?[]const u8 {
+        if (key_value == .null_val) {
+            if (map.entries.contains("")) return "";
+        } else if (!self.usesUniqueCollectionKey(key_value)) {
+            const rendered = utils.coerceToString(key_value, self.arena) catch null;
+            if (rendered) |key| {
+                if (map.entries.contains(key)) return key;
+                for (map.entries.keys()) |existing_key| {
+                    if (std.ascii.eqlIgnoreCase(existing_key, key)) return existing_key;
+                }
+            }
+        }
+
+        for (map.key_values.keys(), map.key_values.values()) |stored_key, original_key| {
+            if (self.valuesEqual(original_key, key_value)) return stored_key;
+        }
+
+        return null;
+    }
+
+    fn mapStorageKey(self: *Evaluator, map: *types.MapValue, key_value: Value) ![]const u8 {
+        if (self.findMapEntryKey(map, key_value)) |existing| return existing;
+        if (key_value == .null_val) return "";
+        if (self.usesUniqueCollectionKey(key_value)) return self.allocUniqueCollectionKey();
+        return utils.coerceToString(key_value, self.arena);
+    }
+
     fn evalMapMethod(self: *Evaluator, map: *types.MapValue, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
-            // Apex Map<String,X> stores null keys as empty string
-            const key = if (args[0] == .null_val) "" else try utils.coerceToString(args[0], self.arena);
+            const key = try self.mapStorageKey(map, args[0]);
             try map.entries.put(self.arena, key, args[1]);
             try map.key_values.put(self.arena, key, args[0]);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
-            const key = if (args[0] == .null_val) "" else try utils.coerceToString(args[0], self.arena);
-            if (map.entries.get(key)) |v| return v;
-            // Case-insensitive fallback for String-keyed maps
-            for (map.entries.keys(), map.entries.values()) |k, v| {
-                if (std.ascii.eqlIgnoreCase(k, key)) return v;
+            if (self.findMapEntryKey(map, args[0])) |key| {
+                if (map.entries.get(key)) |v| return v;
             }
             return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "containsKey") and args.len > 0) {
-            const key = try utils.coerceToString(args[0], self.arena);
-            if (map.entries.contains(key)) return Value{ .boolean = true };
-            // Case-insensitive fallback
-            for (map.entries.keys()) |k| {
-                if (std.ascii.eqlIgnoreCase(k, key)) return Value{ .boolean = true };
-            }
-            return Value{ .boolean = false };
+            return Value{ .boolean = self.findMapEntryKey(map, args[0]) != null };
         }
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(map.entries.count()) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = map.entries.count() == 0 };
@@ -8797,9 +8861,10 @@ pub const Evaluator = struct {
             return Value{ .list = list };
         }
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0) {
-            const key = try utils.coerceToString(args[0], self.arena);
-            if (map.entries.get(key)) |val| {
+            if (self.findMapEntryKey(map, args[0])) |key| {
+                const val = map.entries.get(key) orelse return Value.null_val;
                 _ = map.entries.orderedRemove(key);
+                _ = map.key_values.orderedRemove(key);
                 return val;
             }
             return Value.null_val;
@@ -8870,19 +8935,35 @@ pub const Evaluator = struct {
                 const json = try utils.toJson(value, self.arena);
                 break :blk try std.fmt.allocPrint(self.arena, "{s}#json:{s}", .{ sob.type_name, json });
             },
+            .object, .list, .map, .set => try self.allocUniqueCollectionKey(),
             else => try utils.coerceToString(value, self.arena),
         };
     }
 
+    fn findSetEntryKey(self: *Evaluator, set: *types.SetValue, value: Value) ?[]const u8 {
+        if (!self.usesUniqueCollectionKey(value)) {
+            const rendered = self.setEntryKey(value) catch null;
+            if (rendered) |key| {
+                if (set.entries.contains(key)) return key;
+            }
+        }
+
+        for (set.entries.keys(), set.entries.values()) |stored_key, existing_value| {
+            if (self.valuesEqual(existing_value, value)) return stored_key;
+        }
+
+        return null;
+    }
+
     fn evalSetMethod(self: *Evaluator, set: *types.SetValue, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "add") and args.len > 0) {
+            if (self.findSetEntryKey(set, args[0]) != null) return Value{ .boolean = false };
             const key = try self.setEntryKey(args[0]);
             try set.entries.put(self.arena, key, args[0]);
             return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
-            const key = try self.setEntryKey(args[0]);
-            return Value{ .boolean = set.entries.contains(key) };
+            return Value{ .boolean = self.findSetEntryKey(set, args[0]) != null };
         }
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(set.entries.count()) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = set.entries.count() == 0 };
@@ -8903,17 +8984,19 @@ pub const Evaluator = struct {
             return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0) {
-            const key = try self.setEntryKey(args[0]);
-            _ = set.entries.orderedRemove(key);
-            return Value{ .boolean = true };
+            if (self.findSetEntryKey(set, args[0])) |key| {
+                _ = set.entries.orderedRemove(key);
+                return Value{ .boolean = true };
+            }
+            return Value{ .boolean = false };
         }
         if (std.ascii.eqlIgnoreCase(method, "clear")) {
             set.entries = .empty;
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "containsAll") and args.len > 0 and args[0] == .set) {
-            for (args[0].set.entries.keys()) |key| {
-                if (!set.entries.contains(key)) return Value{ .boolean = false };
+            for (args[0].set.entries.values()) |item| {
+                if (self.findSetEntryKey(set, item) == null) return Value{ .boolean = false };
             }
             return Value{ .boolean = true };
         }
@@ -8930,6 +9013,7 @@ pub const Evaluator = struct {
 
     fn evalStringMethod(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "toString")) return Value{ .string = s };
+        if (std.ascii.eqlIgnoreCase(method, "hashCode")) return Value{ .integer = self.stringHashCode(s) };
         if (std.ascii.eqlIgnoreCase(method, "length")) return Value{ .integer = @intCast(s.len) };
         if (std.ascii.eqlIgnoreCase(method, "toUpperCase")) {
             const upper = try self.arena.alloc(u8, s.len);
@@ -10998,7 +11082,7 @@ pub const Evaluator = struct {
     fn handleAssert(self: *Evaluator, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "areEqual") or std.ascii.eqlIgnoreCase(method, "assertEquals")) {
             if (args.len >= 2) {
-                if (!utils.valueEql(args[0], args[1])) {
+                if (!self.valuesEqual(args[0], args[1])) {
                     const expected_str = try utils.coerceToString(args[0], self.arena);
                     const actual_str = try utils.coerceToString(args[1], self.arena);
                     self.assertion_failure = if (args.len >= 3 and args[2] == .string)
@@ -11009,7 +11093,7 @@ pub const Evaluator = struct {
             }
         } else if (std.ascii.eqlIgnoreCase(method, "areNotEqual") or std.ascii.eqlIgnoreCase(method, "assertNotEquals")) {
             if (args.len >= 2) {
-                if (utils.valueEql(args[0], args[1])) {
+                if (self.valuesEqual(args[0], args[1])) {
                     const val_str = try utils.coerceToString(args[0], self.arena);
                     self.assertion_failure = if (args.len >= 3 and args[2] == .string)
                         try std.fmt.allocPrint(self.arena, "{s} | Both values: {s}", .{ args[2].string, val_str })
@@ -12124,10 +12208,188 @@ pub const Evaluator = struct {
         return self.handleDatabaseMethod(method, args, env);
     }
 
+    pub fn valueToStringPublic(self: *Evaluator, value: Value) anyerror![]const u8 {
+        return self.valueToString(value);
+    }
+
+    pub fn valueHashCodePublic(self: *Evaluator, value: Value) anyerror!i64 {
+        return self.valueHashCode(value);
+    }
+
+    pub fn valuesEqualPublic(self: *Evaluator, left: Value, right: Value) bool {
+        return self.valuesEqual(left, right);
+    }
+
     const ResolvedInstanceMethod = struct {
         owner: *ast.ClassDecl,
         method: *ast.MethodDecl,
     };
+
+    fn valueToString(self: *Evaluator, value: Value) anyerror![]const u8 {
+        if (value == .null_val) return "null";
+
+        switch (value) {
+            .object, .list, .map, .set, .sobject => {
+                const result = self.evalInstanceMethod(value, "toString", &.{}, self.global_env) catch return utils.coerceToString(value, self.arena);
+                if (result == .string) return result.string;
+            },
+            else => {},
+        }
+
+        return utils.coerceToString(value, self.arena);
+    }
+
+    fn stringHashCode(_: *Evaluator, value: []const u8) i64 {
+        var result: i64 = 0;
+        for (value) |ch| {
+            result = result * 31 + @as(i64, ch);
+        }
+        return result;
+    }
+
+    fn strictValuesEqual(self: *Evaluator, left: Value, right: Value) bool {
+        _ = self;
+        if (left == .object and right == .object) return left.object == right.object;
+        if (left == .sobject and right == .sobject) return left.sobject == right.sobject;
+        if (left == .list and right == .list) return left.list == right.list;
+        if (left == .map and right == .map) return left.map == right.map;
+        if (left == .set and right == .set) return left.set == right.set;
+        return utils.valueEql(left, right);
+    }
+
+    fn valuesEqual(self: *Evaluator, left: Value, right: Value) bool {
+        if (left == .list and right == .list) {
+            if (left.list == right.list) return true;
+            if (left.list.items.items.len != right.list.items.items.len) return false;
+            for (left.list.items.items, right.list.items.items) |left_item, right_item| {
+                if (!self.valuesEqual(left_item, right_item)) return false;
+            }
+            return true;
+        }
+
+        if (left == .map and right == .map) {
+            if (left.map == right.map) return true;
+            if (left.map.entries.count() != right.map.entries.count()) return false;
+            for (left.map.entries.keys(), left.map.entries.values()) |left_key, left_value| {
+                const right_value = right.map.entries.get(left_key) orelse return false;
+                if (!self.valuesEqual(left_value, right_value)) return false;
+            }
+            return true;
+        }
+
+        if (left == .set and right == .set) {
+            if (left.set == right.set) return true;
+            if (left.set.entries.count() != right.set.entries.count()) return false;
+            outer: for (left.set.entries.values()) |left_item| {
+                for (right.set.entries.values()) |right_item| {
+                    if (self.valuesEqual(left_item, right_item)) continue :outer;
+                }
+                return false;
+            }
+            return true;
+        }
+
+        if (left == .object and right == .object) {
+            if (utils.valueEql(left, right)) return true;
+
+            if (self.findClass(left.object.class_name)) |left_class| {
+                if (self.findMethodInHierarchyTyped(null, left_class, "equals", &.{right}) != null or
+                    self.findMethodInHierarchy(null, left_class, "equals", 1) != null)
+                {
+                    const result = self.callInstanceMethod(left_class, left.object, "equals", &.{right}) catch return false;
+                    return result == .boolean and result.boolean;
+                }
+            }
+
+            if (self.findClass(right.object.class_name)) |right_class| {
+                if (self.findMethodInHierarchyTyped(null, right_class, "equals", &.{left}) != null or
+                    self.findMethodInHierarchy(null, right_class, "equals", 1) != null)
+                {
+                    const result = self.callInstanceMethod(right_class, right.object, "equals", &.{left}) catch return false;
+                    return result == .boolean and result.boolean;
+                }
+            }
+        }
+
+        return utils.valueEql(left, right);
+    }
+
+    fn valueHashCode(self: *Evaluator, value: Value) anyerror!i64 {
+        return switch (value) {
+            .null_val => 0,
+            .boolean => |b| if (b) 1231 else 1237,
+            .integer => |i| i,
+            .double => |d| @intFromFloat(d),
+            .string => |s| self.stringHashCode(s),
+            .sobject => |sob| blk: {
+                if (sob.id) |id| break :blk self.stringHashCode(id);
+                const json = try utils.toJson(value, self.arena);
+                break :blk self.stringHashCode(json);
+            },
+            .list => |list| blk: {
+                var result: i64 = 1;
+                for (list.items.items) |item| {
+                    result = result * 31 + try self.valueHashCode(item);
+                }
+                break :blk result;
+            },
+            .map => |map| blk: {
+                var result: i64 = 1;
+                for (map.entries.keys(), map.entries.values()) |key, entry_value| {
+                    result = result * 31 + self.stringHashCode(key);
+                    result = result * 31 + try self.valueHashCode(entry_value);
+                }
+                break :blk result;
+            },
+            .set => |set| blk: {
+                var result: i64 = 1;
+                for (set.entries.values()) |item| {
+                    result = result * 31 + try self.valueHashCode(item);
+                }
+                break :blk result;
+            },
+            .object => |obj| blk: {
+                if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
+                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+                    std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+                {
+                    const name_value = obj.fields.get("name") orelse obj.fields.get("fieldName") orelse Value.null_val;
+                    if (name_value == .string) break :blk self.stringHashCode(name_value.string);
+                }
+
+                if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                    std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+                    std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+                {
+                    if (obj.fields.get("value")) |raw_value| {
+                        if (raw_value == .string) break :blk self.stringHashCode(raw_value.string);
+                    }
+                }
+
+                if (self.findClass(obj.class_name)) |class_decl| {
+                    if (self.findMethodInHierarchyTyped(null, class_decl, "hashCode", &.{}) != null or
+                        self.findMethodInHierarchy(null, class_decl, "hashCode", 0) != null)
+                    {
+                        const result = self.callInstanceMethod(class_decl, obj, "hashCode", &.{}) catch Value{ .integer = 0 };
+                        switch (result) {
+                            .integer => |i| break :blk i,
+                            .double => |d| break :blk @intFromFloat(d),
+                            else => {},
+                        }
+                    }
+                }
+
+                if (obj.fields.get("__hashCode__")) |existing| {
+                    if (existing == .integer) break :blk existing.integer;
+                }
+                const generated = @as(i64, @intCast(@intFromPtr(obj) & 0x7fffffff));
+                try obj.fields.put(self.arena, "__hashCode__", Value{ .integer = generated });
+                break :blk generated;
+            },
+            .void_val => 0,
+        };
+    }
 
     fn callInstanceMethod(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
         const actual_class = self.findClass(instance.class_name);
@@ -13999,7 +14261,7 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
     return 0;
 }
 
-fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Allocator) !Value {
+fn evalBinary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Allocator) !Value {
     const TemporalComparable = struct {
         fn normalize(raw: []const u8) []const u8 {
             if (raw.len > 10 and std.mem.indexOf(u8, raw, "T") != null) {
@@ -14032,10 +14294,10 @@ fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Alloca
     };
 
     switch (op) {
-        .eq => return .{ .boolean = utils.valueEql(left, right) },
-        .neq => return .{ .boolean = !utils.valueEql(left, right) },
-        .strict_eq => return .{ .boolean = utils.valueEql(left, right) },
-        .strict_neq => return .{ .boolean = !utils.valueEql(left, right) },
+        .eq => return .{ .boolean = eval.valuesEqual(left, right) },
+        .neq => return .{ .boolean = !eval.valuesEqual(left, right) },
+        .strict_eq => return .{ .boolean = eval.strictValuesEqual(left, right) },
+        .strict_neq => return .{ .boolean = !eval.strictValuesEqual(left, right) },
         .and_op => return .{ .boolean = (utils.coerceToBool(left) catch false) and (utils.coerceToBool(right) catch false) },
         .or_op => return .{ .boolean = (utils.coerceToBool(left) catch false) or (utils.coerceToBool(right) catch false) },
         else => {},
@@ -14074,8 +14336,8 @@ fn evalBinary(left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Alloca
 
     // String concatenation
     if (op == .add and (left == .string or right == .string)) {
-        const ls = try utils.coerceToString(left, arena);
-        const rs = try utils.coerceToString(right, arena);
+        const ls = try eval.valueToString(left);
+        const rs = try eval.valueToString(right);
         const result = try std.fmt.allocPrint(arena, "{s}{s}", .{ ls, rs });
         return .{ .string = result };
     }

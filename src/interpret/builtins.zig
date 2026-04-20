@@ -326,7 +326,10 @@ fn dispatchStaticString(ctx: *BuiltinContext, method_name: []const u8, args: []c
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value.null_val;
-            return Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+            return switch (args[0]) {
+                .object, .list, .map, .set, .sobject => Value{ .string = try ctx.eval.valueToStringPublic(args[0]) },
+                else => Value{ .string = try utils.coerceToString(args[0], ctx.arena) },
+            };
         }
         return Value.null_val;
     }
@@ -369,12 +372,30 @@ fn isSalesforceIdString(value: []const u8) bool {
     return true;
 }
 
-fn dispatchStaticId(_: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatchStaticId(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len == 0) return Value.null_val;
         return switch (args[0]) {
             .null_val => Value.null_val,
-            .string => |s| if (isSalesforceIdString(s)) Value{ .string = s } else Value{ .string = s },
+            .string => |s| blk: {
+                if (!isSalesforceIdString(s)) break :blk Value{ .string = s };
+                if (s.len == 18) break :blk Value{ .string = s };
+
+                const checksum_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+                var suffix: [3]u8 = undefined;
+                for (0..3) |chunk_idx| {
+                    var mask: u8 = 0;
+                    for (0..5) |char_idx| {
+                        const ch = s[chunk_idx * 5 + char_idx];
+                        if (ch >= 'A' and ch <= 'Z') {
+                            mask |= @as(u8, 1) << @intCast(char_idx);
+                        }
+                    }
+                    suffix[chunk_idx] = checksum_chars[mask];
+                }
+
+                break :blk Value{ .string = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ s, suffix[0..] }) };
+            },
             else => Value.null_val,
         };
     }
@@ -2493,6 +2514,12 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
             }
         }
         return Value{ .string = cn };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "hashCode")) {
+        return Value{ .integer = try ctx.eval.valueHashCodePublic(Value{ .object = obj }) };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "equals") and args.len > 0) {
+        return Value{ .boolean = ctx.eval.valuesEqualPublic(Value{ .object = obj }, args[0]) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
         return obj.fields.get("value") orelse Value{ .string = try utils.coerceToString(Value{ .object = obj }, ctx.arena) };

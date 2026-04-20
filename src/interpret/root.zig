@@ -7186,7 +7186,7 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
     try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
 }
 
-test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
+test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
     const source =
         \\public class IdValueOfTest {
         \\    public static String test() {
@@ -7199,7 +7199,65 @@ test "E2E: Id.valueOf returns the provided Salesforce-style id string" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("005000000000000", result.value.string);
+    try std.testing.expectEqualStrings("005000000000000AAA", result.value.string);
+}
+
+test "E2E: custom equals and hashCode drive map lookup while strict equality stays identity" {
+    const source =
+        \\public class EqualityKey {
+        \\    public List<Object> values;
+        \\    public EqualityKey(List<Object> values) {
+        \\        this.values = values;
+        \\    }
+        \\    public Boolean equals(Object other) {
+        \\        EqualityKey that = other instanceof EqualityKey ? (EqualityKey) other : null;
+        \\        return that != null && this.values == that.values;
+        \\    }
+        \\    public Integer hashCode() {
+        \\        return values.hashCode();
+        \\    }
+        \\}
+        \\public class EqualityKeyProbe {
+        \\    public static String test() {
+        \\        EqualityKey first = new EqualityKey(new List<Object>{ 'alpha', 7 });
+        \\        EqualityKey second = new EqualityKey(new List<Object>{ 'alpha', 7 });
+        \\        Map<EqualityKey, String> rows = new Map<EqualityKey, String>();
+        \\        rows.put(first, 'ok');
+        \\        return String.valueOf(first == second) + ':' +
+        \\            String.valueOf(first === second) + ':' +
+        \\            rows.get(second) + ':' +
+        \\            String.valueOf(rows.containsKey(second));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EqualityKeyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:false:ok:true", result.value.string);
+}
+
+test "E2E: String.valueOf respects override toString and List<Type>.toString formats element names" {
+    const source =
+        \\public class ValuePrinter {
+        \\    public override String toString() {
+        \\        return 'printer';
+        \\    }
+        \\}
+        \\public class ValuePrinterProbe {
+        \\    public static String test() {
+        \\        return String.valueOf(new ValuePrinter()) + ':' +
+        \\            new List<Type>{ Integer.class, String.class }.toString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ValuePrinterProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("printer:(Integer, String)", result.value.string);
 }
 
 test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
