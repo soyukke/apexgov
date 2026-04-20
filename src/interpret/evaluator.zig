@@ -13522,11 +13522,11 @@ pub const Evaluator = struct {
     }
 
     fn stringHashCode(_: *Evaluator, value: []const u8) i64 {
-        var result: i64 = 0;
+        var result: i32 = 0;
         for (value) |ch| {
-            result = result * 31 + @as(i64, ch);
+            result = result *% 31 +% @as(i32, ch);
         }
-        return result;
+        return @as(i64, result);
     }
 
     fn strictValuesEqual(self: *Evaluator, left: Value, right: Value) bool {
@@ -13612,22 +13612,22 @@ pub const Evaluator = struct {
             .list => |list| blk: {
                 var result: i64 = 1;
                 for (list.items.items) |item| {
-                    result = result * 31 + try self.valueHashCode(item);
+                    result = result *% 31 +% try self.valueHashCode(item);
                 }
                 break :blk result;
             },
             .map => |map| blk: {
                 var result: i64 = 1;
                 for (map.entries.keys(), map.entries.values()) |key, entry_value| {
-                    result = result * 31 + self.stringHashCode(key);
-                    result = result * 31 + try self.valueHashCode(entry_value);
+                    result = result *% 31 +% self.stringHashCode(key);
+                    result = result *% 31 +% try self.valueHashCode(entry_value);
                 }
                 break :blk result;
             },
             .set => |set| blk: {
                 var result: i64 = 1;
                 for (set.entries.values()) |item| {
-                    result = result * 31 + try self.valueHashCode(item);
+                    result = result *% 31 +% try self.valueHashCode(item);
                 }
                 break :blk result;
             },
