@@ -2094,17 +2094,14 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     fields_kv.* = .{};
     for ([_][]const u8{ "Id", "Name", "CreatedDate", "LastModifiedDate", "OwnerId", "IsDeleted" }) |field_name| {
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and !hasImplicitNameField(obj_name)) continue;
-        const fdr = try createFieldDescribeResult(ctx, obj_name, field_name);
-        if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = obj_name });
-        try fields_kv.entries.put(ctx.arena, field_name, fdr);
+        try fields_kv.entries.put(ctx.arena, field_name, try createSObjectFieldTokenValue(ctx.arena, obj_name, field_name));
     }
     // Add custom fields from field-meta.xml type info
     if (ctx.eval.field_types.get(obj_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |fname, ftype| {
+            _ = ftype;
             if (!fields_kv.entries.contains(fname)) {
-                const fdr = try createFieldDescribeResultWithType(ctx, obj_name, fname, ftype);
-                if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = obj_name });
-                try fields_kv.entries.put(ctx.arena, fname, fdr);
+                try fields_kv.entries.put(ctx.arena, fname, try createSObjectFieldTokenValue(ctx.arena, obj_name, fname));
             }
         }
     }
@@ -2185,9 +2182,7 @@ pub fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, 
 
 fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, field_name: []const u8) !void {
     if (fields_kv.entries.contains(field_name)) return;
-    const fdr = try createFieldDescribeResult(ctx, object_type, field_name);
-    if (fdr == .object) try fdr.object.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try fields_kv.entries.put(ctx.arena, field_name, fdr);
+    try fields_kv.entries.put(ctx.arena, field_name, try createSObjectFieldTokenValue(ctx.arena, object_type, field_name));
 }
 
 fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {

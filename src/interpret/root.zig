@@ -1398,6 +1398,36 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
 }
 
+test "E2E: custom property setters can delegate writes" {
+    const source =
+        \\public class DelegatingSetterProbe {
+        \\    public class Holder {
+        \\        public String value { get; set; }
+        \\    }
+        \\    private Holder holder = new Holder();
+        \\    public String Name {
+        \\        get {
+        \\            return holder.value;
+        \\        }
+        \\        set {
+        \\            holder.value = value;
+        \\        }
+        \\    }
+        \\    public static String run() {
+        \\        DelegatingSetterProbe probe = new DelegatingSetterProbe();
+        \\        probe.Name = 'delegated';
+        \\        return probe.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DelegatingSetterProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("delegated", result.value.string);
+}
+
 test "E2E: Date.today returns current date, Date.newInstance builds from args" {
     const source =
         \\public class DateTest {

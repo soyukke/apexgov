@@ -7486,6 +7486,48 @@ pub const Evaluator = struct {
                         obj.sobject.id = if (final_val == .string) final_val.string else null;
                     }
                 } else if (obj == .object) {
+                    if (self.findClass(obj.object.class_name)) |class_decl| {
+                        for (class_decl.members) |member| {
+                            switch (member) {
+                                .field_decl => |fd| {
+                                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or fd.setter_body == null) continue;
+
+                                    const setter_env = try self.global_env.child();
+                                    try setter_env.define("this", Value{ .object = obj.object });
+
+                                    for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
+                                        setter_env.set(k, v) catch {
+                                            try setter_env.define(k, v);
+                                        };
+                                    }
+                                    try setter_env.define("value", final_val);
+                                    _ = try self.execBlock(fd.setter_body.?, setter_env);
+
+                                    if (setter_env.get("this")) |this_val| {
+                                        if (this_val == .object and this_val.object == obj.object) {
+                                            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+                                            for (obj.object.fields.keys()) |k| field_keys.append(self.arena, k) catch {};
+                                            for (field_keys.items) |k| {
+                                                if (setter_env.get(k)) |updated| {
+                                                    try obj.object.fields.put(self.arena, k, updated);
+                                                }
+                                            }
+                                        } else if (this_val == .object) {
+                                            for (this_val.object.fields.keys(), this_val.object.fields.values()) |k, v| {
+                                                try obj.object.fields.put(self.arena, k, v);
+                                            }
+                                        }
+                                    }
+
+                                    if (fa.object.* == .this_expr) {
+                                        current_env.set(fa.field, obj.object.fields.get(fa.field) orelse final_val) catch {};
+                                    }
+                                    return final_val;
+                                },
+                                else => {},
+                            }
+                        }
+                    }
                     // Case-insensitive put: use existing key if it matches
                     var existing_key: ?[]const u8 = null;
                     for (obj.object.fields.keys()) |k| {
