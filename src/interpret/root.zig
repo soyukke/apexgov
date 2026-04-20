@@ -253,22 +253,25 @@ fn runTestsFiltered(
     }
     try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
 
-    // Load field-meta.xml default values for SObject types
-    // Search the given paths AND their ancestor directories (up to 3 levels) to find objects/ dirs
-    // This handles multi-package SFDX layouts where classes/ and objects/ are in sibling packages
+    // Load field-meta.xml default values for SObject types.
+    // Only walk ancestor directories when the input path points into a classes/
+    // or triggers/ subtree. For repo roots and package roots, recursive loading
+    // from the provided directory is sufficient and avoids pulling sibling repo
+    // metadata from shared fixture parents like `.local-fixtures/apex/repos`.
     for (paths) |path| {
         collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
         collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
         collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
-        // Walk parent directories to find sibling packages containing objects/
-        var parent = std.fs.path.dirname(path);
-        var depth: u8 = 0;
-        while (parent != null and depth < 3) : (depth += 1) {
-            const p = parent.?;
-            collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-            collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
-            collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
-            parent = std.fs.path.dirname(p);
+        if (shouldSearchMetadataParents(path)) {
+            var parent = std.fs.path.dirname(path);
+            var depth: u8 = 0;
+            while (parent != null and depth < 3) : (depth += 1) {
+                const p = parent.?;
+                collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+                collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
+                collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
+                parent = std.fs.path.dirname(p);
+            }
         }
     }
 
@@ -519,6 +522,18 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
     }
 }
 
+fn shouldSearchMetadataParents(path: []const u8) bool {
+    if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) return true;
+    return std.mem.endsWith(u8, path, "/classes") or
+        std.mem.endsWith(u8, path, "\\classes") or
+        std.mem.indexOf(u8, path, "/classes/") != null or
+        std.mem.indexOf(u8, path, "\\classes\\") != null or
+        std.mem.endsWith(u8, path, "/triggers") or
+        std.mem.endsWith(u8, path, "\\triggers") or
+        std.mem.indexOf(u8, path, "/triggers/") != null or
+        std.mem.indexOf(u8, path, "\\triggers\\") != null;
+}
+
 /// field-meta.xml からデフォルト値と型情報を読み込む。
 /// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
 fn collectFieldDefaults(
@@ -658,6 +673,18 @@ fn collectFieldDefaults(
             meta_gop.value_ptr.put(alloc, field_key, metadata) catch {};
         }
 
+        for (metadata.picklist_values) |picklist_value| {
+            if (!picklist_value.is_default) continue;
+            const type_key = alloc.dupe(u8, type_name) catch break;
+            const field_key = alloc.dupe(u8, field_name) catch break;
+            const gop = field_defaults.getOrPut(alloc, type_key) catch break;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .empty;
+            }
+            gop.value_ptr.put(alloc, field_key, Value{ .string = picklist_value.value }) catch {};
+            break;
+        }
+
         // Extract <defaultValue>...</defaultValue>
         const dv_start_tag = "<defaultValue>";
         const dv_end_tag = "</defaultValue>";
@@ -743,9 +770,16 @@ fn parsePicklistValues(alloc: std.mem.Allocator, content: []const u8) ![]const e
             continue;
         };
         const raw_value = extractXmlTagValue(block, "fullName") orelse raw_label;
+        const is_default = blk: {
+            if (extractXmlTagValue(block, "default")) |raw_default| {
+                break :blk std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw_default, " \t\n\r"), "true");
+            }
+            break :blk false;
+        };
         try values.append(alloc, .{
             .label = try decodeXmlText(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
             .value = try decodeXmlText(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
+            .is_default = is_default,
         });
         search_start = block_end + "</value>".len;
     }
@@ -1054,6 +1088,22 @@ fn writeGenericHierarchyCustomSettingFixture(dir: anytype) !void {
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
         \\    <fullName>Flag__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn writeGenericHierarchyCustomSettingDefaultsFixture(dir: anytype) !void {
+    try writeGenericHierarchyCustomSettingFixture(dir);
+    try dir.writeFile(.{
+        .sub_path = "objects/AppSettings__c/fields/Mode__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Mode__c</fullName>
+        \\    <defaultValue>&apos;default&apos;</defaultValue>
         \\    <type>Text</type>
         \\    <length>255</length>
         \\</CustomField>
@@ -2389,6 +2439,86 @@ test "E2E: stripInaccessible READABLE removes selected null fields without acces
     });
     defer result.deinit();
     try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <deploymentStatus>Deployed</deploymentStatus>
+        \\    <enableActivities>false</enableActivities>
+        \\    <enableReports>false</enableReports>
+        \\    <enableSearch>false</enableSearch>
+        \\    <enableSharing>true</enableSharing>
+        \\    <label>Thing</label>
+        \\    <nameField>
+        \\        <label>Thing Name</label>
+        \\        <type>Text</type>
+        \\    </nameField>
+        \\    <pluralLabel>Things</pluralLabel>
+        \\    <sharingModel>ReadWrite</sharingModel>
+        \\</CustomObject>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/Detail__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Detail__c</fullName>
+        \\    <label>Detail</label>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class StripInaccessibleReadableCrudFlagTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Reader',
+        \\            Username = 'crud.flag.reader@example.com',
+        \\            Email = 'crud.flag.reader@example.com',
+        \\            Alias = 'crdf'
+        \\        );
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\    public static String test() {
+        \\        User u = makeUser();
+        \\        Thing__c record = new Thing__c(Id = 'a00000000000001AAA', Name = 'Example', Detail__c = 'secret');
+        \\        String json;
+        \\        System.runAs(u) {
+        \\            SObjectAccessDecision decision = Security.stripInaccessible(
+        \\                AccessType.READABLE,
+        \\                new List<SObject>{ record },
+        \\                false
+        \\            );
+        \\            json = JSON.serializePretty(((List<Thing__c>) decision.getRecords())[0]);
+        \\        }
+        \\        return json;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "StripInaccessibleReadableCrudFlagTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}", result.value.string);
 }
 
 test "E2E: permission set groups expand assigned permission sets" {
@@ -3950,6 +4080,59 @@ test "E2E: required field population preserves explicitly set picklist-like valu
     try std.testing.expectEqualStrings("ERROR:filled", result.value.string);
 }
 
+test "E2E: insert applies required picklist defaults from field metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/OrderThing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/OrderThing__c/fields/Status__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Status__c</fullName>
+        \\    <required>true</required>
+        \\    <type>Picklist</type>
+        \\    <valueSet>
+        \\        <valueSetDefinition>
+        \\            <sorted>false</sorted>
+        \\            <value>
+        \\                <fullName>Draft</fullName>
+        \\                <default>true</default>
+        \\                <label>Draft</label>
+        \\            </value>
+        \\            <value>
+        \\                <fullName>Submitted</fullName>
+        \\                <default>false</default>
+        \\                <label>Submitted</label>
+        \\            </value>
+        \\        </valueSetDefinition>
+        \\    </valueSet>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RequiredPicklistDefaultInsertTest {
+        \\    public static String test() {
+        \\        OrderThing__c row = new OrderThing__c();
+        \\        insert row;
+        \\        OrderThing__c saved = [SELECT Status__c FROM OrderThing__c LIMIT 1];
+        \\        return saved.Status__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RequiredPicklistDefaultInsertTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Draft", result.value.string);
+}
+
 test "E2E: picklist describe preserves metadata order when records only use a subset" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -4322,6 +4505,35 @@ test "E2E: hierarchy custom setting records are visible to later static initiali
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("configured", result.value.string);
+}
+
+test "E2E: explicit null suppresses hierarchy custom setting field defaults on upsert" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeGenericHierarchyCustomSettingDefaultsFixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingNullDefaultTest {
+        \\    public static String test() {
+        \\        AppSettings__c settings = (AppSettings__c) AppSettings__c.SObjectType.newSObject(null, true);
+        \\        settings.SetupOwnerId = UserInfo.getUserId();
+        \\        settings.Mode__c = null;
+        \\        upsert settings;
+        \\        AppSettings__c reloaded = AppSettings__c.getValues(UserInfo.getUserId());
+        \\        return String.valueOf(reloaded.Mode__c == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "HierarchySettingNullDefaultTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
 }
 
 test "E2E: static initializer preserves static method side effects on fields" {
@@ -6198,6 +6410,70 @@ test "resetForTest re-runs static initializers for later test methods" {
     try std.testing.expect(eval.assertion_failure == null);
 }
 
+test "runTestSuite keeps repo-root metadata loading scoped to the requested repo" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("repos/app-a/force-app/main/default/classes");
+    try tmp_dir.dir.makePath("repos/app-a/force-app/main/default/objects/Widget__c");
+    try tmp_dir.dir.makePath("repos/app-b/force-app/main/default/objects/Widget__c/fields");
+
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "repos/app-a/force-app/main/default/classes/WidgetRepoTest.cls",
+        .data =
+        \\@isTest
+        \\private class WidgetRepoTest {
+        \\    @isTest
+        \\    static void insert_widget_in_requested_repo() {
+        \\        insert new Widget__c(Name = 'ok');
+        \\        System.assertEquals(1, [SELECT count() FROM Widget__c]);
+        \\    }
+        \\}
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "repos/app-a/force-app/main/default/objects/Widget__c/Widget__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <deploymentStatus>Deployed</deploymentStatus>
+        \\    <enableActivities>false</enableActivities>
+        \\    <enableReports>false</enableReports>
+        \\    <enableSearch>false</enableSearch>
+        \\    <enableSharing>true</enableSharing>
+        \\    <label>Widget</label>
+        \\    <nameField>
+        \\        <label>Widget Name</label>
+        \\        <type>Text</type>
+        \\    </nameField>
+        \\    <pluralLabel>Widgets</pluralLabel>
+        \\    <sharingModel>ReadWrite</sharingModel>
+        \\</CustomObject>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "repos/app-b/force-app/main/default/objects/Widget__c/fields/Required_Text__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Required_Text__c</fullName>
+        \\    <label>Required Text</label>
+        \\    <required>true</required>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+
+    const repo_a_path = try tmp_dir.dir.realpathAlloc(alloc, "repos/app-a");
+    defer alloc.free(repo_a_path);
+
+    const suite = try runTestSuite(alloc, &.{repo_a_path}, std.io.null_writer);
+    try std.testing.expectEqual(@as(usize, 1), suite.total);
+    try std.testing.expectEqual(@as(usize, 1), suite.passed);
+}
+
 test "JSON.deserialize maps fields to user-defined class" {
     const source =
         \\@IsTest
@@ -6921,6 +7197,50 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true:2:Master", result.value.string);
+}
+
+test "E2E: cached DescribeSObjectResult record type info survives selective map clears" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\public class CachedDescribeRecordTypeInfoProbe {
+        \\    private static Map<String, Schema.DescribeSObjectResult> cached = new Map<String, Schema.DescribeSObjectResult>();
+        \\    private static Map<String, List<Schema.RecordTypeInfo>> nonMasterInfos = new Map<String, List<Schema.RecordTypeInfo>>();
+        \\
+        \\    private static void fill(String objectName) {
+        \\        if (!cached.containsKey(objectName)) {
+        \\            cached.put(
+        \\                objectName,
+        \\                Schema.describeSObjects(
+        \\                    new List<String>{ objectName },
+        \\                    SObjectDescribeOptions.DEFERRED
+        \\                )[0]
+        \\            );
+        \\        }
+        \\        Schema.DescribeSObjectResult describe = cached.get(objectName);
+        \\        List<Schema.RecordTypeInfo> filtered = new List<Schema.RecordTypeInfo>();
+        \\        for (Schema.RecordTypeInfo info : describe.getRecordTypeInfos()) {
+        \\            if (!info.isMaster()) {
+        \\                filtered.add(info);
+        \\            }
+        \\        }
+        \\        nonMasterInfos.put(objectName, filtered);
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        fill('account');
+        \\        nonMasterInfos.clear();
+        \\        fill('account');
+        \\        return String.valueOf(nonMasterInfos.get('account').size()) + ':' +
+        \\            String.valueOf(cached.get('account').getRecordTypeInfosById().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "CachedDescribeRecordTypeInfoProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:2", result.value.string);
 }
 
 test "E2E: Search.query honors fixed search results and stripInaccessible returns records" {
@@ -8515,6 +8835,34 @@ test "E2E: custom equals and hashCode drive map lookup while strict equality sta
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true:false:ok:true", result.value.string);
+}
+
+test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
+    const source =
+        \\public class MapClearProbe {
+        \\    public static String test() {
+        \\        Map<String, Map<String, Integer>> rows = new Map<String, Map<String, Integer>>();
+        \\        Map<String, Integer> first = new Map<String, Integer>();
+        \\        first.put('a', 1);
+        \\        rows.put('account', first);
+        \\        rows.clear();
+        \\        Map<String, Integer> second = new Map<String, Integer>();
+        \\        second.put('b', 2);
+        \\        rows.put('account', second);
+        \\        Map<String, Integer> inner = rows.get('account');
+        \\        return String.valueOf(rows.containsKey('account')) + ':' +
+        \\            String.valueOf(inner == null) + ':' +
+        \\            String.valueOf(inner.size()) + ':' +
+        \\            String.valueOf(inner.containsKey('b'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MapClearProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:false:1:true", result.value.string);
 }
 
 test "E2E: String.valueOf respects override toString and List<Type>.toString formats element names" {

@@ -1303,21 +1303,21 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
         if (input_records == .list) {
             for (input_records.list.items.items) |item| {
                 if (item != .sobject) continue;
-                const object_access_operation = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                const object_access_operation = if (!enforce_crud)
+                    ""
+                else if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
                     "read"
                 else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
                     "create"
                 else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
                     "edit"
-                else if (enforce_crud)
-                    "create"
                 else
-                    "";
+                    "create";
                 if (object_access_operation.len > 0 and !resolveObjectCrudPermission(ctx.eval, item.sobject.type_name, object_access_operation)) {
                     return ctx.throwException("System.NoAccessException", "No access to entity");
                 }
             }
-        } else if (ctx.eval.is_min_access_user and (enforce_crud or std.ascii.eqlIgnoreCase(access_type, "READABLE")) and !has_permset) {
+        } else if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
             return ctx.throwException("System.NoAccessException", "No access to entity");
         }
 
@@ -2132,43 +2132,11 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.custom_setting_types.get(obj_name) != null;
     try desc.fields.put(ctx.arena, "isCustomSetting", Value{ .boolean = is_custom_setting });
 
-    // RecordTypeInfos: Every SObject has at least a Master RecordType.
-    // IDs must be kept in sync with seedRecordTypeStore in evaluator.zig.
-    const rt_list = try ctx.arena.create(types.ListValue);
-    rt_list.* = .{};
-    const rt_by_id_map = try ctx.arena.create(types.MapValue);
-    rt_by_id_map.* = .{};
-
-    // Determine index for this object type to generate stable, unique IDs
-    const known_types = [_][]const u8{
-        "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
-        "Solution", "Campaign", "Event",
-    };
-    var obj_idx: usize = 99; // fallback for unknown types
-    for (known_types, 0..) |kt, i| {
-        if (std.ascii.eqlIgnoreCase(obj_name, kt)) {
-            obj_idx = i;
-            break;
-        }
-    }
-    const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
-
-    // Master RecordType (always present)
-    const master_rt = try createRecordTypeInfo(ctx, "Master", "Master", master_rt_id, true, true, true, true);
-    try rt_list.items.append(ctx.arena, master_rt);
-    try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
-
-    // All known SObject types get an additional "Default" record type for testing
-    // (Salesforce orgs typically have at least one non-Master RT per object)
-    {
-        const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
-        const default_rt = try createRecordTypeInfo(ctx, "Default", "Default", def_rt_id, false, true, true, false);
-        try rt_list.items.append(ctx.arena, default_rt);
-        try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
-    }
-
-    try desc.fields.put(ctx.arena, "recordTypeInfos", Value{ .list = rt_list });
-    try desc.fields.put(ctx.arena, "recordTypeInfosById", Value{ .map = rt_by_id_map });
+    const record_type_artifacts = try buildRecordTypeInfoArtifacts(ctx, obj_name);
+    try desc.fields.put(ctx.arena, "recordTypeInfos", record_type_artifacts.list);
+    try desc.fields.put(ctx.arena, "recordTypeInfosById", record_type_artifacts.by_id);
+    try desc.fields.put(ctx.arena, "recordTypeInfosByName", record_type_artifacts.by_name);
+    try desc.fields.put(ctx.arena, "recordTypeInfosByDeveloperName", record_type_artifacts.by_dev_name);
 
     return Value{ .object = desc };
 }
@@ -2184,6 +2152,61 @@ fn createRecordTypeInfo(ctx: *BuiltinContext, name: []const u8, dev_name: []cons
     try rti.fields.put(ctx.arena, "available", Value{ .boolean = is_available });
     try rti.fields.put(ctx.arena, "defaultRecordTypeMapping", Value{ .boolean = is_default });
     return Value{ .object = rti };
+}
+
+const RecordTypeInfoArtifacts = struct {
+    list: Value,
+    by_id: Value,
+    by_name: Value,
+    by_dev_name: Value,
+};
+
+fn buildRecordTypeInfoArtifacts(ctx: *BuiltinContext, obj_name: []const u8) !RecordTypeInfoArtifacts {
+    const rt_list = try ctx.arena.create(types.ListValue);
+    rt_list.* = .{};
+    const rt_by_id_map = try ctx.arena.create(types.MapValue);
+    rt_by_id_map.* = .{};
+    const rt_by_name_map = try ctx.arena.create(types.MapValue);
+    rt_by_name_map.* = .{};
+    const rt_by_dev_name_map = try ctx.arena.create(types.MapValue);
+    rt_by_dev_name_map.* = .{};
+
+    const known_types = [_][]const u8{
+        "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
+        "Solution", "Campaign", "Event",
+    };
+    var obj_idx: usize = 99;
+    for (known_types, 0..) |kt, i| {
+        if (std.ascii.eqlIgnoreCase(obj_name, kt)) {
+            obj_idx = i;
+            break;
+        }
+    }
+
+    const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
+    const master_rt = try createRecordTypeInfo(ctx, "Master", "Master", master_rt_id, true, true, true, true);
+    try rt_list.items.append(ctx.arena, master_rt);
+    try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
+    try rt_by_name_map.entries.put(ctx.arena, "Master", master_rt);
+    try rt_by_name_map.entries.put(ctx.arena, "master", master_rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, "Master", master_rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, "master", master_rt);
+
+    const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
+    const default_rt = try createRecordTypeInfo(ctx, "Default", "Default", def_rt_id, false, true, true, false);
+    try rt_list.items.append(ctx.arena, default_rt);
+    try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
+    try rt_by_name_map.entries.put(ctx.arena, "Default", default_rt);
+    try rt_by_name_map.entries.put(ctx.arena, "default", default_rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, "Default", default_rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, "default", default_rt);
+
+    return .{
+        .list = Value{ .list = rt_list },
+        .by_id = Value{ .map = rt_by_id_map },
+        .by_name = Value{ .map = rt_by_name_map },
+        .by_dev_name = Value{ .map = rt_by_dev_name_map },
+    };
 }
 
 pub fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
@@ -3469,34 +3492,20 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
         return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
-        return obj.fields.get("recordTypeInfos") orelse blk: {
-            const empty = try ctx.arena.create(types.ListValue);
-            empty.* = .{};
-            break :blk Value{ .list = empty };
-        };
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        return (try buildRecordTypeInfoArtifacts(ctx, name)).list;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById")) {
-        return obj.fields.get("recordTypeInfosById") orelse blk: {
-            const empty = try ctx.arena.create(types.MapValue);
-            empty.* = .{};
-            break :blk Value{ .map = empty };
-        };
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        return (try buildRecordTypeInfoArtifacts(ctx, name)).by_id;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName")) {
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        return (try buildRecordTypeInfoArtifacts(ctx, name)).by_name;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        if (obj.fields.get("recordTypeInfos")) |rti_list_val| {
-            if (rti_list_val == .list) {
-                for (rti_list_val.list.items.items) |rti_val| {
-                    if (rti_val == .object) {
-                        if (rti_val.object.fields.get("developerName")) |dn| {
-                            if (dn == .string) try map.entries.put(ctx.arena, dn.string, rti_val);
-                        }
-                    }
-                }
-            }
-        }
-        return Value{ .map = map };
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        return (try buildRecordTypeInfoArtifacts(ctx, name)).by_dev_name;
     }
     return null;
 }
@@ -3617,6 +3626,7 @@ fn dispatchObjSObjectType(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
         std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or
+        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName") or
         std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
     {
         const name = if (obj.fields.get("name")) |n| n.string else "Object";

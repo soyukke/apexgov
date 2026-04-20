@@ -34,6 +34,7 @@ pub const SummaryFilter = struct {
 pub const PicklistValueMetadata = struct {
     label: []const u8,
     value: []const u8,
+    is_default: bool = false,
 };
 
 pub const FieldMetadata = struct {
@@ -2694,6 +2695,8 @@ pub const Evaluator = struct {
             }
         }
 
+        try self.applyMissingFieldDefaults(obj);
+
         // Validate required fields — throw DmlException on failure
         if (try self.validateRequiredFields(obj, false)) |err_msg| {
             const exc = try self.arena.create(types.ObjectInstance);
@@ -3069,6 +3072,15 @@ pub const Evaluator = struct {
             }
         }
         return null;
+    }
+
+    fn applyMissingFieldDefaults(self: *Evaluator, obj: *types.SObject) !void {
+        if (self.field_defaults.get(obj.type_name)) |defaults| {
+            for (defaults.keys(), defaults.values()) |field_name, default_value| {
+                if (self.getSObjectFieldValueCaseInsensitive(obj, field_name) != null) continue;
+                try utils.sobjectPut(&obj.fields, self.arena, field_name, default_value);
+            }
+        }
     }
 
     fn updateRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
@@ -9348,6 +9360,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "clear")) {
             map.entries = .empty;
+            map.key_values = .empty;
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
