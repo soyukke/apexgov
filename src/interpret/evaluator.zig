@@ -472,6 +472,7 @@ pub const Evaluator = struct {
         profile.id = profile_id;
         try profile.fields.put(self.arena, "Id", Value{ .string = profile_id });
         try self.populateSyntheticProfile(profile, profile_name);
+        try self.applyQueriedSyntheticProfileFlags(profile, soql, current_env);
         return Value{ .sobject = profile };
     }
 
@@ -480,6 +481,11 @@ pub const Evaluator = struct {
 
         const is_guest_profile = std.ascii.indexOfIgnoreCase(profile_name, "Guest") != null;
         try profile.fields.put(self.arena, "UserType", Value{ .string = if (is_guest_profile) "Guest" else "Standard" });
+        if (!is_guest_profile) {
+            try profile.fields.put(self.arena, "PermissionsPrivacyDataAccess", Value{ .boolean = false });
+            try profile.fields.put(self.arena, "PermissionsSubmitMacrosAllowed", Value{ .boolean = true });
+            try profile.fields.put(self.arena, "PermissionsMassInlineEdit", Value{ .boolean = true });
+        }
 
         const license = try self.arena.create(types.SObject);
         const license_id = try std.fmt.allocPrint(self.arena, "0LQ{d:0>15}", .{self.next_id});
@@ -495,6 +501,37 @@ pub const Evaluator = struct {
         }
         try profile.fields.put(self.arena, "UserLicenseId", Value{ .string = license_id });
         try profile.fields.put(self.arena, "UserLicense", Value{ .sobject = license });
+    }
+
+    fn applyQueriedSyntheticProfileFlags(self: *Evaluator, profile: *types.SObject, soql: []const u8, current_env: *Env) !void {
+        const where_clause = extractWhereClause(soql) orelse return;
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+        var pos: usize = 0;
+        while (pos < where_clause.len) : (pos += 1) {
+            if (!std.mem.startsWith(u8, where_clause[pos..], "Permissions")) continue;
+            var end = pos + "Permissions".len;
+            while (end < where_clause.len) : (end += 1) {
+                const ch = where_clause[end];
+                if (!std.ascii.isAlphanumeric(ch) and ch != '_') break;
+            }
+            const field_name = where_clause[pos..end];
+            if (field_name.len == "Permissions".len) continue;
+            if (seen.contains(field_name)) {
+                pos = end - 1;
+                continue;
+            }
+            try seen.put(self.arena, field_name, {});
+            if (self.extractWhereFieldValue(soql, field_name, current_env)) |raw_value| {
+                if (std.ascii.eqlIgnoreCase(raw_value, "true")) {
+                    try profile.fields.put(self.arena, field_name, Value{ .boolean = true });
+                } else if (std.ascii.eqlIgnoreCase(raw_value, "false")) {
+                    try profile.fields.put(self.arena, field_name, Value{ .boolean = false });
+                } else {
+                    try profile.fields.put(self.arena, field_name, Value{ .string = raw_value });
+                }
+            }
+            pos = end - 1;
+        }
     }
 
     fn findProfileByName(self: *Evaluator, profile_name: []const u8) ?*types.SObject {
@@ -538,9 +575,9 @@ pub const Evaluator = struct {
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or where_clause[pos - 1] == ' ' or where_clause[pos - 1] == '(')) continue;
+            if (!(pos == 0 or isSoqlWhitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
-            while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+            while (j < where_clause.len and isSoqlWhitespace(where_clause[j])) j += 1;
             if (j < where_clause.len and where_clause[j] == '=') return true;
         }
         return false;
@@ -552,9 +589,9 @@ pub const Evaluator = struct {
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or where_clause[pos - 1] == ' ' or where_clause[pos - 1] == '(')) continue;
+            if (!(pos == 0 or isSoqlWhitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
-            while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+            while (j < where_clause.len and isSoqlWhitespace(where_clause[j])) j += 1;
             if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) return true;
         }
         return false;
@@ -2809,7 +2846,7 @@ pub const Evaluator = struct {
                 try cd.fields.put(self.arena, "Title", utils.sobjectGet(&obj.fields, "Title") orelse Value{ .string = "Untitled" });
                 // Derive FileType from PathOnClient extension
                 const path_on_client = if (utils.sobjectGet(&obj.fields, "PathOnClient")) |poc| (if (poc == .string) poc.string else "") else "";
-                const file_type: []const u8 = if (std.mem.endsWith(u8, path_on_client, ".png") or std.mem.endsWith(u8, path_on_client, ".PNG")) "PNG" else if (std.mem.endsWith(u8, path_on_client, ".jpg") or std.mem.endsWith(u8, path_on_client, ".jpeg")) "JPG" else if (std.mem.endsWith(u8, path_on_client, ".gif")) "GIF" else if (std.mem.endsWith(u8, path_on_client, ".pdf")) "PDF" else if (std.mem.endsWith(u8, path_on_client, ".docx")) "WORD_X" else if (std.mem.endsWith(u8, path_on_client, ".xlsx")) "EXCEL_X" else if (std.mem.endsWith(u8, path_on_client, ".pptx")) "POWER_POINT_X" else if (std.mem.endsWith(u8, path_on_client, ".m4a")) "M4A" else "UNKNOWN";
+                const file_type: []const u8 = if (std.ascii.endsWithIgnoreCase(path_on_client, ".png")) "PNG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".jpg") or std.ascii.endsWithIgnoreCase(path_on_client, ".jpeg")) "JPG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".gif")) "GIF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pdf")) "PDF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".docx")) "WORD_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".xlsx")) "EXCEL_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pptx")) "POWER_POINT_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".m4a")) "M4A" else "UNKNOWN";
                 try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
                 const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
                 if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
@@ -3606,17 +3643,19 @@ pub const Evaluator = struct {
         // Seed synthetic records for User/Profile/RecordType if none exist in store
         if (records.items.len == 0 and self.store.get(from_type) == null) {
             if (std.ascii.eqlIgnoreCase(from_type, "User")) {
-                const use_query_specific_user = self.hasExactWhereFieldComparison(soql, "Username") or
-                    self.hasExactWhereFieldComparison(soql, "Alias") or
-                    self.hasExactWhereFieldComparison(soql, "Profile.Name") or
+                const use_query_specific_user = self.hasExactWhereFieldComparison(soql, "Profile.Name") or
                     self.hasExactWhereFieldComparison(soql, "Profile.UserType") or
                     self.hasExactWhereFieldComparison(soql, "UserType");
-                const user_record = if (use_query_specific_user)
+                const user_record = if (self.queryMatchesCurrentUser(soql, current_env))
+                    try self.createCurrentUserRecord()
+                else if (self.queryMatchesDefaultSyntheticUser(soql, current_env))
+                    try self.createDefaultUserRecord()
+                else if (use_query_specific_user)
                     try self.createUserForQuery(soql, current_env)
                 else
                     try self.createCurrentUserRecord();
                 // Only include seeded User if it matches WHERE clause
-                if (self.matchesWhere(user_record, soql, current_env)) {
+                if (user_record != .null_val and self.matchesWhere(user_record, soql, current_env)) {
                     try records.append(self.arena, user_record);
                     if (user_record == .sobject) {
                         const gop = try self.store.getOrPut(self.arena, "User");
@@ -3669,6 +3708,21 @@ pub const Evaluator = struct {
                     const gop = try self.store.getOrPut(self.arena, "User");
                     if (!gop.found_existing) gop.value_ptr.* = .empty;
                     try gop.value_ptr.append(self.arena, user_record);
+                }
+            }
+        }
+
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "Profile")) {
+            const profile_record = if (!self.hasWhereFieldLikeComparison(soql, "Name"))
+                try self.createProfileForQuery(soql, current_env)
+            else
+                try self.createDefaultProfileRecord();
+            if (self.matchesWhere(profile_record, soql, current_env)) {
+                try records.append(self.arena, profile_record);
+                if (profile_record == .sobject) {
+                    const gop = try self.store.getOrPut(self.arena, "Profile");
+                    if (!gop.found_existing) gop.value_ptr.* = .empty;
+                    try gop.value_ptr.append(self.arena, profile_record);
                 }
             }
         }
@@ -4299,22 +4353,25 @@ pub const Evaluator = struct {
     }
 
     fn lookupEvaluatedBindExpression(self: *Evaluator, current_env: *Env, bind_expr: []const u8) ?Value {
-        if (std.mem.indexOfAny(u8, bind_expr, ".([") == null) return null;
         const tokens = lexer_mod.tokenize(bind_expr, self.arena) catch return null;
         const expr = parser_mod.parseExpr(tokens, self.arena) catch return null;
         return self.evalExpr(expr, current_env) catch null;
     }
 
     fn lookupBindValue(self: *Evaluator, current_env: *Env, var_name: []const u8) ?Value {
-        if (current_env.get(var_name)) |bv| return bv;
+        if (current_env.get(var_name)) |bv| {
+            if (bv != .null_val) return bv;
+        }
         if (self.lookupEvaluatedBindExpression(current_env, var_name)) |bv| return bv;
 
         if (self.current_class) |cc| {
+            self.ensureStaticInit(cc);
             const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, var_name }) catch null;
             if (key) |k| {
                 if (self.global_env.get(k)) |bv| return bv;
             }
             if (self.findOuterClassName(cc)) |oc| {
+                self.ensureStaticInit(oc);
                 const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch null;
                 if (okey) |k| {
                     if (self.global_env.get(k)) |bv| return bv;
@@ -4325,11 +4382,13 @@ pub const Evaluator = struct {
         if (current_env.get("this")) |tv| {
             if (tv == .object) {
                 const this_cn = tv.object.class_name;
+                self.ensureStaticInit(this_cn);
                 const tkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, var_name }) catch null;
                 if (tkey) |k| {
                     if (self.global_env.get(k)) |bv| return bv;
                 }
                 if (self.findOuterClassName(this_cn)) |oc| {
+                    self.ensureStaticInit(oc);
                     const okey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, var_name }) catch null;
                     if (okey) |k| {
                         if (self.global_env.get(k)) |bv| return bv;
@@ -4353,11 +4412,11 @@ pub const Evaluator = struct {
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
             if (std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name) and
-                (pos == 0 or where_clause[pos - 1] == ' ' or where_clause[pos - 1] == '(') and
-                (pos + field_name.len == where_clause.len or where_clause[pos + field_name.len] == ' ' or where_clause[pos + field_name.len] == '\t'))
+                (pos == 0 or isSoqlWhitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(') and
+                (pos + field_name.len == where_clause.len or isSoqlWhitespace(where_clause[pos + field_name.len]) or where_clause[pos + field_name.len] == ')'))
             {
                 var j = pos + field_name.len;
-                while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+                while (j < where_clause.len and isSoqlWhitespace(where_clause[j])) j += 1;
 
                 var is_in = false;
                 if (j + 2 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 2], "IN")) {
@@ -4371,7 +4430,7 @@ pub const Evaluator = struct {
                     while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(' and where_clause[j] != ' ') j += 1;
                 }
 
-                while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+                while (j < where_clause.len and isSoqlWhitespace(where_clause[j])) j += 1;
 
                 if (is_in and j < where_clause.len and where_clause[j] == '(') {
                     j += 1;
@@ -4444,12 +4503,12 @@ pub const Evaluator = struct {
         var pos: usize = 0;
         while (pos + field_name.len <= clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or clause[pos - 1] == ' ' or clause[pos - 1] == '(')) continue;
+            if (!(pos == 0 or isSoqlWhitespace(clause[pos - 1]) or clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
-            while (j < clause.len and (clause[j] == ' ' or clause[j] == '\t')) j += 1;
+            while (j < clause.len and isSoqlWhitespace(clause[j])) j += 1;
             if (j >= clause.len or clause[j] != '=') continue;
             j += 1;
-            while (j < clause.len and (clause[j] == ' ' or clause[j] == '\t')) j += 1;
+            while (j < clause.len and isSoqlWhitespace(clause[j])) j += 1;
             if (j + 4 <= clause.len and std.ascii.eqlIgnoreCase(clause[j .. j + 4], "NULL")) return true;
         }
         return false;
@@ -5289,10 +5348,10 @@ pub const Evaluator = struct {
                 } else if (base_val == .object) {
                     cmp_val = utils.sobjectGet(&base_val.object.fields, prop_name) orelse return true;
                 } else {
-                    return true;
+                    return false;
                 }
             } else {
-                return true;
+                return false;
             }
         } else if (std.fmt.parseInt(i64, std.mem.trim(u8, value_str, " \t\n\r"), 10)) |int_val| {
             cmp_val = Value{ .integer = int_val };
@@ -7706,7 +7765,10 @@ pub const Evaluator = struct {
                 else => {},
             }
             if (resolved_var == .null_val and current_env.has(class_name)) {
-                return self.evalInstanceMethod(resolved_var, mc.method, args.items, current_env);
+                // Bare identifier method calls need the normal identifier resolution
+                // path so instance property getters can override null backing fields.
+                const rebound = try self.evalExpr(mc.object, current_env);
+                return self.evalInstanceMethod(rebound, mc.method, args.items, current_env);
             }
 
             // Let a user-defined class named Database shadow the platform Database
@@ -10252,22 +10314,38 @@ pub const Evaluator = struct {
             // RestContext.request / RestContext.response
             if (std.ascii.eqlIgnoreCase(class_name, "RestContext")) {
                 if (std.ascii.eqlIgnoreCase(fa.field, "request")) {
+                    const key = try std.fmt.allocPrint(self.arena, "RestContext.request", .{});
+                    if (self.global_env.get(key)) |existing| return existing;
                     const req = try self.arena.create(types.ObjectInstance);
                     req.* = .{ .class_name = "RestRequest" };
                     try req.fields.put(self.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
                     try req.fields.put(self.arena, "httpMethod", Value{ .string = "GET" });
                     try req.fields.put(self.arena, "requestBody", Value.null_val);
-                    // Check if the test set RestContext.request already
-                    const key = try std.fmt.allocPrint(self.arena, "RestContext.request", .{});
-                    return self.global_env.get(key) orelse Value{ .object = req };
+                    const params = try self.arena.create(types.MapValue);
+                    params.* = .{};
+                    try req.fields.put(self.arena, "params", Value{ .map = params });
+                    const headers = try self.arena.create(types.MapValue);
+                    headers.* = .{};
+                    try req.fields.put(self.arena, "headers", Value{ .map = headers });
+                    const value = Value{ .object = req };
+                    try self.global_env.define(key, value);
+                    return value;
                 }
                 if (std.ascii.eqlIgnoreCase(fa.field, "response")) {
+                    const key = try std.fmt.allocPrint(self.arena, "RestContext.response", .{});
+                    if (self.global_env.get(key)) |existing| return existing;
                     const resp = try self.arena.create(types.ObjectInstance);
                     resp.* = .{ .class_name = "RestResponse" };
-                    try resp.fields.put(self.arena, "statusCode", Value{ .integer = 200 });
-                    try resp.fields.put(self.arena, "responseBody", Value.null_val);
-                    const key = try std.fmt.allocPrint(self.arena, "RestContext.response", .{});
-                    return self.global_env.get(key) orelse Value{ .object = resp };
+                    const blob = try self.arena.create(types.ObjectInstance);
+                    blob.* = .{ .class_name = "Blob" };
+                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
+                    try resp.fields.put(self.arena, "responseBody", Value{ .object = blob });
+                    const headers = try self.arena.create(types.MapValue);
+                    headers.* = .{};
+                    try resp.fields.put(self.arena, "headers", Value{ .map = headers });
+                    const value = Value{ .object = resp };
+                    try self.global_env.define(key, value);
+                    return value;
                 }
             }
 

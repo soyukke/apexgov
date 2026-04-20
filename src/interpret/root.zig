@@ -1677,6 +1677,114 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
     try std.testing.expectEqualStrings("0:System Administrator:Salesforce", result.value.string);
 }
 
+test "E2E: synthetic Profile query honors permission flag predicates" {
+    const source =
+        \\public class ProfilePermissionPredicateTest {
+        \\    public static String test() {
+        \\        Profile p = [
+        \\            SELECT Id, Name, PermissionsPrivacyDataAccess, PermissionsSubmitMacrosAllowed, PermissionsMassInlineEdit
+        \\            FROM Profile
+        \\            WHERE
+        \\                UserType = 'Standard'
+        \\                AND PermissionsPrivacyDataAccess = FALSE
+        \\                AND PermissionsSubmitMacrosAllowed = TRUE
+        \\                AND PermissionsMassInlineEdit = TRUE
+        \\            LIMIT 1
+        \\        ];
+        \\        return p.Name + ':' +
+        \\            String.valueOf(p.PermissionsPrivacyDataAccess) + ':' +
+        \\            String.valueOf(p.PermissionsSubmitMacrosAllowed) + ':' +
+        \\            String.valueOf(p.PermissionsMassInlineEdit);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ProfilePermissionPredicateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("System Administrator:false:true:true", result.value.string);
+}
+
+test "E2E: inserted users are queryable by CommunityNickname" {
+    const source =
+        \\public class UserCommunityNicknameTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User' LIMIT 1];
+        \\        User u = new User(
+        \\            LastName = 'Nickname User',
+        \\            Email = 'nickname@example.com',
+        \\            Alias = 'nick',
+        \\            Username = 'nickname@example.com',
+        \\            CommunityNickname = 'fixture-nick',
+        \\            LocaleSidKey = 'en_US',
+        \\            TimeZoneSidKey = 'GMT',
+        \\            ProfileId = p.Id,
+        \\            LanguageLocaleKey = 'en_US',
+        \\            EmailEncodingKey = 'UTF-8'
+        \\        );
+        \\        insert as user u;
+        \\        List<User> rows = [
+        \\            SELECT Id, CommunityNickname
+        \\            FROM User
+        \\            WHERE CommunityNickname = 'fixture-nick'
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].CommunityNickname + ':' + String.valueOf(u.Id != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserCommunityNicknameTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:fixture-nick:true", result.value.string);
+}
+
+test "E2E: static final test-dependent bind variables resolve in SOQL" {
+    const source =
+        \\public class StaticBindProbe {
+        \\    private static final String USERNAME = Test.isRunningTest()
+        \\        ? 'missing-user@example.com'
+        \\        : 'prod-user@example.com';
+        \\    public static String test() {
+        \\        List<User> rows = [
+        \\            SELECT Id, Username
+        \\            FROM User
+        \\            WHERE Username = :USERNAME
+        \\        ];
+        \\        return USERNAME + ':' + String.valueOf(rows.size()) + ':' +
+        \\            (rows.size() == 0 ? 'none' : rows[0].Username);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticBindProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("missing-user@example.com:0:none", result.value.string);
+}
+
+test "E2E: static final test-dependent constants evaluate before use" {
+    const source =
+        \\public class StaticConstantProbe {
+        \\    private static final String USERNAME = Test.isRunningTest()
+        \\        ? 'missing-user@example.com'
+        \\        : 'prod-user@example.com';
+        \\    public static String test() {
+        \\        return USERNAME;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticConstantProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("missing-user@example.com", result.value.string);
+}
+
 test "E2E: synthetic User LIKE collapses repeated wildcards" {
     const source =
         \\public class UserLikeSearchTest {
@@ -2217,6 +2325,36 @@ test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("3:3", result.value.string);
+}
+
+test "E2E: ContentVersion infers uppercase file extensions for ContentDocument filters" {
+    const source =
+        \\public class ContentVersionFileTypeCaseTest {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'CaseTest');
+        \\        insert acct;
+        \\        ContentVersion audio = new ContentVersion(
+        \\            Title = 'Audio',
+        \\            PathOnClient = 'clip.M4A',
+        \\            VersionData = Blob.valueOf('audio'),
+        \\            FirstPublishLocationId = acct.Id
+        \\        );
+        \\        insert audio;
+        \\        List<ContentDocumentLink> links = [
+        \\            SELECT ContentDocumentId
+        \\            FROM ContentDocumentLink
+        \\            WHERE LinkedEntityId = :acct.Id AND ContentDocument.FileType IN ('M4A')
+        \\        ];
+        \\        return String.valueOf(links.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ContentVersionFileTypeCaseTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
 }
 
 test "E2E: StaticResource Body → ContentVersion insert via method" {
@@ -6600,6 +6738,169 @@ test "E2E: Rest headers default to empty maps and accept addHeader" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:2:0", result.value.string);
+}
+
+test "E2E: RestContext request and response share assigned objects" {
+    const source =
+        \\public class RestContextSharedStateTest {
+        \\    public static String test() {
+        \\        RestContext.Request = new RestRequest();
+        \\        RestContext.Response = new RestResponse();
+        \\        RestContext.request.requestURI = '/services/apexrest/demo';
+        \\        RestContext.response.statusCode = 204;
+        \\        return RestContext.Request.requestURI + ':' + String.valueOf(RestContext.Response.statusCode);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestContextSharedStateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("/services/apexrest/demo:204", result.value.string);
+}
+
+test "E2E: instance getter can write through RestContext response" {
+    const source =
+        \\public class RestResponseWrapper {
+        \\    protected RestResponse response {
+        \\        get {
+        \\            return RestContext.response;
+        \\        }
+        \\        private set;
+        \\    }
+        \\    public void run() {
+        \\        if (response.statusCode == null) {
+        \\            response.statusCode = 202;
+        \\        }
+        \\    }
+        \\}
+        \\public class RestResponseWrapperTest {
+        \\    public static String test() {
+        \\        RestContext.Response = new RestResponse();
+        \\        RestResponse resp = RestContext.Response;
+        \\        new RestResponseWrapper().run();
+        \\        return String.valueOf(resp.statusCode);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestResponseWrapperTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("202", result.value.string);
+}
+
+test "E2E: inherited getter can write through RestContext response" {
+    const source =
+        \\public virtual class RestResponseBase {
+        \\    protected RestResponse response {
+        \\        get {
+        \\            return RestContext.response;
+        \\        }
+        \\        private set;
+        \\    }
+        \\    public void run() {
+        \\        if (response.statusCode == null) {
+        \\            response.statusCode = 206;
+        \\        }
+        \\    }
+        \\}
+        \\public class RestResponseChild extends RestResponseBase {}
+        \\public class RestResponseChildTest {
+        \\    public static String test() {
+        \\        RestContext.Response = new RestResponse();
+        \\        RestResponse resp = RestContext.Response;
+        \\        new RestResponseChild().run();
+        \\        return String.valueOf(resp.statusCode);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestResponseChildTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("206", result.value.string);
+}
+
+test "E2E: static helper can assign RestContext response" {
+    const source =
+        \\public class RestContextSetupHelper {
+        \\    public static void setup() {
+        \\        RestContext.Response = new RestResponse();
+        \\    }
+        \\}
+        \\public class RestContextSetupHelperTest {
+        \\    public static String test() {
+        \\        RestContextSetupHelper.setup();
+        \\        RestContext.response.statusCode = 207;
+        \\        return String.valueOf(RestContext.Response.statusCode);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestContextSetupHelperTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("207", result.value.string);
+}
+
+test "E2E: inner subclasses inherit route-style RestContext response writes" {
+    const source =
+        \\public virtual class RouteStyleResponder {
+        \\    protected RestResponse response {
+        \\        get {
+        \\            return RestContext.response;
+        \\        }
+        \\        private set;
+        \\    }
+        \\    public void execute() {
+        \\        response.addHeader('Content-Type', 'application/json');
+        \\        if (response.statusCode == null) {
+        \\            response.statusCode = 200;
+        \\        }
+        \\    }
+        \\}
+        \\public class RouteStyleOuter {
+        \\    public class Child extends RouteStyleResponder {}
+        \\}
+        \\public class RouteStyleResponderTest {
+        \\    public static String test() {
+        \\        RestContext.Response = new RestResponse();
+        \\        RestResponse resp = RestContext.Response;
+        \\        new RouteStyleOuter.Child().execute();
+        \\        return String.valueOf(resp.statusCode) + ':' +
+        \\            String.valueOf(RestContext.Response.statusCode) + ':' +
+        \\            RestContext.Response.getHeader('Content-Type');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RouteStyleResponderTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("200:200:application/json", result.value.string);
+}
+
+test "E2E: System.currentPageReference reuses ApexPages current page parameters" {
+    const source =
+        \\public class CurrentPageReferenceTest {
+        \\    public static String test() {
+        \\        ApexPages.currentPage().getParameters().put('startURL', '/home');
+        \\        return String.valueOf(System.currentPageReference().getParameters().get('startURL'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CurrentPageReferenceTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("/home", result.value.string);
 }
 
 test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {

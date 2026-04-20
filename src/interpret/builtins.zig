@@ -251,6 +251,9 @@ fn dispatchStaticSystem(ctx: *BuiltinContext, method_name: []const u8, args: []c
         }
         return .void_val;
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "currentPageReference")) {
+        return try ensureCurrentPageReference(ctx);
+    }
     return null;
 }
 
@@ -1009,19 +1012,10 @@ fn dispatchStaticLoggingLevel(ctx: *BuiltinContext, method_name: []const u8, arg
 
 fn dispatchStaticRestContext(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "request") or std.ascii.eqlIgnoreCase(method_name, "getRequest")) {
-        const req = try ctx.arena.create(types.ObjectInstance);
-        req.* = .{ .class_name = "RestRequest" };
-        try req.fields.put(ctx.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
-        try req.fields.put(ctx.arena, "httpMethod", Value{ .string = "GET" });
-        try req.fields.put(ctx.arena, "requestBody", Value.null_val);
-        return Value{ .object = req };
+        return try ensureRestContextMember(ctx, "request");
     }
     if (std.ascii.eqlIgnoreCase(method_name, "response") or std.ascii.eqlIgnoreCase(method_name, "getResponse")) {
-        const resp = try ctx.arena.create(types.ObjectInstance);
-        resp.* = .{ .class_name = "RestResponse" };
-        try resp.fields.put(ctx.arena, "statusCode", Value{ .integer = 200 });
-        try resp.fields.put(ctx.arena, "responseBody", Value.null_val);
-        return Value{ .object = resp };
+        return try ensureRestContextMember(ctx, "response");
     }
     return Value.null_val;
 }
@@ -1592,18 +1586,57 @@ fn dispatchStaticApexPages(ctx: *BuiltinContext, method_name: []const u8, args: 
         return Value{ .list = list };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentPage")) {
-        if (ctx.eval.global_env.get("ApexPages.currentPageRef")) |existing| return existing;
-        const pr = try ctx.arena.create(types.ObjectInstance);
-        pr.* = .{ .class_name = "PageReference" };
-        try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
-        const params = try ctx.arena.create(types.MapValue);
-        params.* = .{};
-        try pr.fields.put(ctx.arena, "parameters", Value{ .map = params });
-        const val = Value{ .object = pr };
-        try ctx.eval.global_env.define("ApexPages.currentPageRef", val);
-        return val;
+        return try ensureCurrentPageReference(ctx);
     }
     return Value.null_val;
+}
+
+fn ensureCurrentPageReference(ctx: *BuiltinContext) !Value {
+    if (ctx.eval.global_env.get("ApexPages.currentPageRef")) |existing| return existing;
+    const pr = try ctx.arena.create(types.ObjectInstance);
+    pr.* = .{ .class_name = "PageReference" };
+    try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
+    const params = try ctx.arena.create(types.MapValue);
+    params.* = .{};
+    try pr.fields.put(ctx.arena, "parameters", Value{ .map = params });
+    const val = Value{ .object = pr };
+    try ctx.eval.global_env.define("ApexPages.currentPageRef", val);
+    return val;
+}
+
+fn ensureRestContextMember(ctx: *BuiltinContext, member_name: []const u8) !Value {
+    const key = try std.fmt.allocPrint(ctx.arena, "RestContext.{s}", .{member_name});
+    if (ctx.eval.global_env.get(key)) |existing| return existing;
+
+    if (std.ascii.eqlIgnoreCase(member_name, "request")) {
+        const req = try ctx.arena.create(types.ObjectInstance);
+        req.* = .{ .class_name = "RestRequest" };
+        try req.fields.put(ctx.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
+        try req.fields.put(ctx.arena, "httpMethod", Value{ .string = "GET" });
+        try req.fields.put(ctx.arena, "requestBody", Value.null_val);
+        const params = try ctx.arena.create(types.MapValue);
+        params.* = .{};
+        try req.fields.put(ctx.arena, "params", Value{ .map = params });
+        const headers = try ctx.arena.create(types.MapValue);
+        headers.* = .{};
+        try req.fields.put(ctx.arena, "headers", Value{ .map = headers });
+        const value = Value{ .object = req };
+        try ctx.eval.global_env.define(key, value);
+        return value;
+    }
+
+    const resp = try ctx.arena.create(types.ObjectInstance);
+    resp.* = .{ .class_name = "RestResponse" };
+    const blob = try ctx.arena.create(types.ObjectInstance);
+    blob.* = .{ .class_name = "Blob" };
+    try blob.fields.put(ctx.arena, "value", Value{ .string = "" });
+    try resp.fields.put(ctx.arena, "responseBody", Value{ .object = blob });
+    const headers = try ctx.arena.create(types.MapValue);
+    headers.* = .{};
+    try resp.fields.put(ctx.arena, "headers", Value{ .map = headers });
+    const value = Value{ .object = resp };
+    try ctx.eval.global_env.define(key, value);
+    return value;
 }
 
 fn dispatchStaticNetwork(ctx: *BuiltinContext, method_name: []const u8) !?Value {
@@ -2285,6 +2318,32 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             try headers.entries.put(ctx.arena, args[0].string, args[1]);
         }
         return .void_val;
+    }
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeader")) {
+        if (args.len > 0 and args[0] == .string) {
+            if (obj.fields.get("headers")) |headers_val| {
+                if (headers_val == .map) {
+                    if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
+                    var iter = headers_val.map.entries.iterator();
+                    while (iter.next()) |entry| {
+                        if (ci.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+                    }
+                }
+            }
+        }
+        return Value.null_val;
+    }
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        if (obj.fields.get("headers")) |headers_val| {
+            if (headers_val == .map) {
+                for (headers_val.map.entries.keys()) |key| {
+                    try list.items.append(ctx.arena, Value{ .string = key });
+                }
+            }
+        }
+        return Value{ .list = list };
     }
     if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or
         ci.eqlIgnoreCase(cn, "DescribeFieldResult") or
