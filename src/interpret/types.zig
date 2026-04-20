@@ -59,6 +59,8 @@ pub const SObject = struct {
     /// When true, accessing a field not in `fields` throws SObjectException
     /// (set by Security.stripInaccessible)
     is_stripped: bool = false,
+    /// When true, SObject.isClone() returns true (set by .clone()/.deepClone())
+    is_clone: bool = false,
 };
 
 pub const ListValue = struct {

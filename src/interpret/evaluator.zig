@@ -104,6 +104,8 @@ pub const Evaluator = struct {
     max_call_depth: u32 = 500,
     // Scheduled jobs store (System.schedule → CronTrigger queries)
     scheduled_jobs: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    // Schedulable instances queued during Test.startTest(); executed on Test.stopTest()
+    pending_schedulables: std.ArrayListUnmanaged(Value) = .empty,
     // Class source code (class name → source text, for ApexClass.Body queries)
     class_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // Trigger source code (trigger name → source text, for ApexTrigger.Body queries)
@@ -217,6 +219,7 @@ pub const Evaluator = struct {
         self.last_json_value = null;
         self.call_depth = 0;
         self.scheduled_jobs = .empty;
+        self.pending_schedulables = .empty;
         self.is_restricted_user = false;
         self.is_min_access_user = false;
         self.is_standard_user = false;
@@ -2961,6 +2964,29 @@ pub const Evaluator = struct {
                     if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
                     try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
                 }
+            }
+        }
+
+        // Auto-create the two default CampaignMemberStatus records (Sent, Responded)
+        // when a Campaign is inserted, matching Salesforce behavior.
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Campaign")) {
+            const default_statuses = [_]struct { label: []const u8, is_default: bool, has_responded: bool, sort_order: i64 }{
+                .{ .label = "Sent", .is_default = true, .has_responded = false, .sort_order = 1 },
+                .{ .label = "Responded", .is_default = false, .has_responded = true, .sort_order = 2 },
+            };
+            for (default_statuses) |ds| {
+                const cms_id = try self.allocId();
+                const cms = try self.arena.create(types.SObject);
+                cms.* = .{ .type_name = "CampaignMemberStatus", .id = cms_id };
+                try cms.fields.put(self.arena, "Id", Value{ .string = cms_id });
+                try cms.fields.put(self.arena, "CampaignId", Value{ .string = id });
+                try cms.fields.put(self.arena, "Label", Value{ .string = ds.label });
+                try cms.fields.put(self.arena, "IsDefault", Value{ .boolean = ds.is_default });
+                try cms.fields.put(self.arena, "HasResponded", Value{ .boolean = ds.has_responded });
+                try cms.fields.put(self.arena, "SortOrder", Value{ .integer = ds.sort_order });
+                const cms_gop = try self.store.getOrPut(self.arena, "CampaignMemberStatus");
+                if (!cms_gop.found_existing) cms_gop.value_ptr.* = .empty;
+                try cms_gop.value_ptr.append(self.arena, Value{ .sobject = cms });
             }
         }
 
@@ -5781,9 +5807,23 @@ pub const Evaluator = struct {
             .{ "Leads", "Lead" },
             .{ "AccountContactRoles", "AccountContactRole" },
             .{ "OpportunityContactRoles", "OpportunityContactRole" },
+            .{ "CampaignMemberStatuses", "CampaignMemberStatus" },
+            .{ "CampaignMembers", "CampaignMember" },
         };
         inline for (mappings) |m| {
             if (std.ascii.eqlIgnoreCase(relationship, m[0])) return m[1];
+        }
+        // Try removing trailing 'es' (statuses → status, boxes → box)
+        if (relationship.len > 2 and std.ascii.endsWithIgnoreCase(relationship, "es")) {
+            const candidate = relationship[0 .. relationship.len - 2];
+            // Only accept if candidate ends in 's' (statuses), 'x', 'sh', 'ch'
+            if (std.ascii.endsWithIgnoreCase(candidate, "s") or
+                std.ascii.endsWithIgnoreCase(candidate, "x") or
+                std.ascii.endsWithIgnoreCase(candidate, "sh") or
+                std.ascii.endsWithIgnoreCase(candidate, "ch"))
+            {
+                return candidate;
+            }
         }
         // Try removing trailing 's' for standard plural
         if (relationship.len > 1 and relationship[relationship.len - 1] == 's') {
@@ -5806,11 +5846,13 @@ pub const Evaluator = struct {
             .{ "Case", "CaseId" },
             .{ "Lead", "LeadId" },
             .{ "User", "OwnerId" },
+            .{ "Campaign", "CampaignId" },
         };
         inline for (common_fks) |m| {
             if (std.ascii.eqlIgnoreCase(parent_type, m[0])) return m[1];
         }
-        return "ParentId";
+        // Default: use parent_type + "Id" convention
+        return std.fmt.allocPrint(self.arena, "{s}Id", .{parent_type}) catch "ParentId";
     }
 
     fn resolveCustomChildRelationship(self: *Evaluator, parent_type: []const u8, relationship: []const u8) ?CustomChildRelationship {
@@ -8066,6 +8108,11 @@ pub const Evaluator = struct {
                 return .void_val;
             }
 
+            // System.schedule → queue Schedulable for execution on Test.stopTest()
+            if (std.ascii.eqlIgnoreCase(class_name, "System") and std.ascii.eqlIgnoreCase(mc.method, "schedule")) {
+                return self.handleSystemMethod("schedule", mc.method, args.items, current_env);
+            }
+
             // JSON.serialize/deserialize with round-trip support
             if (std.ascii.eqlIgnoreCase(class_name, "JSON")) {
                 if (std.ascii.eqlIgnoreCase(mc.method, "serialize") or std.ascii.eqlIgnoreCase(mc.method, "serializePretty")) {
@@ -9471,7 +9518,7 @@ pub const Evaluator = struct {
             // clone()
             if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
                 const clone = try self.arena.create(types.SObject);
-                clone.* = .{ .type_name = obj.sobject.type_name };
+                clone.* = .{ .type_name = obj.sobject.type_name, .is_clone = true };
                 // Clone preserves Id unless first arg is false
                 const preserve_id = if (args.len >= 1 and args[0] == .boolean) args[0].boolean else true;
                 if (preserve_id and obj.sobject.id != null) {
@@ -9482,6 +9529,10 @@ pub const Evaluator = struct {
                     try clone.fields.put(self.arena, k, v);
                 }
                 return Value{ .sobject = clone };
+            }
+            // isClone()
+            if (std.ascii.eqlIgnoreCase(method, "isClone")) {
+                return Value{ .boolean = obj.sobject.is_clone };
             }
             // getSObjectType()
             if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
@@ -9525,11 +9576,15 @@ pub const Evaluator = struct {
                 }
                 return Value{ .map = map };
             }
-            // addError(msg)
+            // addError(msg) or addError(field, msg)
             if (std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0) {
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", args[0]);
+                // Salesforce: addError(String message) or addError(String fieldName, String message)
+                const msg_val = if (args.len >= 2) args[1] else args[0];
+                const field_val: ?Value = if (args.len >= 2) args[0] else null;
+                try exc.fields.put(self.arena, "message", msg_val);
+                if (field_val) |fv| try exc.fields.put(self.arena, "field", fv);
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -11207,6 +11262,20 @@ pub const Evaluator = struct {
             search.* = .{ .class_name = "Search" };
             return Value{ .object = search };
         }
+        // System.Label.XXX — fallback to label name string when metadata not available.
+        if (fa.object.* == .field_access) {
+            const inner = fa.object.field_access;
+            const is_system_label = (inner.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(inner.object.identifier.name, "System") and
+                std.ascii.eqlIgnoreCase(inner.field, "Label")) or
+                (inner.object.* == .identifier and std.ascii.eqlIgnoreCase(inner.object.identifier.name, "Label"));
+            if (is_system_label) {
+                return Value{ .string = try self.arena.dupe(u8, fa.field) };
+            }
+        }
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.object.identifier.name, "Label")) {
+            return Value{ .string = try self.arena.dupe(u8, fa.field) };
+        }
 
         // Auto-unwrap list to first element for field access (SOQL single-record pattern)
         if (obj == .list) {
@@ -12198,6 +12267,18 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "stopTest")) {
+            // Execute any Schedulable instances queued via System.schedule between startTest/stopTest.
+            while (self.pending_schedulables.items.len > 0) {
+                const sched = self.pending_schedulables.orderedRemove(0);
+                if (sched == .object) {
+                    if (self.findClass(sched.object.class_name)) |class_decl| {
+                        const ctx_obj = try self.arena.create(types.ObjectInstance);
+                        ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
+                        try ctx_obj.fields.put(self.arena, "triggerId", Value{ .string = "08e000000000001" });
+                        _ = self.callInstanceMethod(class_decl, sched.object, "execute", &.{Value{ .object = ctx_obj }}) catch {};
+                    }
+                }
+            }
             return .void_val;
         }
         // Test.setFixedSearchResults(List<Id>)
@@ -12316,11 +12397,83 @@ pub const Evaluator = struct {
         return Value{ .list = empty };
     }
 
+    fn buildFailedDmlResult(self: *Evaluator, result_class: []const u8, target: Value, is_upsert: bool) !Value {
+        const result_id = if (target == .sobject) self.sobjectIdForResult(target.sobject) else null;
+        const result = try self.createDmlResultValue(result_class, false, result_id, if (is_upsert) false else null);
+        if (self.pending_exception) |pe| {
+            const errors_list = try self.arena.create(types.ListValue);
+            errors_list.* = .{};
+            const err_obj = try self.arena.create(types.ObjectInstance);
+            err_obj.* = .{ .class_name = "Database.Error" };
+            var message_val: Value = Value{ .string = "" };
+            var fields_val: Value = Value{ .list = blk: {
+                const empty = try self.arena.create(types.ListValue);
+                empty.* = .{};
+                break :blk empty;
+            } };
+            if (pe == .object) {
+                if (pe.object.fields.get("message")) |m| message_val = m;
+                if (pe.object.fields.get("field")) |f| {
+                    if (f == .string) {
+                        const fl = try self.arena.create(types.ListValue);
+                        fl.* = .{};
+                        try fl.items.append(self.arena, f);
+                        fields_val = Value{ .list = fl };
+                    }
+                }
+            } else if (pe == .string) {
+                message_val = pe;
+            }
+            try err_obj.fields.put(self.arena, "message", message_val);
+            try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+            try err_obj.fields.put(self.arena, "fields", fields_val);
+            try errors_list.items.append(self.arena, Value{ .object = err_obj });
+            if (result == .object) {
+                try result.object.fields.put(self.arena, "errors", Value{ .list = errors_list });
+            }
+        }
+        return result;
+    }
+
     fn executePartialDatabaseMethod(self: *Evaluator, op: ast.DmlOp, result_class: []const u8, target: Value, external_id_field: ?[]const u8) !Value {
         const appendFailure = struct {
             fn build(self_eval: *Evaluator, cls: []const u8, item: Value, op_kind: ast.DmlOp) !Value {
                 const result_id = if (item == .sobject) self_eval.sobjectIdForResult(item.sobject) else null;
-                return self_eval.createDmlResultValue(cls, false, result_id, if (op_kind == .upsert) false else null);
+                const result = try self_eval.createDmlResultValue(cls, false, result_id, if (op_kind == .upsert) false else null);
+                // Capture pending exception as Database.Error on the failed result
+                if (self_eval.pending_exception) |pe| {
+                    const errors_list = try self_eval.arena.create(types.ListValue);
+                    errors_list.* = .{};
+                    const err_obj = try self_eval.arena.create(types.ObjectInstance);
+                    err_obj.* = .{ .class_name = "Database.Error" };
+                    var message_val: Value = Value{ .string = "" };
+                    var fields_val: Value = Value{ .list = blk: {
+                        const empty = try self_eval.arena.create(types.ListValue);
+                        empty.* = .{};
+                        break :blk empty;
+                    } };
+                    if (pe == .object) {
+                        if (pe.object.fields.get("message")) |m| message_val = m;
+                        if (pe.object.fields.get("field")) |f| {
+                            if (f == .string) {
+                                const fl = try self_eval.arena.create(types.ListValue);
+                                fl.* = .{};
+                                try fl.items.append(self_eval.arena, f);
+                                fields_val = Value{ .list = fl };
+                            }
+                        }
+                    } else if (pe == .string) {
+                        message_val = pe;
+                    }
+                    try err_obj.fields.put(self_eval.arena, "message", message_val);
+                    try err_obj.fields.put(self_eval.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+                    try err_obj.fields.put(self_eval.arena, "fields", fields_val);
+                    try errors_list.items.append(self_eval.arena, Value{ .object = err_obj });
+                    if (result == .object) {
+                        try result.object.fields.put(self_eval.arena, "errors", Value{ .list = errors_list });
+                    }
+                }
+                return result;
             }
         };
 
@@ -12372,36 +12525,41 @@ pub const Evaluator = struct {
                     const result = switch (op) {
                         .insert => blk: {
                             self.executeDmlWithExternalIdInternal(.insert, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .update => blk: {
                             self.executeDmlWithExternalIdInternal(.update, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .upsert => blk: {
                             self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), was_created);
                         },
                         .delete => blk: {
                             self.executeDmlWithExternalIdInternal(.delete, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .undelete => blk: {
                             self.executeDmlWithExternalIdInternal(.undelete, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
@@ -12429,36 +12587,41 @@ pub const Evaluator = struct {
                     const result = switch (op) {
                         .insert => blk: {
                             self.executeDmlWithExternalIdInternal(.insert, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .update => blk: {
                             self.executeDmlWithExternalIdInternal(.update, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .upsert => blk: {
                             self.executeDmlWithExternalIdInternal(.upsert, item, external_id_field, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), was_created);
                         },
                         .delete => blk: {
                             self.executeDmlWithExternalIdInternal(.delete, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
                         .undelete => blk: {
                             self.executeDmlWithExternalIdInternal(.undelete, item, null, false, null) catch {
+                                const failed = try appendFailure.build(self, result_class, item, op);
                                 self.pending_exception = null;
-                                break :blk try appendFailure.build(self, result_class, item, op);
+                                break :blk failed;
                             };
                             break :blk try self.createDmlResultValue(result_class, true, self.sobjectIdForResult(item.sobject), null);
                         },
@@ -12569,10 +12732,12 @@ pub const Evaluator = struct {
                 } else {
                     // Best-effort mode: allow per-record failures instead of failing the whole DML statement.
                     return self.executePartialDatabaseMethod(op, result_class, args[0], external_id_field) catch |err| {
-                        self.pending_exception = null;
                         if (err == error.ApexException and args[0] == .sobject) {
-                            return self.createDmlResultValue(result_class, false, self.sobjectIdForResult(args[0].sobject), if (is_upsert) false else null);
+                            const failed = try self.buildFailedDmlResult(result_class, args[0], is_upsert);
+                            self.pending_exception = null;
+                            return failed;
                         }
+                        self.pending_exception = null;
                         return err;
                     };
                 }
@@ -12853,6 +13018,9 @@ pub const Evaluator = struct {
             // args: (jobName, cronExpression, schedulableInstance)
             if (args.len >= 2 and args[1] == .string) {
                 try self.scheduled_jobs.put(self.arena, job_id, args[1].string);
+            }
+            if (args.len >= 3 and args[2] == .object) {
+                try self.pending_schedulables.append(self.arena, args[2]);
             }
             return Value{ .string = job_id };
         }

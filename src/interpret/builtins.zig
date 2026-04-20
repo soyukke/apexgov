@@ -3943,7 +3943,7 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
     // clone / deepClone
     if (std.ascii.eqlIgnoreCase(method_name, "clone") or std.ascii.eqlIgnoreCase(method_name, "deepClone")) {
         const new_sob = try ctx.arena.create(types.SObject);
-        new_sob.* = .{ .type_name = sob.type_name };
+        new_sob.* = .{ .type_name = sob.type_name, .is_clone = true };
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             try new_sob.fields.put(ctx.arena, k, v);
         }
@@ -3962,10 +3962,22 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         }
         return Value{ .sobject = new_sob };
     }
-    // addError → throw DmlException
+    // isClone() — true when created via .clone()/.deepClone()
+    if (std.ascii.eqlIgnoreCase(method_name, "isClone")) {
+        return Value{ .boolean = sob.is_clone };
+    }
+    // addError → throw DmlException (supports 1-arg msg or 2-arg field,msg)
     if (std.ascii.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
-        const msg = if (args[0] == .string) args[0].string else "Validation error";
-        return ctx.throwException("DmlException", msg);
+        const exc = try ctx.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        const msg_val = if (args.len >= 2) args[1] else args[0];
+        const field_val: ?Value = if (args.len >= 2) args[0] else null;
+        try exc.fields.put(ctx.arena, "message", msg_val);
+        if (field_val) |fv| try exc.fields.put(ctx.arena, "field", fv);
+        ctx.eval.pending_exception = Value{ .object = exc };
+        // Also attach an error object to the SObject so that addError effects (DML failures)
+        // are reflected in SaveResult.errors. The evaluator's executeDml catches this.
+        return error.ApexException;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
         // Case-insensitive lookup
