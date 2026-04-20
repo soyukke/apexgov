@@ -3845,6 +3845,16 @@ pub const Evaluator = struct {
             }
         }
 
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "BusinessHours")) {
+            const business_hours = try self.arena.create(types.SObject);
+            business_hours.* = .{ .type_name = "BusinessHours", .id = "01m000000000001AAA" };
+            try business_hours.fields.put(self.arena, "Id", Value{ .string = "01m000000000001AAA" });
+            try business_hours.fields.put(self.arena, "Name", Value{ .string = "Default" });
+            if (self.matchesWhere(Value{ .sobject = business_hours }, soql, current_env)) {
+                try records.append(self.arena, Value{ .sobject = business_hours });
+            }
+        }
+
         // If no records found from store or metadata stubs, and the object type
         // is not recognized at all, throw QueryException (unknown SObject type).
         // Known types: anything in the store, known metadata stubs, or common Salesforce objects.

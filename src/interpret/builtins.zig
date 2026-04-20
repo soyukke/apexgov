@@ -135,6 +135,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatchStaticTime(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "TimeZone")) return dispatchStaticTimeZone(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "DateTime")) return dispatchStaticDateTime(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Approval")) return dispatchStaticApproval(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "BusinessHours")) return dispatchStaticBusinessHours(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatchStaticJson(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatchStaticUserInfo(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel")) return dispatchStaticLoggingLevel(ctx, method_name, args);
@@ -1439,6 +1441,108 @@ fn dispatchStaticLimits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     if (ci.eqlIgnoreCase(method_name, "getLimitAsyncCalls")) return Value{ .integer = 50 };
     // All other Limits methods return 0
     return Value{ .integer = 0 };
+}
+
+fn findStoredRecordById(eval: *evaluator_mod.Evaluator, record_id: []const u8) ?*types.SObject {
+    var store_iter = eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        for (entry.value_ptr.items) |*item| {
+            if (item.* != .sobject) continue;
+            const id_value = utils.sobjectGet(&item.sobject.fields, "Id") orelse continue;
+            if (id_value == .string and std.ascii.eqlIgnoreCase(id_value.string, record_id)) return item.sobject;
+        }
+    }
+    return null;
+}
+
+fn buildDatabaseErrorValue(ctx: *BuiltinContext, status_code: []const u8, message: []const u8) !Value {
+    const err = try ctx.arena.create(types.ObjectInstance);
+    err.* = .{ .class_name = "Database.Error" };
+    try err.fields.put(ctx.arena, "statusCode", Value{ .string = status_code });
+    try err.fields.put(ctx.arena, "message", Value{ .string = message });
+    const empty_fields = try ctx.arena.create(types.ListValue);
+    empty_fields.* = .{};
+    try err.fields.put(ctx.arena, "fields", Value{ .list = empty_fields });
+    return Value{ .object = err };
+}
+
+fn buildApprovalResult(ctx: *BuiltinContext, class_name: []const u8, is_success: bool, status_code: ?[]const u8, message: ?[]const u8) !Value {
+    const result = try ctx.arena.create(types.ObjectInstance);
+    result.* = .{ .class_name = class_name };
+    try result.fields.put(ctx.arena, "success", Value{ .boolean = is_success });
+    const errors = try ctx.arena.create(types.ListValue);
+    errors.* = .{};
+    if (!is_success and status_code != null and message != null) {
+        try errors.items.append(ctx.arena, try buildDatabaseErrorValue(ctx, status_code.?, message.?));
+    }
+    try result.fields.put(ctx.arena, "errors", Value{ .list = errors });
+    return Value{ .object = result };
+}
+
+fn dispatchStaticApproval(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    if (args.len == 0 or args[0] != .string) {
+        if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) return Value{ .boolean = false };
+        if (std.ascii.eqlIgnoreCase(method_name, "lock")) return try buildApprovalResult(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        if (std.ascii.eqlIgnoreCase(method_name, "unlock")) return try buildApprovalResult(ctx, "Approval.UnlockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        return null;
+    }
+
+    const record_id = args[0].string;
+    const record = findStoredRecordById(ctx.eval, record_id);
+
+    if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) {
+        if (record) |matched| {
+            const is_locked = utils.sobjectGet(&matched.fields, "__isLocked") orelse Value{ .boolean = false };
+            return if (is_locked == .boolean) is_locked else Value{ .boolean = false };
+        }
+        return Value{ .boolean = false };
+    }
+
+    if (std.ascii.eqlIgnoreCase(method_name, "lock")) {
+        if (record) |matched| {
+            try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = true });
+            return try buildApprovalResult(ctx, "Approval.LockResult", true, null, null);
+        }
+        return try buildApprovalResult(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+    }
+
+    if (std.ascii.eqlIgnoreCase(method_name, "unlock")) {
+        if (record) |matched| {
+            try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = false });
+            return try buildApprovalResult(ctx, "Approval.UnlockResult", true, null, null);
+        }
+        return try buildApprovalResult(ctx, "Approval.UnlockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+    }
+
+    return null;
+}
+
+fn parseDateTimeToEpochMillis(s: []const u8) ?i64 {
+    if (s.len < 10 or s[4] != '-' or s[7] != '-') return null;
+    const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
+    const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(u8, s[8..10], 10) catch return null;
+    const h: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[11..13], 10) catch 0 else 0;
+    const mi: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[14..16], 10) catch 0 else 0;
+    const sec: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[17..19], 10) catch 0 else 0;
+    const cumulative = [_]i64{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+    const doy = cumulative[m - 1] + d;
+    const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) 1 else 0;
+    const leap_adj: i64 = if (m > 2) is_leap else 0;
+    const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+    return (days_from_epoch * 86400 + h * 3600 + mi * 60 + sec) * 1000;
+}
+
+fn dispatchStaticBusinessHours(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    _ = ctx;
+    if (std.ascii.eqlIgnoreCase(method_name, "diff") and args.len >= 3) {
+        const start = extractDateString(args[1]) orelse return Value{ .long = 0 };
+        const end = extractDateString(args[2]) orelse return Value{ .long = 0 };
+        const start_ms = parseDateTimeToEpochMillis(start) orelse return Value{ .long = 0 };
+        const end_ms = parseDateTimeToEpochMillis(end) orelse return Value{ .long = 0 };
+        return Value{ .long = end_ms - start_ms };
+    }
+    return null;
 }
 
 fn dispatchStaticDataWeave(ctx: *BuiltinContext, args: []const Value) !?Value {
@@ -2891,6 +2995,12 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) return obj.fields.get("message") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getFields")) return obj.fields.get("fields") orelse blk: {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
+        break :blk Value{ .list = list };
+    };
     if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber")) return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {

@@ -11727,3 +11727,48 @@ test "E2E: describe maps include common Task date and picklist fields" {
     defer result.deinit();
     try std.testing.expectEqualStrings("DATE:PICKLIST", result.value.string);
 }
+
+test "E2E: Approval lock APIs toggle record lock state" {
+    const source =
+        \\public class ApprovalLockStateTest {
+        \\    public static String test() {
+        \\        Account row = new Account(Name = 'Locked');
+        \\        insert row;
+        \\        Approval.LockResult lockResult = Approval.lock(row.Id);
+        \\        Boolean afterLock = Approval.isLocked(row.Id);
+        \\        Approval.UnlockResult unlockResult = Approval.unlock(row.Id);
+        \\        Boolean afterUnlock = Approval.isLocked(row.Id);
+        \\        return String.valueOf(lockResult.isSuccess()) + ':' +
+        \\            String.valueOf(afterLock) + ':' +
+        \\            String.valueOf(unlockResult.isSuccess()) + ':' +
+        \\            String.valueOf(afterUnlock);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ApprovalLockStateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:true:false", result.value.string);
+}
+
+test "E2E: BusinessHours query and diff return default day duration" {
+    const source =
+        \\public class BusinessHoursDiffTest {
+        \\    public static String test() {
+        \\        BusinessHours hours = [SELECT Id, Name FROM BusinessHours WHERE Name = 'Default' LIMIT 1];
+        \\        Datetime startDate = Datetime.newInstance(2020, 3, 27);
+        \\        Datetime endDate = startDate.addDays(1);
+        \\        Long duration = BusinessHours.diff(hours.Id, startDate, endDate);
+        \\        return hours.Name + ':' + String.valueOf(duration);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BusinessHoursDiffTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Default:86400000", result.value.string);
+}
