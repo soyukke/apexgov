@@ -8688,6 +8688,14 @@ pub const Evaluator = struct {
 
     fn evalListMethod(self: *Evaluator, list: *types.ListValue, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "add")) {
+            if (args.len >= 2 and args[0] == .integer) {
+                if (args[0].integer < 0) return .void_val;
+                const i: usize = @intCast(args[0].integer);
+                if (i <= list.items.items.len) {
+                    try list.items.insert(self.arena, i, args[1]);
+                }
+                return .void_val;
+            }
             if (args.len > 0) try list.items.append(self.arena, args[0]);
             return .void_val;
         }
@@ -15451,4 +15459,20 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
     var r = try evalSource(source, "StubStringProbe", "run");
     defer r.deinit();
     try std.testing.expectEqualStrings("StubStringTarget__sfdc_ApexStub:[instance]", r.value.string);
+}
+
+test "List.add with explicit index inserts the provided value" {
+    const source =
+        \\public class IndexedListInsertProbe {
+        \\    public static String run() {
+        \\        List<Object> values = new List<Object>();
+        \\        values.add('tail');
+        \\        values.add(0, 'head');
+        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + values.size();
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "IndexedListInsertProbe", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("head|tail|2", r.value.string);
 }
