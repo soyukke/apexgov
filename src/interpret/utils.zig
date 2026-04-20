@@ -17,6 +17,18 @@ fn normalizeDateTimeStr(s: []const u8) []const u8 {
     return s;
 }
 
+fn formatJsonDateTimeStr(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (s.len <= 10 or std.mem.indexOf(u8, s, "T") == null) return s;
+    if (std.mem.endsWith(u8, s, ".000Z")) return s;
+    if (std.mem.endsWith(u8, s, ".000+0000")) {
+        return std.fmt.allocPrint(arena, "{s}.000Z", .{s[0 .. s.len - 9]});
+    }
+    if (std.mem.endsWith(u8, s, "Z")) {
+        return std.fmt.allocPrint(arena, "{s}.000Z", .{s[0 .. s.len - 1]});
+    }
+    return s;
+}
+
 /// Apex == セマンティクスで値を比較する。
 /// String は大文字小文字を区別しない。
 pub fn valueEql(a: Value, b: Value) bool {
@@ -305,7 +317,13 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
                 std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
             {
                 if (obj.fields.get("value")) |val| {
-                    if (val == .string) break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{val.string});
+                    if (val == .string) {
+                        const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
+                            try formatJsonDateTimeStr(arena, val.string)
+                        else
+                            val.string;
+                        break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
+                    }
                 }
             }
             var buf: std.ArrayListUnmanaged(u8) = .empty;

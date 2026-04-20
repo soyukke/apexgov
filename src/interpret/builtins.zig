@@ -687,7 +687,15 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
 
 fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
-        if (args.len > 0) return Value{ .string = try utils.toJson(args[0], ctx.arena) };
+        if (args.len > 0) {
+            if (args[0] == .object and
+                (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+                    std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
+            {
+                return ctx.throwException("System.JSONException", "Apex Type unsupported in JSON: Schema.SObjectField");
+            }
+            return Value{ .string = try utils.toJson(args[0], ctx.arena) };
+        }
         return Value{ .string = "{}" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "createGenerator")) {
@@ -2333,6 +2341,10 @@ fn mapXmlTypeToDisplayType(xml_type: []const u8) []const u8 {
 
 /// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
 fn inferFieldType(field_name: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
+        std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
+        return "Integer";
+    if (std.ascii.eqlIgnoreCase(field_name, "DoNotCall")) return "Boolean";
     if (std.ascii.eqlIgnoreCase(field_name, "Id") or
         std.ascii.eqlIgnoreCase(field_name, "OwnerId") or
         std.mem.endsWith(u8, field_name, "Id") or
@@ -3609,7 +3621,10 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
         // Case-insensitive lookup
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, args[0].string)) return v;
+            if (std.ascii.eqlIgnoreCase(k, args[0].string)) {
+                if (ctx.eval.relationshipRecordsValue(v)) |records| return records;
+                return v;
+            }
         }
         // If stripped SObject, throw SObjectException for missing relationship
         if (sob.is_stripped) {

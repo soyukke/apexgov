@@ -5733,6 +5733,41 @@ pub const Evaluator = struct {
         return null;
     }
 
+    pub fn relationshipRecordsValue(_: *Evaluator, value: Value) ?Value {
+        return switch (value) {
+            .object => |obj| blk: {
+                if (obj.fields.get("records")) |records| {
+                    if (records == .list) break :blk records;
+                }
+                break :blk null;
+            },
+            .sobject => |sob| blk: {
+                if (utils.sobjectGet(&sob.fields, "records")) |records| {
+                    if (records == .list) break :blk records;
+                }
+                break :blk null;
+            },
+            .map => |map| blk: {
+                for (map.entries.keys(), map.entries.values()) |k, records| {
+                    if (std.ascii.eqlIgnoreCase(k, "records") and records == .list) break :blk records;
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    fn normalizeParsedJsonSObjectField(self: *Evaluator, sob: *types.SObject, field_name: []const u8, value: Value) Value {
+        var bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        return builtins.normalizeSObjectFieldAssignment(&bctx, sob, field_name, value) catch value;
+    }
+
     pub fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
         var matched_value: ?Value = null;
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
@@ -5754,6 +5789,7 @@ pub const Evaluator = struct {
                         return builtins.makeDateValue(self.arena, date_str) catch value;
                     }
                 }
+                if (self.relationshipRecordsValue(value)) |records| return records;
                 return value;
             }
         }
@@ -7668,6 +7704,16 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(class_name, "JSON")) {
                 if (std.ascii.eqlIgnoreCase(mc.method, "serialize") or std.ascii.eqlIgnoreCase(mc.method, "serializePretty")) {
                     if (args.items.len > 0) {
+                        if (args.items[0] == .object and
+                            (std.ascii.eqlIgnoreCase(args.items[0].object.class_name, "Schema.SObjectField") or
+                                std.ascii.eqlIgnoreCase(args.items[0].object.class_name, "SObjectField")))
+                        {
+                            const exc = try self.arena.create(types.ObjectInstance);
+                            exc.* = .{ .class_name = "System.JSONException" };
+                            try exc.fields.put(self.arena, "message", Value{ .string = "Apex Type unsupported in JSON: Schema.SObjectField" });
+                            self.pending_exception = Value{ .object = exc };
+                            return error.ApexException;
+                        }
                         self.last_json_value = args.items[0];
                         return Value{ .string = try utils.toJson(args.items[0], self.arena) };
                     }
@@ -8557,7 +8603,11 @@ pub const Evaluator = struct {
         if (obj == .sobject) {
             // getSObjects(relationship)
             if (std.ascii.eqlIgnoreCase(method, "getSObjects") and args.len > 0 and args[0] == .string) {
-                return utils.sobjectGet(&obj.sobject.fields, args[0].string) orelse try self.makeEmptyList();
+                if (utils.sobjectGet(&obj.sobject.fields, args[0].string)) |raw| {
+                    if (self.relationshipRecordsValue(raw)) |records| return records;
+                    return raw;
+                }
+                return try self.makeEmptyList();
             }
             // get(fieldName) - case-insensitive
             if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
@@ -12052,6 +12102,16 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
             if (std.ascii.eqlIgnoreCase(method, "serialize") or std.ascii.eqlIgnoreCase(method, "serializePretty")) {
                 if (args.len > 0) {
+                    if (args[0] == .object and
+                        (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+                            std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
+                    {
+                        const exc = try self.arena.create(types.ObjectInstance);
+                        exc.* = .{ .class_name = "System.JSONException" };
+                        try exc.fields.put(self.arena, "message", Value{ .string = "Apex Type unsupported in JSON: Schema.SObjectField" });
+                        self.pending_exception = Value{ .object = exc };
+                        return error.ApexException;
+                    }
                     return Value{ .string = try utils.toJson(args[0], self.arena) };
                 }
                 return Value{ .string = "{}" };
@@ -14131,7 +14191,8 @@ pub const Evaluator = struct {
                             sob.id = val_str;
                             sob.fields.put(self.arena, "Id", Value{ .string = val_str }) catch {};
                         } else {
-                            sob.fields.put(self.arena, key, Value{ .string = val_str }) catch {};
+                            const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .string = val_str });
+                            sob.fields.put(self.arena, key, normalized) catch {};
                         }
                     }
                 } else if (trimmed[i] == '{') {
@@ -14164,7 +14225,8 @@ pub const Evaluator = struct {
                         }
                     } else {
                         if (self.parseJsonValue(nested, "Object")) |nv| {
-                            sob.fields.put(self.arena, key, nv) catch {};
+                            const stored_value = self.relationshipRecordsValue(nv) orelse self.normalizeParsedJsonSObjectField(sob, key, nv);
+                            sob.fields.put(self.arena, key, stored_value) catch {};
                         }
                     }
                 } else if (trimmed[i] == '[') {
@@ -14189,10 +14251,12 @@ pub const Evaluator = struct {
                     sob.fields.put(self.arena, key, Value.null_val) catch {};
                     i += 4;
                 } else if (std.mem.startsWith(u8, trimmed[i..], "true")) {
-                    sob.fields.put(self.arena, key, Value{ .boolean = true }) catch {};
+                    const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .boolean = true });
+                    sob.fields.put(self.arena, key, normalized) catch {};
                     i += 4;
                 } else if (std.mem.startsWith(u8, trimmed[i..], "false")) {
-                    sob.fields.put(self.arena, key, Value{ .boolean = false }) catch {};
+                    const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .boolean = false });
+                    sob.fields.put(self.arena, key, normalized) catch {};
                     i += 5;
                 } else {
                     // Number
@@ -14200,12 +14264,15 @@ pub const Evaluator = struct {
                     while (num_end < trimmed.len and trimmed[num_end] != ',' and trimmed[num_end] != '}' and trimmed[num_end] != ' ') : (num_end += 1) {}
                     const num_str = trimmed[i..num_end];
                     if (std.fmt.parseInt(i64, num_str, 10)) |n| {
-                        sob.fields.put(self.arena, key, Value{ .integer = n }) catch {};
+                        const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .integer = n });
+                        sob.fields.put(self.arena, key, normalized) catch {};
                     } else |_| {
                         if (std.fmt.parseFloat(f64, num_str)) |f| {
-                            sob.fields.put(self.arena, key, Value{ .double = f }) catch {};
+                            const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .double = f });
+                            sob.fields.put(self.arena, key, normalized) catch {};
                         } else |_| {
-                            sob.fields.put(self.arena, key, Value{ .string = num_str }) catch {};
+                            const normalized = self.normalizeParsedJsonSObjectField(sob, key, Value{ .string = num_str });
+                            sob.fields.put(self.arena, key, normalized) catch {};
                         }
                     }
                     i = num_end;

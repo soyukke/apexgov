@@ -3935,7 +3935,7 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
 }
 
 test "E2E: JSON read-only round-trip preserves typed ApexClass property access" {
@@ -3959,7 +3959,7 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
@@ -4015,7 +4015,7 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
 }
 
 test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
@@ -4110,7 +4110,7 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00.000Z", result.value.string);
 }
 
 test "E2E: qualified inner class literals preserve outer class names" {
@@ -6750,6 +6750,65 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
+}
+
+test "E2E: JSON serialize on field tokens throws and callers can fall back to toString" {
+    const source =
+        \\public class JsonFieldTokenFallbackTest {
+        \\    public static String test() {
+        \\        try {
+        \\            return JSON.serialize(Account.Description);
+        \\        } catch (Exception e) {
+        \\            return '' + Account.Description;
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonFieldTokenFallbackTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Description", result.value.string);
+}
+
+test "E2E: JSON deserialize unwraps relationship records and normalizes standard field types" {
+    const source =
+        \\public class JsonRelationshipRoundTripTest {
+        \\    public static String test() {
+        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","NumberOfEmployees":"7","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA","DoNotCall":"true"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA","DoNotCall":"false"}]}}]';
+        \\        SObject accountRecord = ((List<SObject>) JSON.deserialize(json, List<SObject>.class))[0];
+        \\        List<SObject> contacts = accountRecord.getSObjects('Contacts');
+        \\        return String.valueOf(accountRecord.get('NumberOfEmployees')) + ':' +
+        \\            String.valueOf(contacts.size()) + ':' +
+        \\            String.valueOf(contacts[0].Id) + ':' +
+        \\            String.valueOf((Boolean) contacts[0].get('DoNotCall'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonRelationshipRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("7:2:003000000000001AAA:true", result.value.string);
+}
+
+test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {
+    const source =
+        \\public class JsonDatetimeSerializeTest {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstance(2019, 1, 1, 12, 0, 0);
+        \\        return JSON.serialize(dt);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonDatetimeSerializeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("\"2019-01-01T12:00:00.000Z\"", result.value.string);
 }
 
 test "E2E: Apex metadata datetime compares against custom datetime fields" {
