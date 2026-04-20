@@ -8322,7 +8322,7 @@ pub const Evaluator = struct {
             }
         }
 
-        // JSONParser methods: nextToken, getCurrentToken, getText, readValueAs
+        // JSONParser methods: nextToken, getCurrentToken, getCurrentName, getText, readValueAs
         if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser")) {
             const json_body = if (obj.object.fields.get("__json_body__")) |jb| (if (jb == .string) jb.string else null) else null;
             if (std.ascii.eqlIgnoreCase(method, "nextToken")) {
@@ -8337,15 +8337,19 @@ pub const Evaluator = struct {
                     const ch = body[pos];
                     if (ch == '{') {
                         try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_OBJECT" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "{" });
                         pos += 1;
                     } else if (ch == '}') {
                         try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_OBJECT" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "}" });
                         pos += 1;
                     } else if (ch == '[') {
                         try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_ARRAY" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "[" });
                         pos += 1;
                     } else if (ch == ']') {
                         try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_ARRAY" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "]" });
                         pos += 1;
                     } else if (ch == '"') {
                         // String or field name
@@ -8367,22 +8371,26 @@ pub const Evaluator = struct {
                         }
                         try obj.object.fields.put(self.arena, "__text__", Value{ .string = text });
                     } else if (ch == 't' or ch == 'f') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_BOOLEAN" });
                         if (std.mem.startsWith(u8, body[pos..], "true")) {
+                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_TRUE" });
                             try obj.object.fields.put(self.arena, "__text__", Value{ .string = "true" });
                             pos += 4;
                         } else {
+                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_FALSE" });
                             try obj.object.fields.put(self.arena, "__text__", Value{ .string = "false" });
                             pos += 5;
                         }
                     } else if (ch == 'n') {
                         try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_NULL" });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "null" });
                         pos += 4;
                     } else if (std.ascii.isDigit(ch) or ch == '-') {
                         const start = pos;
                         while (pos < body.len and (std.ascii.isDigit(body[pos]) or body[pos] == '.' or body[pos] == '-' or body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+')) pos += 1;
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_NUMBER" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = body[start..pos] });
+                        const number_text = body[start..pos];
+                        const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null) "VALUE_NUMBER_FLOAT" else "VALUE_NUMBER_INT";
+                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = token_name });
+                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = number_text });
                     } else {
                         pos += 1;
                     }
@@ -8393,6 +8401,13 @@ pub const Evaluator = struct {
             }
             if (std.ascii.eqlIgnoreCase(method, "getCurrentToken")) {
                 return obj.object.fields.get("__token__") orelse Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(method, "getCurrentName")) {
+                const token_value = obj.object.fields.get("__token__") orelse Value.null_val;
+                if (token_value == .string and std.ascii.eqlIgnoreCase(token_value.string, "FIELD_NAME")) {
+                    return obj.object.fields.get("__text__") orelse Value.null_val;
+                }
+                return Value.null_val;
             }
             if (std.ascii.eqlIgnoreCase(method, "getText")) {
                 return obj.object.fields.get("__text__") orelse Value{ .string = "" };

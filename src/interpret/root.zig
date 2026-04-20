@@ -1333,6 +1333,71 @@ test "E2E: Matcher.matches requires a full-string regex match" {
     try std.testing.expectEqualStrings("true|false", result.value.string);
 }
 
+test "E2E: standard child relationships preserve field token equality" {
+    const source =
+        \\public class ChildRelationshipProbe {
+        \\    public static String run() {
+        \\        for (Object relObj : Account.SObjectType.getDescribe().getChildRelationships()) {
+        \\            Schema.ChildRelationship rel = (Schema.ChildRelationship)relObj;
+        \\            if (rel.getField() == Contact.AccountId) {
+        \\                return rel.getRelationshipName();
+        \\            }
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChildRelationshipProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Contacts", result.value.string);
+}
+
+test "E2E: JSON parser tokens can be streamed into a generator" {
+    const source =
+        \\public class JsonStreamingProbe {
+        \\    public static String run() {
+        \\        JSONParser parser = JSON.createParser('[{"Name":"Acme","Count":2,"Flag":true,"Missing":null}]');
+        \\        JSONGenerator generator = JSON.createGenerator(false);
+        \\        while (parser.nextToken() != null) {
+        \\            switch on parser.getCurrentToken() {
+        \\                when START_ARRAY {
+        \\                    generator.writeStartArray();
+        \\                }
+        \\                when START_OBJECT {
+        \\                    generator.writeStartObject();
+        \\                }
+        \\                when FIELD_NAME {
+        \\                    generator.writeFieldName(parser.getCurrentName());
+        \\                }
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                    generator.writeString(parser.getText());
+        \\                }
+        \\                when VALUE_NULL {
+        \\                    generator.writeNull();
+        \\                }
+        \\                when END_OBJECT {
+        \\                    generator.writeEndObject();
+        \\                }
+        \\                when END_ARRAY {
+        \\                    generator.writeEndArray();
+        \\                }
+        \\            }
+        \\        }
+        \\        return generator.getAsString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonStreamingProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
+}
+
 test "E2E: Date.today returns current date, Date.newInstance builds from args" {
     const source =
         \\public class DateTest {

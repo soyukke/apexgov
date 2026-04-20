@@ -150,6 +150,25 @@ pub fn valueEql(a: Value, b: Value) bool {
                     return std.ascii.eqlIgnoreCase(a_norm, b_norm);
                 }
             }
+            if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(av.class_name, "SObjectField")) and
+                (std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectField") or
+                    std.ascii.eqlIgnoreCase(b.object.class_name, "SObjectField")))
+            {
+                const a_name = av.fields.get("fieldName") orelse av.fields.get("name") orelse return false;
+                const b_name = b.object.fields.get("fieldName") orelse b.object.fields.get("name") orelse return false;
+                if (a_name != .string or b_name != .string) return false;
+
+                const same_object_type = blk: {
+                    const a_object_type = av.fields.get("objectType");
+                    const b_object_type = b.object.fields.get("objectType");
+                    if (a_object_type == null or b_object_type == null) break :blk true;
+                    if (a_object_type.? != .string or b_object_type.? != .string) break :blk false;
+                    break :blk std.ascii.eqlIgnoreCase(a_object_type.?.string, b_object_type.?.string);
+                };
+
+                return same_object_type and std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+            }
             return false;
         },
     };

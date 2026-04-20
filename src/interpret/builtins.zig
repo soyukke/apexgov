@@ -690,6 +690,12 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
         if (args.len > 0) return Value{ .string = try utils.toJson(args[0], ctx.arena) };
         return Value{ .string = "{}" };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "createGenerator")) {
+        const generator = try ctx.arena.create(types.ObjectInstance);
+        generator.* = .{ .class_name = "JSONGenerator" };
+        try generator.fields.put(ctx.arena, "__output__", Value{ .string = "" });
+        return Value{ .object = generator };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "deserializeUntyped")) {
         if (args.len > 0 and args[0] == .string) {
             const json_str = args[0].string;
@@ -859,6 +865,178 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
             return Value{ .map = map };
         }
         return Value.null_val;
+    }
+    return null;
+}
+
+fn ensureObjectListField(ctx: *BuiltinContext, obj: *types.ObjectInstance, field_name: []const u8) !*types.ListValue {
+    if (obj.fields.get(field_name)) |existing| {
+        if (existing == .list) return existing.list;
+    }
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    try obj.fields.put(ctx.arena, field_name, Value{ .list = list });
+    return list;
+}
+
+fn jsonGeneratorOutput(obj: *types.ObjectInstance) []const u8 {
+    if (obj.fields.get("__output__")) |existing| {
+        if (existing == .string) return existing.string;
+    }
+    return "";
+}
+
+fn jsonGeneratorAppend(ctx: *BuiltinContext, obj: *types.ObjectInstance, text: []const u8) !void {
+    const next = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ jsonGeneratorOutput(obj), text });
+    try obj.fields.put(ctx.arena, "__output__", Value{ .string = next });
+}
+
+fn jsonGeneratorCurrentContextType(obj: *types.ObjectInstance) ?[]const u8 {
+    if (obj.fields.get("__ctx_types__")) |value| {
+        if (value == .list and value.list.items.items.len > 0) {
+            const last = value.list.items.items[value.list.items.items.len - 1];
+            if (last == .string) return last.string;
+        }
+    }
+    return null;
+}
+
+fn jsonGeneratorCurrentCount(obj: *types.ObjectInstance) i64 {
+    if (obj.fields.get("__ctx_counts__")) |value| {
+        if (value == .list and value.list.items.items.len > 0) {
+            const last = value.list.items.items[value.list.items.items.len - 1];
+            if (last == .integer) return last.integer;
+        }
+    }
+    return 0;
+}
+
+fn jsonGeneratorSetCurrentCount(ctx: *BuiltinContext, obj: *types.ObjectInstance, count: i64) !void {
+    const counts = try ensureObjectListField(ctx, obj, "__ctx_counts__");
+    if (counts.items.items.len == 0) return;
+    counts.items.items[counts.items.items.len - 1] = Value{ .integer = count };
+}
+
+fn jsonGeneratorIsExpectingValue(obj: *types.ObjectInstance) bool {
+    if (obj.fields.get("__expecting_value__")) |value| {
+        if (value == .boolean) return value.boolean;
+    }
+    return false;
+}
+
+fn jsonGeneratorSetExpectingValue(ctx: *BuiltinContext, obj: *types.ObjectInstance, expecting: bool) !void {
+    try obj.fields.put(ctx.arena, "__expecting_value__", Value{ .boolean = expecting });
+}
+
+fn jsonGeneratorPushContext(ctx: *BuiltinContext, obj: *types.ObjectInstance, context_type: []const u8) !void {
+    const context_types = try ensureObjectListField(ctx, obj, "__ctx_types__");
+    const context_counts = try ensureObjectListField(ctx, obj, "__ctx_counts__");
+    try context_types.items.append(ctx.arena, Value{ .string = context_type });
+    try context_counts.items.append(ctx.arena, Value{ .integer = 0 });
+}
+
+fn jsonGeneratorPopContext(obj: *types.ObjectInstance) void {
+    if (obj.fields.get("__ctx_types__")) |value| {
+        if (value == .list and value.list.items.items.len > 0) value.list.items.items.len -= 1;
+    }
+    if (obj.fields.get("__ctx_counts__")) |value| {
+        if (value == .list and value.list.items.items.len > 0) value.list.items.items.len -= 1;
+    }
+}
+
+fn jsonGeneratorBeforeValue(ctx: *BuiltinContext, obj: *types.ObjectInstance) !void {
+    const context_type = jsonGeneratorCurrentContextType(obj) orelse return;
+    if (std.ascii.eqlIgnoreCase(context_type, "object")) {
+        if (jsonGeneratorIsExpectingValue(obj)) {
+            try jsonGeneratorSetExpectingValue(ctx, obj, false);
+            return;
+        }
+        const count = jsonGeneratorCurrentCount(obj);
+        if (count > 0) try jsonGeneratorAppend(ctx, obj, ",");
+        try jsonGeneratorSetCurrentCount(ctx, obj, count + 1);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(context_type, "array")) {
+        const count = jsonGeneratorCurrentCount(obj);
+        if (count > 0) try jsonGeneratorAppend(ctx, obj, ",");
+        try jsonGeneratorSetCurrentCount(ctx, obj, count + 1);
+    }
+}
+
+fn jsonGeneratorWriteRawValue(ctx: *BuiltinContext, obj: *types.ObjectInstance, raw: []const u8) !void {
+    try jsonGeneratorBeforeValue(ctx, obj);
+    try jsonGeneratorAppend(ctx, obj, raw);
+}
+
+fn dispatchObjJsonGenerator(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getAsString")) {
+        return Value{ .string = jsonGeneratorOutput(obj) };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeStartObject")) {
+        try jsonGeneratorBeforeValue(ctx, obj);
+        try jsonGeneratorAppend(ctx, obj, "{");
+        try jsonGeneratorPushContext(ctx, obj, "object");
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeEndObject")) {
+        try jsonGeneratorAppend(ctx, obj, "}");
+        jsonGeneratorPopContext(obj);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeStartArray")) {
+        try jsonGeneratorBeforeValue(ctx, obj);
+        try jsonGeneratorAppend(ctx, obj, "[");
+        try jsonGeneratorPushContext(ctx, obj, "array");
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeEndArray")) {
+        try jsonGeneratorAppend(ctx, obj, "]");
+        jsonGeneratorPopContext(obj);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeFieldName")) {
+        if (args.len == 0 or args[0] == .null_val) {
+            _ = try ctx.throwException("JSONException", "Can not write a field name, expecting a value");
+            return error.ApexException;
+        }
+        if (!std.ascii.eqlIgnoreCase(jsonGeneratorCurrentContextType(obj) orelse "", "object") or jsonGeneratorIsExpectingValue(obj)) {
+            _ = try ctx.throwException("JSONException", "Can not write a field name, expecting a value");
+            return error.ApexException;
+        }
+        const count = jsonGeneratorCurrentCount(obj);
+        if (count > 0) try jsonGeneratorAppend(ctx, obj, ",");
+        const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+        try jsonGeneratorAppend(ctx, obj, try utils.toJson(name_value, ctx.arena));
+        try jsonGeneratorAppend(ctx, obj, ":");
+        try jsonGeneratorSetCurrentCount(ctx, obj, count + 1);
+        try jsonGeneratorSetExpectingValue(ctx, obj, true);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeString")) {
+        if (args.len == 0) return Value.void_val;
+        const string_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerceToString(args[0], ctx.arena) };
+        try jsonGeneratorWriteRawValue(ctx, obj, try utils.toJson(string_value, ctx.arena));
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeNull")) {
+        try jsonGeneratorWriteRawValue(ctx, obj, "null");
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeNumberField") and args.len >= 2) {
+        _ = try dispatchObjJsonGenerator(ctx, obj, "writeFieldName", args[0..1]);
+        const raw = switch (args[1]) {
+            .integer => |i| try std.fmt.allocPrint(ctx.arena, "{d}", .{i}),
+            .double => |d| try std.fmt.allocPrint(ctx.arena, "{d}", .{d}),
+            else => try utils.coerceToString(args[1], ctx.arena),
+        };
+        try jsonGeneratorWriteRawValue(ctx, obj, raw);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeBooleanField") and args.len >= 2) {
+        _ = try dispatchObjJsonGenerator(ctx, obj, "writeFieldName", args[0..1]);
+        const raw = if (args[1] == .boolean and args[1].boolean) "true" else "false";
+        try jsonGeneratorWriteRawValue(ctx, obj, raw);
+        return Value.void_val;
     }
     return null;
 }
@@ -1723,6 +1901,31 @@ fn defaultRelationshipName(arena: std.mem.Allocator, field_name: []const u8) !?[
     return null;
 }
 
+fn standardReferenceTargetForFieldName(field_name: []const u8) ?[]const u8 {
+    const known = [_]struct { field_name: []const u8, target_type: []const u8 }{
+        .{ .field_name = "AccountId", .target_type = "Account" },
+        .{ .field_name = "ContactId", .target_type = "Contact" },
+        .{ .field_name = "OpportunityId", .target_type = "Opportunity" },
+        .{ .field_name = "CaseId", .target_type = "Case" },
+        .{ .field_name = "LeadId", .target_type = "Lead" },
+        .{ .field_name = "CampaignId", .target_type = "Campaign" },
+        .{ .field_name = "Pricebook2Id", .target_type = "Pricebook2" },
+        .{ .field_name = "PricebookEntryId", .target_type = "PricebookEntry" },
+        .{ .field_name = "Product2Id", .target_type = "Product2" },
+        .{ .field_name = "QuoteId", .target_type = "Quote" },
+        .{ .field_name = "OwnerId", .target_type = "User" },
+        .{ .field_name = "CreatedById", .target_type = "User" },
+        .{ .field_name = "LastModifiedById", .target_type = "User" },
+        .{ .field_name = "ProfileId", .target_type = "Profile" },
+        .{ .field_name = "UserRoleId", .target_type = "UserRole" },
+        .{ .field_name = "UserLicenseId", .target_type = "UserLicense" },
+    };
+    inline for (known) |entry| {
+        if (std.ascii.eqlIgnoreCase(field_name, entry.field_name)) return entry.target_type;
+    }
+    return null;
+}
+
 fn defaultFieldIsNillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
     if (std.ascii.eqlIgnoreCase(field_name, "Name") and hasImplicitNameField(object_type) and !hasCustomObjectSuffix(object_type)) return false;
@@ -1775,6 +1978,56 @@ fn createSObjectFieldTokenValue(arena: std.mem.Allocator, object_type: []const u
     try token.fields.put(arena, "fieldName", Value{ .string = field_name });
     try token.fields.put(arena, "name", Value{ .string = field_name });
     return Value{ .object = token };
+}
+
+fn appendChildRelationshipValue(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    child_type: []const u8,
+    fk_field: []const u8,
+    relationship_name: []const u8,
+) !void {
+    const child_rel = try ctx.arena.create(types.ObjectInstance);
+    child_rel.* = .{ .class_name = "Schema.ChildRelationship" };
+    try child_rel.fields.put(ctx.arena, "field", try createSObjectFieldTokenValue(ctx.arena, child_type, fk_field));
+    try child_rel.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
+
+    const child_type_token = try ctx.arena.create(types.ObjectInstance);
+    child_type_token.* = .{ .class_name = "Schema.SObjectType" };
+    try child_type_token.fields.put(ctx.arena, "name", Value{ .string = child_type });
+    try child_rel.fields.put(ctx.arena, "childSObject", Value{ .object = child_type_token });
+
+    try list.items.append(ctx.arena, Value{ .object = child_rel });
+}
+
+fn createChildRelationshipsValue(ctx: *BuiltinContext, parent_type: []const u8) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+
+    for (ctx.eval.child_relationships.keys(), ctx.eval.child_relationships.values()) |key, rel| {
+        const sep = std.mem.indexOfScalar(u8, key, '|') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(key[0..sep], parent_type)) continue;
+        try appendChildRelationshipValue(ctx, list, rel.child_type, rel.fk_field, key[sep + 1 ..]);
+    }
+
+    const standard = [_]struct { parent: []const u8, child: []const u8, fk: []const u8, relationship: []const u8 }{
+        .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
+        .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
+        .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
+        .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
+        .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
+        .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
+        .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
+        .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
+        .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
+        .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
+    };
+    for (standard) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.parent, parent_type)) continue;
+        try appendChildRelationshipValue(ctx, list, entry.child, entry.fk, entry.relationship);
+    }
+
+    return Value{ .list = list };
 }
 
 pub fn createFieldSetCollectionValue(arena: std.mem.Allocator, eval: *evaluator_mod.Evaluator, obj_name: []const u8) !Value {
@@ -2324,6 +2577,9 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "Pattern")) return dispatchObjPattern(ctx, obj, method_name, args);
     if (ci.eqlIgnoreCase(cn, "Matcher")) {
         if (try dispatchObjMatcher(ctx, obj, method_name, args)) |v| return v;
+    }
+    if (ci.eqlIgnoreCase(cn, "JSONGenerator")) {
+        if (try dispatchObjJsonGenerator(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "EventBus")) {
         if (try dispatchObjEventBus(ctx, obj, method_name, args)) |v| return v;
@@ -3108,6 +3364,12 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLabelPlural")) return obj.fields.get("labelPlural") orelse obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Objects" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getChildRelationships")) {
+        if (obj.fields.get("childRelationships")) |existing| return existing;
+        const relationships = try createChildRelationshipsValue(ctx, desc_name);
+        try obj.fields.put(ctx.arena, "childRelationships", relationships);
+        return relationships;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
@@ -3212,6 +3474,11 @@ fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstan
                             try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
                             try list.items.append(ctx.arena, Value{ .object = token });
                         }
+                    } else if (standardReferenceTargetForFieldName(field_name_val.string)) |reference_to| {
+                        const token = try ctx.arena.create(types.ObjectInstance);
+                        token.* = .{ .class_name = "Schema.SObjectType" };
+                        try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
+                        try list.items.append(ctx.arena, Value{ .object = token });
                     }
                 }
             }
