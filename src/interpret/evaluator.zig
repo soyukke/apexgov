@@ -1322,7 +1322,31 @@ pub const Evaluator = struct {
                     _ = self.callInstanceMethod(cb_class, callback, "onSuccess", &.{Value{ .object = pub_result }}) catch {};
                 }
             }
+            if (args.len > 0) {
+                const clearLiveEventId = struct {
+                    fn run(item: Value) void {
+                        if (item != .sobject) return;
+                        if (!std.mem.endsWith(u8, item.sobject.type_name, "__e")) return;
+                        _ = item.sobject.fields.orderedRemove("Id");
+                    }
+                }.run;
+                if (args[0] == .sobject) {
+                    clearLiveEventId(args[0]);
+                } else if (args[0] == .list) {
+                    for (args[0].list.items.items) |item| clearLiveEventId(item);
+                }
+            }
             return result;
+        }
+        if ((std.ascii.eqlIgnoreCase(class_name, "Search") or std.ascii.eqlIgnoreCase(class_name, "System.Search")) and
+            std.ascii.eqlIgnoreCase(method_name, "query"))
+        {
+            if (args.len > 0 and args[0] == .string) {
+                return self.executeSosl(args[0].string);
+            }
+            const outer = try self.arena.create(types.ListValue);
+            outer.* = .{};
+            return Value{ .list = outer };
         }
 
         // Custom Metadata Type: Type__mdt.getInstance(developerName) / getAll()
@@ -7486,6 +7510,22 @@ pub const Evaluator = struct {
         self.cast_type_hints = arg_type_hints.items;
         defer self.cast_type_hints = prev_hints;
 
+        if (mc.object.* == .field_access) {
+            const search_fa = mc.object.field_access;
+            if (search_fa.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(search_fa.object.identifier.name, "System") and
+                std.ascii.eqlIgnoreCase(search_fa.field, "Search") and
+                std.ascii.eqlIgnoreCase(mc.method, "query"))
+            {
+                if (args.items.len > 0 and args.items[0] == .string) {
+                    return self.executeSosl(args.items[0].string);
+                }
+                const outer = try self.arena.create(types.ListValue);
+                outer.* = .{};
+                return Value{ .list = outer };
+            }
+        }
+
         if (mc.object.* == .super_expr) {
             if (current_env.get("this")) |this_val| {
                 if (this_val == .object) {
@@ -8017,6 +8057,17 @@ pub const Evaluator = struct {
             try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
+        }
+        if (obj == .object and
+            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or std.ascii.eqlIgnoreCase(obj.object.class_name, "System.Search")) and
+            std.ascii.eqlIgnoreCase(method, "query"))
+        {
+            if (args.len > 0 and args[0] == .string) {
+                return self.executeSosl(args[0].string);
+            }
+            const outer = try self.arena.create(types.ListValue);
+            outer.* = .{};
+            return Value{ .list = outer };
         }
 
         if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
@@ -10065,6 +10116,13 @@ pub const Evaluator = struct {
             if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 return try self.makeSObjectFieldToken(schema_name, fa.field);
             }
+        }
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.object.identifier.name, "System") and
+            std.ascii.eqlIgnoreCase(fa.field, "Search"))
+        {
+            const search = try self.arena.create(types.ObjectInstance);
+            search.* = .{ .class_name = "Search" };
+            return Value{ .object = search };
         }
 
         // Auto-unwrap list to first element for field access (SOQL single-record pattern)

@@ -6115,6 +6115,51 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
     try std.testing.expectEqualStrings("true:2:Master", result.value.string);
 }
 
+test "E2E: Search.query honors fixed search results and stripInaccessible returns records" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/fields/Name.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Name</fullName>
+        \\    <label>Name</label>
+        \\    <type>Text</type>
+        \\    <length>80</length>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class SearchQueryFixedResultsTest {
+        \\    public static String test() {
+        \\        Thing__c row = new Thing__c(Name = 'Alpha');
+        \\        insert row;
+        \\        System.Test.setFixedSearchResults(new List<Id>{ row.Id });
+        \\        List<Thing__c> matches = (List<Thing__c>) System.Search
+        \\            .query('FIND \'*Alpha*\' IN ALL FIELDS RETURNING Thing__c (Id,Name LIMIT 10)')
+        \\            .get(0);
+        \\        List<Thing__c> stripped = (List<Thing__c>) System.Security
+        \\            .stripInaccessible(System.AccessType.READABLE, matches)
+        \\            .getRecords();
+        \\        return String.valueOf(matches.size()) + ':' + String.valueOf(stripped.size()) + ':' + String.valueOf(stripped.get(0).Id == row.Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "SearchQueryFixedResultsTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:1:true", result.value.string);
+}
+
 test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -9576,6 +9621,25 @@ test "E2E: Type.forName custom object __e returns sobject with put/get" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("hello", result.value.string);
+}
+
+test "E2E: EventBus.publish keeps live platform event Id field unset" {
+    const source =
+        \\public class PublishedPlatformEventIdTest {
+        \\    public static String test() {
+        \\        MyEvent__e eventRecord = new MyEvent__e();
+        \\        eventRecord.put('Message__c', 'hello');
+        \\        EventBus.publish(eventRecord);
+        \\        return String.valueOf(eventRecord.Id == null) + ':' + String.valueOf(eventRecord.get('Id') == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PublishedPlatformEventIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
 test "E2E: Type.forName SObject + empty list DML integration" {
