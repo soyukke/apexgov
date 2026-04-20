@@ -9256,7 +9256,7 @@ pub const Evaluator = struct {
                         const key = items[i_idx];
                         var j_idx: usize = i_idx;
                         while (j_idx > 0) {
-                            const cmp = self.callInstanceMethod(comparator_class, comparator_obj, "compare", &.{ items[j_idx - 1], key }) catch Value{ .integer = 0 };
+                            const cmp = try self.callInstanceMethod(comparator_class, comparator_obj, "compare", &.{ items[j_idx - 1], key });
                             if (cmp == .integer and cmp.integer > 0) {
                                 items[j_idx] = items[j_idx - 1];
                                 j_idx -= 1;
@@ -9277,7 +9277,7 @@ pub const Evaluator = struct {
                     var j_idx: usize = i_idx;
                     while (j_idx > 0) {
                         const cmp = if (use_comparable and items[j_idx - 1] == .object and key == .object)
-                            self.callCompareTo(items[j_idx - 1].object, key)
+                            try self.callCompareTo(items[j_idx - 1].object, key)
                         else
                             self.compareValues(items[j_idx - 1], key);
                         if (cmp > 0) {
@@ -14368,9 +14368,9 @@ pub const Evaluator = struct {
             self.classImplementsInterface(class_name, "Batchable");
     }
 
-    fn callCompareTo(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) i32 {
+    fn callCompareTo(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) !i32 {
         if (self.findClass(a.class_name)) |cd| {
-            const result = self.callInstanceMethod(cd, a, "compareTo", &.{b_val}) catch return 0;
+            const result = try self.callInstanceMethod(cd, a, "compareTo", &.{b_val});
             if (result == .integer) return @intCast(if (result.integer > 0) @as(i32, 1) else if (result.integer < 0) @as(i32, -1) else @as(i32, 0));
         }
         return 0;

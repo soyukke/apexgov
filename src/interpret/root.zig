@@ -11772,3 +11772,33 @@ test "E2E: BusinessHours query and diff return default day duration" {
     defer result.deinit();
     try std.testing.expectEqualStrings("Default:86400000", result.value.string);
 }
+
+test "E2E: List.sort propagates Comparable exceptions" {
+    const source =
+        \\public class SortExceptionPropagationTest {
+        \\    public class BrokenComparable implements Comparable {
+        \\        public Integer compareTo(Object otherValue) {
+        \\            throw new UnsupportedOperationException('unsupported sort type');
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        List<BrokenComparable> items = new List<BrokenComparable>{
+        \\            new BrokenComparable(),
+        \\            new BrokenComparable()
+        \\        };
+        \\        try {
+        \\            items.sort();
+        \\            return 'unexpected';
+        \\        } catch (System.UnsupportedOperationException e) {
+        \\            return e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SortExceptionPropagationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("unsupported sort type", result.value.string);
+}
