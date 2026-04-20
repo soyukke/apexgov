@@ -1269,6 +1269,19 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
                 }
             }
         }
+        // Also add all objects loaded from object-meta.xml, whether or not they have data yet.
+        {
+            var labels_iter = ctx.eval.object_labels.iterator();
+            while (labels_iter.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (!map.entries.contains(key)) {
+                    const sot3 = try ctx.arena.create(types.ObjectInstance);
+                    sot3.* = .{ .class_name = "Schema.SObjectType" };
+                    try sot3.fields.put(ctx.arena, "name", Value{ .string = key });
+                    try map.entries.put(ctx.arena, key, Value{ .object = sot3 });
+                }
+            }
+        }
         return Value{ .map = map };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
