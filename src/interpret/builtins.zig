@@ -2653,8 +2653,11 @@ fn dispatchObjMatcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
-        const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
-        if (matches == .list) return Value{ .boolean = matches.list.items.items.len > 0 };
+        const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
+        const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
+        if (pattern_value == .string and input_value == .string) {
+            return Value{ .boolean = try regex.matches(ctx.arena, pattern_value.string, input_value.string) };
+        }
         return Value{ .boolean = false };
     }
     return null;

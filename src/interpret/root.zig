@@ -1314,6 +1314,25 @@ test "E2E: Pattern.compile with digit and word patterns" {
     try std.testing.expectEqualStrings("2:123:456:user:host", result.value.string);
 }
 
+test "E2E: Matcher.matches requires a full-string regex match" {
+    const source =
+        \\public class MatcherFullMatchProbe {
+        \\    public static String run() {
+        \\        Pattern pat = Pattern.compile('(b|m)o[a-z]*');
+        \\        return String.valueOf(pat.matcher('bobby').matches())
+        \\            + '|'
+        \\            + String.valueOf(pat.matcher('jimbob').matches());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MatcherFullMatchProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|false", result.value.string);
+}
+
 test "E2E: Date.today returns current date, Date.newInstance builds from args" {
     const source =
         \\public class DateTest {
