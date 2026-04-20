@@ -1555,7 +1555,14 @@ pub const Evaluator = struct {
             .for_stmt => |fs| {
                 const loop_env = try current_env.child();
                 if (fs.init) |init_stmt| {
-                    _ = try self.execStmt(init_stmt.*, loop_env);
+                    switch (init_stmt.*) {
+                        .block => |init_stmts| {
+                            for (init_stmts) |init_item| {
+                                _ = try self.execStmt(init_item, loop_env);
+                            }
+                        },
+                        else => _ = try self.execStmt(init_stmt.*, loop_env),
+                    }
                 }
                 var iterations: u32 = 0;
                 while (iterations < 100_000) : (iterations += 1) {
@@ -2661,19 +2668,13 @@ pub const Evaluator = struct {
         // Register Id → type_name mapping for getSObjectType() lookups
         try self.id_type_map.put(self.arena, id, obj.type_name);
 
-        // Auto-generate system timestamp fields using current time
-        {
-            const now_str = builtins.currentDateTimeString(self.arena) catch "2026-01-01T00:00:00Z";
-            if (utils.sobjectGet(&obj.fields, "CreatedDate") == null) {
-                try obj.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
-            }
-            if (utils.sobjectGet(&obj.fields, "LastModifiedDate") == null) {
-                try obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str });
-            }
-            if (utils.sobjectGet(&obj.fields, "SystemModstamp") == null) {
-                try obj.fields.put(self.arena, "SystemModstamp", Value{ .string = now_str });
-            }
-        }
+        // Auto-generate system timestamp fields using current time. These are
+        // persisted immediately, but they do not become populated on the live
+        // in-memory SObject until a query or explicit test hook materializes them.
+        const now_str = builtins.currentDateTimeString(self.arena) catch "2026-01-01T00:00:00Z";
+        const generated_created_date = utils.sobjectGet(&obj.fields, "CreatedDate") == null;
+        const generated_last_modified_date = utils.sobjectGet(&obj.fields, "LastModifiedDate") == null;
+        const generated_system_modstamp = utils.sobjectGet(&obj.fields, "SystemModstamp") == null;
 
         // Auto-set CreatedById and CreatedBy relationship
         if (utils.sobjectGet(&obj.fields, "CreatedById") == null) {
@@ -2793,6 +2794,15 @@ pub const Evaluator = struct {
         snapshot.* = .{ .type_name = obj.type_name, .id = id };
         for (obj.fields.keys(), obj.fields.values()) |k, v| {
             try snapshot.fields.put(self.arena, k, v);
+        }
+        if (generated_created_date) {
+            try snapshot.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
+        }
+        if (generated_last_modified_date) {
+            try snapshot.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str });
+        }
+        if (generated_system_modstamp) {
+            try snapshot.fields.put(self.arena, "SystemModstamp", Value{ .string = now_str });
         }
         const gop = try self.store.getOrPut(self.arena, obj.type_name);
         if (!gop.found_existing) {
@@ -6378,6 +6388,7 @@ pub const Evaluator = struct {
         }
         switch (expr.*) {
             .integer_literal => |v| return .{ .integer = v },
+            .long_literal => |v| return .{ .long = v },
             .double_literal => |v| return .{ .double = v },
             .string_literal => |v| return .{ .string = v },
             .boolean_literal => |v| return .{ .boolean = v },
@@ -6914,6 +6925,9 @@ pub const Evaluator = struct {
 
             .instanceof => |ie| {
                 const val = try self.evalExpr(ie.operand, current_env);
+                if (instanceofMatchesPrimitive(val, ie.type_name.name)) {
+                    return Value{ .boolean = true };
+                }
                 if (val == .sobject) {
                     if (std.ascii.eqlIgnoreCase(ie.type_name.name, "SObject") or
                         std.ascii.eqlIgnoreCase(ie.type_name.name, "Sobject") or
@@ -6924,7 +6938,6 @@ pub const Evaluator = struct {
                     return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
                 }
                 if (val == .object) {
-                    if (instanceofMatchesPrimitive(val, ie.type_name.name)) return Value{ .boolean = true };
                     // Check class name and superclass/interface hierarchy
                     if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
                     // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name is the simple name
@@ -6988,10 +7001,13 @@ pub const Evaluator = struct {
                     return Value{ .boolean = false };
                 }
                 if (val == .integer) {
-                    return Value{ .boolean = instanceofMatchesNumericType(ie.type_name.name) };
+                    return Value{ .boolean = instanceofMatchesPrimitive(val, ie.type_name.name) };
+                }
+                if (val == .long) {
+                    return Value{ .boolean = instanceofMatchesPrimitive(val, ie.type_name.name) };
                 }
                 if (val == .double) {
-                    return Value{ .boolean = instanceofMatchesNumericType(ie.type_name.name) };
+                    return Value{ .boolean = instanceofMatchesPrimitive(val, ie.type_name.name) };
                 }
                 if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
                 return Value{ .boolean = false };
@@ -8217,6 +8233,12 @@ pub const Evaluator = struct {
         }
         if (obj == .integer and std.ascii.eqlIgnoreCase(method, "hashCode")) {
             return obj;
+        }
+        if (obj == .long and std.ascii.eqlIgnoreCase(method, "toString")) {
+            return Value{ .string = try utils.coerceToString(obj, self.arena) };
+        }
+        if (obj == .long and std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = @intCast(obj.long) };
         }
         if (obj == .double and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerceToString(obj, self.arena) };
@@ -10986,15 +11008,6 @@ pub const Evaluator = struct {
         return true;
     }
 
-    /// instanceof チェック: 数値型名 (Integer, Decimal, Long, Double, Number) にマッチするか。
-    fn instanceofMatchesNumericType(tn: []const u8) bool {
-        return std.ascii.eqlIgnoreCase(tn, "Integer") or
-            std.ascii.eqlIgnoreCase(tn, "Decimal") or
-            std.ascii.eqlIgnoreCase(tn, "Long") or
-            std.ascii.eqlIgnoreCase(tn, "Double") or
-            std.ascii.eqlIgnoreCase(tn, "Number");
-    }
-
     fn isSalesforceIdString(value: []const u8) bool {
         if (value.len != 15 and value.len != 18) return false;
         for (value) |ch| {
@@ -11006,7 +11019,24 @@ pub const Evaluator = struct {
     /// instanceof チェック: Value がプリミティブ型名にマッチするか。
     fn instanceofMatchesPrimitive(val: Value, tn: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(tn, "Object")) return val != .null_val and val != .void_val;
-        if (val == .integer or val == .double) return instanceofMatchesNumericType(tn);
+        if (val == .integer) {
+            return std.ascii.eqlIgnoreCase(tn, "Integer") or
+                std.ascii.eqlIgnoreCase(tn, "Long") or
+                std.ascii.eqlIgnoreCase(tn, "Decimal") or
+                std.ascii.eqlIgnoreCase(tn, "Double") or
+                std.ascii.eqlIgnoreCase(tn, "Number");
+        }
+        if (val == .long) {
+            return std.ascii.eqlIgnoreCase(tn, "Long") or
+                std.ascii.eqlIgnoreCase(tn, "Decimal") or
+                std.ascii.eqlIgnoreCase(tn, "Double") or
+                std.ascii.eqlIgnoreCase(tn, "Number");
+        }
+        if (val == .double) {
+            return std.ascii.eqlIgnoreCase(tn, "Decimal") or
+                std.ascii.eqlIgnoreCase(tn, "Double") or
+                std.ascii.eqlIgnoreCase(tn, "Number");
+        }
         if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
         if (val == .string) {
             return std.ascii.eqlIgnoreCase(tn, "String") or
@@ -12384,6 +12414,7 @@ pub const Evaluator = struct {
                         .sobject => |s| Value{ .string = s.type_name },
                         .string => Value{ .string = "String" },
                         .integer => Value{ .string = "Integer" },
+                        .long => Value{ .string = "Long" },
                         .double => Value{ .string = "Double" },
                         .boolean => Value{ .string = "Boolean" },
                         .list => Value{ .string = "List" },
@@ -12553,6 +12584,7 @@ pub const Evaluator = struct {
             .null_val => 0,
             .boolean => |b| if (b) 1231 else 1237,
             .integer => |i| i,
+            .long => |i| i,
             .double => |d| @intFromFloat(d),
             .string => |s| self.stringHashCode(s),
             .sobject => |sob| blk: {
@@ -13211,6 +13243,8 @@ pub const Evaluator = struct {
                         score += 2;
                     } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
                         score += 2;
+                    } else if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) {
+                        score += 2;
                     } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
                         score += 2;
                     } else if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) {
@@ -13813,10 +13847,12 @@ pub const Evaluator = struct {
         if (av == .string and bv == .string) {
             return compareCaseInsensitiveStrings(av.string, bv.string);
         }
-        // Integer comparison
-        if (av == .integer and bv == .integer) {
-            if (av.integer < bv.integer) return -1;
-            if (av.integer > bv.integer) return 1;
+        // Integer/Long comparison
+        if ((av == .integer or av == .long) and (bv == .integer or bv == .long)) {
+            const ai = if (av == .integer) av.integer else av.long;
+            const bi = if (bv == .integer) bv.integer else bv.long;
+            if (ai < bi) return -1;
+            if (ai > bi) return 1;
             return 0;
         }
         // Double comparison
@@ -13844,10 +13880,12 @@ pub const Evaluator = struct {
         if (a == .string and b == .string) {
             return compareCaseInsensitiveStrings(a.string, b.string);
         }
-        // Integer comparison
-        if (a == .integer and b == .integer) {
-            if (a.integer < b.integer) return -1;
-            if (a.integer > b.integer) return 1;
+        // Integer/Long comparison
+        if ((a == .integer or a == .long) and (b == .integer or b == .long)) {
+            const ai = if (a == .integer) a.integer else a.long;
+            const bi = if (b == .integer) b.integer else b.long;
+            if (ai < bi) return -1;
+            if (ai > bi) return 1;
             return 0;
         }
         // Double comparison
@@ -13864,13 +13902,13 @@ pub const Evaluator = struct {
         }
         const a_rank: i32 = switch (a) {
             .string => 0,
-            .integer, .double => 1,
+            .integer, .long, .double => 1,
             .boolean => 2,
             else => 3,
         };
         const b_rank: i32 = switch (b) {
             .string => 0,
-            .integer, .double => 1,
+            .integer, .long, .double => 1,
             .boolean => 2,
             else => 3,
         };
@@ -14402,6 +14440,12 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
+    if (arg == .long) {
+        if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
     if (arg == .double) {
         if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
@@ -14544,24 +14588,38 @@ fn evalBinary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, are
         else => {},
     }
 
-    if (left == .integer and right == .integer) {
-        return .{ .integer = switch (op) {
-            .add => left.integer + right.integer,
-            .sub => left.integer - right.integer,
-            .mul => left.integer * right.integer,
-            .div => if (right.integer != 0) @divTrunc(left.integer, right.integer) else 0,
-            .mod => if (right.integer != 0) @mod(left.integer, right.integer) else 0,
-            .lt => return .{ .boolean = left.integer < right.integer },
-            .gt => return .{ .boolean = left.integer > right.integer },
-            .lte => return .{ .boolean = left.integer <= right.integer },
-            .gte => return .{ .boolean = left.integer >= right.integer },
+    if ((left == .integer or left == .long) and (right == .integer or right == .long)) {
+        const li = if (left == .integer) left.integer else left.long;
+        const ri = if (right == .integer) right.integer else right.long;
+        const use_long = left == .long or right == .long;
+        return if (use_long) .{ .long = switch (op) {
+            .add => li + ri,
+            .sub => li - ri,
+            .mul => li * ri,
+            .div => if (ri != 0) @divTrunc(li, ri) else 0,
+            .mod => if (ri != 0) @mod(li, ri) else 0,
+            .lt => return .{ .boolean = li < ri },
+            .gt => return .{ .boolean = li > ri },
+            .lte => return .{ .boolean = li <= ri },
+            .gte => return .{ .boolean = li >= ri },
+            else => 0,
+        } } else .{ .integer = switch (op) {
+            .add => li + ri,
+            .sub => li - ri,
+            .mul => li * ri,
+            .div => if (ri != 0) @divTrunc(li, ri) else 0,
+            .mod => if (ri != 0) @mod(li, ri) else 0,
+            .lt => return .{ .boolean = li < ri },
+            .gt => return .{ .boolean = li > ri },
+            .lte => return .{ .boolean = li <= ri },
+            .gte => return .{ .boolean = li >= ri },
             else => 0,
         } };
     }
 
-    if ((left == .double or left == .integer) and (right == .double or right == .integer)) {
-        const l = if (left == .double) left.double else @as(f64, @floatFromInt(left.integer));
-        const r = if (right == .double) right.double else @as(f64, @floatFromInt(right.integer));
+    if ((left == .double or left == .integer or left == .long) and (right == .double or right == .integer or right == .long)) {
+        const l = if (left == .double) left.double else if (left == .integer) @as(f64, @floatFromInt(left.integer)) else @as(f64, @floatFromInt(left.long));
+        const r = if (right == .double) right.double else if (right == .integer) @as(f64, @floatFromInt(right.integer)) else @as(f64, @floatFromInt(right.long));
         return switch (op) {
             .add => .{ .double = l + r },
             .sub => .{ .double = l - r },
@@ -14634,6 +14692,7 @@ fn evalUnary(op: ast.UnaryOp, operand: Value) !Value {
     switch (op) {
         .negate => {
             if (operand == .integer) return .{ .integer = -operand.integer };
+            if (operand == .long) return .{ .long = -operand.long };
             if (operand == .double) return .{ .double = -operand.double };
             return .null_val;
         },
@@ -14645,6 +14704,7 @@ fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std
     switch (op) {
         .plus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer + value.integer };
+            if (current == .long and value == .long) return .{ .long = current.long + value.long };
             if (current == .double and value == .double) return .{ .double = current.double + value.double };
             // String concatenation for +=
             if (current == .string or value == .string) {
@@ -14656,13 +14716,17 @@ fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std
         },
         .minus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer - value.integer };
+            if (current == .long and value == .long) return .{ .long = current.long - value.long };
         },
         .star_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer * value.integer };
+            if (current == .long and value == .long) return .{ .long = current.long * value.long };
         },
         .slash_assign => {
             if (current == .integer and value == .integer and value.integer != 0)
                 return .{ .integer = @divTrunc(current.integer, value.integer) };
+            if (current == .long and value == .long and value.long != 0)
+                return .{ .long = @divTrunc(current.long, value.long) };
         },
         .assign => return value,
         .null_coalesce_assign => return if (current == .null_val) value else current,

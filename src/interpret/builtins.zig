@@ -415,6 +415,7 @@ fn dispatchStaticInteger(ctx: *BuiltinContext, method_name: []const u8, args: []
                 return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}));
             } },
             .integer => args[0],
+            .long => |l| Value{ .integer = l },
             .double => |d| Value{ .integer = @intFromFloat(d) },
             .null_val => Value.null_val,
             else => Value.null_val,
@@ -426,11 +427,12 @@ fn dispatchStaticInteger(ctx: *BuiltinContext, method_name: []const u8, args: []
 fn dispatchStaticLong(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
-            .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch {
+            .string => |s| Value{ .long = std.fmt.parseInt(i64, s, 10) catch {
                 return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}));
             } },
-            .integer => args[0],
-            .double => |d| Value{ .integer = @intFromFloat(d) },
+            .integer => |i| Value{ .long = i },
+            .long => args[0],
+            .double => |d| Value{ .long = @intFromFloat(d) },
             .null_val => Value.null_val,
             else => Value.null_val,
         };
@@ -596,42 +598,28 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
             }));
         }
     };
+    const numericAsI64 = struct {
+        fn from(value: Value, default_value: i64) i64 {
+            return switch (value) {
+                .integer => |i| i,
+                .long => |i| i,
+                .double => |d| @as(i64, @intFromFloat(d)),
+                else => default_value,
+            };
+        }
+    };
 
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
     }
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
         if (args.len >= 6) {
-            const y = switch (args[0]) {
-                .integer => |i| i,
-                .double => |d| @as(i64, @intFromFloat(d)),
-                else => 2026,
-            };
-            const mo = switch (args[1]) {
-                .integer => |i| i,
-                .double => |d| @as(i64, @intFromFloat(d)),
-                else => 1,
-            };
-            const d = switch (args[2]) {
-                .integer => |i| i,
-                .double => |d2| @as(i64, @intFromFloat(d2)),
-                else => 1,
-            };
-            const h = switch (args[3]) {
-                .integer => |i| i,
-                .double => |d3| @as(i64, @intFromFloat(d3)),
-                else => 0,
-            };
-            const mi = switch (args[4]) {
-                .integer => |i| i,
-                .double => |d4| @as(i64, @intFromFloat(d4)),
-                else => 0,
-            };
-            const s = switch (args[5]) {
-                .integer => |i| i,
-                .double => |d5| @as(i64, @intFromFloat(d5)),
-                else => 0,
-            };
+            const y = numericAsI64.from(args[0], 2026);
+            const mo = numericAsI64.from(args[1], 1);
+            const d = numericAsI64.from(args[2], 1);
+            const h = numericAsI64.from(args[3], 0);
+            const mi = numericAsI64.from(args[4], 0);
+            const s = numericAsI64.from(args[5], 0);
             return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
                 @as(u32, @intCast(if (y < 0) 1 else y)),
                 @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
@@ -642,21 +630,9 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
             }));
         }
         if (args.len >= 3) {
-            const y = switch (args[0]) {
-                .integer => |i| i,
-                .double => |d6| @as(i64, @intFromFloat(d6)),
-                else => 2026,
-            };
-            const mo = switch (args[1]) {
-                .integer => |i| i,
-                .double => |d7| @as(i64, @intFromFloat(d7)),
-                else => 1,
-            };
-            const d8 = switch (args[2]) {
-                .integer => |i| i,
-                .double => |d9| @as(i64, @intFromFloat(d9)),
-                else => 1,
-            };
+            const y = numericAsI64.from(args[0], 2026);
+            const mo = numericAsI64.from(args[1], 1);
+            const d8 = numericAsI64.from(args[2], 1);
             return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
                 @as(u32, @intCast(if (y < 0) 1 else y)),
                 @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
@@ -664,11 +640,7 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
             }));
         }
         if (args.len >= 1) {
-            const ms: i64 = switch (args[0]) {
-                .integer => |i| i,
-                .double => |d10| @as(i64, @intFromFloat(d10)),
-                else => 0,
-            };
+            const ms: i64 = numericAsI64.from(args[0], 0);
             return try fromEpochMillis.convert(ctx, ms);
         }
         return try makeDatetimeValue(ctx.arena, "2026-04-06T00:00:00Z");
@@ -677,6 +649,7 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
         if (args.len > 0) {
             switch (args[0]) {
                 .integer => |i| return try fromEpochMillis.convert(ctx, i),
+                .long => |i| return try fromEpochMillis.convert(ctx, i),
                 .double => |d| return try fromEpochMillis.convert(ctx, @intFromFloat(d)),
                 .null_val => return Value.null_val,
                 else => {},
@@ -1238,8 +1211,8 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         const known_types = [_][]const u8{
-            "Account",  "Contact",  "Opportunity", "Task",            "Lead",           "Case", "User",
-            "Solution", "Campaign", "Event",       "ContentDocument", "ContentVersion",
+            "Account", "Contact",  "Opportunity", "Task",  "Lead",            "Case",           "User",
+            "Group",   "Solution", "Campaign",    "Event", "ContentDocument", "ContentVersion",
         };
         for (known_types) |obj_name| {
             const sot = try ctx.arena.create(types.ObjectInstance);
@@ -1264,8 +1237,9 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
     }
     if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
         const known_types = [_][]const u8{
-            "account",  "contact",  "opportunity", "task",            "lead",           "case",               "user",
-            "solution", "campaign", "event",       "contentdocument", "contentversion", "flowdefinitionview", "flowversionview",
+            "account",         "contact",  "opportunity", "task",  "lead",            "case",           "user",
+            "group",           "solution", "campaign",    "event", "contentdocument", "contentversion", "flowdefinitionview",
+            "flowversionview",
         };
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -2515,6 +2489,7 @@ pub fn dispatchInstance(ctx: *BuiltinContext, receiver: Value, method_name: []co
         .sobject => |sob| return dispatchSObjectInstance(ctx, sob, method_name, args),
         .double => |d| return dispatchDoubleInstance(ctx, d, method_name, args),
         .integer => |i| return dispatchDoubleInstance(ctx, @floatFromInt(i), method_name, args),
+        .long => |i| return dispatchDoubleInstance(ctx, @floatFromInt(i), method_name, args),
         else => return null,
     }
 }
@@ -2533,6 +2508,7 @@ fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8,
         if (args.len > 0) {
             const scale: i64 = switch (args[0]) {
                 .integer => |i| i,
+                .long => |i| i,
                 .double => |dv| @intFromFloat(dv),
                 else => 0,
             };
@@ -2548,7 +2524,7 @@ fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8,
     // intValue()
     if (std.ascii.eqlIgnoreCase(method_name, "intValue")) return Value{ .integer = @intFromFloat(d) };
     // longValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .integer = @intFromFloat(d) };
+    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .long = @intFromFloat(d) };
     // round()
     if (std.ascii.eqlIgnoreCase(method_name, "round")) return Value{ .integer = @intFromFloat(@round(d)) };
     // abs()

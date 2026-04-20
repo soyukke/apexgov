@@ -14,6 +14,7 @@ const TokenKind = types.TokenKind;
 
 pub const Expr = union(enum) {
     integer_literal: i64,
+    long_literal: i64,
     double_literal: f64,
     string_literal: []const u8,
     boolean_literal: bool,

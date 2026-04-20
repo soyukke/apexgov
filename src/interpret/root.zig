@@ -3266,6 +3266,26 @@ test "E2E: Integer and Long valueOf preserve null inputs" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: long literals remain distinct from Integer in instanceof checks" {
+    const source =
+        \\public class LongInstanceofProbe {
+        \\    public static String test() {
+        \\        return String.valueOf(9 instanceof Long) + ':' +
+        \\            String.valueOf(9L instanceof Long) + ':' +
+        \\            String.valueOf(9L instanceof Integer) + ':' +
+        \\            String.valueOf(9.99 instanceof Integer) + ':' +
+        \\            String.valueOf(Long.valueOf('9') instanceof Long);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "LongInstanceofProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:false:false:true", result.value.string);
+}
+
 test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
     const source =
         \\public class FormulaFieldTest {
@@ -7102,6 +7122,235 @@ test "E2E: JSON serialize preserves Id on generic newSObject records" {
     try std.testing.expectEqualStrings("001000000000001AAA:{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}", result.value.string);
 }
 
+test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
+    const source =
+        \\public class TokenKeyedSObjectMatchProbe {
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\        for (Schema.SObjectField f : toMatch.keySet()) {
+        \\            if (sobj.get(f) != toMatch.get(f)) {
+        \\                return false;
+        \\            }
+        \\        }
+        \\        return true;
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields = Account.SObjectType.getDescribe().fields.getMap();
+        \\        Schema.SObjectField idField = fields.get('Id');
+        \\        Schema.SObjectField nameField = fields.get('Name');
+        \\
+        \\        SObject first = Account.SObjectType.newSObject();
+        \\        first.put('Id', '001000000000001AAA');
+        \\        first.put('Name', 'Acme');
+        \\        SObject second = Account.SObjectType.newSObject();
+        \\        second.put('Id', '001000000000002AAA');
+        \\        second.put('Name', 'Beta');
+        \\
+        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => '001000000000001AAA',
+        \\                nameField => 'Acme'
+        \\            },
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => '001000000000002AAA',
+        \\                nameField => 'Beta'
+        \\            }
+        \\        };
+        \\
+        \\        List<SObject> actual = new List<SObject>{ first, second };
+        \\        return String.valueOf(sObjectMatches(actual[0], expected[0])) + ':' +
+        \\            String.valueOf(sObjectMatches(actual[1], expected[1]));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TokenKeyedSObjectMatchProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: token-keyed sobject match works for inserted Group records" {
+    const source =
+        \\public class TokenKeyedGroupMatchProbe {
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\        for (Schema.SObjectField f : toMatch.keySet()) {
+        \\            try {
+        \\                if (sobj.get(f) != toMatch.get(f)) {
+        \\                    return false;
+        \\                }
+        \\            } catch (Exception e) {
+        \\                return false;
+        \\            }
+        \\        }
+        \\        return true;
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        List<Group> groups = new List<Group>{
+        \\            new Group(Name = 'Probe0', DeveloperName = 'Probe0', Type = 'Queue'),
+        \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
+        \\        };
+        \\        insert groups;
+        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Schema.SObjectField idField = fields.get('Id');
+        \\        Schema.SObjectField nameField = fields.get('Name');
+        \\
+        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => groups[0].Id,
+        \\                nameField => groups[0].get('Name')
+        \\            },
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => groups[1].Id,
+        \\                nameField => groups[1].get('Name')
+        \\            }
+        \\        };
+        \\
+        \\        return String.valueOf(sObjectMatches(groups[0], expected[0])) + ':' +
+        \\            String.valueOf(sObjectMatches(groups[1], expected[1]));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TokenKeyedGroupMatchProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: self-referential Boolean getter preserves backing field value" {
+    const source =
+        \\public class BooleanGetterBackingFieldProbe {
+        \\    private Boolean flag {
+        \\        get {
+        \\            return flag == null ? false : flag;
+        \\        }
+        \\        set;
+        \\    }
+        \\
+        \\    public BooleanGetterBackingFieldProbe(Boolean value) {
+        \\        this.flag = value;
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        BooleanGetterBackingFieldProbe probe = new BooleanGetterBackingFieldProbe(true);
+        \\        return String.valueOf(probe.flag);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BooleanGetterBackingFieldProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: ordered token-keyed sobject list matcher works through Object entrypoint" {
+    const source =
+        \\public class OrderedTokenKeyedSObjectListMatcherProbe {
+        \\    private class OrderedMatcher {
+        \\        private List<Map<Schema.SObjectField, Object>> toMatch;
+        \\        private Boolean matchInOrder {
+        \\            get {
+        \\                return matchInOrder == null ? false : matchInOrder;
+        \\            }
+        \\            set;
+        \\        }
+        \\
+        \\        public OrderedMatcher(List<Map<Schema.SObjectField, Object>> values) {
+        \\            this.toMatch = values;
+        \\            this.matchInOrder = true;
+        \\        }
+        \\
+        \\        public Boolean matches(Object arg) {
+        \\            if (arg != null && arg instanceof List<SObject>) {
+        \\                SObject[] sobjsArg = (SObject[]) arg;
+        \\                List<Map<Schema.SObjectField, Object>> toMatches = new List<Map<Schema.SObjectField, Object>>();
+        \\                for (Map<Schema.SObjectField, Object> matchElem : toMatch) {
+        \\                    toMatches.add(matchElem);
+        \\                }
+        \\                if (sobjsArg.size() != toMatches.size()) {
+        \\                    return false;
+        \\                }
+        \\                if (matchInOrder) {
+        \\                    for (Integer i = 0; i < sobjsArg.size(); i++) {
+        \\                        if (!sObjectMatches(sobjsArg[i], toMatches[i])) {
+        \\                            return false;
+        \\                        }
+        \\                    }
+        \\                    return true;
+        \\                }
+        \\            }
+        \\            return false;
+        \\        }
+        \\    }
+        \\
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\        for (Schema.SObjectField f : toMatch.keySet()) {
+        \\            try {
+        \\                if (sobj.get(f) != toMatch.get(f)) {
+        \\                    return false;
+        \\                }
+        \\            } catch (Exception e) {
+        \\                return false;
+        \\            }
+        \\        }
+        \\        return true;
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        List<Group> groups = new List<Group>{
+        \\            new Group(Name = 'Probe0', DeveloperName = 'Probe0', Type = 'Queue'),
+        \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
+        \\        };
+        \\        insert groups;
+        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Schema.SObjectField idField = fields.get('Id');
+        \\        Schema.SObjectField nameField = fields.get('Name');
+        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => groups[0].Id,
+        \\                nameField => groups[0].get('Name')
+        \\            },
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                idField => groups[1].Id,
+        \\                nameField => groups[1].get('Name')
+        \\            }
+        \\        };
+        \\        OrderedMatcher matcher = new OrderedMatcher(expected);
+        \\        return String.valueOf(matcher.matches(groups));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "OrderedTokenKeyedSObjectListMatcherProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: global describe exposes Group sobject type" {
+    const source =
+        \\public class GlobalDescribeGroupProbe {
+        \\    public static String test() {
+        \\        Schema.SObjectType groupType = Schema.getGlobalDescribe().get('Group');
+        \\        return String.valueOf(groupType == null ? null : groupType.getDescribe().getName());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GlobalDescribeGroupProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Group", result.value.string);
+}
+
 test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {
     const source =
         \\public class JsonDatetimeSerializeTest {
@@ -8772,6 +9021,47 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:true:false", result.value.string);
+}
+
+test "E2E: inserted live records do not expose auto-generated CreatedDate before requery" {
+    const source =
+        \\public class InsertedLiveCreatedDateVisibilityTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id = :accountRecord.Id];
+        \\        return String.valueOf(accountRecord.get('CreatedDate') == null) + ':' +
+        \\            String.valueOf(refreshed.CreatedDate != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InsertedLiveCreatedDateVisibilityTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: for-init multiple variable declarations remain in loop scope" {
+    const source =
+        \\public class ForMultiInitRuntimeTest {
+        \\    public static String test() {
+        \\        List<Integer> values = new List<Integer>{ 1, 2, 3 };
+        \\        Integer sum = 0;
+        \\        for (Integer i = 0, size = values.size(); i < size; i++) {
+        \\            sum += values[i];
+        \\        }
+        \\        return String.valueOf(sum);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ForMultiInitRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("6", result.value.string);
 }
 
 test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {

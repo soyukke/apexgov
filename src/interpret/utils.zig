@@ -29,6 +29,15 @@ fn formatJsonDateTimeStr(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
     return s;
 }
 
+fn numericAsF64(v: Value) ?f64 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .long => |i| @floatFromInt(i),
+        .double => |d| d,
+        else => null,
+    };
+}
+
 /// Apex == セマンティクスで値を比較する。
 /// String は大文字小文字を区別しない。
 pub fn valueEql(a: Value, b: Value) bool {
@@ -40,12 +49,11 @@ pub fn valueEql(a: Value, b: Value) bool {
     if (a_tag == .null_val or b_tag == .null_val) return false;
 
     if (a_tag != b_tag) {
-        // integer/double cross-comparison
-        if (a_tag == .integer and b_tag == .double) {
-            return @as(f64, @floatFromInt(a.integer)) == b.double;
-        }
-        if (a_tag == .double and b_tag == .integer) {
-            return a.double == @as(f64, @floatFromInt(b.integer));
+        // Numeric cross-comparison
+        if (numericAsF64(a)) |af| {
+            if (numericAsF64(b)) |bf| {
+                return af == bf;
+            }
         }
         // Date/DateTime object vs string cross-comparison
         if (a_tag == .object and b_tag == .string) {
@@ -80,6 +88,7 @@ pub fn valueEql(a: Value, b: Value) bool {
     return switch (a) {
         .boolean => |av| av == b.boolean,
         .integer => |av| av == b.integer,
+        .long => |av| av == b.long,
         .double => |av| av == b.double,
         .string => |av| blk: {
             if (std.ascii.eqlIgnoreCase(av, b.string)) break :blk true;
@@ -192,6 +201,7 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .null_val => "null",
         .boolean => |b| if (b) "true" else "false",
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
+        .long => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .double => |d| try formatApexDouble(arena, d),
         .string => |s| s,
         .void_val => "void",
@@ -266,6 +276,7 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .null_val => "null",
         .boolean => |b| if (b) "true" else "false",
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
+        .long => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
         .string => |s| try std.fmt.allocPrint(arena, "\"{s}\"", .{s}),
         .void_val => "null",

@@ -578,16 +578,27 @@ const Parser = struct {
         if (!self.check(.semicolon)) {
             const init_stmt = try self.arena.create(ast.Stmt);
             if (self.looksLikeVarDecl()) {
-                init_stmt.* = try self.parseVarDeclStmt();
-                // Handle multiple var decls: Integer i = 0, j = list.size()
-                while (self.matchKind(.comma)) {
-                    if (self.check(.identifier) and (self.peekKind(1) == .assign or self.peekKind(1) == .semicolon or self.peekKind(1) == .comma)) {
-                        // name = expr or name;
-                        _ = try self.expectIdentifier();
-                        if (self.matchKind(.assign)) {
-                            _ = try self.expression();
-                        }
+                const type_ref = try self.parseTypeRef();
+                var init_stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
+                while (true) {
+                    const decl_loc = self.currentLoc();
+                    const name = try self.expectIdentifier();
+                    var initializer: ?*ast.Expr = null;
+                    if (self.matchKind(.assign)) {
+                        initializer = try self.expression();
                     }
+
+                    const decl = try self.arena.create(ast.VarDecl);
+                    decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = decl_loc };
+                    try init_stmts.append(self.arena, .{ .var_decl = decl });
+
+                    if (!self.matchKind(.comma)) break;
+                }
+
+                if (init_stmts.items.len == 1) {
+                    init_stmt.* = init_stmts.items[0];
+                } else {
+                    init_stmt.* = .{ .block = try init_stmts.toOwnedSlice(self.arena) };
                 }
             } else {
                 const expr = try self.expression();
@@ -1216,7 +1227,7 @@ const Parser = struct {
             const val = std.fmt.parseInt(i64, num_part, 10) catch 0;
             self.pos += 1;
             const result = try self.arena.create(ast.Expr);
-            result.* = .{ .integer_literal = val };
+            result.* = .{ .long_literal = val };
             return result;
         }
         if (kind == .double_literal) {
