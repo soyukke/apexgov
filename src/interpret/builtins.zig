@@ -397,7 +397,9 @@ fn dispatchStaticId(ctx: *BuiltinContext, method_name: []const u8, args: []const
         return switch (args[0]) {
             .null_val => Value.null_val,
             .string => |s| blk: {
-                if (!isSalesforceIdString(s)) break :blk Value{ .string = s };
+                if (!isSalesforceIdString(s)) {
+                    return ctx.throwException("System.StringException", "Invalid id");
+                }
                 if (s.len == 18) break :blk Value{ .string = s };
 
                 const checksum_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";

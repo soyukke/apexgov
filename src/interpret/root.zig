@@ -2064,6 +2064,27 @@ test "E2E: FlowDefinitionView stub query works through helper method reuse" {
     try std.testing.expectEqualStrings("1:1", result.value.string);
 }
 
+test "E2E: FlowDefinitionView stub does not synthesize inactive-free queries" {
+    const source =
+        \\public class FlowDefinitionViewMissingTest {
+        \\    public static String test() {
+        \\        List<Schema.FlowDefinitionView> defs = [
+        \\            SELECT ApiName
+        \\            FROM FlowDefinitionView
+        \\            WHERE ApiName = 'MissingFlow'
+        \\        ];
+        \\        return String.valueOf(defs.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FlowDefinitionViewMissingTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
 test "E2E: fixture Flow.Interview plugin mock exposes input and output variables" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator);
     defer fixture_paths.deinit();
@@ -8913,6 +8934,27 @@ test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("005000000000000AAA", result.value.string);
+}
+
+test "E2E: Id.valueOf throws StringException for invalid ids" {
+    const source =
+        \\public class InvalidIdValueOfTest {
+        \\    public static String test() {
+        \\        try {
+        \\            Id.valueOf('invalid');
+        \\            return 'no-exception';
+        \\        } catch (System.StringException e) {
+        \\            return 'string-exception';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidIdValueOfTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("string-exception", result.value.string);
 }
 
 test "E2E: custom equals and hashCode drive map lookup while strict equality stays identity" {

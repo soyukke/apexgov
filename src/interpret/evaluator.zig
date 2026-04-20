@@ -4129,6 +4129,13 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(from_type, "FlowDefinitionView")) {
             const api_name = self.extractWhereFieldValue(soql, "ApiName", current_env) orelse name_val;
             if (std.mem.indexOfScalar(u8, api_name, ' ') != null) return null;
+            const has_active_true_literal = std.ascii.indexOfIgnoreCase(soql, "IsActive = TRUE") != null or
+                std.ascii.indexOfIgnoreCase(soql, "IsActive=TRUE") != null;
+            const is_active_filter = self.extractWhereFieldValue(soql, "IsActive", current_env);
+            const should_synthesize = has_active_true_literal or if (is_active_filter) |filter_value|
+                std.ascii.eqlIgnoreCase(filter_value, "TRUE")
+            else
+                false;
 
             if (self.store.get(from_type)) |records| {
                 for (records.items) |record| {
@@ -4141,6 +4148,8 @@ pub const Evaluator = struct {
                     }
                 }
             }
+
+            if (!should_synthesize) return null;
 
             const durable_id = try std.fmt.allocPrint(self.arena, "300{d:0>15}", .{self.next_id});
             self.next_id += 1;
