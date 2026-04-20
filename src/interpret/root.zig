@@ -6094,6 +6094,27 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
 }
 
+test "E2E: SObjectType record type info methods delegate to describe metadata" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\public class SObjectTypeRecordTypeInfoTest {
+        \\    public static String test() {
+        \\        Map<Id, Schema.RecordTypeInfo> byId = Schema.SObjectType.Account.getRecordTypeInfosById();
+        \\        List<Schema.RecordTypeInfo> infos = Schema.SObjectType.Account.getRecordTypeInfos();
+        \\        return String.valueOf(byId != null) + ':' +
+        \\            String.valueOf(infos.size()) + ':' +
+        \\            byId.values().get(0).getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "SObjectTypeRecordTypeInfoTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:2:Master", result.value.string);
+}
+
 test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});

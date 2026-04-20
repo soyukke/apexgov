@@ -3209,6 +3209,16 @@ fn dispatchObjSObjectType(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         const name = if (obj.fields.get("name")) |n| n.string else "Object";
         return try createDescribeResult(ctx, name);
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
+        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or
+        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
+    {
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        const describe_val = try createDescribeResult(ctx, name);
+        if (describe_val == .object) {
+            return try dispatchObjDescribeSObject(ctx, describe_val.object, method_name);
+        }
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
         std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
     {
