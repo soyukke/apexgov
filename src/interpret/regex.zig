@@ -556,17 +556,33 @@ fn splitAlternatives(inner: []const u8) [8]?[]const u8 {
     var count: usize = 0;
     var start: usize = 0;
     var depth: u32 = 0;
-    for (inner, 0..) |c, i| {
-        if (c == '(') depth += 1;
-        if (c == ')') {
-            if (depth > 0) depth -= 1;
+    var in_class: bool = false;
+    var i: usize = 0;
+    while (i < inner.len) : (i += 1) {
+        const c = inner[i];
+        // Skip escaped characters
+        if (c == '\\' and i + 1 < inner.len) {
+            i += 1;
+            continue;
         }
-        if (c == '|' and depth == 0) {
-            if (count < result.len) {
-                result[count] = inner[start..i];
-                count += 1;
+        if (!in_class) {
+            if (c == '[') {
+                in_class = true;
+                continue;
             }
-            start = i + 1;
+            if (c == '(') depth += 1;
+            if (c == ')') {
+                if (depth > 0) depth -= 1;
+            }
+            if (c == '|' and depth == 0) {
+                if (count < result.len) {
+                    result[count] = inner[start..i];
+                    count += 1;
+                }
+                start = i + 1;
+            }
+        } else {
+            if (c == ']') in_class = false;
         }
     }
     if (count < result.len) {

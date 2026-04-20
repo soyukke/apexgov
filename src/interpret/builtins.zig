@@ -2814,6 +2814,29 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     const ci = std.ascii;
     const cn = obj.class_name;
 
+    // System.Iterator — generic iterator for Set/List, with __items__ list and __pos__ index
+    if (ci.eqlIgnoreCase(cn, "System.Iterator") or ci.eqlIgnoreCase(cn, "Iterator")) {
+        const items_val = obj.fields.get("__items__") orelse return Value.null_val;
+        if (items_val != .list) return Value.null_val;
+        const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
+        const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+        if (ci.eqlIgnoreCase(method_name, "hasNext")) {
+            return Value{ .boolean = pos < items_val.list.items.items.len };
+        }
+        if (ci.eqlIgnoreCase(method_name, "next")) {
+            if (pos >= items_val.list.items.items.len) {
+                const exc = try ctx.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "System.NoSuchElementException" };
+                try exc.fields.put(ctx.arena, "message", Value{ .string = "Iterator has no more elements" });
+                ctx.eval.pending_exception = Value{ .object = exc };
+                return error.ApexException;
+            }
+            const value = items_val.list.items.items[pos];
+            try obj.fields.put(ctx.arena, "__pos__", Value{ .integer = @intCast(pos + 1) });
+            return value;
+        }
+    }
+
     // Class-specific handlers (return non-null on match, null to fall through)
     if (ci.eqlIgnoreCase(cn, "Pattern")) return dispatchObjPattern(ctx, obj, method_name, args);
     if (ci.eqlIgnoreCase(cn, "Matcher")) {

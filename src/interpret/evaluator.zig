@@ -9624,6 +9624,18 @@ pub const Evaluator = struct {
     }
 
     fn evalListMethod(self: *Evaluator, list: *types.ListValue, method: []const u8, args: []const Value) !Value {
+        if (std.ascii.eqlIgnoreCase(method, "iterator")) {
+            const iter = try self.arena.create(types.ObjectInstance);
+            iter.* = .{ .class_name = "System.Iterator" };
+            const values_list = try self.arena.create(types.ListValue);
+            values_list.* = .{};
+            for (list.items.items) |item| {
+                try values_list.items.append(self.arena, item);
+            }
+            try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
+            try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
+            return Value{ .object = iter };
+        }
         if (std.ascii.eqlIgnoreCase(method, "add")) {
             if (args.len >= 2 and args[0] == .integer) {
                 if (args[0].integer < 0) return .void_val;
@@ -10019,6 +10031,19 @@ pub const Evaluator = struct {
                 try new_set.entries.put(self.arena, key, item);
             }
             return Value{ .set = new_set };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "iterator")) {
+            // Return an Iterator-like object that wraps the set values.
+            const iter = try self.arena.create(types.ObjectInstance);
+            iter.* = .{ .class_name = "System.Iterator" };
+            const values_list = try self.arena.create(types.ListValue);
+            values_list.* = .{};
+            for (set.entries.values()) |item| {
+                try values_list.items.append(self.arena, item);
+            }
+            try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
+            try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
+            return Value{ .object = iter };
         }
         return Value.null_val;
     }
