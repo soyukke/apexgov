@@ -2095,6 +2095,11 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     }
     try addKnownDescribeFields(ctx, fields_kv, obj_name);
     try addDescribeFieldsFromStore(ctx, fields_kv, obj_name);
+    for (fields_kv.entries.keys()) |field_name| {
+        if (fields_kv.key_values.get(field_name) == null) {
+            try fields_kv.key_values.put(ctx.arena, field_name, Value{ .string = field_name });
+        }
+    }
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
@@ -2175,7 +2180,15 @@ fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, o
 
 fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
     if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
-        try addDescribeFieldIfMissing(ctx, fields_kv, object_type, "AccountId");
+        for ([_][]const u8{ "AccountId", "FirstName", "LastName", "Email" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Lead")) {
+        for ([_][]const u8{ "FirstName", "LastName", "Company", "Email" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
         return;
     }
     if (std.ascii.eqlIgnoreCase(object_type, "User")) {
@@ -2994,6 +3007,12 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
         if (nv == .string) nv.string else ""
     else
         "";
+    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
+        if (object_type != null and field_name.len > 0) {
+            return try createFieldDescribeResultWithType(ctx, object_type.?, field_name, null);
+        }
+        return Value{ .object = obj };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};

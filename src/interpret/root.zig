@@ -1379,6 +1379,26 @@ test "E2E: fields map tokens compare equal to standard child relationship fields
     try std.testing.expect(result.value.boolean);
 }
 
+test "E2E: Contact describe fields expose LastName token at runtime" {
+    const source =
+        \\public class ContactDescribeFieldsProbe {
+        \\    public static String run() {
+        \\        Map<String, Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
+        \\        String fieldName = String.valueOf(Contact.LastName);
+        \\        Schema.SObjectField lastNameField = fields.get(fieldName);
+        \\        Schema.DescribeFieldResult describe = lastNameField.getDescribe();
+        \\        return String.valueOf(lastNameField != null) + ':' + String.valueOf(lastNameField) + ':' + describe.getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ContactDescribeFieldsProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:LastName:LastName", result.value.string);
+}
+
 test "E2E: list-derived describe resolves standard child relationship fields" {
     const source =
         \\public class ChildRelationshipListProbe {
