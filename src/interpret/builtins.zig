@@ -1353,7 +1353,7 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
                     const clone = try ctx.arena.create(types.SObject);
                     clone.* = .{ .type_name = item.sobject.type_name };
                     clone.id = item.sobject.id;
-                    clone.is_stripped = true;
+                    clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
                     for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
                         if (rm_map.entries.get(field_name) == null) try clone.fields.put(ctx.arena, field_name, field_value);
                     }
@@ -2193,6 +2193,29 @@ fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, o
 }
 
 fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+    if (std.ascii.eqlIgnoreCase(object_type, "Account")) {
+        for ([_][]const u8{
+            "Phone",
+            "Website",
+            "Industry",
+            "Type",
+            "BillingStreet",
+            "BillingCity",
+            "BillingState",
+            "BillingPostalCode",
+            "BillingCountry",
+            "ShippingStreet",
+            "ShippingCity",
+            "ShippingState",
+            "ShippingPostalCode",
+            "ShippingCountry",
+            "NumberOfEmployees",
+            "Description",
+        }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
     if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
         for ([_][]const u8{ "AccountId", "FirstName", "LastName", "Email" }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);

@@ -2346,6 +2346,180 @@ test "E2E: permission set groups expand assigned permission sets" {
     try std.testing.expect(result.value.boolean);
 }
 
+test "E2E: permission set metadata expands composite address field permissions" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("permissionsets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "permissionsets/Address_Edit.permissionset-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fieldPermissions>
+        \\        <editable>true</editable>
+        \\        <field>Account.ShippingAddress</field>
+        \\        <readable>true</readable>
+        \\    </fieldPermissions>
+        \\    <label>Address Edit</label>
+        \\    <objectPermissions>
+        \\        <allowCreate>false</allowCreate>
+        \\        <allowDelete>false</allowDelete>
+        \\        <allowEdit>true</allowEdit>
+        \\        <allowRead>true</allowRead>
+        \\        <modifyAllRecords>false</modifyAllRecords>
+        \\        <object>Account</object>
+        \\        <viewAllRecords>false</viewAllRecords>
+        \\    </objectPermissions>
+        \\</PermissionSet>
+        ,
+    });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const source =
+        \\public class PermissionSetMetadataAddressTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Address',
+        \\            Username = 'address.permissions@example.com',
+        \\            Email = 'address.permissions@example.com',
+        \\            Alias = 'addr'
+        \\        );
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\    public static Boolean test() {
+        \\        User u = makeUser();
+        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit' LIMIT 1];
+        \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
+        \\        Boolean allowed = false;
+        \\        System.runAs(u) {
+        \\            SObjectAccessDecision decision = Security.stripInaccessible(
+        \\                AccessType.UPDATABLE,
+        \\                new List<Account>{
+        \\                    new Account(Name = 'Example', ShippingStreet = '123 Main')
+        \\                }
+        \\            );
+        \\            List<Account> rows = (List<Account>) decision.getRecords();
+        \\            allowed = ((String) rows[0].get('ShippingStreet')) == '123 Main';
+        \\        }
+        \\        return allowed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PermissionSetMetadataAddressTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: describeSObjects exposes updatable standard address fields" {
+    const source =
+        \\public class DescribeSObjectsUpdatableFieldsTest {
+        \\    public static Boolean test() {
+        \\        Schema.DescribeSObjectResult[] desc = Schema.describeSObjects(
+        \\            new List<String>{ 'Account' }
+        \\        );
+        \\        Map<String, Schema.SObjectField> fields = desc[0].fields.getMap();
+        \\        return fields.get('Name').getDescribe().isUpdateable() &&
+        \\            fields.get('ShippingStreet').getDescribe().isUpdateable();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DescribeSObjectsUpdatableFieldsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: stripInaccessible update records remain usable after JSON round-trip" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("permissionsets");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "permissionsets/Address_Edit.permissionset-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fieldPermissions>
+        \\        <editable>true</editable>
+        \\        <field>Account.ShippingAddress</field>
+        \\        <readable>true</readable>
+        \\    </fieldPermissions>
+        \\    <label>Address Edit</label>
+        \\    <objectPermissions>
+        \\        <allowCreate>false</allowCreate>
+        \\        <allowDelete>false</allowDelete>
+        \\        <allowEdit>true</allowEdit>
+        \\        <allowRead>true</allowRead>
+        \\        <modifyAllRecords>false</modifyAllRecords>
+        \\        <object>Account</object>
+        \\        <viewAllRecords>false</viewAllRecords>
+        \\    </objectPermissions>
+        \\</PermissionSet>
+        ,
+    });
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const source =
+        \\public class StripInaccessibleJsonUpdateTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Updater',
+        \\            Username = 'json.updater@example.com',
+        \\            Email = 'json.updater@example.com',
+        \\            Alias = 'jupd'
+        \\        );
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\    public static Boolean test() {
+        \\        Account acct = new Account(Name = 'Example');
+        \\        insert acct;
+        \\        User u = makeUser();
+        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit' LIMIT 1];
+        \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
+        \\        List<Account> rows = [SELECT Name FROM Account WHERE Id = :acct.Id];
+        \\        rows[0].ShippingStreet = '123 Main';
+        \\        System.runAs(u) {
+        \\            List<Account> deserialized = (List<Account>) JSON.deserialize(
+        \\                JSON.serialize(rows),
+        \\                List<Account>.class
+        \\            );
+        \\            SObjectAccessDecision decision = Security.stripInaccessible(
+        \\                AccessType.UPDATABLE,
+        \\                deserialized
+        \\            );
+        \\            update decision.getRecords();
+        \\        }
+        \\        return [SELECT ShippingStreet FROM Account WHERE Id = :acct.Id]
+        \\            .ShippingStreet == '123 Main';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StripInaccessibleJsonUpdateTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
 test "E2E: synthetic automated-process User query works when the User store is non-empty" {
     const source =
         \\public class AutomatedProcessUserQueryTest {
