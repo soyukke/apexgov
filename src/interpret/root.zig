@@ -1810,6 +1810,31 @@ test "E2E: synthetic User LIKE collapses repeated wildcards" {
     try std.testing.expectEqualStrings("Test User:testuser@example.com", result.value.string);
 }
 
+test "E2E: stripInaccessible keeps Id on update records" {
+    const source =
+        \\public class StripInaccessibleIdTest {
+        \\    public static String test() {
+        \\        Account recordToUpdate = new Account(Id = '001000000000001AAA');
+        \\        recordToUpdate.Description = 'updated';
+        \\        SObjectAccessDecision decision = Security.stripInaccessible(
+        \\            AccessType.UPDATABLE,
+        \\            new List<SObject>{ recordToUpdate },
+        \\            true
+        \\        );
+        \\        List<SObject> rows = decision.getRecords();
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(rows[0].Id) + ':' +
+        \\            String.valueOf(rows[0].get('Description'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StripInaccessibleIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:001000000000001AAA:updated", result.value.string);
+}
+
 test "E2E: synthetic automated-process User query works when the User store is non-empty" {
     const source =
         \\public class AutomatedProcessUserQueryTest {

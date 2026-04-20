@@ -1128,6 +1128,7 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
             for (input_records.list.items.items) |item| {
                 if (item != .sobject) continue;
                 for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                    if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
                     const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
                         resolveFieldReadPermission(ctx.eval, item.sobject.type_name, field_name)
                     else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
