@@ -1278,48 +1278,69 @@ pub const Evaluator = struct {
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
         if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
             self.limits_publish_immediate += 1;
-            // EventBus.publish always succeeds in Salesforce (errors are in SaveResult.errors)
-            const publish_success = true;
-            if (publish_success and args.len > 0) {
-                if (args[0] == .sobject) {
-                    try self.insertRecord(args[0].sobject);
-                } else if (args[0] == .list) {
-                    for (args[0].list.items.items) |item| {
-                        if (item == .sobject) try self.insertRecord(item.sobject);
-                    }
+            const PublishResult = struct {
+                success: bool,
+                id: ?[]const u8,
+            };
+            const publish_one = struct {
+                fn run(self_eval: *Evaluator, item: Value) !PublishResult {
+                    if (item != .sobject) return .{ .success = false, .id = null };
+                    self_eval.pending_exception = null;
+                    self_eval.insertRecord(item.sobject) catch |err| {
+                        if (err == error.ApexException) {
+                            self_eval.pending_exception = null;
+                            return .{ .success = false, .id = null };
+                        }
+                        return err;
+                    };
+                    return .{ .success = true, .id = self_eval.sobjectIdForResult(item.sobject) };
                 }
-                // Fire after insert triggers for the event type
+            }.run;
+
+            const successful_items = try self.arena.create(types.ListValue);
+            successful_items.* = .{};
+            var any_publish_success = false;
+
+            const result = if (args.len > 0 and args[0] == .list) blk: {
+                const results = try self.arena.create(types.ListValue);
+                results.* = .{};
+                for (args[0].list.items.items) |item| {
+                    const publish_result = try publish_one(self, item);
+                    if (publish_result.success) {
+                        any_publish_success = true;
+                        try successful_items.items.append(self.arena, item);
+                    }
+                    try results.items.append(self.arena, try self.createDmlResultValue("Database.SaveResult", publish_result.success, publish_result.id, null));
+                }
+                break :blk Value{ .list = results };
+            } else blk: {
+                const publish_result: PublishResult = if (args.len > 0) try publish_one(self, args[0]) else .{ .success = false, .id = null };
+                if (publish_result.success and args.len > 0) {
+                    any_publish_success = true;
+                    try successful_items.items.append(self.arena, args[0]);
+                }
+                break :blk try self.createDmlResultValue("Database.SaveResult", publish_result.success, publish_result.id, null);
+            };
+            if (any_publish_success) {
                 // Platform event triggers run in a separate transaction in Salesforce,
-                // so save/restore DML/SOQL limits to avoid counting trigger DML in caller's limits
-                const event_type = if (args[0] == .sobject) args[0].sobject.type_name else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
-                    args[0].list.items.items[0].sobject.type_name
+                // so save/restore DML/SOQL limits to avoid counting trigger DML in caller's limits.
+                const event_type = if (successful_items.items.items.len > 0 and successful_items.items.items[0] == .sobject)
+                    successful_items.items.items[0].sobject.type_name
                 else
                     null;
                 if (event_type) |et| {
                     const saved_dml = self.limits_dml;
                     const saved_dml_rows = self.limits_dml_rows;
                     const saved_soql = self.limits_soql;
-                    var record_list = try self.buildRecordList(args[0]);
+                    var record_list = try self.buildRecordList(Value{ .list = successful_items });
                     self.fireTrigger(et, .after_insert, &record_list, null) catch {};
                     self.limits_dml = saved_dml;
                     self.limits_dml_rows = saved_dml_rows;
                     self.limits_soql = saved_soql;
                 }
             }
-            const result = if (args.len > 0 and args[0] == .list) blk: {
-                const results = try self.arena.create(types.ListValue);
-                results.* = .{};
-                for (args[0].list.items.items) |item| {
-                    const result_id = if (publish_success and item == .sobject) self.sobjectIdForResult(item.sobject) else null;
-                    try results.items.append(self.arena, try self.createDmlResultValue("Database.SaveResult", publish_success, result_id, null));
-                }
-                break :blk Value{ .list = results };
-            } else blk: {
-                const result_id = if (publish_success and args.len > 0 and args[0] == .sobject) self.sobjectIdForResult(args[0].sobject) else null;
-                break :blk try self.createDmlResultValue("Database.SaveResult", publish_success, result_id, null);
-            };
             // If a callback is provided (second arg), store it for later processing by Test.getEventBus()
-            if (args.len >= 2 and args[1] == .object) {
+            if (args.len >= 2 and args[1] == .object and any_publish_success) {
                 const callback = args[1].object;
                 // Store callback info for Test.getEventBus().fail() support
                 self.pending_event_callback = .{
@@ -2973,7 +2994,6 @@ pub const Evaluator = struct {
     /// When `only_present` is true (for updates), only validate fields that are
     /// explicitly present in the object's fields map — missing fields are not changed.
     fn validateRequiredFields(self: *Evaluator, obj: *types.SObject, only_present: bool) !?[]const u8 {
-        _ = self;
         const type_name = obj.type_name;
         if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
             const name_val = utils.sobjectGet(&obj.fields, "Name");
@@ -3023,6 +3043,28 @@ pub const Evaluator = struct {
                     if (inner == .string and inner.string.len == 0) {
                         return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
                     }
+                }
+            }
+        }
+        if (self.field_metadata.get(type_name)) |field_map| {
+            var iter = field_map.iterator();
+            while (iter.next()) |entry| {
+                const field_name = entry.key_ptr.*;
+                const meta = entry.value_ptr.*;
+                if (!meta.is_required) continue;
+
+                const field_val = utils.sobjectGet(&obj.fields, field_name);
+                if (field_val == null) {
+                    if (!only_present) {
+                        return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                    }
+                    continue;
+                }
+                if (field_val.? == .null_val) {
+                    return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                }
+                if (field_val.? == .string and std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0) {
+                    return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
                 }
             }
         }
@@ -3802,7 +3844,7 @@ pub const Evaluator = struct {
                     "Product2",                   "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense",
                     "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
                     "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
-                    "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",
+                    "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",          "AppMenuItem",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
@@ -4307,6 +4349,24 @@ pub const Evaluator = struct {
                 try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
             }
             return Value{ .sobject = sob };
+        }
+
+        if (std.ascii.eqlIgnoreCase(from_type, "AppMenuItem")) {
+            const gop = try self.store.getOrPut(self.arena, "AppMenuItem");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            if (gop.value_ptr.items.len == 0) {
+                const menu = try self.arena.create(types.SObject);
+                menu.* = .{ .type_name = "AppMenuItem" };
+                const id = try self.allocId();
+                const app_id = try std.fmt.allocPrint(self.arena, "02u{d:0>15}", .{self.next_id});
+                self.next_id += 1;
+                menu.id = id;
+                try menu.fields.put(self.arena, "Id", Value{ .string = id });
+                try menu.fields.put(self.arena, "ApplicationId", Value{ .string = app_id });
+                try menu.fields.put(self.arena, "Name", Value{ .string = "Apex_Recipes" });
+                try gop.value_ptr.append(self.arena, Value{ .sobject = menu });
+            }
+            return gop.value_ptr.items[0];
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "PlatformCachePartition")) {
@@ -10378,6 +10438,10 @@ pub const Evaluator = struct {
                     const headers = try self.arena.create(types.MapValue);
                     headers.* = .{};
                     try instance.fields.put(self.arena, "headers", Value{ .map = headers });
+                    const blob = try self.arena.create(types.ObjectInstance);
+                    blob.* = .{ .class_name = "Blob" };
+                    try blob.fields.put(self.arena, "value", Value.null_val);
+                    try instance.fields.put(self.arena, "requestBody", Value{ .object = blob });
                     return Value{ .object = instance };
                 }
                 // RestResponse: initialize responseBody as Blob
@@ -10696,9 +10760,14 @@ pub const Evaluator = struct {
                                                 };
                                             }
                                         }
+                                        const saved_class = self.current_class;
                                         const saved_getter = self.evaluating_getter;
+                                        self.current_class = ccd.name;
                                         self.evaluating_getter = fd.name;
-                                        defer self.evaluating_getter = saved_getter;
+                                        defer {
+                                            self.current_class = saved_class;
+                                            self.evaluating_getter = saved_getter;
+                                        }
                                         const result = self.execBlock(getter, getter_env) catch |err| {
                                             if (err == error.StackOverflow) return Value.null_val;
                                             return err;
@@ -10861,7 +10930,10 @@ pub const Evaluator = struct {
                     req.* = .{ .class_name = "RestRequest" };
                     try req.fields.put(self.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
                     try req.fields.put(self.arena, "httpMethod", Value{ .string = "GET" });
-                    try req.fields.put(self.arena, "requestBody", Value.null_val);
+                    const blob = try self.arena.create(types.ObjectInstance);
+                    blob.* = .{ .class_name = "Blob" };
+                    try blob.fields.put(self.arena, "value", Value.null_val);
+                    try req.fields.put(self.arena, "requestBody", Value{ .object = blob });
                     const params = try self.arena.create(types.MapValue);
                     params.* = .{};
                     try req.fields.put(self.arena, "params", Value{ .map = params });
@@ -12331,6 +12403,13 @@ pub const Evaluator = struct {
                 return Value{ .string = "{}" };
             }
             if (std.ascii.eqlIgnoreCase(method, "deserialize") or std.ascii.eqlIgnoreCase(method, "deserializeUntyped")) {
+                if (args.len >= 1 and args[0] == .null_val) {
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "System.JSONException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = "Argument cannot be null." });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
                 if (args.len >= 1 and args[0] == .string) {
                     const json_str = args[0].string;
                     const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
@@ -12640,6 +12719,10 @@ pub const Evaluator = struct {
 
     pub fn callInstanceMethodPublic(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
         return self.callInstanceMethod(class_decl, instance, method_name, args);
+    }
+
+    pub fn resolveFullClassNamePublic(self: *Evaluator, name: []const u8) []const u8 {
+        return self.resolveFullClassName(name);
     }
 
     pub fn handleDatabaseMethodPublic(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
@@ -13377,16 +13460,21 @@ pub const Evaluator = struct {
         const saved_class = self.current_class;
         self.current_class = class_decl.name;
         defer self.current_class = saved_class;
+        const init_env = try self.global_env.child();
+        try init_env.define("this", Value{ .object = instance });
 
         for (class_decl.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
                     if (!fd.modifiers.is_static) {
                         const val = if (fd.initializer) |init_expr|
-                            self.evalExpr(init_expr, self.global_env) catch Value.null_val
+                            self.evalExpr(init_expr, init_env) catch Value.null_val
                         else
                             defaultValue(fd.type_ref);
                         try instance.fields.put(self.arena, fd.name, val);
+                        init_env.set(fd.name, val) catch {
+                            try init_env.define(fd.name, val);
+                        };
                     }
                 },
                 else => {},

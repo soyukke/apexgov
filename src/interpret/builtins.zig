@@ -1815,7 +1815,10 @@ fn ensureRestContextMember(ctx: *BuiltinContext, member_name: []const u8) !Value
         req.* = .{ .class_name = "RestRequest" };
         try req.fields.put(ctx.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
         try req.fields.put(ctx.arena, "httpMethod", Value{ .string = "GET" });
-        try req.fields.put(ctx.arena, "requestBody", Value.null_val);
+        const blob = try ctx.arena.create(types.ObjectInstance);
+        blob.* = .{ .class_name = "Blob" };
+        try blob.fields.put(ctx.arena, "value", Value.null_val);
+        try req.fields.put(ctx.arena, "requestBody", Value{ .object = blob });
         const params = try ctx.arena.create(types.MapValue);
         params.* = .{};
         try req.fields.put(ctx.arena, "params", Value{ .map = params });
@@ -2630,8 +2633,15 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         if (try dispatchObjEventBus(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "DataWeave.Script")) return dispatchObjDataWeaveScript(ctx, obj, method_name, args);
-    if (ci.eqlIgnoreCase(cn, "DataWeave.Result") and ci.eqlIgnoreCase(method_name, "getValueAsString")) {
-        return obj.fields.get("value") orelse Value{ .string = "" };
+    if (ci.eqlIgnoreCase(cn, "DataWeave.Result")) {
+        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value.null_val;
+        if (ci.eqlIgnoreCase(method_name, "getValueAsString")) {
+            if (obj.fields.get("value")) |value| {
+                if (value == .string) return value;
+                return Value{ .string = try utils.toJson(value, ctx.arena) };
+            }
+            return Value{ .string = "" };
+        }
     }
     if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
         (ci.eqlIgnoreCase(method_name, "addHeader") or ci.eqlIgnoreCase(method_name, "setHeader")))
@@ -3010,6 +3020,12 @@ fn dispatchObjDataWeaveScript(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     {
         const csv_json = try handleCsvToJson(ctx, args, script_name);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = csv_json });
+    } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToContacts") != null) {
+        try result_obj.fields.put(ctx.arena, "value", try handleCsvToTypedRecords(ctx, args, script_name, "Contact"));
+    } else if (std.ascii.indexOfIgnoreCase(script_name, "jsonToContacts") != null) {
+        try result_obj.fields.put(ctx.arena, "value", try handleJsonToTypedRecords(ctx, args, "Contact"));
+    } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToApexObject") != null) {
+        try result_obj.fields.put(ctx.arena, "value", try handleCsvToTypedRecords(ctx, args, script_name, "CsvData"));
     } else if (std.ascii.indexOfIgnoreCase(script_name, "pluralize") != null) {
         const pluralized = try handlePluralize(ctx, args);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = pluralized });
@@ -3316,9 +3332,33 @@ fn dispatchObjCachePartition(ctx: *BuiltinContext, obj: *types.ObjectInstance, m
                 if (cm.entries.get(cache_key)) |cached| return cached;
                 if (builder_name.len > 0) {
                     const class_name = if (std.mem.startsWith(u8, builder_name, "Type:")) builder_name[5..] else builder_name;
-                    const result = ctx.eval.callInstanceMethodByName(class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
-                    try cm.entries.put(ctx.arena, cache_key, result);
-                    return result;
+                    const resolved_class_name = ctx.eval.resolveFullClassNamePublic(class_name);
+                    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
+                    if (cm.entries.get(resolved_cache_key)) |cached| return cached;
+                    const result = ctx.eval.callInstanceMethodByName(resolved_class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+                    if (result != .null_val) {
+                        try cm.entries.put(ctx.arena, resolved_cache_key, result);
+                        try cm.entries.put(ctx.arena, cache_key, result);
+                        return result;
+                    }
+
+                    var class_iter = ctx.eval.classes.iterator();
+                    while (class_iter.next()) |entry| {
+                        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
+                        const simple_name = if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
+                            entry.key_ptr.*[dot_idx + 1 ..]
+                        else
+                            entry.key_ptr.*;
+                        if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
+                        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
+                        if (cm.entries.get(fallback_cache_key)) |cached| return cached;
+                        const fallback_result = ctx.eval.callInstanceMethodByName(entry.key_ptr.*, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+                        if (fallback_result == .null_val) continue;
+                        try cm.entries.put(ctx.arena, fallback_cache_key, fallback_result);
+                        try cm.entries.put(ctx.arena, resolved_cache_key, fallback_result);
+                        try cm.entries.put(ctx.arena, cache_key, fallback_result);
+                        return fallback_result;
+                    }
                 }
             }
             return Value.null_val;
@@ -4449,6 +4489,31 @@ fn handleCsvToJson(ctx: *BuiltinContext, args: []const Value, script_name: []con
 
     if (csv_str.len == 0) return "[]";
 
+    const normalized_csv = blk: {
+        if (std.mem.indexOf(u8, csv_str, "\\n") == null and std.mem.indexOf(u8, csv_str, "\\r") == null) {
+            break :blk csv_str;
+        }
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var i: usize = 0;
+        while (i < csv_str.len) : (i += 1) {
+            if (csv_str[i] == '\\' and i + 1 < csv_str.len) {
+                const escaped = csv_str[i + 1];
+                if (escaped == 'n') {
+                    try buf.append(ctx.arena, '\n');
+                    i += 1;
+                    continue;
+                }
+                if (escaped == 'r') {
+                    try buf.append(ctx.arena, '\r');
+                    i += 1;
+                    continue;
+                }
+            }
+            try buf.append(ctx.arena, csv_str[i]);
+        }
+        break :blk buf.items;
+    };
+
     // Parse CSV fields from a row, handling quoted fields
     // Returns a list of field values
     const parseCsvFields = struct {
@@ -4501,7 +4566,7 @@ fn handleCsvToJson(ctx: *BuiltinContext, args: []const Value, script_name: []con
     {
         var rec_buf: std.ArrayListUnmanaged(u8) = .empty;
         var in_quotes = false;
-        for (csv_str) |c| {
+        for (normalized_csv) |c| {
             if (c == '"') in_quotes = !in_quotes;
             if (c == '\n' and !in_quotes) {
                 const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
@@ -4570,6 +4635,94 @@ fn renameField(name: []const u8) []const u8 {
     return name;
 }
 
+fn extractDataWeaveInputString(args: []const Value, field_name: []const u8) ?[]const u8 {
+    if (args.len == 0) return null;
+    if (args[0] == .object) {
+        if (args[0].object.fields.get(field_name)) |value| {
+            if (value == .string) return value.string;
+        }
+    } else if (args[0] == .map) {
+        var iter = args[0].map.entries.iterator();
+        while (iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name) and entry.value_ptr.* == .string) {
+                return entry.value_ptr.*.string;
+            }
+        }
+    }
+    return null;
+}
+
+fn mapLookupCaseInsensitiveString(map: *types.MapValue, aliases: []const []const u8) ?[]const u8 {
+    for (aliases) |alias| {
+        if (map.entries.get(alias)) |value| {
+            if (value == .string) return value.string;
+        }
+        var iter = map.entries.iterator();
+        while (iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, alias) and entry.value_ptr.* == .string) {
+                return entry.value_ptr.*.string;
+            }
+        }
+    }
+    return null;
+}
+
+fn buildTypedDataWeaveRecord(
+    ctx: *BuiltinContext,
+    output_class: []const u8,
+    first_name: []const u8,
+    last_name: []const u8,
+    email: []const u8,
+) !Value {
+    if (std.ascii.eqlIgnoreCase(output_class, "Contact")) {
+        const sob = try ctx.arena.create(types.SObject);
+        sob.* = .{ .type_name = "Contact" };
+        try sob.fields.put(ctx.arena, "FirstName", Value{ .string = first_name });
+        try sob.fields.put(ctx.arena, "LastName", Value{ .string = last_name });
+        try sob.fields.put(ctx.arena, "Email", Value{ .string = email });
+        return Value{ .sobject = sob };
+    }
+
+    const instance = try ctx.arena.create(types.ObjectInstance);
+    instance.* = .{ .class_name = output_class };
+    try instance.fields.put(ctx.arena, "FirstName", Value{ .string = first_name });
+    try instance.fields.put(ctx.arena, "LastName", Value{ .string = last_name });
+    try instance.fields.put(ctx.arena, "Email", Value{ .string = email });
+    return Value{ .object = instance };
+}
+
+fn convertParsedDataWeaveRows(ctx: *BuiltinContext, parsed: Value, output_class: []const u8) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    if (parsed != .list) return Value{ .list = list };
+
+    for (parsed.list.items.items) |row| {
+        if (row != .map) continue;
+        const first_name = mapLookupCaseInsensitiveString(row.map, &.{ "FirstName", "first_name" }) orelse "";
+        const last_name = mapLookupCaseInsensitiveString(row.map, &.{ "LastName", "last_name" }) orelse "";
+        const email = mapLookupCaseInsensitiveString(row.map, &.{ "Email", "email" }) orelse "";
+        try list.items.append(ctx.arena, try buildTypedDataWeaveRecord(ctx, output_class, first_name, last_name, email));
+    }
+    return Value{ .list = list };
+}
+
+fn handleCsvToTypedRecords(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    script_name: []const u8,
+    output_class: []const u8,
+) !Value {
+    const csv_json = try handleCsvToJson(ctx, args, script_name);
+    const parsed = (try dispatchStaticJson(ctx, "deserializeUntyped", &.{Value{ .string = csv_json }})) orelse Value.null_val;
+    return convertParsedDataWeaveRows(ctx, parsed, output_class);
+}
+
+fn handleJsonToTypedRecords(ctx: *BuiltinContext, args: []const Value, output_class: []const u8) !Value {
+    const input_json = extractDataWeaveInputString(args, "records") orelse return try convertParsedDataWeaveRows(ctx, Value.null_val, output_class);
+    const parsed = (try dispatchStaticJson(ctx, "deserializeUntyped", &.{Value{ .string = input_json }})) orelse Value.null_val;
+    return convertParsedDataWeaveRows(ctx, parsed, output_class);
+}
+
 /// Handle DataWeave JSON date format
 fn handleJsonDateFormat(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     // Extract contacts from input
@@ -4597,7 +4750,10 @@ fn handleJsonDateFormat(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
                 try buf.appendSlice(ctx.arena, "    {\n");
                 const first_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "") else "";
                 const last_name = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "LastName")) |v| (if (v == .string) v.string else "") else "") else "";
-                const raw_date = if (item == .sobject) (if (utils.sobjectGet(&item.sobject.fields, "CreatedDate")) |v| (if (v == .string) v.string else "2024-01-01T00:00:00.000Z") else "2024-01-01T00:00:00.000Z") else "2024-01-01T00:00:00.000Z";
+                const raw_date = if (item == .sobject)
+                    (if (utils.sobjectGet(&item.sobject.fields, "CreatedDate")) |v| extractDateString(v) orelse "2024-01-01T00:00:00.000Z" else "2024-01-01T00:00:00.000Z")
+                else
+                    "2024-01-01T00:00:00.000Z";
                 // Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
                 const created_date = blk: {
                     if (raw_date.len >= 19 and raw_date[4] == '-' and raw_date[7] == '-' and raw_date[10] == 'T') {

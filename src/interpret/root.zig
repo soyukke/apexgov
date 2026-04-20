@@ -1808,6 +1808,109 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
+test "E2E: Cache.Partition get resolves inner CacheBuilder classes" {
+    const source =
+        \\public class CacheBuilderHost {
+        \\    public class InnerBuilder implements Cache.CacheBuilder {
+        \\        public Object doLoad(String key) { return 'loaded:' + key; }
+        \\    }
+        \\}
+        \\public class InnerCacheBuilderTest {
+        \\    public static String test() {
+        \\        Cache.OrgPartition p = Cache.Org.getPartition('local.default');
+        \\        p.remove(CacheBuilderHost.InnerBuilder.class, 'demo');
+        \\        Object val = p.get(CacheBuilderHost.InnerBuilder.class, 'demo');
+        \\        return String.valueOf(val) + ':' + String.valueOf(p.getNumKeys() > 0) + ':' +
+        \\            String.valueOf(p.getKeys().toString().containsIgnoreCase('innerbuilder'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InnerCacheBuilderTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("loaded:demo:true:true", result.value.string);
+}
+
+test "E2E: Cache.Partition get resolves bare inner CacheBuilder literals inside the outer class" {
+    const source =
+        \\public class CacheBuilderOwner {
+        \\    public class InnerBuilder implements Cache.CacheBuilder {
+        \\        public Object doLoad(String key) { return 'loaded:' + key; }
+        \\    }
+        \\    public static String test() {
+        \\        Cache.OrgPartition p = Cache.Org.getPartition('local.default');
+        \\        p.remove(InnerBuilder.class, 'demo');
+        \\        Object val = p.get(InnerBuilder.class, 'demo');
+        \\        return String.valueOf(val) + ':' + String.valueOf(p.getNumKeys() > 0);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CacheBuilderOwner",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("loaded:demo:true", result.value.string);
+}
+
+test "E2E: cached Organization accessor works through an inner CacheBuilder" {
+    const source =
+        \\public class CachedOrgAccessor {
+        \\    private Cache.OrgPartition safeDefaultCachePartition;
+        \\    private Organization orgState = getOrgState();
+        \\    public Boolean isSandbox {
+        \\        get { return getOrgState().isSandbox; }
+        \\    }
+        \\    private Cache.OrgPartition getAvailableOrgCachePartition() {
+        \\        if (this.safeDefaultCachePartition != null) {
+        \\            return this.safeDefaultCachePartition;
+        \\        }
+        \\        PlatformCachePartition partition = [
+        \\            SELECT DeveloperName
+        \\            FROM PlatformCachePartition
+        \\            WHERE NamespacePrefix = ''
+        \\            LIMIT 1
+        \\        ];
+        \\        this.safeDefaultCachePartition = Cache.Org.getPartition('local.' + partition.DeveloperName);
+        \\        return this.safeDefaultCachePartition;
+        \\    }
+        \\    public Boolean isPlatformCacheEnabled() {
+        \\        return getAvailableOrgCachePartition() != null;
+        \\    }
+        \\    private Organization getOrgState() {
+        \\        if (isPlatformCacheEnabled()) {
+        \\            return (Organization) getAvailableOrgCachePartition()
+        \\                .get(CachedLoader.class, 'requiredButNotUsed');
+        \\        }
+        \\        if (this.orgState != null) {
+        \\            return this.orgState;
+        \\        }
+        \\        this.orgState = [SELECT FIELDS(STANDARD) FROM Organization LIMIT 1];
+        \\        return this.orgState;
+        \\    }
+        \\    public class CachedLoader implements Cache.CacheBuilder {
+        \\        public Organization doLoad(String ignored) {
+        \\            return [SELECT FIELDS(STANDARD) FROM Organization LIMIT 1];
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Cache.OrgPartition partition = Cache.Org.getPartition('local.default');
+        \\        partition.remove(CachedLoader.class, 'requiredButNotUsed');
+        \\        CachedOrgAccessor accessor = new CachedOrgAccessor();
+        \\        return String.valueOf(accessor.isSandbox) + ':' + String.valueOf(partition.getNumKeys());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CachedOrgAccessor",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:1", result.value.string);
+}
+
 test "E2E: Cache.Partition isAvailable returns true for existing org partition" {
     const source =
         \\public class CacheAvailabilityTest {
@@ -7405,6 +7508,77 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     try std.testing.expectEqualStrings("false:2:003000000000001AAA", result.value.string);
 }
 
+test "E2E: DataWeave object conversion returns typed records" {
+    const source =
+        \\public class CsvData {
+        \\    public String FirstName;
+        \\    public String LastName;
+        \\    public String Email;
+        \\}
+        \\public class DataWeaveObjectConversionTest {
+        \\    public static String test() {
+        \\        String csvInput = 'first_name,last_name,email\\nAbel,Maclead,a.m@demo.org';
+        \\        String jsonInput = '[{ "first_name": "Abel", "last_name": "Maclead", "email": "a.m@demo.org" }]';
+        \\        List<Contact> csvContacts = (List<Contact>) new DataWeaveScriptResource.csvToContacts()
+        \\            .execute(new Map<String, Object>{ 'records' => csvInput })
+        \\            .getValue();
+        \\        List<Contact> jsonContacts = (List<Contact>) new DataWeaveScriptResource.jsonToContacts()
+        \\            .execute(new Map<String, Object>{ 'records' => jsonInput })
+        \\            .getValue();
+        \\        List<CsvData> rows = (List<CsvData>) new DataWeaveScriptResource.csvToApexObject()
+        \\            .execute(new Map<String, Object>{ 'records' => csvInput })
+        \\            .getValue();
+        \\        return String.valueOf(csvContacts.size()) + ':' + csvContacts[0].FirstName + ':' +
+        \\            jsonContacts[0].Email + ':' + rows[0].LastName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DataWeaveObjectConversionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Abel:a.m@demo.org:Maclead", result.value.string);
+}
+
+test "E2E: DataWeave json date format uses Datetime field values" {
+    const source =
+        \\public class DataWeaveDateFormatTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(FirstName = 'John', LastName = 'Doe');
+        \\        insert contactRecord;
+        \\        List<Contact> contacts = [
+        \\            SELECT FirstName, LastName, CreatedDate
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
+        \\        String actual = new DataWeaveScriptResource.jsonDateFormat()
+        \\            .execute(new Map<String, Object>{ 'records' => contacts })
+        \\            .getValueAsString();
+        \\        String expected =
+        \\            '{\n' +
+        \\            '  "users": [\n' +
+        \\            '    {\n' +
+        \\            '      "firstName": "John",\n' +
+        \\            '      "lastName": "Doe",\n' +
+        \\            '      "createdDate": "' +
+        \\            contacts[0].CreatedDate.formatGMT('hh:mm:ss a, MMMM dd, yyyy') +
+        \\            '"\n' +
+        \\            '    }\n' +
+        \\            '  ]\n' +
+        \\            '}';
+        \\        return String.valueOf(actual == expected);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DataWeaveDateFormatTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
     const source =
         \\public class JsonReadonlyDatetimeProbe {
@@ -7569,6 +7743,37 @@ test "E2E: self-referential Boolean getter preserves backing field value" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: instance property getter can call helper methods that read this-backed fields" {
+    const source =
+        \\public class GetterMethodDispatchProbe {
+        \\    private String backing = 'ok';
+        \\
+        \\    public String value {
+        \\        get {
+        \\            return helper();
+        \\        }
+        \\    }
+        \\
+        \\    private String helper() {
+        \\        return this.backing;
+        \\    }
+        \\}
+        \\
+        \\public class GetterMethodDispatchProbeCaller {
+        \\    public static String test() {
+        \\        GetterMethodDispatchProbe probe = new GetterMethodDispatchProbe();
+        \\        return probe.value;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GetterMethodDispatchProbeCaller",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
 test "E2E: ordered token-keyed sobject list matcher works through Object entrypoint" {
@@ -7881,6 +8086,28 @@ test "E2E: Rest headers default to empty maps and accept addHeader" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("1:2:0", result.value.string);
+}
+
+test "E2E: JSON.deserialize on default RestRequest body reports null-argument error" {
+    const source =
+        \\public class RestRequestBodyNullTest {
+        \\    public static String test() {
+        \\        RestRequest req = new RestRequest();
+        \\        try {
+        \\            JSON.deserialize(req.requestBody.toString(), List<Account>.class);
+        \\        } catch (Exception ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\        return 'no-error';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RestRequestBodyNullTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Argument cannot be null.", result.value.string);
 }
 
 test "E2E: RestContext request and response share assigned objects" {
@@ -10774,6 +11001,55 @@ test "E2E: Type.forName custom object __e returns sobject with put/get" {
     try std.testing.expectEqualStrings("hello", result.value.string);
 }
 
+test "E2E: EventBus.publish returns failed SaveResult when required event fields are missing" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("objects/Signal__e/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Signal__e/Signal__e.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <eventType>HighVolume</eventType>
+        \\    <label>Signal</label>
+        \\    <pluralLabel>Signals</pluralLabel>
+        \\    <publishBehavior>PublishAfterCommit</publishBehavior>
+        \\</CustomObject>
+        ,
+    });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Signal__e/fields/Message__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Message__c</fullName>
+        \\    <required>true</required>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class RequiredEventPublishTest {
+        \\    public static String test() {
+        \\        Database.SaveResult publishResult = EventBus.publish(new Signal__e());
+        \\        return String.valueOf(publishResult.isSuccess());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "RequiredEventPublishTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false", result.value.string);
+}
+
 test "E2E: EventBus.publish keeps live platform event Id field unset" {
     const source =
         \\public class PublishedPlatformEventIdTest {
@@ -10791,6 +11067,23 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: synthetic AppMenuItem query exposes app order entries" {
+    const source =
+        \\public class AppMenuItemQueryTest {
+        \\    public static String test() {
+        \\        List<AppMenuItem> items = [SELECT ApplicationId, Name FROM AppMenuItem];
+        \\        return String.valueOf(items.size()) + ':' + items[0].Name + ':' + String.valueOf(items[0].ApplicationId != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AppMenuItemQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1:Apex_Recipes:true", result.value.string);
 }
 
 test "E2E: Type.forName SObject + empty list DML integration" {
