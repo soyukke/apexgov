@@ -11281,6 +11281,7 @@ pub const Evaluator = struct {
             const stub = try self.arena.create(types.ObjectInstance);
             stub.* = .{ .class_name = type_name };
             try stub.fields.put(self.arena, "__stubProvider__", provider);
+            try stub.fields.put(self.arena, "__stubDisplayClassName__", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}__sfdc_ApexStub", .{type_name}) });
             // Initialize instance fields from the class if it exists
             if (self.findClass(type_name)) |class_decl| {
                 self.initInstanceFields(class_decl, stub) catch {};
@@ -12293,6 +12294,17 @@ pub const Evaluator = struct {
 
     fn valueToString(self: *Evaluator, value: Value) anyerror![]const u8 {
         if (value == .null_val) return "null";
+
+        if (value == .object) {
+            if (value.object.fields.get("__stubProvider__") != null) {
+                if (value.object.fields.get("__stubDisplayClassName__")) |display_name| {
+                    if (display_name == .string) {
+                        return try std.fmt.allocPrint(self.arena, "{s}:[instance]", .{display_name.string});
+                    }
+                }
+                return utils.coerceToString(value, self.arena);
+            }
+        }
 
         switch (value) {
             .object, .list, .map, .set, .sobject => {
@@ -15427,15 +15439,16 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
         \\    }
         \\}
         \\public class StubStringProbe {
-        \\    public static Integer run() {
+        \\    public static String run() {
         \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(StubStringTarget.class, new StubStringRecorder());
         \\        String rendered = String.valueOf(stubbed);
         \\        System.assert(rendered != null);
-        \\        return StubStringRecorder.callCount;
+        \\        System.assertEquals(0, StubStringRecorder.callCount);
+        \\        return rendered;
         \\    }
         \\}
     ;
     var r = try evalSource(source, "StubStringProbe", "run");
     defer r.deinit();
-    try std.testing.expectEqual(@as(i64, 0), r.value.integer);
+    try std.testing.expectEqualStrings("StubStringTarget__sfdc_ApexStub:[instance]", r.value.string);
 }
