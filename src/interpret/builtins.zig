@@ -1279,29 +1279,14 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
         };
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        if (args.len > 0 and args[0] == .list) {
-            for (args[0].list.items.items) |item| {
-                const obj_name = if (item == .string) item.string else "Object";
-                const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
-                var found = false;
-                for (known_types) |kt| {
-                    if (std.mem.eql(u8, lower, kt)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
-                    !std.mem.endsWith(u8, obj_name, "__e") and
-                    !std.mem.endsWith(u8, obj_name, "__mdt") and
-                    !std.mem.endsWith(u8, obj_name, "__b"))
-                {
-                    return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
-                }
-                const desc = try createDescribeResult(ctx, obj_name);
-                try list.items.append(ctx.arena, desc);
-            }
-        } else if (args.len > 0 and args[0] == .string) {
-            const obj_name = args[0].string;
+        const names: []const Value = if (args.len > 0 and args[0] == .list)
+            args[0].list.items.items
+        else if (args.len > 0 and args[0] == .string)
+            (&[_]Value{args[0]})[0..]
+        else
+            (&[_]Value{})[0..];
+        for (names) |item| {
+            const obj_name = if (item == .string) item.string else "Object";
             const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
             var found = false;
             for (known_types) |kt| {
@@ -1310,11 +1295,22 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
                     break;
                 }
             }
-            if (!found and !std.mem.endsWith(u8, obj_name, "__c") and
-                !std.mem.endsWith(u8, obj_name, "__e") and
-                !std.mem.endsWith(u8, obj_name, "__mdt") and
-                !std.mem.endsWith(u8, obj_name, "__b"))
-            {
+            const has_custom_suffix = std.mem.endsWith(u8, obj_name, "__c") or
+                std.mem.endsWith(u8, obj_name, "__e") or
+                std.mem.endsWith(u8, obj_name, "__mdt") or
+                std.mem.endsWith(u8, obj_name, "__b");
+            if (!found and has_custom_suffix) {
+                // Custom SObject types must have a registered object-meta.xml in the fixture.
+                // Matching is case-insensitive on the type name key.
+                var it = ctx.eval.object_labels.iterator();
+                while (it.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
                 return ctx.throwException("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
             }
             const desc = try createDescribeResult(ctx, obj_name);
