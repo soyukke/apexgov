@@ -8195,18 +8195,41 @@ pub const Evaluator = struct {
                                 self.findMethodInHierarchy(null, stub_class, method, args.len)
                         else
                             null;
+                        const is_default_object_method =
+                            (args.len == 0 and
+                                (std.ascii.eqlIgnoreCase(method, "toString") or
+                                    std.ascii.eqlIgnoreCase(method, "hashCode"))) or
+                            (args.len == 1 and std.ascii.eqlIgnoreCase(method, "equals"));
 
-                        // Build args for handleMethodCall(stubbedObject, stubbedMethodName, returnType, listOfParamTypes, listOfParamNames, listOfArgs)
-                        const args_list = try self.arena.create(types.ListValue);
-                        args_list.* = .{};
-                        for (args) |a| try args_list.items.append(self.arena, a);
-                        // Build param types from the resolved method declaration when available.
-                        const type_list = try self.arena.create(types.ListValue);
-                        type_list.* = .{};
-                        for (args, 0..) |a, i| {
-                            const type_name: []const u8 = if (stub_md) |md|
-                                if (i < md.params.len)
-                                    self.renderTypeRef(md.params[i].type_ref)
+                        if (is_default_object_method and stub_md == null) {
+                            // Test.createStub proxies should not treat inherited Object methods
+                            // as stubbed invocations unless the mocked type explicitly overrides them.
+                        } else {
+
+                            // Build args for handleMethodCall(stubbedObject, stubbedMethodName, returnType, listOfParamTypes, listOfParamNames, listOfArgs)
+                            const args_list = try self.arena.create(types.ListValue);
+                            args_list.* = .{};
+                            for (args) |a| try args_list.items.append(self.arena, a);
+                            // Build param types from the resolved method declaration when available.
+                            const type_list = try self.arena.create(types.ListValue);
+                            type_list.* = .{};
+                            for (args, 0..) |a, i| {
+                                const type_name: []const u8 = if (stub_md) |md|
+                                    if (i < md.params.len)
+                                        self.renderTypeRef(md.params[i].type_ref)
+                                    else switch (a) {
+                                        .string => "String",
+                                        .integer => "Integer",
+                                        .double => "Double",
+                                        .boolean => "Boolean",
+                                        .list => "List",
+                                        .map => "Map",
+                                        .set => "Set",
+                                        .sobject => "SObject",
+                                        .object => |o| o.class_name,
+                                        .null_val => "Object",
+                                        else => "Object",
+                                    }
                                 else switch (a) {
                                     .string => "String",
                                     .integer => "Integer",
@@ -8219,42 +8242,30 @@ pub const Evaluator = struct {
                                     .object => |o| o.class_name,
                                     .null_val => "Object",
                                     else => "Object",
-                                }
-                            else switch (a) {
-                                .string => "String",
-                                .integer => "Integer",
-                                .double => "Double",
-                                .boolean => "Boolean",
-                                .list => "List",
-                                .map => "Map",
-                                .set => "Set",
-                                .sobject => "SObject",
-                                .object => |o| o.class_name,
-                                .null_val => "Object",
-                                else => "Object",
-                            };
-                            const type_obj = try self.arena.create(types.ObjectInstance);
-                            type_obj.* = .{ .class_name = "Type" };
-                            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-                            try type_list.items.append(self.arena, Value{ .object = type_obj });
-                        }
-                        // Build param names from method declaration if available
-                        const name_list = try self.arena.create(types.ListValue);
-                        name_list.* = .{};
-                        if (stub_md) |md| {
-                            for (md.params) |p| {
-                                try name_list.items.append(self.arena, Value{ .string = p.name });
+                                };
+                                const type_obj = try self.arena.create(types.ObjectInstance);
+                                type_obj.* = .{ .class_name = "Type" };
+                                try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+                                try type_list.items.append(self.arena, Value{ .object = type_obj });
                             }
+                            // Build param names from method declaration if available
+                            const name_list = try self.arena.create(types.ListValue);
+                            name_list.* = .{};
+                            if (stub_md) |md| {
+                                for (md.params) |p| {
+                                    try name_list.items.append(self.arena, Value{ .string = p.name });
+                                }
+                            }
+                            const hmc_args = [_]Value{
+                                obj,
+                                Value{ .string = method },
+                                Value.null_val,
+                                Value{ .list = type_list },
+                                Value{ .list = name_list },
+                                Value{ .list = args_list },
+                            };
+                            return self.callInstanceMethod(prov_class, provider.object, "handleMethodCall", &hmc_args);
                         }
-                        const hmc_args = [_]Value{
-                            obj,
-                            Value{ .string = method },
-                            Value.null_val,
-                            Value{ .list = type_list },
-                            Value{ .list = name_list },
-                            Value{ .list = args_list },
-                        };
-                        return self.callInstanceMethod(prov_class, provider.object, "handleMethodCall", &hmc_args);
                     }
                 }
             }
@@ -15399,4 +15410,32 @@ test "createStub forwards declared param types for typed null helper arguments" 
     var r = try evalSource(source, "StubProbe", "run");
     defer r.deinit();
     try std.testing.expectEqualStrings("String", r.value.string);
+}
+
+test "String.valueOf on Test.createStub proxy does not invoke stubbed Object methods" {
+    const source =
+        \\public class StubStringTarget {
+        \\    public void ping() {
+        \\    }
+        \\}
+        \\public class StubStringRecorder implements StubProvider {
+        \\    public static Integer callCount = 0;
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> listOfParamTypes, List<String> listOfParamNames, List<Object> listOfArgs) {
+        \\        callCount++;
+        \\        return null;
+        \\    }
+        \\}
+        \\public class StubStringProbe {
+        \\    public static Integer run() {
+        \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(StubStringTarget.class, new StubStringRecorder());
+        \\        String rendered = String.valueOf(stubbed);
+        \\        System.assert(rendered != null);
+        \\        return StubStringRecorder.callCount;
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "StubStringProbe", "run");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i64, 0), r.value.integer);
 }
