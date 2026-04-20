@@ -1541,7 +1541,7 @@ pub const Evaluator = struct {
         const method_env = try self.global_env.child();
 
         for (method.params, 0..) |param, i| {
-            const val = if (i < args.len) args[i] else Value.null_val;
+            const val = if (i < args.len) try self.prepareMethodArgValue(args[i]) else Value.null_val;
             const declared_type = self.renderTypeRef(param.type_ref);
             try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);
         }
@@ -8505,14 +8505,8 @@ pub const Evaluator = struct {
                     }
                 }
 
-                // ConnectApi → throw UnsupportedOperationException unless SeeAllData=true
                 if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-                    if (self.see_all_data) return Value.null_val;
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "UnsupportedOperationException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
+                    return (try self.handleConnectApiNamespace(inner, mc.method, args.items)) orelse Value.null_val;
                 }
 
                 // Cache.Session.getPartition / Cache.Org.getPartition
@@ -8548,6 +8542,390 @@ pub const Evaluator = struct {
         // Instance method on evaluated object
         const obj = try self.evalExpr(mc.object, current_env);
         return self.evalInstanceMethod(obj, mc.method, args.items, current_env);
+    }
+
+    fn connectApiCreateObject(self: *Evaluator, class_name: []const u8) !*types.ObjectInstance {
+        const obj = try self.arena.create(types.ObjectInstance);
+        obj.* = .{ .class_name = class_name };
+        return obj;
+    }
+
+    fn prepareMethodArgValue(self: *Evaluator, value: Value) !Value {
+        return switch (value) {
+            .string => |s| Value{ .string = try self.arena.dupe(u8, s) },
+            else => value,
+        };
+    }
+
+    fn connectApiCreateRecordRef(self: *Evaluator, record_id: []const u8) !Value {
+        const record = try self.connectApiCreateObject("ConnectApi.Record");
+        try record.fields.put(self.arena, "id", Value{ .string = record_id });
+        return Value{ .object = record };
+    }
+
+    fn connectApiMarkupTag(markup_value: Value) ?[]const u8 {
+        return switch (markup_value) {
+            .string => |name| blk: {
+                if (std.ascii.eqlIgnoreCase(name, "Bold")) break :blk "b";
+                if (std.ascii.eqlIgnoreCase(name, "Code")) break :blk "code";
+                if (std.ascii.eqlIgnoreCase(name, "Italic")) break :blk "i";
+                if (std.ascii.eqlIgnoreCase(name, "ListItem")) break :blk "li";
+                if (std.ascii.eqlIgnoreCase(name, "OrderedList")) break :blk "ol";
+                if (std.ascii.eqlIgnoreCase(name, "Paragraph")) break :blk "p";
+                if (std.ascii.eqlIgnoreCase(name, "Strikethrough")) break :blk "s";
+                if (std.ascii.eqlIgnoreCase(name, "Underline")) break :blk "u";
+                if (std.ascii.eqlIgnoreCase(name, "UnorderedList")) break :blk "ul";
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    fn isConnectApiHashtagChar(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_';
+    }
+
+    fn isConnectApiWhitespace(ch: u8) bool {
+        return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
+    }
+
+    fn isConnectApiMentionId(self: *Evaluator, record_id: []const u8) bool {
+        _ = self;
+        if (record_id.len != 15 and record_id.len != 18) return false;
+        for (record_id) |ch| {
+            if (!std.ascii.isAlphanumeric(ch)) return false;
+        }
+        if (std.mem.startsWith(u8, record_id, "005")) return true;
+        if (std.mem.startsWith(u8, record_id, "00G")) return true;
+        if (std.mem.startsWith(u8, record_id, "0F9")) return true;
+        return false;
+    }
+
+    fn connectApiClassNameEquals(class_name: []const u8, simple_name: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(class_name, simple_name)) return true;
+        if (std.mem.lastIndexOfScalar(u8, class_name, '.')) |dot| {
+            return std.ascii.eqlIgnoreCase(class_name[dot + 1 ..], simple_name);
+        }
+        return false;
+    }
+
+    fn connectApiAppendOutputSegment(self: *Evaluator, segments: *types.ListValue, segment: *types.ObjectInstance) !void {
+        try segments.items.append(self.arena, Value{ .object = segment });
+    }
+
+    fn connectApiAppendTextSegment(self: *Evaluator, segments: *types.ListValue, text: []const u8) !void {
+        if (text.len == 0) return;
+        const segment = try self.connectApiCreateObject("ConnectApi.TextSegment");
+        try segment.fields.put(self.arena, "text", Value{ .string = text });
+        try self.connectApiAppendOutputSegment(segments, segment);
+    }
+
+    fn connectApiAppendParsedText(self: *Evaluator, segments: *types.ListValue, text: []const u8) !void {
+        var text_start: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            const is_http = std.mem.startsWith(u8, text[i..], "http://") or std.mem.startsWith(u8, text[i..], "https://");
+            if (is_http) {
+                try self.connectApiAppendTextSegment(segments, text[text_start..i]);
+                var end = i;
+                while (end < text.len and !isConnectApiWhitespace(text[end])) : (end += 1) {}
+                const link = try self.connectApiCreateObject("ConnectApi.LinkSegment");
+                try link.fields.put(self.arena, "url", Value{ .string = text[i..end] });
+                try self.connectApiAppendOutputSegment(segments, link);
+                i = end;
+                text_start = end;
+                continue;
+            }
+
+            if (text[i] == '#' and i + 1 < text.len and isConnectApiHashtagChar(text[i + 1])) {
+                try self.connectApiAppendTextSegment(segments, text[text_start..i]);
+                var end = i + 1;
+                while (end < text.len and isConnectApiHashtagChar(text[end])) : (end += 1) {}
+                const hashtag = try self.connectApiCreateObject("ConnectApi.HashtagSegment");
+                try hashtag.fields.put(self.arena, "tag", Value{ .string = text[i + 1 .. end] });
+                try self.connectApiAppendOutputSegment(segments, hashtag);
+                i = end;
+                text_start = end;
+                continue;
+            }
+
+            i += 1;
+        }
+
+        try self.connectApiAppendTextSegment(segments, text[text_start..]);
+    }
+
+    fn connectApiBuildOutputSegments(self: *Evaluator, message_segments: Value) !*types.ListValue {
+        const output = try self.arena.create(types.ListValue);
+        output.* = .{};
+        if (message_segments != .list) return output;
+
+        for (message_segments.list.items.items) |segment_input| {
+            if (segment_input != .object) continue;
+            const class_name = segment_input.object.class_name;
+
+            if (connectApiClassNameEquals(class_name, "TextSegmentInput")) {
+                const text = utils.sobjectGet(&segment_input.object.fields, "text") orelse Value.null_val;
+                if (text == .string) try self.connectApiAppendParsedText(output, text.string);
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "MentionSegmentInput")) {
+                const mention_id = utils.sobjectGet(&segment_input.object.fields, "id") orelse Value.null_val;
+                if (mention_id == .string) {
+                    if (!self.isConnectApiMentionId(mention_id.string)) {
+                        const exc = try self.arena.create(types.ObjectInstance);
+                        exc.* = .{ .class_name = "ConnectApi.ConnectApiException" };
+                        try exc.fields.put(self.arena, "message", Value{ .string = "Only user and group IDs may be used in inline mentions." });
+                        self.pending_exception = Value{ .object = exc };
+                        return error.ApexException;
+                    }
+                    const mention = try self.connectApiCreateObject("ConnectApi.MentionSegment");
+                    try mention.fields.put(self.arena, "record", try self.connectApiCreateRecordRef(mention_id.string));
+                    try self.connectApiAppendOutputSegment(output, mention);
+                }
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "LinkSegmentInput")) {
+                const url = utils.sobjectGet(&segment_input.object.fields, "url") orelse Value.null_val;
+                if (url == .string) {
+                    const link = try self.connectApiCreateObject("ConnectApi.LinkSegment");
+                    try link.fields.put(self.arena, "url", url);
+                    try self.connectApiAppendOutputSegment(output, link);
+                }
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "HashtagSegmentInput")) {
+                const tag = utils.sobjectGet(&segment_input.object.fields, "tag") orelse Value.null_val;
+                if (tag == .string) {
+                    const hashtag = try self.connectApiCreateObject("ConnectApi.HashtagSegment");
+                    try hashtag.fields.put(self.arena, "tag", tag);
+                    try self.connectApiAppendOutputSegment(output, hashtag);
+                }
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "MarkupBeginSegmentInput")) {
+                const markup = try self.connectApiCreateObject("ConnectApi.MarkupBeginSegment");
+                if (utils.sobjectGet(&segment_input.object.fields, "markupType")) |markup_type| {
+                    try markup.fields.put(self.arena, "markupType", markup_type);
+                }
+                try self.connectApiAppendOutputSegment(output, markup);
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "MarkupEndSegmentInput")) {
+                const markup = try self.connectApiCreateObject("ConnectApi.MarkupEndSegment");
+                if (utils.sobjectGet(&segment_input.object.fields, "markupType")) |markup_type| {
+                    try markup.fields.put(self.arena, "markupType", markup_type);
+                }
+                try self.connectApiAppendOutputSegment(output, markup);
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "EntityLinkSegmentInput")) {
+                const entity = try self.connectApiCreateObject("ConnectApi.EntityLinkSegment");
+                if (utils.sobjectGet(&segment_input.object.fields, "entityId")) |entity_id| {
+                    try entity.fields.put(self.arena, "record", entity_id);
+                }
+                try self.connectApiAppendOutputSegment(output, entity);
+                continue;
+            }
+
+            if (connectApiClassNameEquals(class_name, "InlineImageSegmentInput")) {
+                const image = try self.connectApiCreateObject("ConnectApi.InlineImageSegment");
+                const thumbnails = try self.connectApiCreateObject("ConnectApi.InlineImageThumbnails");
+                if (utils.sobjectGet(&segment_input.object.fields, "fileId")) |file_id| {
+                    try thumbnails.fields.put(self.arena, "fileId", file_id);
+                }
+                try image.fields.put(self.arena, "thumbnails", Value{ .object = thumbnails });
+                if (utils.sobjectGet(&segment_input.object.fields, "altText")) |alt_text| {
+                    try image.fields.put(self.arena, "altText", alt_text);
+                }
+                try self.connectApiAppendOutputSegment(output, image);
+                continue;
+            }
+        }
+
+        return output;
+    }
+
+    fn connectApiRenderBodyText(self: *Evaluator, output_segments: *types.ListValue) ![]const u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        for (output_segments.items.items) |segment| {
+            if (segment != .object) continue;
+            const class_name = segment.object.class_name;
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.TextSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "text")) |text| {
+                    if (text == .string) try buf.appendSlice(self.arena, text.string);
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.LinkSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "url")) |url| {
+                    if (url == .string) try buf.appendSlice(self.arena, url.string);
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.HashtagSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "tag")) |tag| {
+                    if (tag == .string) {
+                        try buf.append(self.arena, '#');
+                        try buf.appendSlice(self.arena, tag.string);
+                    }
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MentionSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "record")) |record| {
+                    if (record == .object) {
+                        if (utils.sobjectGet(&record.object.fields, "id")) |record_id| {
+                            if (record_id == .string) {
+                                try buf.append(self.arena, '{');
+                                try buf.appendSlice(self.arena, record_id.string);
+                                try buf.append(self.arena, '}');
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment") or
+                std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupEndSegment"))
+            {
+                const markup_type = utils.sobjectGet(&segment.object.fields, "markupType") orelse Value.null_val;
+                const tag_name = connectApiMarkupTag(markup_type) orelse continue;
+                if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment")) {
+                    try buf.appendSlice(self.arena, "<");
+                    try buf.appendSlice(self.arena, tag_name);
+                    try buf.appendSlice(self.arena, ">");
+                } else {
+                    try buf.appendSlice(self.arena, "</");
+                    try buf.appendSlice(self.arena, tag_name);
+                    try buf.appendSlice(self.arena, ">");
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.InlineImageSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "thumbnails")) |thumbs| {
+                    if (thumbs == .object) {
+                        if (utils.sobjectGet(&thumbs.object.fields, "fileId")) |file_id| {
+                            if (file_id == .string) {
+                                try buf.appendSlice(self.arena, "image: ");
+                                try buf.appendSlice(self.arena, file_id.string);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.EntityLinkSegment")) {
+                if (utils.sobjectGet(&segment.object.fields, "text")) |text| {
+                    if (text == .string) try buf.appendSlice(self.arena, text.string);
+                }
+            }
+        }
+        return buf.items;
+    }
+
+    fn connectApiExtractMessageSegments(self: *Evaluator, value: Value, depth: u8) ?Value {
+        if (depth == 0) return null;
+        switch (value) {
+            .list => return value,
+            .object => |obj| {
+                if (utils.sobjectGet(&obj.fields, "messageSegments")) |segments| {
+                    if (segments == .list) return segments;
+                }
+                for (obj.fields.values()) |field_value| {
+                    if (self.connectApiExtractMessageSegments(field_value, depth - 1)) |segments| return segments;
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn connectApiCreateFeedBody(self: *Evaluator, message_segments: Value) !Value {
+        const output_segments = try self.connectApiBuildOutputSegments(message_segments);
+        const body_text = try self.connectApiRenderBodyText(output_segments);
+        const body = try self.connectApiCreateObject("ConnectApi.FeedBody");
+        try body.fields.put(self.arena, "messageSegments", Value{ .list = output_segments });
+        try body.fields.put(self.arena, "text", Value{ .string = body_text });
+        return Value{ .object = body };
+    }
+
+    fn connectApiPersistFeedItem(self: *Evaluator, parent_id: Value, body_value: Value) ![]const u8 {
+        const feed_item = try self.arena.create(types.SObject);
+        feed_item.* = .{ .type_name = "FeedItem" };
+        if (parent_id == .string) {
+            try feed_item.fields.put(self.arena, "ParentId", parent_id);
+        } else if (parent_id != .null_val) {
+            try feed_item.fields.put(self.arena, "ParentId", Value{ .string = try utils.coerceToString(parent_id, self.arena) });
+        }
+        if (body_value == .object) {
+            if (utils.sobjectGet(&body_value.object.fields, "text")) |body_text| {
+                if (body_text == .string) try feed_item.fields.put(self.arena, "Body", body_text);
+            }
+        }
+        try self.insertRecord(feed_item);
+        return feed_item.id orelse "";
+    }
+
+    fn handleConnectApiNamespace(self: *Evaluator, namespace: []const u8, method: []const u8, args: []const Value) !?Value {
+        if (!self.see_all_data) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "UnsupportedOperationException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+
+        if (!std.ascii.eqlIgnoreCase(namespace, "ChatterFeeds")) return Value.null_val;
+
+        if (std.ascii.eqlIgnoreCase(method, "postFeedElement")) {
+            var subject_id: Value = Value.null_val;
+            var message_segments: Value = Value.null_val;
+
+            if (args.len >= 2 and args[1] == .object) {
+                subject_id = utils.sobjectGet(&args[1].object.fields, "subjectId") orelse Value.null_val;
+                message_segments = self.connectApiExtractMessageSegments(args[1], 4) orelse Value.null_val;
+            } else if (args.len >= 4) {
+                subject_id = args[1];
+                const text_segments = try self.arena.create(types.ListValue);
+                text_segments.* = .{};
+                const text_segment = try self.connectApiCreateObject("ConnectApi.TextSegmentInput");
+                const text_value = switch (args[3]) {
+                    .string => args[3].string,
+                    else => try utils.coerceToString(args[3], self.arena),
+                };
+                try text_segment.fields.put(self.arena, "text", Value{ .string = text_value });
+                try text_segments.items.append(self.arena, Value{ .object = text_segment });
+                message_segments = Value{ .list = text_segments };
+            }
+
+            const body_value = try self.connectApiCreateFeedBody(message_segments);
+            const feed_id = try self.connectApiPersistFeedItem(subject_id, body_value);
+            const feed_element = try self.connectApiCreateObject("ConnectApi.FeedElement");
+            try feed_element.fields.put(self.arena, "id", Value{ .string = feed_id });
+            try feed_element.fields.put(self.arena, "body", body_value);
+            return Value{ .object = feed_element };
+        }
+
+        if (std.ascii.eqlIgnoreCase(method, "postCommentToFeedElement")) {
+            var message_segments: Value = Value.null_val;
+            if (args.len >= 3 and args[2] == .object) {
+                message_segments = self.connectApiExtractMessageSegments(args[2], 4) orelse Value.null_val;
+            }
+            const body_value = try self.connectApiCreateFeedBody(message_segments);
+            const comment = try self.connectApiCreateObject("ConnectApi.Comment");
+            try comment.fields.put(self.arena, "id", Value{ .string = try self.allocId() });
+            try comment.fields.put(self.arena, "body", body_value);
+            return Value{ .object = comment };
+        }
+
+        return Value.null_val;
     }
 
     fn evalInstanceMethod(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, current_env: *Env) anyerror!Value {
@@ -9876,6 +10254,15 @@ pub const Evaluator = struct {
             }
             return Value{ .string = try buf.toOwnedSlice(self.arena) };
         }
+        if (std.ascii.eqlIgnoreCase(method, "unescapeHtml4")) {
+            var result = try std.mem.replaceOwned(u8, self.arena, s, "&lt;", "<");
+            result = try std.mem.replaceOwned(u8, self.arena, result, "&gt;", ">");
+            result = try std.mem.replaceOwned(u8, self.arena, result, "&quot;", "\"");
+            result = try std.mem.replaceOwned(u8, self.arena, result, "&#39;", "'");
+            result = try std.mem.replaceOwned(u8, self.arena, result, "&apos;", "'");
+            result = try std.mem.replaceOwned(u8, self.arena, result, "&amp;", "&");
+            return Value{ .string = result };
+        }
         if (std.ascii.eqlIgnoreCase(method, "format")) {
             // String.format(formatString, List<String>) — replace {0}, {1}, ... with args
             if (args.len > 0 and args[0] == .list) {
@@ -10558,6 +10945,24 @@ pub const Evaluator = struct {
                     try instance.fields.put(self.arena, "summary", Value{ .string = summary });
                     try instance.fields.put(self.arena, "detail", Value{ .string = detail });
                     try instance.fields.put(self.arena, "message", Value{ .string = summary });
+                    return Value{ .object = instance };
+                }
+
+                if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
+                    if (ne.args.len > 0) {
+                        var arg0_copy = ne.args[0];
+                        const url_val = try self.evalExpr(&arg0_copy, current_env);
+                        if (url_val == .string) {
+                            try instance.fields.put(self.arena, "url", url_val);
+                        } else {
+                            try instance.fields.put(self.arena, "url", Value{ .string = try utils.coerceToString(url_val, self.arena) });
+                        }
+                    } else {
+                        try instance.fields.put(self.arena, "url", Value{ .string = "" });
+                    }
+                    const params = try self.arena.create(types.MapValue);
+                    params.* = .{};
+                    try instance.fields.put(self.arena, "parameters", Value{ .map = params });
                     return Value{ .object = instance };
                 }
 
@@ -13106,7 +13511,7 @@ pub const Evaluator = struct {
             }
             // Then define method parameters (so they shadow instance fields with same name)
             for (method.params, 0..) |param, i| {
-                const val = if (i < args.len) args[i] else Value.null_val;
+                const val = if (i < args.len) try self.prepareMethodArgValue(args[i]) else Value.null_val;
                 method_env.set(param.name, val) catch {
                     const declared_type = self.renderTypeRef(param.type_ref);
                     try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);

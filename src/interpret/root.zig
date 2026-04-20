@@ -1383,6 +1383,34 @@ test "E2E: Matcher.matches requires a full-string regex match" {
     try std.testing.expectEqualStrings("true|false", result.value.string);
 }
 
+test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
+    const source =
+        \\public class MatcherSpanProbe {
+        \\    private static final String BODY = 'xxaay';
+        \\    public static String run() {
+        \\        Pattern pat = Pattern.compile('(a+)');
+        \\        Matcher matcher = pat.matcher(BODY);
+        \\        if (!matcher.find()) return 'none';
+        \\        return String.valueOf(matcher.start())
+        \\            + ':'
+        \\            + String.valueOf(matcher.end())
+        \\            + ':'
+        \\            + String.valueOf(matcher.groupCount())
+        \\            + ':'
+        \\            + matcher.group(0)
+        \\            + ':'
+        \\            + matcher.group(1);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MatcherSpanProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:4:1:aa:aa", result.value.string);
+}
+
 test "E2E: standard child relationships preserve field token equality" {
     const source =
         \\public class ChildRelationshipProbe {
@@ -6714,6 +6742,26 @@ test "PageReference.getUrl returns stored URL" {
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(eval.assertion_failure == null);
+}
+
+test "PageReference.getUrl appends parameters in insertion order" {
+    const source =
+        \\public class PageReferenceParamProbe {
+        \\    public static String run() {
+        \\        PageReference ref = new PageReference('/flow/ns/testFlow');
+        \\        ref.getParameters().put('a', '1');
+        \\        ref.getParameters().put('b', '2');
+        \\        ref.getParameters().put('c', '3');
+        \\        return ref.getUrl();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PageReferenceParamProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("/flow/ns/testFlow?a=1&b=2&c=3", result.value.string);
 }
 
 test "SOQL LIKE with bind variable matches correctly" {

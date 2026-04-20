@@ -3119,22 +3119,42 @@ fn dispatchObjPattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
         try matcher.fields.put(ctx.arena, "pos", Value{ .integer = 0 });
         const matches = try ctx.arena.create(types.ListValue);
         matches.* = .{};
+        var group_count: i64 = 0;
         try matcher.fields.put(ctx.arena, "matches", Value{ .list = matches });
         if (obj.fields.get("pattern")) |pat_val| {
             if (pat_val == .string) {
                 const regex_matches = try regex.findAll(ctx.arena, pat_val.string, args[0].string);
                 for (regex_matches) |m| {
+                    const match_obj = try ctx.arena.create(types.ObjectInstance);
+                    match_obj.* = .{ .class_name = "Matcher.Match" };
                     const match_groups = try ctx.arena.create(types.ListValue);
                     match_groups.* = .{};
+                    const group_starts = try ctx.arena.create(types.ListValue);
+                    group_starts.* = .{};
+                    const group_ends = try ctx.arena.create(types.ListValue);
+                    group_ends.* = .{};
+                    var match_group_count: i64 = 0;
                     for (0..regex.max_groups) |gi| {
-                        if (m.groupSlice(gi, args[0].string)) |s| {
-                            try match_groups.items.append(ctx.arena, Value{ .string = s });
+                        if (m.group(gi)) |span| {
+                            if (m.groupSlice(gi, args[0].string)) |s| {
+                                try match_groups.items.append(ctx.arena, Value{ .string = s });
+                            } else {
+                                try match_groups.items.append(ctx.arena, Value.null_val);
+                            }
+                            try group_starts.items.append(ctx.arena, Value{ .integer = @intCast(span.start) });
+                            try group_ends.items.append(ctx.arena, Value{ .integer = @intCast(span.end) });
+                            if (gi > 0) match_group_count += 1;
                         } else if (gi > 0) break;
                     }
-                    try matches.items.append(ctx.arena, Value{ .list = match_groups });
+                    if (match_group_count > group_count) group_count = match_group_count;
+                    try match_obj.fields.put(ctx.arena, "groups", Value{ .list = match_groups });
+                    try match_obj.fields.put(ctx.arena, "groupStarts", Value{ .list = group_starts });
+                    try match_obj.fields.put(ctx.arena, "groupEnds", Value{ .list = group_ends });
+                    try matches.items.append(ctx.arena, Value{ .object = match_obj });
                 }
             }
         }
+        try matcher.fields.put(ctx.arena, "groupCount", Value{ .integer = group_count });
         return Value{ .object = matcher };
     }
     return Value.null_val;
@@ -3155,11 +3175,30 @@ fn dispatchObjMatcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
     }
     if (std.ascii.eqlIgnoreCase(method_name, "group")) {
         const current = obj.fields.get("currentMatch") orelse return Value.null_val;
+        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
+        if (current == .object) {
+            if (current.object.fields.get("groups")) |groups| {
+                if (groups == .list and idx < groups.list.items.items.len) return groups.list.items.items[idx];
+            }
+        }
         if (current == .list) {
-            const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
             if (idx < current.list.items.items.len) return current.list.items.items[idx];
         }
         if (current == .string) return current;
+        return Value.null_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "groupCount")) {
+        return obj.fields.get("groupCount") orelse Value{ .integer = 0 };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "start") or std.ascii.eqlIgnoreCase(method_name, "end")) {
+        const current = obj.fields.get("currentMatch") orelse return Value.null_val;
+        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
+        if (current == .object) {
+            const key = if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
+            if (current.object.fields.get(key)) |values| {
+                if (values == .list and idx < values.list.items.items.len) return values.list.items.items[idx];
+            }
+        }
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
@@ -3406,7 +3445,29 @@ fn dispatchObjHttp(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name
 }
 
 fn dispatchObjPageReference(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getUrl")) return obj.fields.get("url") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUrl")) {
+        const base_url = if (obj.fields.get("url")) |url_val|
+            if (url_val == .string) url_val.string else ""
+        else
+            "";
+        const params_val = obj.fields.get("parameters") orelse return Value{ .string = base_url };
+        if (params_val != .map or params_val.map.entries.count() == 0) return Value{ .string = base_url };
+
+        var buf = std.ArrayListUnmanaged(u8).empty;
+        try buf.appendSlice(ctx.arena, base_url);
+        try buf.append(ctx.arena, if (std.mem.indexOfScalar(u8, base_url, '?') == null) '?' else '&');
+        for (params_val.map.entries.keys(), params_val.map.entries.values(), 0..) |key, value, idx| {
+            if (idx > 0) try buf.append(ctx.arena, '&');
+            try buf.appendSlice(ctx.arena, key);
+            try buf.append(ctx.arena, '=');
+            if (value == .string) {
+                try buf.appendSlice(ctx.arena, value.string);
+            } else {
+                try buf.appendSlice(ctx.arena, try utils.coerceToString(value, ctx.arena));
+            }
+        }
+        return Value{ .string = buf.items };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "setRedirect") and args.len > 0) {
         try obj.fields.put(ctx.arena, "redirect", args[0]);
         return Value.null_val;
