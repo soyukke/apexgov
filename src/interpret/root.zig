@@ -54,7 +54,7 @@ pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
         for (opts.source_paths) |path| {
             collectFieldDefaults(arena.allocator(), path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
             collectFieldSets(arena.allocator(), path, &eval.field_sets) catch {};
-            collectCustomSettingTypes(arena.allocator(), path, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
+            collectCustomSettingTypes(arena.allocator(), path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
         }
     }
     try eval.loadDecls(decls);
@@ -261,7 +261,7 @@ fn runTestsFiltered(
     for (paths) |path| {
         collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
         collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
-        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
+        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
         if (shouldSearchMetadataParents(path)) {
             var parent = std.fs.path.dirname(path);
             var depth: u8 = 0;
@@ -269,7 +269,7 @@ fn runTestsFiltered(
                 const p = parent.?;
                 collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
                 collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
-                collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds) catch {};
+                collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
                 parent = std.fs.path.dirname(p);
             }
         }
@@ -364,6 +364,8 @@ fn runTestsFiltered(
                     test_eval.child_relationships = eval.child_relationships;
                     test_eval.custom_setting_types = eval.custom_setting_types;
                     test_eval.custom_setting_kinds = eval.custom_setting_kinds;
+                    test_eval.object_labels = eval.object_labels;
+                    test_eval.object_label_plurals = eval.object_label_plurals;
                     test_eval.field_sets = eval.field_sets;
 
                     // Check for @isTest(SeeAllData=true) annotation
@@ -810,6 +812,8 @@ fn collectCustomSettingTypes(
     path: []const u8,
     custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
     custom_setting_kinds: *std.StringArrayHashMapUnmanaged([]const u8),
+    object_labels: *std.StringArrayHashMapUnmanaged([]const u8),
+    object_label_plurals: *std.StringArrayHashMapUnmanaged([]const u8),
 ) !void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
     defer dir.close();
@@ -822,6 +826,30 @@ fn collectCustomSettingTypes(
         const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(alloc, full_path, 256 * 1024) catch continue;
+
+        // Extract <label> — all objects with a label
+        if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
+            const start = start_idx + "<label>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</label>")) |end_idx| {
+                const label_value = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+                if (label_value.len > 0) {
+                    const key_dup = alloc.dupe(u8, type_name) catch continue;
+                    const val_dup = alloc.dupe(u8, label_value) catch continue;
+                    object_labels.put(alloc, key_dup, val_dup) catch {};
+                }
+            }
+        }
+        if (std.mem.indexOf(u8, content, "<pluralLabel>")) |start_idx| {
+            const start = start_idx + "<pluralLabel>".len;
+            if (std.mem.indexOfPos(u8, content, start, "</pluralLabel>")) |end_idx| {
+                const label_value = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
+                if (label_value.len > 0) {
+                    const key_dup = alloc.dupe(u8, type_name) catch continue;
+                    const val_dup = alloc.dupe(u8, label_value) catch continue;
+                    object_label_plurals.put(alloc, key_dup, val_dup) catch {};
+                }
+            }
+        }
 
         if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
         const type_key = alloc.dupe(u8, type_name) catch continue;

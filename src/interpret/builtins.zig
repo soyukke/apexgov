@@ -2259,8 +2259,10 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
 
     const local_name = describeLocalName(obj_name);
-    try desc.fields.put(ctx.arena, "label", Value{ .string = local_name });
-    try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = try defaultDescribeLabelPlural(ctx.arena, obj_name) });
+    const entity_label: []const u8 = ctx.eval.object_labels.get(obj_name) orelse local_name;
+    const entity_label_plural: []const u8 = ctx.eval.object_label_plurals.get(obj_name) orelse try defaultDescribeLabelPlural(ctx.arena, obj_name);
+    try desc.fields.put(ctx.arena, "label", Value{ .string = entity_label });
+    try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = entity_label_plural });
     try desc.fields.put(ctx.arena, "fieldSets", try createFieldSetCollectionValue(ctx.arena, ctx.eval, obj_name));
 
     // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
@@ -3883,6 +3885,18 @@ fn dispatchObjSObjectType(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         const name = if (obj.fields.get("name")) |n| n.string else "Object";
         return try createDescribeResult(ctx, name);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel") or std.ascii.eqlIgnoreCase(method_name, "getLabelPlural") or
+        std.ascii.eqlIgnoreCase(method_name, "getName"))
+    {
+        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = name };
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            if (ctx.eval.object_labels.get(name)) |lbl| return Value{ .string = lbl };
+            return Value{ .string = describeLocalName(name) };
+        }
+        if (ctx.eval.object_label_plurals.get(name)) |lbl| return Value{ .string = lbl };
+        return Value{ .string = try defaultDescribeLabelPlural(ctx.arena, name) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
         std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or

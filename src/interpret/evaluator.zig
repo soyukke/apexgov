@@ -138,6 +138,10 @@ pub const Evaluator = struct {
     custom_setting_types: std.StringArrayHashMapUnmanaged(void) = .empty,
     /// object-meta.xml で読み取った Custom Setting 種別。`Hierarchy` / `List` を保持する。
     custom_setting_kinds: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    /// object-meta.xml `<label>` を格納。object_labels[TypeName] = entity label.
+    object_labels: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    /// object-meta.xml `<pluralLabel>` を格納。object_label_plurals[TypeName] = plural label.
+    object_label_plurals: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// fieldSet-meta.xml から読み取った field set 情報。field_sets[TypeName][QualifiedFieldSetName] = metadata。
     field_sets: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldSetMetadata)) = .empty,
     // System.Limits counters
@@ -6789,6 +6793,16 @@ pub const Evaluator = struct {
                     // If value is null_val, still check for instance getter (property may override)
                     if (val != .null_val) return val;
                 }
+                // SObjectType.X (without Schema. prefix) → Schema.SObjectType token for X
+                if (std.mem.startsWith(u8, id.name, "SObjectType.") and
+                    std.mem.indexOfScalar(u8, id.name["SObjectType.".len..], '.') == null)
+                {
+                    const object_name = id.name["SObjectType.".len..];
+                    const sot = try self.arena.create(types.ObjectInstance);
+                    sot.* = .{ .class_name = "Schema.SObjectType" };
+                    try sot.fields.put(self.arena, "name", Value{ .string = object_name });
+                    return Value{ .object = sot };
+                }
                 if (std.mem.startsWith(u8, id.name, "Schema.")) {
                     const suffix = id.name["Schema.".len..];
                     if (std.mem.lastIndexOfScalar(u8, suffix, '.')) |dot_idx| {
@@ -11279,6 +11293,13 @@ pub const Evaluator = struct {
             if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 return try self.makeSObjectFieldToken(schema_name, fa.field);
             }
+        }
+        // SObjectType.X — global shortcut, returns Schema.SObjectType token for X.
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.object.identifier.name, "SObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
+            return Value{ .object = sot };
         }
         if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.object.identifier.name, "System") and
             std.ascii.eqlIgnoreCase(fa.field, "Search"))
