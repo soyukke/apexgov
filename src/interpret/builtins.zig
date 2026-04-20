@@ -128,8 +128,8 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "Integer")) return dispatchStaticInteger(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Long")) return dispatchStaticLong(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatchStaticBoolean(method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Decimal")) return dispatchStaticDecimal(method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Double")) return dispatchStaticDoubleClass(method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Decimal")) return dispatchStaticDecimal(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Double")) return dispatchStaticDoubleClass(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Date")) return dispatchStaticDate(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Math")) return dispatchStaticMath(method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatchStaticTime(ctx, method_name, args);
@@ -463,25 +463,39 @@ fn dispatchStaticBoolean(method_name: []const u8, args: []const Value) !?Value {
     return Value{ .boolean = false };
 }
 
-fn dispatchStaticDecimal(method_name: []const u8, args: []const Value) !?Value {
+fn dispatchStaticDecimal(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
-            .string => |s| Value{ .double = std.fmt.parseFloat(f64, s) catch 0.0 },
+            .null_val => Value.null_val,
+            .string => |s| blk: {
+                const parsed = std.fmt.parseFloat(f64, s) catch {
+                    return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}));
+                };
+                break :blk Value{ .double = parsed };
+            },
             .integer => |i| Value{ .double = @floatFromInt(i) },
             .double => args[0],
-            else => Value{ .double = 0.0 },
+            .long => |i| Value{ .double = @floatFromInt(i) },
+            else => return ctx.throwException("System.TypeException", "Invalid decimal value"),
         };
     }
     return Value{ .double = 0.0 };
 }
 
-fn dispatchStaticDoubleClass(method_name: []const u8, args: []const Value) !?Value {
+fn dispatchStaticDoubleClass(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
-            .string => |s| Value{ .double = std.fmt.parseFloat(f64, s) catch 0.0 },
+            .null_val => Value.null_val,
+            .string => |s| blk: {
+                const parsed = std.fmt.parseFloat(f64, s) catch {
+                    return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid double: {s}", .{s}));
+                };
+                break :blk Value{ .double = parsed };
+            },
             .integer => |i| Value{ .double = @floatFromInt(i) },
             .double => args[0],
-            else => Value{ .double = 0.0 },
+            .long => |i| Value{ .double = @floatFromInt(i) },
+            else => return ctx.throwException("System.TypeException", "Invalid double value"),
         };
     }
     return Value{ .double = 0.0 };
@@ -517,6 +531,7 @@ fn dispatchStaticDate(ctx: *BuiltinContext, method_name: []const u8, args: []con
     }
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
+            if (args[0] == .null_val) return Value.null_val;
             if (extractDateString(args[0])) |s| {
                 if (!isValidDateString(s)) return error.ApexException;
                 const date_part = if (s.len > 10) s[0..10] else s;
@@ -699,6 +714,9 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
             const json_str = args[0].string;
             const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
             if (trimmed.len > 0 and trimmed[0] == '[') {
+                if (trimmed[trimmed.len - 1] != ']') {
+                    return ctx.throwException("System.JSONException", "Unexpected end-of-input while parsing JSON");
+                }
                 const list = try ctx.arena.create(types.ListValue);
                 list.* = .{};
                 var arr_depth: i32 = 0;
@@ -745,6 +763,9 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
             if (std.ascii.eqlIgnoreCase(trimmed, "true")) return Value{ .boolean = true };
             if (std.ascii.eqlIgnoreCase(trimmed, "false")) return Value{ .boolean = false };
             if (std.ascii.eqlIgnoreCase(trimmed, "null")) return Value.null_val;
+            if (trimmed.len == 0 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
+                return ctx.throwException("System.JSONException", "Malformed JSON");
+            }
             const map = try ctx.arena.create(types.MapValue);
             map.* = .{};
             var pos: usize = 0;
@@ -2224,6 +2245,29 @@ pub fn createFieldDescribeResult(ctx: *BuiltinContext, object_type: []const u8, 
     return createFieldDescribeResultWithType(ctx, object_type, field_name, null);
 }
 
+pub fn sobjectFieldExists(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) bool {
+    for (sob.fields.keys()) |known_field| {
+        if (std.ascii.eqlIgnoreCase(known_field, field_name)) return true;
+    }
+
+    if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
+        for (type_map.keys()) |known_field| {
+            if (std.ascii.eqlIgnoreCase(known_field, field_name)) return true;
+        }
+    }
+
+    const describe_value = createDescribeResult(ctx, sob.type_name) catch return false;
+    if (describe_value != .object) return false;
+    const fields_value = describe_value.object.fields.get("fields") orelse return false;
+    if (fields_value != .object) return false;
+    const map_value = fields_value.object.fields.get("map") orelse return false;
+    if (map_value != .map) return false;
+    for (map_value.map.entries.keys()) |known_field| {
+        if (std.ascii.eqlIgnoreCase(known_field, field_name)) return true;
+    }
+    return false;
+}
+
 fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, field_name: []const u8) !void {
     if (fields_kv.entries.contains(field_name)) return;
     try fields_kv.entries.put(ctx.arena, field_name, try createSObjectFieldTokenValue(ctx.arena, object_type, field_name));
@@ -2248,6 +2292,7 @@ fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, obje
             "ShippingCountry",
             "NumberOfEmployees",
             "Description",
+            "Rating",
         }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
@@ -2261,6 +2306,12 @@ fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, obje
     }
     if (std.ascii.eqlIgnoreCase(object_type, "Lead")) {
         for ([_][]const u8{ "FirstName", "LastName", "Company", "Email" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Task")) {
+        for ([_][]const u8{ "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId" }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
         return;
@@ -2416,6 +2467,7 @@ fn inferFieldType(field_name: []const u8) []const u8 {
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
         return "Integer";
     if (std.ascii.eqlIgnoreCase(field_name, "DoNotCall")) return "Boolean";
+    if (std.ascii.eqlIgnoreCase(field_name, "ActivityDate")) return "Date";
     if (std.ascii.eqlIgnoreCase(field_name, "Id") or
         std.ascii.eqlIgnoreCase(field_name, "OwnerId") or
         std.mem.endsWith(u8, field_name, "Id") or
@@ -2434,6 +2486,7 @@ fn inferFieldType(field_name: []const u8) []const u8 {
         std.mem.endsWith(u8, field_name, "Date__c") or
         std.mem.endsWith(u8, field_name, "Timestamp__c"))
         return "DateTime";
+    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or std.ascii.eqlIgnoreCase(field_name, "Status")) return "Picklist";
     return "String";
 }
 
@@ -3760,7 +3813,11 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         if (ctx.eval.getSObjectFieldValueCaseInsensitive(sob, args[0].string)) |value| {
             return value;
         }
-        return Value.null_val;
+        if (sobjectFieldExists(ctx, sob, args[0].string)) {
+            return Value.null_val;
+        }
+        const msg = try std.fmt.allocPrint(ctx.arena, "Invalid field {s} for {s}", .{ args[0].string, sob.type_name });
+        return ctx.throwException("System.SObjectException", msg);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
         const normalized = try normalizeSObjectFieldAssignment(ctx, sob, args[0].string, args[1]);

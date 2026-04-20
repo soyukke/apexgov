@@ -1503,7 +1503,14 @@ pub const Evaluator = struct {
                         .enum_decl => |ed| {
                             if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
                                 if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
-                                    return Value{ .string = args[0].string };
+                                    for (ed.values) |v| {
+                                        if (std.ascii.eqlIgnoreCase(v, args[0].string)) return Value{ .string = v };
+                                    }
+                                    const exc = try self.arena.create(types.ObjectInstance);
+                                    exc.* = .{ .class_name = "System.NoSuchElementException" };
+                                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant {s}.{s}", .{ class_name, args[0].string }) });
+                                    self.pending_exception = Value{ .object = exc };
+                                    return error.ApexException;
                                 }
                                 if (std.ascii.eqlIgnoreCase(method_name, "values")) {
                                     const list = try self.arena.create(types.ListValue);
@@ -6063,6 +6070,40 @@ pub const Evaluator = struct {
         return builtins.normalizeSObjectFieldAssignment(&bctx, sob, field_name, value) catch value;
     }
 
+    fn findVisibleEnumDecl(self: *Evaluator, enum_name: []const u8) ?*ast.EnumDecl {
+        const Search = struct {
+            fn inClass(cd: *ast.ClassDecl, target: []const u8) ?*ast.EnumDecl {
+                for (cd.members) |member| {
+                    switch (member) {
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, target)) return ed;
+                        },
+                        else => {},
+                    }
+                }
+                return null;
+            }
+        };
+
+        if (self.current_class) |class_name| {
+            if (self.findClass(class_name)) |cd| {
+                if (Search.inClass(cd, enum_name)) |ed| return ed;
+            }
+            if (self.findOuterClassName(class_name)) |outer_name| {
+                if (self.findClass(outer_name)) |outer_cd| {
+                    if (Search.inClass(outer_cd, enum_name)) |ed| return ed;
+                }
+            }
+        }
+
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') != null) continue;
+            if (Search.inClass(entry.value_ptr.*, enum_name)) |ed| return ed;
+        }
+        return null;
+    }
+
     pub fn getSObjectFieldValueCaseInsensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
         var matched_value: ?Value = null;
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
@@ -8932,7 +8973,22 @@ pub const Evaluator = struct {
                     }
                     break :blk try utils.coerceToString(args[0], self.arena);
                 } else try utils.coerceToString(args[0], self.arena);
-                return self.getSObjectFieldValueCaseInsensitive(obj.sobject, field_name) orelse Value.null_val;
+                if (self.getSObjectFieldValueCaseInsensitive(obj.sobject, field_name)) |value| return value;
+
+                var get_bctx = builtins.BuiltinContext{
+                    .arena = self.arena,
+                    .stdout = &self.stdout,
+                    .pending_exception = &self.pending_exception,
+                    .see_all_data = self.see_all_data,
+                    .eval = self,
+                };
+                if (builtins.sobjectFieldExists(&get_bctx, obj.sobject, field_name)) return Value.null_val;
+
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "System.SObjectException" };
+                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Invalid field {s} for {s}", .{ field_name, obj.sobject.type_name }) });
+                self.pending_exception = Value{ .object = exc };
+                return error.ApexException;
             }
             // getSObject(fieldName) - resolve loaded parent records or follow FK to the store
             if (std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0) {
@@ -9985,7 +10041,18 @@ pub const Evaluator = struct {
             return Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 };
         }
         if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0) {
-            // For enum names (e.g., "SaveMethod".valueOf("EVENT_BUS")), return the arg value
+            if (self.findVisibleEnumDecl(s)) |enum_decl| {
+                if (args[0] == .null_val) return Value.null_val;
+                const raw_value = if (args[0] == .string) args[0].string else try utils.coerceToString(args[0], self.arena);
+                for (enum_decl.values) |enum_value| {
+                    if (std.ascii.eqlIgnoreCase(enum_value, raw_value)) return Value{ .string = enum_value };
+                }
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "System.NoSuchElementException" };
+                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant {s}.{s}", .{ s, raw_value }) });
+                self.pending_exception = Value{ .object = exc };
+                return error.ApexException;
+            }
             return args[0];
         }
         if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len == 0) {
@@ -15018,11 +15085,56 @@ fn evalUnary(op: ast.UnaryOp, operand: Value) !Value {
 }
 
 fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std.mem.Allocator) Value {
+    const Numeric = struct {
+        fn asF64(v: Value) ?f64 {
+            return switch (v) {
+                .integer => |i| @floatFromInt(i),
+                .long => |i| @floatFromInt(i),
+                .double => |d| d,
+                else => null,
+            };
+        }
+
+        fn isIntegral(f: f64) bool {
+            return @floor(f) == f;
+        }
+
+        fn fromArithmetic(current_value: Value, incoming_value: Value, result: f64) Value {
+            if (current_value == .double or incoming_value == .double) {
+                if (isIntegral(result)) {
+                    if (current_value == .integer or incoming_value == .integer) return .{ .integer = @intFromFloat(result) };
+                    if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+                }
+                return .{ .double = result };
+            }
+            if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+            return .{ .integer = @intFromFloat(result) };
+        }
+
+        fn fromDivision(current_value: Value, incoming_value: Value, result: f64) Value {
+            if (current_value == .double or incoming_value == .double) {
+                if (isIntegral(result)) return .{ .integer = @intFromFloat(result) };
+                return .{ .double = result };
+            }
+            if (current_value == .long or incoming_value == .long) {
+                if (isIntegral(result)) return .{ .long = @intFromFloat(result) };
+                return .{ .double = result };
+            }
+            if (isIntegral(result)) return .{ .integer = @intFromFloat(result) };
+            return .{ .double = result };
+        }
+    };
+
     switch (op) {
         .plus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer + value.integer };
             if (current == .long and value == .long) return .{ .long = current.long + value.long };
             if (current == .double and value == .double) return .{ .double = current.double + value.double };
+            if (Numeric.asF64(current)) |lhs| {
+                if (Numeric.asF64(value)) |rhs| {
+                    return Numeric.fromArithmetic(current, value, lhs + rhs);
+                }
+            }
             // String concatenation for +=
             if (current == .string or value == .string) {
                 const ls = utils.coerceToString(current, arena) catch return current;
@@ -15034,16 +15146,31 @@ fn evalCompoundAssign(current: Value, op: ast.AssignOp, value: Value, arena: std
         .minus_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer - value.integer };
             if (current == .long and value == .long) return .{ .long = current.long - value.long };
+            if (Numeric.asF64(current)) |lhs| {
+                if (Numeric.asF64(value)) |rhs| {
+                    return Numeric.fromArithmetic(current, value, lhs - rhs);
+                }
+            }
         },
         .star_assign => {
             if (current == .integer and value == .integer) return .{ .integer = current.integer * value.integer };
             if (current == .long and value == .long) return .{ .long = current.long * value.long };
+            if (Numeric.asF64(current)) |lhs| {
+                if (Numeric.asF64(value)) |rhs| {
+                    return Numeric.fromArithmetic(current, value, lhs * rhs);
+                }
+            }
         },
         .slash_assign => {
             if (current == .integer and value == .integer and value.integer != 0)
                 return .{ .integer = @divTrunc(current.integer, value.integer) };
             if (current == .long and value == .long and value.long != 0)
                 return .{ .long = @divTrunc(current.long, value.long) };
+            if (Numeric.asF64(current)) |lhs| {
+                if (Numeric.asF64(value)) |rhs| {
+                    if (rhs != 0) return Numeric.fromDivision(current, value, lhs / rhs);
+                }
+            }
         },
         .assign => return value,
         .null_coalesce_assign => return if (current == .null_val) value else current,

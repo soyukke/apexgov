@@ -11595,3 +11595,135 @@ test "E2E: Type.forName SObject + empty list DML integration" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
+
+test "E2E: SObject.get throws for unknown field names" {
+    const source =
+        \\public class UnknownFieldGetTest {
+        \\    public static String test() {
+        \\        try {
+        \\            new Account(Name = 'Acme').get('MissingField');
+        \\            return 'unexpected';
+        \\        } catch (System.SObjectException e) {
+        \\            return e.getMessage().contains('Invalid field') ? 'ok' : e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UnknownFieldGetTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: JSON.deserializeUntyped throws on malformed root input" {
+    const source =
+        \\public class InvalidJsonParseTest {
+        \\    public static String test() {
+        \\        try {
+        \\            JSON.deserializeUntyped('invalidJSON');
+        \\            return 'unexpected';
+        \\        } catch (System.JSONException e) {
+        \\            return e.getMessage().contains('Malformed') ? 'ok' : e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidJsonParseTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: Decimal.valueOf throws on invalid numeric strings" {
+    const source =
+        \\public class InvalidDecimalValueTest {
+        \\    public static String test() {
+        \\        try {
+        \\            Decimal.valueOf('abc');
+        \\            return 'unexpected';
+        \\        } catch (System.TypeException e) {
+        \\            return e.getMessage().contains('Invalid decimal') ? 'ok' : e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidDecimalValueTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: compound assignment preserves numeric accumulation across mixed numeric types" {
+    const source =
+        \\public class MixedNumericCompoundAssignTest {
+        \\    public static String test() {
+        \\        Decimal total = 0;
+        \\        for (Decimal value : new List<Decimal>{ 20, 10 }) {
+        \\            total += value;
+        \\        }
+        \\        total /= 2;
+        \\        return String.valueOf(total);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MixedNumericCompoundAssignTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("15", result.value.string);
+}
+
+test "E2E: inner enum valueOf throws for unknown values" {
+    const source =
+        \\public class InvalidInnerEnumValueTest {
+        \\    private enum Mode {
+        \\        Alpha,
+        \\        Beta
+        \\    }
+        \\    public static String test() {
+        \\        try {
+        \\            Mode.valueOf('Gamma');
+        \\            return 'unexpected';
+        \\        } catch (System.NoSuchElementException e) {
+        \\            return e.getMessage().contains('Gamma') ? 'ok' : e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvalidInnerEnumValueTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: describe maps include common Task date and picklist fields" {
+    const source =
+        \\public class TaskDescribeFieldCoverageTest {
+        \\    public static String test() {
+        \\        Task taskRecord = new Task(
+        \\            Subject = 'Example',
+        \\            ActivityDate = Date.today(),
+        \\            Priority = 'High'
+        \\        );
+        \\        Map<String, Schema.SObjectField> fieldsByName = taskRecord.getSObjectType().getDescribe().fields.getMap();
+        \\        return fieldsByName.get('ActivityDate').getDescribe().getType().name()
+        \\            + ':' + fieldsByName.get('Priority').getDescribe().getType().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TaskDescribeFieldCoverageTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("DATE:PICKLIST", result.value.string);
+}
