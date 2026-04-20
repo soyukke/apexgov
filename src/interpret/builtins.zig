@@ -1297,7 +1297,7 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
         rm_map.* = .{};
         const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
         const has_permset = hasAssignedPermissionSet(ctx.eval);
-        const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
+        const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
         const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
 
         if (input_records == .list) {

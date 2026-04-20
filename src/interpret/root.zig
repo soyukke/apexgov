@@ -2521,6 +2521,75 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
     try std.testing.expectEqualStrings("{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}", result.value.string);
 }
 
+test "E2E: stripInaccessible READABLE enforces root CRUD by default" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("objects/Thing__c/fields");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <deploymentStatus>Deployed</deploymentStatus>
+        \\    <enableActivities>false</enableActivities>
+        \\    <enableReports>false</enableReports>
+        \\    <enableSearch>false</enableSearch>
+        \\    <enableSharing>true</enableSharing>
+        \\    <label>Thing</label>
+        \\    <nameField>
+        \\        <label>Thing Name</label>
+        \\        <type>Text</type>
+        \\    </nameField>
+        \\    <pluralLabel>Things</pluralLabel>
+        \\    <sharingModel>ReadWrite</sharingModel>
+        \\</CustomObject>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class StripInaccessibleReadableDefaultCrudTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Reader',
+        \\            Username = 'crud.default.reader@example.com',
+        \\            Email = 'crud.default.reader@example.com',
+        \\            Alias = 'crdd'
+        \\        );
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\    public static Boolean test() {
+        \\        User u = makeUser();
+        \\        Boolean threw = false;
+        \\        System.runAs(u) {
+        \\            try {
+        \\                Security.stripInaccessible(
+        \\                    AccessType.READABLE,
+        \\                    new List<SObject>{ new Thing__c(Name = 'Example') }
+        \\                );
+        \\            } catch (NoAccessException e) {
+        \\                threw = e.getMessage().containsIgnoreCase('No access to entity');
+        \\            }
+        \\        }
+        \\        return threw;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, source, .{
+        .entry_class = "StripInaccessibleReadableDefaultCrudTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
 test "E2E: permission set groups expand assigned permission sets" {
     const source =
         \\public class PermissionSetGroupExpansionTest {
