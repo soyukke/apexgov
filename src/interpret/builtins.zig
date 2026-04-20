@@ -107,6 +107,17 @@ fn isValidDateString(s: []const u8) bool {
     return true;
 }
 
+fn normalizeDateTimeValueOfInput(arena: std.mem.Allocator, s: []const u8) !?[]const u8 {
+    if (!isValidDateString(s)) return null;
+    if (s.len == 10) {
+        return try std.fmt.allocPrint(arena, "{s}T00:00:00Z", .{s[0..10]});
+    }
+    if (s.len >= 19 and (s[10] == ' ' or s[10] == 'T') and s[13] == ':' and s[16] == ':') {
+        return try std.fmt.allocPrint(arena, "{s}T{s}Z", .{ s[0..10], s[11..19] });
+    }
+    return s;
+}
+
 /// 静的メソッド呼び出しを試行する。
 /// 静的メソッド呼び出しを試行する。
 pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
@@ -655,8 +666,8 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
                 else => {},
             }
             if (extractDateString(args[0])) |s| {
-                if (!isValidDateString(s)) return error.ApexException;
-                return try makeDatetimeValue(ctx.arena, s);
+                const normalized = try normalizeDateTimeValueOfInput(ctx.arena, s) orelse return error.ApexException;
+                return try makeDatetimeValue(ctx.arena, normalized);
             }
         }
         return Value.null_val;

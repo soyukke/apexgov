@@ -5583,6 +5583,9 @@ pub const Evaluator = struct {
                     in_str[paren_start + 1 .. paren_end]
                 else
                     in_str[paren_start + 1 ..];
+                if (std.ascii.indexOfIgnoreCase(inner, "SELECT") != null) {
+                    return self.subqueryContainsValue(field_val, inner, current_env);
+                }
                 // Split by comma and check each value
                 var iter = std.mem.splitScalar(u8, inner, ',');
                 while (iter.next()) |part| {
@@ -5701,6 +5704,30 @@ pub const Evaluator = struct {
             return false; // incomparable types
         }
         return utils.valueEql(field_val, cmp_val);
+    }
+
+    fn subqueryContainsValue(self: *Evaluator, field_val: Value, subquery: []const u8, current_env: *Env) bool {
+        const select_start = std.ascii.indexOfIgnoreCase(subquery, "SELECT") orelse return false;
+        const from_start = std.ascii.indexOfIgnoreCase(subquery, "FROM") orelse return false;
+        if (from_start <= select_start + 6) return false;
+        const select_clause = std.mem.trim(u8, subquery[select_start + 6 .. from_start], " \t\n\r");
+        if (select_clause.len == 0) return false;
+        const selected_field = std.mem.trim(u8, if (std.mem.indexOfScalar(u8, select_clause, ',')) |comma_pos|
+            select_clause[0..comma_pos]
+        else
+            select_clause, " \t\n\r");
+
+        const subquery_result = self.executeSoql(subquery, current_env) catch return false;
+        if (subquery_result != .list) return false;
+        for (subquery_result.list.items.items) |item| {
+            if (item != .sobject) continue;
+            const candidate = if (std.ascii.eqlIgnoreCase(selected_field, "Id"))
+                (if (item.sobject.id) |record_id| Value{ .string = record_id } else Value.null_val)
+            else
+                self.resolveFieldPathValue(item.sobject, selected_field) orelse self.getSObjectFieldValueCaseInsensitive(item.sobject, selected_field) orelse Value.null_val;
+            if (utils.valueEql(field_val, candidate)) return true;
+        }
+        return false;
     }
 
     fn makeEmptyList(self: *Evaluator) !Value {
@@ -7064,6 +7091,11 @@ pub const Evaluator = struct {
                         const i: usize = @intCast(idx.integer);
                         if (i < obj.list.items.items.len) return obj.list.items.items[i];
                     }
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "ListException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "List index out of bounds: {d}", .{idx.integer}) });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
                 }
                 if (obj == .map and idx == .string) {
                     return obj.map.entries.get(idx.string) orelse Value.null_val;

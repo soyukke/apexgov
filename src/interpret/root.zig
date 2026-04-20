@@ -3339,6 +3339,30 @@ test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
     try std.testing.expectEqualStrings("3:3", result.value.string);
 }
 
+test "E2E: SOQL IN subquery matches parent record ids" {
+    const source =
+        \\public class InSubqueryTest {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'Parent');
+        \\        insert acct;
+        \\        insert new Contact(LastName = 'Child', AccountId = acct.Id);
+        \\        List<Contact> rows = [
+        \\            SELECT Id
+        \\            FROM Contact
+        \\            WHERE AccountId IN (SELECT Id FROM Account)
+        \\        ];
+        \\        return String.valueOf(rows.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InSubqueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
 test "E2E: ContentVersion infers uppercase file extensions for ContentDocument filters" {
     const source =
         \\public class ContentVersionFileTypeCaseTest {
@@ -3813,6 +3837,27 @@ test "E2E: Datetime.valueOf accepts epoch milliseconds" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("2025-01-01:1735689600000", result.value.string);
+}
+
+test "E2E: Datetime.valueOf normalizes formatted strings with trailing timezone offsets" {
+    const source =
+        \\public class DtValueOfOffsetStringTest {
+        \\    public static String test() {
+        \\        Datetime expected = Datetime.newInstance(2018, 8, 8, 8, 8, 8);
+        \\        Datetime withZeroOffset = Datetime.valueOf('2018-08-08 08:08:080');
+        \\        Datetime withSignedOffset = Datetime.valueOf('2018-08-08 08:08:08+9');
+        \\        return String.valueOf(expected == withZeroOffset) + ':' +
+        \\            String.valueOf(expected == withSignedOffset) + ':' +
+        \\            String.valueOf(withZeroOffset);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtValueOfOffsetStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:2018-08-08T08:08:08Z", result.value.string);
 }
 
 test "E2E: TimeZone.getTimeZone returns an object-like value with id and display name" {
@@ -9665,6 +9710,28 @@ test "E2E: for-each on null collection throws NullPointerException" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+}
+
+test "E2E: list index access throws ListException when out of bounds" {
+    const source =
+        \\public class ListIndexOutOfBoundsTest {
+        \\    public static String test() {
+        \\        List<String> rows = new List<String>();
+        \\        try {
+        \\            String value = rows[0];
+        \\            return value;
+        \\        } catch (Exception ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ListIndexOutOfBoundsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("List index out of bounds: 0", result.value.string);
 }
 
 test "E2E: JSON.deserialize preserves user-defined field initializers for omitted fields" {
