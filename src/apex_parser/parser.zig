@@ -1423,6 +1423,7 @@ const Parser = struct {
         }
 
         var args: []ast.Expr = &.{};
+        var is_brace_initializer = false;
         if (self.matchKind(.lparen)) {
             args = try self.parseArgList();
             try self.expect(.rparen);
@@ -1430,6 +1431,7 @@ const Parser = struct {
 
         // Brace initializer: new List<T>{ item1, item2 } or new Map<K,V>{ key => value, ... }
         if (self.matchKind(.lbrace)) {
+            is_brace_initializer = true;
             var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
             if (!self.check(.rbrace)) {
                 const first_expr = try self.expression();
@@ -1467,7 +1469,7 @@ const Parser = struct {
         }
 
         const node = try self.arena.create(ast.NewExpr);
-        node.* = .{ .type_name = type_name, .args = args, .loc = loc };
+        node.* = .{ .type_name = type_name, .args = args, .is_brace_initializer = is_brace_initializer, .loc = loc };
         const result = try self.arena.create(ast.Expr);
         result.* = .{ .new_expr = node };
         return result;

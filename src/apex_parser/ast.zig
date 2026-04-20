@@ -124,6 +124,7 @@ pub const AssignOp = enum {
 pub const NewExpr = struct {
     type_name: TypeRef,
     args: []Expr,
+    is_brace_initializer: bool = false,
     loc: SourceLoc = .zero,
 };
 

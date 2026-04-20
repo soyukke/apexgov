@@ -1355,6 +1355,54 @@ test "E2E: standard child relationships preserve field token equality" {
     try std.testing.expectEqualStrings("Contacts", result.value.string);
 }
 
+test "E2E: fields map tokens compare equal to standard child relationship fields" {
+    const source =
+        \\public class ChildRelationshipFieldMapProbe {
+        \\    public static Boolean run() {
+        \\        Map<String, Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
+        \\        Schema.SObjectField fromMap = fields.get('AccountId');
+        \\        for (Object relObj : Account.SObjectType.getDescribe().getChildRelationships()) {
+        \\            Schema.ChildRelationship rel = (Schema.ChildRelationship) relObj;
+        \\            if (rel.getRelationshipName() == 'Contacts') {
+        \\                return rel.getField() == fromMap;
+        \\            }
+        \\        }
+        \\        return false;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChildRelationshipFieldMapProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: list-derived describe resolves standard child relationship fields" {
+    const source =
+        \\public class ChildRelationshipListProbe {
+        \\    public static String run() {
+        \\        List<Account> parents = new List<Account>{ new Account() };
+        \\        DescribeSObjectResult parentDescribe = parents.getSObjectType().getDescribe();
+        \\        for (Object relObj : parentDescribe.getChildRelationships()) {
+        \\            Schema.ChildRelationship rel = (Schema.ChildRelationship) relObj;
+        \\            if (rel.getField() == Contact.AccountId) {
+        \\                return rel.getRelationshipName();
+        \\            }
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChildRelationshipListProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Contacts", result.value.string);
+}
+
 test "E2E: JSON parser tokens can be streamed into a generator" {
     const source =
         \\public class JsonStreamingProbe {
@@ -1396,6 +1444,207 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
+}
+
+test "E2E: streamed JSON child relationship injection round-trips for typed and generic access" {
+    const source =
+        \\public class JsonInjectedRelationshipProbe {
+        \\    private interface ParserEvents {
+        \\        void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream);
+        \\    }
+        \\
+        \\    private class InjectChildrenEventHandler implements ParserEvents {
+        \\        private JSONParser childrenParser;
+        \\        private List<List<Contact>> children;
+        \\        private Integer childListIdx = 0;
+        \\
+        \\        public InjectChildrenEventHandler(JSONParser childrenParser, List<List<Contact>> children) {
+        \\            this.childrenParser = childrenParser;
+        \\            this.children = children;
+        \\            this.childrenParser.nextToken();
+        \\        }
+        \\
+        \\        public void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream) {
+        \\            if (depth == 2 && fromStream.getCurrentToken() == JSONToken.END_OBJECT) {
+        \\                toStream.writeFieldName('Contacts');
+        \\                toStream.writeStartObject();
+        \\                toStream.writeNumberField('totalSize', children[childListIdx].size());
+        \\                toStream.writeBooleanField('done', true);
+        \\                toStream.writeFieldName('records');
+        \\                streamTokens(childrenParser, toStream, null);
+        \\                toStream.writeEndObject();
+        \\                childListIdx++;
+        \\            }
+        \\        }
+        \\    }
+        \\
+        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\        Integer depth = 0;
+        \\        while (fromStream.nextToken() != null) {
+        \\            if (events != null) {
+        \\                events.nextToken(fromStream, depth, toStream);
+        \\            }
+        \\            switch on fromStream.getCurrentToken() {
+        \\                when START_ARRAY {
+        \\                    toStream.writeStartArray();
+        \\                    depth++;
+        \\                }
+        \\                when START_OBJECT {
+        \\                    toStream.writeStartObject();
+        \\                    depth++;
+        \\                }
+        \\                when FIELD_NAME {
+        \\                    toStream.writeFieldName(fromStream.getCurrentName());
+        \\                }
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                    toStream.writeString(fromStream.getText());
+        \\                }
+        \\                when VALUE_NULL {
+        \\                    toStream.writeNull();
+        \\                }
+        \\                when END_OBJECT {
+        \\                    toStream.writeEndObject();
+        \\                    depth--;
+        \\                }
+        \\                when END_ARRAY {
+        \\                    toStream.writeEndArray();
+        \\                    depth--;
+        \\                }
+        \\            }
+        \\            if (depth == 0) {
+        \\                break;
+        \\            }
+        \\        }
+        \\    }
+        \\
+        \\    public static String run() {
+        \\        Account parent = new Account(
+        \\            Id = '001000000000001AAA',
+        \\            Name = 'Acme',
+        \\            NumberOfEmployees = 7
+        \\        );
+        \\        Contact child1 = new Contact(Id = '003000000000001AAA', DoNotCall = true);
+        \\        Contact child2 = new Contact(Id = '003000000000002AAA', DoNotCall = false);
+        \\        List<List<Contact>> children = new List<List<Contact>>{
+        \\            new List<Contact>{ child1, child2 }
+        \\        };
+        \\        JSONParser parentsParser = JSON.createParser(JSON.serialize(new List<Account>{ parent }));
+        \\        JSONParser childrenParser = JSON.createParser(JSON.serialize(children));
+        \\        JSONGenerator out = JSON.createGenerator(false);
+        \\        streamTokens(parentsParser, out, new InjectChildrenEventHandler(childrenParser, children));
+        \\        String combined = out.getAsString();
+        \\        Account typed = ((List<Account>) JSON.deserialize(combined, List<Account>.class))[0];
+        \\        SObject generic = ((List<SObject>) JSON.deserialize(combined, List<SObject>.class))[0];
+        \\        return String.valueOf(typed.Contacts == null ? null : typed.Contacts.size()) + ':' +
+        \\            String.valueOf(generic.getSObjects('Contacts').size()) + ':' +
+        \\            String.valueOf(generic.getSObjects('Contacts')[0].Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonInjectedRelationshipProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:2:003000000000001AAA", result.value.string);
+}
+
+test "E2E: streamed JSON child relationship injection emits relationship wrapper" {
+    const source =
+        \\public class JsonInjectedRelationshipStringProbe {
+        \\    private interface ParserEvents {
+        \\        void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream);
+        \\    }
+        \\
+        \\    private class InjectChildrenEventHandler implements ParserEvents {
+        \\        private JSONParser childrenParser;
+        \\        private List<List<Contact>> children;
+        \\        private Integer childListIdx = 0;
+        \\
+        \\        public InjectChildrenEventHandler(JSONParser childrenParser, List<List<Contact>> children) {
+        \\            this.childrenParser = childrenParser;
+        \\            this.children = children;
+        \\            this.childrenParser.nextToken();
+        \\        }
+        \\
+        \\        public void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream) {
+        \\            if (depth == 2 && fromStream.getCurrentToken() == JSONToken.END_OBJECT) {
+        \\                toStream.writeFieldName('Contacts');
+        \\                toStream.writeStartObject();
+        \\                toStream.writeNumberField('totalSize', children[childListIdx].size());
+        \\                toStream.writeBooleanField('done', true);
+        \\                toStream.writeFieldName('records');
+        \\                streamTokens(childrenParser, toStream, null);
+        \\                toStream.writeEndObject();
+        \\                childListIdx++;
+        \\            }
+        \\        }
+        \\    }
+        \\
+        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\        Integer depth = 0;
+        \\        while (fromStream.nextToken() != null) {
+        \\            if (events != null) {
+        \\                events.nextToken(fromStream, depth, toStream);
+        \\            }
+        \\            switch on fromStream.getCurrentToken() {
+        \\                when START_ARRAY {
+        \\                    toStream.writeStartArray();
+        \\                    depth++;
+        \\                }
+        \\                when START_OBJECT {
+        \\                    toStream.writeStartObject();
+        \\                    depth++;
+        \\                }
+        \\                when FIELD_NAME {
+        \\                    toStream.writeFieldName(fromStream.getCurrentName());
+        \\                }
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                    toStream.writeString(fromStream.getText());
+        \\                }
+        \\                when VALUE_NULL {
+        \\                    toStream.writeNull();
+        \\                }
+        \\                when END_OBJECT {
+        \\                    toStream.writeEndObject();
+        \\                    depth--;
+        \\                }
+        \\                when END_ARRAY {
+        \\                    toStream.writeEndArray();
+        \\                    depth--;
+        \\                }
+        \\            }
+        \\            if (depth == 0) {
+        \\                break;
+        \\            }
+        \\        }
+        \\    }
+        \\
+        \\    public static String run() {
+        \\        Account parent = new Account(
+        \\            Id = '001000000000001AAA',
+        \\            Name = 'Acme',
+        \\            NumberOfEmployees = 7
+        \\        );
+        \\        Contact child1 = new Contact(Id = '003000000000001AAA', DoNotCall = true);
+        \\        Contact child2 = new Contact(Id = '003000000000002AAA', DoNotCall = false);
+        \\        List<List<Contact>> children = new List<List<Contact>>{
+        \\            new List<Contact>{ child1, child2 }
+        \\        };
+        \\        JSONParser parentsParser = JSON.createParser(JSON.serialize(new List<Account>{ parent }));
+        \\        JSONParser childrenParser = JSON.createParser(JSON.serialize(children));
+        \\        JSONGenerator out = JSON.createGenerator(false);
+        \\        streamTokens(parentsParser, out, new InjectChildrenEventHandler(childrenParser, children));
+        \\        return out.getAsString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonInjectedRelationshipStringProbe",
+        .entry_method = "run",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("[{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\",\"NumberOfEmployees\":\"7\",\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"},{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]", result.value.string);
 }
 
 test "E2E: custom property setters can delegate writes" {
@@ -3935,7 +4184,7 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
 test "E2E: JSON read-only round-trip preserves typed ApexClass property access" {
@@ -3959,7 +4208,7 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
@@ -4015,7 +4264,7 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00.000Z", result.value.string);
+    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
 test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
@@ -4110,7 +4359,7 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00.000Z", result.value.string);
+    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
 }
 
 test "E2E: qualified inner class literals preserve outer class names" {
@@ -6792,6 +7041,65 @@ test "E2E: JSON deserialize unwraps relationship records and normalizes standard
     });
     defer result.deinit();
     try std.testing.expectEqualStrings("7:2:003000000000001AAA:true", result.value.string);
+}
+
+test "E2E: JSON deserialize unwraps relationship records for typed child access" {
+    const source =
+        \\public class JsonTypedRelationshipRoundTripTest {
+        \\    public static String test() {
+        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA"}]}}]';
+        \\        Account accountRecord = ((List<Account>) JSON.deserialize(json, List<Account>.class))[0];
+        \\        return String.valueOf(accountRecord.Contacts == null) + ':' +
+        \\            String.valueOf(accountRecord.Contacts == null ? null : accountRecord.Contacts.size()) + ':' +
+        \\            String.valueOf(accountRecord.Contacts == null || accountRecord.Contacts.size() == 0 ? null : accountRecord.Contacts[0].Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonTypedRelationshipRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:2:003000000000001AAA", result.value.string);
+}
+
+test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
+    const source =
+        \\public class JsonReadonlyDatetimeProbe {
+        \\    public static String test() {
+        \\        String json = '{"attributes":{"type":"Account"},"LastReferencedDate":"2020-01-07T23:30:00.000Z"}';
+        \\        Account accountRecord = (Account) JSON.deserialize(json, Account.class);
+        \\        Datetime expected = Datetime.newInstanceGmt(2020, 1, 7, 23, 30, 0);
+        \\        return String.valueOf(expected == accountRecord.LastReferencedDate) + ':' +
+        \\            String.valueOf(accountRecord.LastReferencedDate);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonReadonlyDatetimeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:2020-01-07T23:30:00Z", result.value.string);
+}
+
+test "E2E: JSON serialize preserves Id on generic newSObject records" {
+    const source =
+        \\public class JsonGenericSObjectIdProbe {
+        \\    public static String test() {
+        \\        SObject accountRecord = Schema.getGlobalDescribe().get('Account').newSObject();
+        \\        accountRecord.put('Id', '001000000000001AAA');
+        \\        accountRecord.put('Name', 'Acme');
+        \\        return String.valueOf(accountRecord.Id) + ':' + JSON.serialize(accountRecord);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "JsonGenericSObjectIdProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("001000000000001AAA:{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}", result.value.string);
 }
 
 test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {

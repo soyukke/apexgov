@@ -65,9 +65,15 @@ pub fn makeDateValue(arena: std.mem.Allocator, date_str: []const u8) anyerror!Va
 /// DateTime 型のオブジェクトインスタンスを生成する。
 /// 内部の ISO 日時文字列 (YYYY-MM-DDThh:mm:ssZ) を "value" フィールドに保持する。
 pub fn makeDatetimeValue(arena: std.mem.Allocator, dt_str: []const u8) anyerror!Value {
+    const normalized = if (std.mem.endsWith(u8, dt_str, ".000+0000"))
+        try std.fmt.allocPrint(arena, "{s}Z", .{dt_str[0 .. dt_str.len - 9]})
+    else if (std.mem.endsWith(u8, dt_str, ".000Z"))
+        try std.fmt.allocPrint(arena, "{s}Z", .{dt_str[0 .. dt_str.len - 5]})
+    else
+        dt_str;
     const obj = try arena.create(types.ObjectInstance);
     obj.* = .{ .class_name = "Datetime" };
-    try obj.fields.put(arena, "value", Value{ .string = dt_str });
+    try obj.fields.put(arena, "value", Value{ .string = normalized });
     return Value{ .object = obj };
 }
 
@@ -2194,6 +2200,10 @@ fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, o
 }
 
 fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+    if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
+        try addDescribeFieldIfMissing(ctx, fields_kv, object_type, "AccountId");
+        return;
+    }
     if (std.ascii.eqlIgnoreCase(object_type, "User")) {
         for ([_][]const u8{ "Username", "Email", "FirstName", "LastName", "ProfileId", "Alias", "UserType", "IsActive" }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
@@ -2356,6 +2366,8 @@ fn inferFieldType(field_name: []const u8) []const u8 {
         std.mem.startsWith(u8, field_name, "Has"))
         return "Boolean";
     if (std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "LastReferencedDate") or
+        std.ascii.eqlIgnoreCase(field_name, "LastViewedDate") or
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
         std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
         std.mem.endsWith(u8, field_name, "Date__c") or
@@ -3642,6 +3654,9 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
         const normalized = try normalizeSObjectFieldAssignment(ctx, sob, args[0].string, args[1]);
         try utils.sobjectPut(&sob.fields, ctx.arena, args[0].string, normalized);
+        if (std.ascii.eqlIgnoreCase(args[0].string, "Id") and normalized == .string) {
+            sob.id = normalized.string;
+        }
         return normalized;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap")) {

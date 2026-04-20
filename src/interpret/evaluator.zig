@@ -9921,7 +9921,7 @@ pub const Evaluator = struct {
                 list.element_type = stripTypeNamespace(self.renderTypeRef(ne.type_name.params[0]));
             }
             // Single arg that is a Set → convert to list
-            if (ne.args.len == 1) {
+            if (ne.args.len == 1 and !ne.is_brace_initializer) {
                 var arg_copy = ne.args[0];
                 const arg_val = try self.evalExpr(&arg_copy, current_env);
                 if (arg_val == .set) {
