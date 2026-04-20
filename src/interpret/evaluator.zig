@@ -7160,6 +7160,42 @@ pub const Evaluator = struct {
                 }
                 return null;
             },
+            .method_call => |mc| {
+                const arg_count = mc.args.len;
+
+                if (mc.object.* == .identifier) {
+                    const target_name = mc.object.identifier.name;
+
+                    if (self.findClass(target_name)) |class_decl| {
+                        if (self.findMethodInHierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                            return stripTypeNamespace(self.renderTypeRef(method_decl.return_type));
+                        }
+                    }
+
+                    if (self.resolveAssignmentTargetType(mc.object, current_env)) |instance_type| {
+                        const base_type = typeBaseName(instance_type);
+                        if (self.findClass(base_type)) |class_decl| {
+                            if (self.findMethodInHierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                                return stripTypeNamespace(self.renderTypeRef(method_decl.return_type));
+                            }
+                        }
+                    }
+                }
+
+                if (mc.object.* == .field_access) {
+                    const fa = mc.object.field_access;
+                    if (fa.object.* == .identifier) {
+                        const qualified_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fa.object.identifier.name, fa.field }) catch return null;
+                        if (self.findClass(qualified_name)) |class_decl| {
+                            if (self.findMethodInHierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                                return stripTypeNamespace(self.renderTypeRef(method_decl.return_type));
+                            }
+                        }
+                    }
+                }
+
+                return null;
+            },
             else => return null,
         }
     }
@@ -8154,15 +8190,37 @@ pub const Evaluator = struct {
             if (obj.object.fields.get("__stubProvider__")) |provider| {
                 if (provider == .object) {
                     if (self.findClass(provider.object.class_name)) |prov_class| {
+                        const stub_md = if (self.findClass(obj.object.class_name)) |stub_class|
+                            self.findMethodInHierarchyTyped(null, stub_class, method, args) orelse
+                                self.findMethodInHierarchy(null, stub_class, method, args.len)
+                        else
+                            null;
+
                         // Build args for handleMethodCall(stubbedObject, stubbedMethodName, returnType, listOfParamTypes, listOfParamNames, listOfArgs)
                         const args_list = try self.arena.create(types.ListValue);
                         args_list.* = .{};
                         for (args) |a| try args_list.items.append(self.arena, a);
-                        // Build type list from actual arguments
+                        // Build param types from the resolved method declaration when available.
                         const type_list = try self.arena.create(types.ListValue);
                         type_list.* = .{};
-                        for (args) |a| {
-                            const type_name: []const u8 = switch (a) {
+                        for (args, 0..) |a, i| {
+                            const type_name: []const u8 = if (stub_md) |md|
+                                if (i < md.params.len)
+                                    self.renderTypeRef(md.params[i].type_ref)
+                                else switch (a) {
+                                    .string => "String",
+                                    .integer => "Integer",
+                                    .double => "Double",
+                                    .boolean => "Boolean",
+                                    .list => "List",
+                                    .map => "Map",
+                                    .set => "Set",
+                                    .sobject => "SObject",
+                                    .object => |o| o.class_name,
+                                    .null_val => "Object",
+                                    else => "Object",
+                                }
+                            else switch (a) {
                                 .string => "String",
                                 .integer => "Integer",
                                 .double => "Double",
@@ -8183,12 +8241,9 @@ pub const Evaluator = struct {
                         // Build param names from method declaration if available
                         const name_list = try self.arena.create(types.ListValue);
                         name_list.* = .{};
-                        if (self.findClass(obj.object.class_name)) |stub_class| {
-                            const stub_md = self.findMethodInHierarchy(null, stub_class, method, args.len);
-                            if (stub_md) |smd| {
-                                for (smd.params) |p| {
-                                    try name_list.items.append(self.arena, Value{ .string = p.name });
-                                }
+                        if (stub_md) |md| {
+                            for (md.params) |p| {
+                                try name_list.items.append(self.arena, Value{ .string = p.name });
                             }
                         }
                         const hmc_args = [_]Value{
@@ -15286,4 +15341,62 @@ test "typed null identifier prefers iterable overload over object overload" {
     var r = try evalSource(source, "IterableProbe", "run");
     defer r.deinit();
     try std.testing.expectEqualStrings("iterable", r.value.string);
+}
+
+test "null-returning helper method preserves declared return type for overload hints" {
+    const source =
+        \\public class MatchLikeHelper {
+        \\    public static String anyString() {
+        \\        return (String) null;
+        \\    }
+        \\}
+        \\public class MatchLikeProbe {
+        \\    public static String pick(String value) {
+        \\        return 'string';
+        \\    }
+        \\    public static String pick(Object value) {
+        \\        return 'object';
+        \\    }
+        \\    public static String run() {
+        \\        return pick(MatchLikeHelper.anyString());
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "MatchLikeProbe", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("string", r.value.string);
+}
+
+test "createStub forwards declared param types for typed null helper arguments" {
+    const source =
+        \\public class StubMatcherHelper {
+        \\    public static String anyString() {
+        \\        return (String) null;
+        \\    }
+        \\}
+        \\public class StubTarget {
+        \\    public void take(String value) {
+        \\    }
+        \\    public void take(Object value) {
+        \\    }
+        \\}
+        \\public class StubRecorder implements StubProvider {
+        \\    public static String seenType;
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> listOfParamTypes, List<String> listOfParamNames, List<Object> listOfArgs) {
+        \\        seenType = listOfParamTypes.get(0).getName();
+        \\        return null;
+        \\    }
+        \\}
+        \\public class StubProbe {
+        \\    public static String run() {
+        \\        StubTarget stubbed = (StubTarget) Test.createStub(StubTarget.class, new StubRecorder());
+        \\        stubbed.take(StubMatcherHelper.anyString());
+        \\        return StubRecorder.seenType;
+        \\    }
+        \\}
+    ;
+    var r = try evalSource(source, "StubProbe", "run");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("String", r.value.string);
 }
