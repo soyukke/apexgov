@@ -1300,14 +1300,24 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
         const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else false;
         const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
 
-        if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
-            return ctx.throwException("System.NoAccessException", "No access to entity");
-        }
-        if ((std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
-            std.ascii.eqlIgnoreCase(access_type, "CREATABLE") or
-            std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE")) and
-            ctx.eval.is_min_access_user and !has_permset)
-        {
+        if (input_records == .list) {
+            for (input_records.list.items.items) |item| {
+                if (item != .sobject) continue;
+                const object_access_operation = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                    "read"
+                else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
+                    "create"
+                else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                    "edit"
+                else if (enforce_crud)
+                    "create"
+                else
+                    "";
+                if (object_access_operation.len > 0 and !resolveObjectCrudPermission(ctx.eval, item.sobject.type_name, object_access_operation)) {
+                    return ctx.throwException("System.NoAccessException", "No access to entity");
+                }
+            }
+        } else if (ctx.eval.is_min_access_user and (enforce_crud or std.ascii.eqlIgnoreCase(access_type, "READABLE")) and !has_permset) {
             return ctx.throwException("System.NoAccessException", "No access to entity");
         }
 
@@ -1324,7 +1334,11 @@ fn dispatchStaticSecurity(ctx: *BuiltinContext, method_name: []const u8, args: [
                         resolveFieldWritePermission(ctx.eval, item.sobject.type_name, field_name, "edit")
                     else
                         true;
-                    if (!should_keep and field_value != .null_val) {
+                    const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                        !should_keep
+                    else
+                        !should_keep and field_value != .null_val;
+                    if (should_record_removed_field) {
                         try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
                     }
                 }
@@ -2247,7 +2261,7 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
     try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse defaultFieldLabel(field_name) else defaultFieldLabel(field_name) });
     try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
+    try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolveFieldReadPermission(ctx.eval, object_type, field_name) });
     // Id and system fields are not updateable/createable
     const is_system_field = std.ascii.eqlIgnoreCase(field_name, "Id") or
         std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
@@ -2256,9 +2270,9 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
         std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
         std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
-    try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_system_field });
-    try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field });
-    try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = true });
+    try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_system_field and resolveFieldWritePermission(ctx.eval, object_type, field_name, "edit") });
+    try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_field and resolveFieldWritePermission(ctx.eval, object_type, field_name, "create") });
+    try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = resolveFieldReadPermission(ctx.eval, object_type, field_name) });
     // Set field length based on field type
     const length: i64 = if (metadata != null and metadata.?.length != null)
         metadata.?.length.?
@@ -3455,10 +3469,28 @@ fn dispatchObjSelectOption(ctx: *BuiltinContext, obj: *types.ObjectInstance, met
 }
 
 fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) return Value{ .boolean = true };
+    const object_type = if (obj.fields.get("objectType")) |ov|
+        if (ov == .string) ov.string else null
+    else
+        null;
+    const field_name = if (obj.fields.get("fieldName")) |fv|
+        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
+    else if (obj.fields.get("name")) |nv|
+        if (nv == .string) nv.string else ""
+    else
+        "";
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
+        return obj.fields.get("isAccessible") orelse Value{ .boolean = resolveFieldReadPermission(ctx.eval, object_type, field_name) };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
+        return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolveFieldWritePermission(ctx.eval, object_type, field_name, "edit") };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
+        return obj.fields.get("isCreateable") orelse Value{ .boolean = resolveFieldWritePermission(ctx.eval, object_type, field_name, "create") };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) {
+        return obj.fields.get("isFilterable") orelse Value{ .boolean = resolveFieldReadPermission(ctx.eval, object_type, field_name) };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
@@ -3742,19 +3774,45 @@ fn collectAssignedPermissionSetIds(eval: *evaluator_mod.Evaluator, out: *[64][]c
             if (psa != .sobject) continue;
             const assignee_id = utils.sobjectGet(&psa.sobject.fields, "AssigneeId") orelse continue;
             if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) continue;
-            const permission_set_id = utils.sobjectGet(&psa.sobject.fields, "PermissionSetId") orelse continue;
-            if (permission_set_id != .string) continue;
-
-            var already_added = false;
-            for (out[0..count]) |existing_id| {
-                if (std.ascii.eqlIgnoreCase(existing_id, permission_set_id.string)) {
-                    already_added = true;
-                    break;
+            if (utils.sobjectGet(&psa.sobject.fields, "PermissionSetId")) |permission_set_id| {
+                if (permission_set_id == .string) {
+                    var already_added = false;
+                    for (out[0..count]) |existing_id| {
+                        if (std.ascii.eqlIgnoreCase(existing_id, permission_set_id.string)) {
+                            already_added = true;
+                            break;
+                        }
+                    }
+                    if (!already_added and count < out.len) {
+                        out[count] = permission_set_id.string;
+                        count += 1;
+                    }
                 }
             }
-            if (!already_added and count < out.len) {
-                out[count] = permission_set_id.string;
-                count += 1;
+
+            if (utils.sobjectGet(&psa.sobject.fields, "PermissionSetGroupId")) |permission_set_group_id| {
+                if (permission_set_group_id != .string) continue;
+                if (eval.store.get("PermissionSetGroupComponent")) |components| {
+                    for (components.items) |component| {
+                        if (component != .sobject) continue;
+                        const group_id = utils.sobjectGet(&component.sobject.fields, "PermissionSetGroupId") orelse continue;
+                        if (group_id != .string or !std.ascii.eqlIgnoreCase(group_id.string, permission_set_group_id.string)) continue;
+                        const component_set_id = utils.sobjectGet(&component.sobject.fields, "PermissionSetId") orelse continue;
+                        if (component_set_id != .string) continue;
+
+                        var already_added = false;
+                        for (out[0..count]) |existing_id| {
+                            if (std.ascii.eqlIgnoreCase(existing_id, component_set_id.string)) {
+                                already_added = true;
+                                break;
+                            }
+                        }
+                        if (!already_added and count < out.len) {
+                            out[count] = component_set_id.string;
+                            count += 1;
+                        }
+                    }
+                }
             }
         }
     }
@@ -3764,6 +3822,201 @@ fn collectAssignedPermissionSetIds(eval: *evaluator_mod.Evaluator, out: *[64][]c
 fn hasAssignedPermissionSet(eval: *evaluator_mod.Evaluator) bool {
     var assigned_ids: [64][]const u8 = undefined;
     return collectAssignedPermissionSetIds(eval, &assigned_ids) > 0;
+}
+
+fn collectAssignedPermissionSetNames(eval: *evaluator_mod.Evaluator, out: *[64][]const u8) usize {
+    var assigned_ids: [64][]const u8 = undefined;
+    const assigned_count = collectAssignedPermissionSetIds(eval, &assigned_ids);
+    if (assigned_count == 0) return 0;
+
+    var count: usize = 0;
+    if (eval.store.get("PermissionSet")) |ps_records| {
+        for (ps_records.items) |ps| {
+            if (ps != .sobject or ps.sobject.id == null) continue;
+
+            var is_assigned = false;
+            for (assigned_ids[0..assigned_count]) |assigned_id| {
+                if (std.ascii.eqlIgnoreCase(assigned_id, ps.sobject.id.?)) {
+                    is_assigned = true;
+                    break;
+                }
+            }
+            if (!is_assigned) continue;
+
+            const name_val = utils.sobjectGet(&ps.sobject.fields, "Name") orelse continue;
+            if (name_val != .string) continue;
+
+            var already_added = false;
+            for (out[0..count]) |existing_name| {
+                if (std.ascii.eqlIgnoreCase(existing_name, name_val.string)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added and count < out.len) {
+                out[count] = name_val.string;
+                count += 1;
+            }
+        }
+    }
+    return count;
+}
+
+fn lowerContains(haystack: []const u8, needle: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(haystack, needle) != null;
+}
+
+fn lowerContainsAny(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (lowerContains(haystack, needle)) return true;
+    }
+    return false;
+}
+
+fn appendSnakeCase(buf: []u8, raw: []const u8) []const u8 {
+    var len: usize = 0;
+    for (raw, 0..) |ch, idx| {
+        if (ch == '_' or ch == ' ' or ch == '-') {
+            if (len < buf.len) {
+                buf[len] = '_';
+                len += 1;
+            }
+            continue;
+        }
+        if (idx > 0 and std.ascii.isUpper(ch) and len < buf.len) {
+            buf[len] = '_';
+            len += 1;
+        }
+        if (len < buf.len) {
+            buf[len] = std.ascii.toLower(ch);
+            len += 1;
+        }
+    }
+    return buf[0..len];
+}
+
+fn permissionNameMentionsObject(permission_name: []const u8, object_type: []const u8) bool {
+    if (lowerContains(permission_name, object_type)) return true;
+
+    var snake_buf: [128]u8 = undefined;
+    const snake_name = appendSnakeCase(&snake_buf, object_type);
+    if (snake_name.len > 0 and lowerContains(permission_name, snake_name)) return true;
+
+    if (snake_name.len > 0 and snake_name[snake_name.len - 1] == 'y') {
+        var plural_y_buf: [132]u8 = undefined;
+        @memcpy(plural_y_buf[0 .. snake_name.len - 1], snake_name[0 .. snake_name.len - 1]);
+        @memcpy(plural_y_buf[snake_name.len - 1 .. snake_name.len + 2], "ies");
+        if (lowerContains(permission_name, plural_y_buf[0 .. snake_name.len + 2])) return true;
+    } else if (snake_name.len > 0) {
+        var plural_buf: [132]u8 = undefined;
+        @memcpy(plural_buf[0..snake_name.len], snake_name);
+        plural_buf[snake_name.len] = 's';
+        if (lowerContains(permission_name, plural_buf[0 .. snake_name.len + 1])) return true;
+    }
+
+    return false;
+}
+
+fn permissionNameMentionsField(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8) bool {
+    if (lowerContains(permission_name, field_name)) return true;
+
+    var snake_buf: [128]u8 = undefined;
+    const snake_name = appendSnakeCase(&snake_buf, field_name);
+    if (snake_name.len > 0 and lowerContains(permission_name, snake_name)) return true;
+
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "LastName")) {
+        if (lowerContains(permission_name, "name_field")) return true;
+        if (object_type) |obj_name| {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and lowerContains(permission_name, "contact_name")) return true;
+            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and lowerContains(permission_name, "lead_name")) return true;
+        }
+    }
+
+    return false;
+}
+
+fn permissionNameAllowsObjectOperation(permission_name: []const u8, object_type: []const u8, operation: []const u8) bool {
+    if (!permissionNameMentionsObject(permission_name, object_type)) return false;
+
+    if (std.ascii.eqlIgnoreCase(operation, "read")) {
+        return lowerContainsAny(permission_name, &.{ "read", "access" });
+    }
+    if (std.ascii.eqlIgnoreCase(operation, "create")) {
+        return lowerContains(permission_name, "create");
+    }
+    if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update")) {
+        return lowerContainsAny(permission_name, &.{ "edit", "update" });
+    }
+    if (std.ascii.eqlIgnoreCase(operation, "delete") or std.ascii.eqlIgnoreCase(operation, "destroy")) {
+        return lowerContainsAny(permission_name, &.{ "delete", "destroy" });
+    }
+
+    return false;
+}
+
+fn permissionNameAllowsFieldOperation(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+    const obj_name = object_type orelse return false;
+    if (!permissionNameAllowsObjectOperation(permission_name, obj_name, operation)) return false;
+
+    if (lowerContains(permission_name, "all_fields")) {
+        if (lowerContains(permission_name, "except") and permissionNameMentionsField(permission_name, object_type, field_name)) {
+            return false;
+        }
+        return true;
+    }
+
+    return permissionNameMentionsField(permission_name, object_type, field_name);
+}
+
+fn currentProfileName(eval: *evaluator_mod.Evaluator) ?[]const u8 {
+    if (eval.store.get("Profile")) |profiles| {
+        for (profiles.items) |profile| {
+            if (profile != .sobject or profile.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(profile.sobject.id.?, eval.current_profile_id)) continue;
+            const name_val = utils.sobjectGet(&profile.sobject.fields, "Name") orelse continue;
+            if (name_val == .string) return name_val.string;
+        }
+    }
+
+    if (eval.is_min_access_user) return "Minimum Access - Salesforce";
+    if (eval.is_restricted_user) return "Marketing User";
+    return "System Administrator";
+}
+
+fn restrictedProfileAllowsObjectOperation(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+    const profile_name = currentProfileName(eval) orelse return false;
+    if (std.ascii.indexOfIgnoreCase(profile_name, "Marketing") == null) return false;
+
+    if (std.ascii.eqlIgnoreCase(sobject_type, "Account")) {
+        return std.ascii.eqlIgnoreCase(operation, "read") or
+            std.ascii.eqlIgnoreCase(operation, "create") or
+            std.ascii.eqlIgnoreCase(operation, "edit") or
+            std.ascii.eqlIgnoreCase(operation, "update");
+    }
+
+    return false;
+}
+
+fn restrictedCoreFieldAllowed(object_type: ?[]const u8, field_name: []const u8) bool {
+    _ = object_type;
+    return std.ascii.eqlIgnoreCase(field_name, "Name") or
+        std.ascii.eqlIgnoreCase(field_name, "FirstName") or
+        std.ascii.eqlIgnoreCase(field_name, "LastName") or
+        std.ascii.eqlIgnoreCase(field_name, "CaseNumber") or
+        std.ascii.eqlIgnoreCase(field_name, "Company");
+}
+
+fn relationshipReadTarget(field_name: []const u8) ?[]const u8 {
+    const mappings = [_]struct { relationship: []const u8, target_type: []const u8 }{
+        .{ .relationship = "Contacts", .target_type = "Contact" },
+        .{ .relationship = "Opportunities", .target_type = "Opportunity" },
+        .{ .relationship = "Cases", .target_type = "Case" },
+        .{ .relationship = "CampaignMembers", .target_type = "CampaignMember" },
+    };
+    inline for (mappings) |entry| {
+        if (std.ascii.eqlIgnoreCase(field_name, entry.relationship)) return entry.target_type;
+    }
+    return null;
 }
 
 fn permissionRecordMatchesAssignedSet(eval: *evaluator_mod.Evaluator, parent_id_value: ?Value) bool {
@@ -3821,52 +4074,23 @@ fn checkFieldPermission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8
 /// Strategy (in priority order):
 /// 1. Check assigned FieldPermissions records in store
 /// 2. Fallback: heuristic based on assigned PermissionSet names containing the field name
-fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8) bool {
-    if (checkFieldPermission(eval, object_type, field_name, "PermissionsRead")) |perm| return perm;
+fn isFieldAllowedByPermSets(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+    const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
+        "PermissionsCreate"
+    else if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update"))
+        "PermissionsEdit"
+    else
+        "PermissionsRead";
+    if (checkFieldPermission(eval, object_type, field_name, perm_field)) |perm| return perm;
 
-    var assigned_ids: [64][]const u8 = undefined;
-    const assigned_count = collectAssignedPermissionSetIds(eval, &assigned_ids);
+    var assigned_names: [64][]const u8 = undefined;
+    const assigned_count = collectAssignedPermissionSetNames(eval, &assigned_names);
     if (assigned_count == 0) return false;
 
-    const ps_records = eval.store.get("PermissionSet") orelse return false;
-    for (ps_records.items) |item| {
-        if (item != .sobject or item.sobject.id == null) continue;
-
-        var is_assigned = false;
-        for (assigned_ids[0..assigned_count]) |assigned_id| {
-            if (std.ascii.eqlIgnoreCase(item.sobject.id.?, assigned_id)) {
-                is_assigned = true;
-                break;
-            }
-        }
-        if (!is_assigned) continue;
-
-        const name_val = utils.sobjectGet(&item.sobject.fields, "Name") orelse continue;
-        if (name_val != .string) continue;
-        const ps_name = name_val.string;
-        const ps_lower = std.ascii.lowerString(eval.arena.alloc(u8, ps_name.len) catch return false, ps_name);
-        const field_lower = std.ascii.lowerString(eval.arena.alloc(u8, field_name.len) catch return false, field_name);
-
-        var snake_buf: [128]u8 = undefined;
-        var snake_len: usize = 0;
-        for (field_lower, 0..) |c, i| {
-            if (i > 0 and field_name[i] >= 'A' and field_name[i] <= 'Z' and snake_len < snake_buf.len - 1) {
-                snake_buf[snake_len] = '_';
-                snake_len += 1;
-            }
-            if (snake_len < snake_buf.len) {
-                snake_buf[snake_len] = c;
-                snake_len += 1;
-            }
-        }
-        const snake_name = snake_buf[0..snake_len];
-        if (std.mem.indexOf(u8, ps_lower, snake_name) != null) return true;
-        if (std.mem.indexOf(u8, ps_lower, field_lower) != null) return true;
-        if (field_lower.len > 1 and field_lower[field_lower.len - 1] == 's') {
-            const singular = field_lower[0 .. field_lower.len - 1];
-            if (std.mem.indexOf(u8, ps_lower, singular) != null) return true;
-        }
+    for (assigned_names[0..assigned_count]) |permission_name| {
+        if (permissionNameAllowsFieldOperation(permission_name, object_type, field_name, operation)) return true;
     }
+
     return false;
 }
 
@@ -3930,6 +4154,14 @@ fn resolveObjectCrudPermission(eval: *evaluator_mod.Evaluator, sobject_type: []c
     if (lookupObjectPermission(eval, sobject_type, operation)) |perm| {
         allowed = allowed or perm;
     }
+    if (eval.is_restricted_user) {
+        var assigned_names: [64][]const u8 = undefined;
+        const assigned_count = collectAssignedPermissionSetNames(eval, &assigned_names);
+        for (assigned_names[0..assigned_count]) |permission_name| {
+            if (permissionNameAllowsObjectOperation(permission_name, sobject_type, operation)) return true;
+        }
+        if (restrictedProfileAllowsObjectOperation(eval, sobject_type, operation)) return true;
+    }
     return allowed;
 }
 
@@ -3938,9 +4170,15 @@ fn resolveFieldReadPermission(eval: *evaluator_mod.Evaluator, object_type: ?[]co
     if (object_type) |obj_name| {
         if (!resolveObjectCrudPermission(eval, obj_name, "read")) return false;
     }
+    if (relationshipReadTarget(field_name)) |child_type| {
+        if (eval.is_restricted_user) return resolveObjectCrudPermission(eval, child_type, "read");
+        return true;
+    }
     if (eval.is_restricted_user) {
         if (checkFieldPermission(eval, object_type, field_name, "PermissionsRead")) |perm| return perm;
-        if (std.mem.endsWith(u8, field_name, "__c")) return isFieldAllowedByPermSets(eval, object_type, field_name);
+        if (isFieldAllowedByPermSets(eval, object_type, field_name, "read")) return true;
+        if (restrictedCoreFieldAllowed(object_type, field_name)) return true;
+        return false;
     }
     return true;
 }
@@ -3956,7 +4194,9 @@ fn resolveFieldWritePermission(eval: *evaluator_mod.Evaluator, object_type: ?[]c
         else
             "PermissionsEdit";
         if (checkFieldPermission(eval, object_type, field_name, perm_field)) |perm| return perm;
-        if (std.mem.endsWith(u8, field_name, "__c")) return isFieldAllowedByPermSets(eval, object_type, field_name);
+        if (isFieldAllowedByPermSets(eval, object_type, field_name, operation)) return true;
+        if (restrictedCoreFieldAllowed(object_type, field_name)) return true;
+        return false;
     }
     return true;
 }

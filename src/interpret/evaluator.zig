@@ -1027,6 +1027,27 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn isBuiltinStaticNamespace(simple_name: []const u8) bool {
+        const builtin_names = [_][]const u8{
+            "System",      "String",       "Id",          "Integer",
+            "Long",        "Boolean",      "Decimal",     "Double",
+            "Date",        "Math",         "Time",        "TimeZone",
+            "DateTime",    "JSON",         "UserInfo",    "LoggingLevel",
+            "Quiddity",    "UUID",         "OrgLimits",   "Database",
+            "RestContext", "HttpResponse", "HttpRequest", "Schema",
+            "Security",    "AccessLevel",  "ConnectApi",  "FeatureManagement",
+            "Limits",      "Script",       "Pattern",     "Type",
+            "Request",     "Crypto",       "Blob",        "EncodingUtil",
+            "Messaging",   "EventBus",     "Test",        "Cache",
+            "Http",        "CanTheUser",   "OrgShape",    "ApexPages",
+            "Network",     "Url",          "URL",         "AccessType",
+        };
+        inline for (builtin_names) |builtin_name| {
+            if (std.ascii.eqlIgnoreCase(simple_name, builtin_name)) return true;
+        }
+        return false;
+    }
+
     /// Build a Salesforce-format stack trace string for a constructed Exception.
     /// Format: "Class.ClassName.methodName: line N, column 1\n..."
     /// Exceptions created inside constructors only expose the constructor and
@@ -1409,8 +1430,10 @@ pub const Evaluator = struct {
             return self.handleDatabaseMethod(method_name, args, self.global_env);
         }
 
-        // Builtin class stubs (before user-defined classes)
-        if (!(std.ascii.eqlIgnoreCase(class_name, "Database") and self.findClass(class_name) != null)) {
+        // Builtin class stubs (before user-defined classes), except when the
+        // class name itself is a user-defined class that intentionally shadows
+        // a builtin static namespace like Security or CanTheUser.
+        if (!(isBuiltinStaticNamespace(class_name) and self.findClass(class_name) != null)) {
             var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
             if (try builtins.dispatchStatic(&bctx, class_name, method_name, args)) |result| {
                 return result;
@@ -7963,11 +7986,9 @@ pub const Evaluator = struct {
                 return self.evalInstanceMethod(rebound, mc.method, args.items, current_env);
             }
 
-            // Let a user-defined class named Database shadow the platform Database
-            // namespace only when that class is actually visible at this call-site.
-            // Unrelated inner classes named Database must not hijack platform
-            // Database.executeBatch()/delete()/etc. in other classes.
-            if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
+            // Let user-defined classes shadow platform static namespaces only
+            // when the identifier collides with a builtin class name.
+            if (isBuiltinStaticNamespace(class_name)) {
                 if (self.resolveVisibleUserClassInScope(current_env, class_name)) |visible_class| {
                     return self.callMethod(visible_class, mc.method, args.items);
                 }

@@ -2218,6 +2218,134 @@ test "E2E: stripInaccessible keeps Id on update records" {
     try std.testing.expectEqualStrings("1:001000000000001AAA:updated", result.value.string);
 }
 
+test "E2E: user-defined classes shadow builtin static helpers" {
+    const source =
+        \\public class Security {
+        \\    public static String stripInaccessible(String marker) {
+        \\        return 'shadow:' + marker;
+        \\    }
+        \\}
+        \\public class SecurityShadowTest {
+        \\    public static String test() {
+        \\        return Security.stripInaccessible('ok');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SecurityShadowTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("shadow:ok", result.value.string);
+}
+
+test "E2E: stripInaccessible READABLE removes selected null fields without access" {
+    const source =
+        \\public class ReadableNullFieldStripTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Reader',
+        \\            Username = 'reader.nullstrip@example.com',
+        \\            Email = 'reader.nullstrip@example.com',
+        \\            Alias = 'rdrs'
+        \\        );
+        \\        insert u;
+        \\        PermissionSet ps = new PermissionSet(Name = 'AccountReadOnly', Label = 'AccountReadOnly');
+        \\        insert ps;
+        \\        ObjectPermissions op = new ObjectPermissions(ParentId = ps.Id, SobjectType = 'Account');
+        \\        op.PermissionsRead = true;
+        \\        insert op;
+        \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
+        \\        return u;
+        \\    }
+        \\    public static Boolean test() {
+        \\        insert new Account(Name = 'Example');
+        \\        User u = makeUser();
+        \\        Boolean stripped = false;
+        \\        System.runAs(u) {
+        \\            SObjectAccessDecision decision = Security.stripInaccessible(
+        \\                AccessType.READABLE,
+        \\                [SELECT Id, Name, ShippingStreet FROM Account]
+        \\            );
+        \\            List<Account> rows = (List<Account>) decision.getRecords();
+        \\            try {
+        \\                String ignored = rows[0].ShippingStreet;
+        \\            } catch (SObjectException e) {
+        \\                stripped = e.getMessage().containsIgnoreCase('without querying');
+        \\            }
+        \\        }
+        \\        return stripped;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ReadableNullFieldStripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: permission set groups expand assigned permission sets" {
+    const source =
+        \\public class PermissionSetGroupExpansionTest {
+        \\    private static User makeUser() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Grouped',
+        \\            Username = 'grouped.permissions@example.com',
+        \\            Email = 'grouped.permissions@example.com',
+        \\            Alias = 'grpd'
+        \\        );
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\    public static Boolean test() {
+        \\        PermissionSet ps = new PermissionSet(
+        \\            Name = 'Allows_read_access_to_account_shipping_street',
+        \\            Label = 'Allows_read_access_to_account_shipping_street'
+        \\        );
+        \\        insert ps;
+        \\        PermissionSetGroup psg = new PermissionSetGroup(
+        \\            DeveloperName = 'Account_Read_Group',
+        \\            MasterLabel = 'Account Read Group'
+        \\        );
+        \\        insert psg;
+        \\        insert new PermissionSetGroupComponent(
+        \\            PermissionSetGroupId = psg.Id,
+        \\            PermissionSetId = ps.Id
+        \\        );
+        \\        User u = makeUser();
+        \\        insert new PermissionSetAssignment(
+        \\            PermissionSetGroupId = psg.Id,
+        \\            AssigneeId = u.Id
+        \\        );
+        \\        Boolean allowed = false;
+        \\        System.runAs(u) {
+        \\            SObjectAccessDecision decision = Security.stripInaccessible(
+        \\                AccessType.READABLE,
+        \\                new List<Account>{
+        \\                    new Account(Name = 'Example', ShippingStreet = '123 Main')
+        \\                }
+        \\            );
+        \\            List<Account> rows = (List<Account>) decision.getRecords();
+        \\            allowed = ((String) rows[0].get('ShippingStreet')) == '123 Main';
+        \\        }
+        \\        return allowed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PermissionSetGroupExpansionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expect(result.value.boolean);
+}
+
 test "E2E: synthetic automated-process User query works when the User store is non-empty" {
     const source =
         \\public class AutomatedProcessUserQueryTest {
