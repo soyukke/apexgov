@@ -10127,6 +10127,15 @@ pub const Evaluator = struct {
             try map.key_values.put(self.arena, key, args[0]);
             return .void_val;
         }
+        // Apex's Map.equals(Object) compares entries pairwise. Used by user classes
+        // that override `equals` and delegate to their internal Map (e.g. apex-expression's
+        // Environment). Missing this returned null and silently broke equality checks.
+        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
+            return Value{ .boolean = self.valuesEqual(Value{ .map = map }, args[0]) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = try self.valueHashCode(Value{ .map = map }) };
+        }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
             if (self.findMapEntryKey(map, args[0])) |key| {
                 if (map.entries.get(key)) |v| return v;
@@ -10257,6 +10266,12 @@ pub const Evaluator = struct {
             const key = try self.setEntryKey(args[0]);
             try set.entries.put(self.arena, key, args[0]);
             return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
+            return Value{ .boolean = self.valuesEqual(Value{ .set = set }, args[0]) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+            return Value{ .integer = try self.valueHashCode(Value{ .set = set }) };
         }
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
             return Value{ .boolean = self.findSetEntryKey(set, args[0]) != null };

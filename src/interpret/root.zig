@@ -4504,6 +4504,29 @@ test "E2E: bitwise operators on integers return integer results" {
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
+test "E2E: Map.equals delegates pairwise value comparison" {
+    // Apex-style user classes often override `equals` by comparing internal
+    // collections (e.g. apex-expression's Environment delegates to
+    // `variables.equals(other.variables)`). The interpreter used to return null
+    // for Map.equals because only List exposed it, breaking downstream equality.
+    const source =
+        \\public class MapEqualsProbe {
+        \\    public static String test() {
+        \\        Map<String, Object> a = new Map<String, Object>{ 'name' => 'Bob', 'age' => 42 };
+        \\        Map<String, Object> b = new Map<String, Object>{ 'name' => 'Bob', 'age' => 42 };
+        \\        Map<String, Object> c = new Map<String, Object>{ 'name' => 'Bob', 'age' => 43 };
+        \\        return String.valueOf(a.equals(b)) + ',' + String.valueOf(a.equals(c));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MapEqualsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true,false", result.value.string);
+}
+
 test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     // apex-expression's DSL tests build throw-away Users inside System.runAs
     // without ever inserting them. UserInfo methods used to return the default
