@@ -2302,7 +2302,11 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     // Create a map with common fields
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
-    for ([_][]const u8{ "Id", "Name", "CreatedDate", "LastModifiedDate", "OwnerId", "IsDeleted" }) |field_name| {
+    for ([_][]const u8{
+        "Id",        "Name",           "CreatedDate",    "LastModifiedDate",
+        "OwnerId",   "IsDeleted",      "CreatedById",    "LastModifiedById",
+        "CreatedBy", "LastModifiedBy", "SystemModstamp",
+    }) |field_name| {
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and !hasImplicitNameField(obj_name)) continue;
         try fields_kv.entries.put(ctx.arena, field_name, try createSObjectFieldTokenValue(ctx.arena, obj_name, field_name));
     }
