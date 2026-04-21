@@ -4480,6 +4480,31 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: fflib_IDGenerator.generate provides a fake id when class source is absent" {
+    // fflib-apex-common tests reference fflib_IDGenerator from the sibling fflib-apex-mocks
+    // package, but when only fflib-apex-common is loaded the class is missing and tests
+    // crash with `null.Id` downstream. We stub the helper with a deterministic fake id —
+    // only when the user hasn't actually supplied their own fflib_IDGenerator.
+    const source =
+        \\public class FflibIdGeneratorStubProbe {
+        \\    public static String test() {
+        \\        Id a = fflib_IDGenerator.generate(Schema.Account.SObjectType);
+        \\        Id b = fflib_IDGenerator.generate(Schema.Account.SObjectType);
+        \\        if (a == null || b == null) return 'null-id';
+        \\        if (a == b) return 'duplicate-id';
+        \\        if (!String.valueOf(a).startsWith('001')) return 'bad-prefix:' + String.valueOf(a);
+        \\        return 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FflibIdGeneratorStubProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
 test "E2E: Contact exposes Tasks and Account exposes Cases as child relationships" {
     // `getChildRelationships()` must include well-known standard relationships so that
     // fflib_QueryFactory's `subselectQuery('Tasks')` style lookups succeed. Prior to this
