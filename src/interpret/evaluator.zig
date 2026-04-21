@@ -926,6 +926,10 @@ pub const Evaluator = struct {
                     self.call_stack.items[self.call_stack.items.len - 1].line = tl;
             }
         }
+        // Initialize static fields in declaration order, then re-run any initializer
+        // whose result was `null_val` in case it referenced a later-declared field.
+        // This matches Apex's behaviour where `X = Y.method()` pairs with a later
+        // `Y = ...` declaration without a compile error.
         for (cd.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
@@ -942,6 +946,31 @@ pub const Evaluator = struct {
                 },
                 else => {},
             }
+        }
+        // Second pass: retry initializers that produced null but had a real expression.
+        // Bounded retry guards against circular references.
+        var retry_attempts: u8 = 0;
+        while (retry_attempts < 4) : (retry_attempts += 1) {
+            var made_progress = false;
+            for (cd.members) |member| {
+                switch (member) {
+                    .field_decl => |fd| {
+                        if (!fd.modifiers.is_static) continue;
+                        const init_expr = fd.initializer orelse continue;
+                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        const current = self.global_env.get(key) orelse Value.null_val;
+                        if (current != .null_val) continue;
+                        const val = self.evalExpr(init_expr, self.global_env) catch Value.null_val;
+                        if (val == .null_val) continue;
+                        self.global_env.set(key, val) catch {
+                            self.global_env.define(key, val) catch {};
+                        };
+                        made_progress = true;
+                    },
+                    else => {},
+                }
+            }
+            if (!made_progress) break;
         }
     }
 

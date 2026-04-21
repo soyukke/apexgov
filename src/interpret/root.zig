@@ -4504,6 +4504,33 @@ test "E2E: bitwise operators on integers return integer results" {
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
+test "E2E: static field initializer can forward-reference a later static field" {
+    // Apex's real compiler allows:
+    //
+    //     private static final Integer HEX_BASE = HEX_CHARACTERS.length();
+    //     private static final String HEX_CHARACTERS = '0123456789abcdef';
+    //
+    // where `HEX_BASE` depends on a field declared after it. The interpreter used
+    // to leave the forward-referencing field null because it only initialised
+    // fields in declaration order. A bounded retry pass fills in values once the
+    // referenced fields have been initialised.
+    const source =
+        \\public class StaticForwardRefProbe {
+        \\    private static final Integer HEX_BASE = HEX_CHARACTERS.length();
+        \\    private static final String HEX_CHARACTERS = '0123456789abcdef';
+        \\    public static String test() {
+        \\        return String.valueOf(HEX_BASE) + ':' + HEX_CHARACTERS;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StaticForwardRefProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("16:0123456789abcdef", result.value.string);
+}
+
 test "E2E: bitwise operators on booleans return boolean results" {
     // NebulaLogger uses `collectionA != null & collectionB.isEmpty() == false`
     // where `&` is applied to two Booleans. The result must stay a Boolean so
