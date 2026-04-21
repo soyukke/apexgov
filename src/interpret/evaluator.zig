@@ -171,6 +171,10 @@ pub const Evaluator = struct {
     // Current user context (defaults to the synthetic system test user)
     current_user_id: []const u8 = "005000000000001",
     current_profile_id: []const u8 = "00e000000000001",
+    // Ephemeral User record surfaced inside `System.runAs(...)`. When set, UserInfo
+    // methods read from here instead of the data store, so tests that build a
+    // throw-away User (without inserting it) still get the values they configured.
+    current_user_override: ?*types.SObject = null,
     // Batch job execution queue used to model chained Database.executeBatch calls
     pending_batch_jobs: std.ArrayListUnmanaged(Value) = .empty,
     batch_job_runner_active: bool = false,
@@ -2006,6 +2010,13 @@ pub const Evaluator = struct {
                 const prev_standard = self.is_standard_user;
                 const prev_user_id = self.current_user_id;
                 const prev_profile_id = self.current_profile_id;
+                const prev_user_override = self.current_user_override;
+                if (user_val == .sobject) {
+                    self.current_user_override = user_val.sobject;
+                } else {
+                    self.current_user_override = null;
+                }
+                defer self.current_user_override = prev_user_override;
                 // Determine if the user is a restricted/min-access/standard user
                 if (user_val == .sobject) {
                     if (user_val.sobject.id) |uid| self.current_user_id = uid;

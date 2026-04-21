@@ -4504,6 +4504,32 @@ test "E2E: bitwise operators on integers return integer results" {
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
+test "E2E: System.runAs exposes the target user's fields to UserInfo" {
+    // apex-expression's DSL tests build throw-away Users inside System.runAs
+    // without ever inserting them. UserInfo methods used to return the default
+    // synthetic user because the implementation only consulted the data store.
+    // A current_user_override slot keeps the runAs target visible while the
+    // block executes.
+    const source =
+        \\public class RunAsUserOverrideProbe {
+        \\    public static String test() {
+        \\        User target = new User(FirstName = 'Bob', LastName = 'Smith', Email = 'bob@example.com', LanguageLocaleKey = 'en_US');
+        \\        String result = '';
+        \\        System.runAs(target) {
+        \\            result = UserInfo.getFirstName() + '|' + UserInfo.getLastName() + '|' + UserInfo.getUserEmail() + '|' + UserInfo.getLanguage();
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RunAsUserOverrideProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Bob|Smith|bob@example.com|en_US", result.value.string);
+}
+
 test "E2E: bare method call inside a subclass resolves to inherited builtin" {
     // fflib_HttpException and similar user exception subclasses call bare
     // `setMessage(s)` from their constructors. The interpreter used to leave the

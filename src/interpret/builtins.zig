@@ -1219,6 +1219,11 @@ fn dispatchObjJsonGenerator(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
 
 fn dispatchStaticUserInfo(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     const current_user = blk: {
+        // `System.runAs(user) { ... }` can install a throw-away User without
+        // inserting it. Inside that block, prefer the override so UserInfo
+        // methods return what the test configured instead of the default
+        // synthetic user.
+        if (ctx.eval.current_user_override) |override| break :blk override;
         if (ctx.eval.store.get("User")) |users| {
             for (users.items) |record| {
                 if (record != .sobject or record.sobject.id == null) continue;
@@ -1263,8 +1268,18 @@ fn dispatchStaticUserInfo(ctx: *BuiltinContext, method_name: []const u8) !?Value
         }
         return Value{ .string = "Standard" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLanguage")) return Value{ .string = "en_US" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLocale")) return Value{ .string = "en_US" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLanguage")) {
+        if (current_user_string(current_user, "LanguageLocaleKey")) |lang| return Value{ .string = lang };
+        return Value{ .string = "en_US" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocale")) {
+        if (current_user_string(current_user, "LocaleSidKey")) |locale| return Value{ .string = locale };
+        return Value{ .string = "en_US" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getUserEmail")) {
+        if (current_user_string(current_user, "Email")) |email| return Value{ .string = email };
+        return Value{ .string = "" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
         if (current_user_string(current_user, "TimeZoneSidKey")) |time_zone| return Value{ .string = time_zone };
         return Value{ .string = "America/Los_Angeles" };
