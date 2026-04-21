@@ -8593,6 +8593,18 @@ pub const Evaluator = struct {
                 return Value{ .object = sot };
             }
 
+            // Unknown static target — the identifier may actually resolve to an
+            // instance value via implicit `this` (a property getter on the enclosing
+            // class, for example `triggerNew.size()` inside a peer property getter).
+            // Route through evalExpr so instance-property getters fire.
+            if (self.findClass(class_name) == null) {
+                if (self.evalExpr(mc.object, current_env)) |obj_val| {
+                    if (obj_val != .null_val) {
+                        return self.evalInstanceMethod(obj_val, mc.method, args.items, current_env);
+                    }
+                } else |_| {}
+            }
+
             return self.callMethod(class_name, mc.method, args.items);
         }
 

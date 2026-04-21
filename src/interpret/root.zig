@@ -4480,6 +4480,46 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: method call on property-backed identifier invokes the getter" {
+    // `foo.size()` for a property-backed `foo` used to return null when the call
+    // happened inside another getter, because the method-call fast path bailed
+    // out to `callMethod` before falling back to evalExpr. TriggerBase's
+    // `triggerSize` getter (and similar peer-property patterns) need the getter
+    // to fire so `.size()` reaches the real list.
+    const source =
+        \\public virtual class PropertyMethodCallProbeBase {
+        \\    @TestVisible
+        \\    protected List<SObject> triggerNew {
+        \\        get { return triggerNew; }
+        \\        private set;
+        \\    }
+        \\    private Integer triggerSize {
+        \\        get {
+        \\            return triggerNew != null ? triggerNew.size() : 0;
+        \\        }
+        \\    }
+        \\    public Integer readSize() {
+        \\        return triggerSize;
+        \\    }
+        \\}
+        \\public class PropertyMethodCallProbe {
+        \\    public class Child extends PropertyMethodCallProbeBase {}
+        \\    public static String test() {
+        \\        Child c = new Child();
+        \\        c.triggerNew = new List<SObject>{ new Account() };
+        \\        Integer n = c.readSize();
+        \\        return String.valueOf(n);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PropertyMethodCallProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
 test "E2E: overload resolution matches Type arg against System.Type param" {
     // When user code declares the qualified `System.Type` form on a parameter,
     // the interpreter stores the runtime Type value with its simple class name
