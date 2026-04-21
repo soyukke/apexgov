@@ -2369,22 +2369,14 @@ fn hasImplicitNameField(object_type: []const u8) bool {
     return true;
 }
 
-fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
-    const desc = try ctx.arena.create(types.ObjectInstance);
-    desc.* = .{ .class_name = "DescribeSObjectResult" };
-    const is_custom = hasCustomObjectSuffix(obj_name);
-    try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "read") });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "create") });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "edit") });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "delete") });
-    try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
-    try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
-
-    // Fields map
+/// Build a fully-populated `FieldDescribeMap` object for the given SObject.
+/// `getMap()` on this object (or case-insensitive field access on it) returns the same
+/// map, matching the Apex describe contract regardless of whether the caller reached
+/// the map via `getDescribe().fields` or `Schema.SObjectType.<X>.fields`.
+pub fn createFieldDescribeMapValue(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const fields_map_obj = try ctx.arena.create(types.ObjectInstance);
     fields_map_obj.* = .{ .class_name = "FieldDescribeMap" };
-    // Create a map with common fields
+    try fields_map_obj.fields.put(ctx.arena, "owner", Value{ .string = obj_name });
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
     for ([_][]const u8{
@@ -2395,7 +2387,6 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and !hasImplicitNameField(obj_name)) continue;
         try fields_kv.entries.put(ctx.arena, field_name, try createSObjectFieldTokenValue(ctx.arena, obj_name, field_name));
     }
-    // Add custom fields from field-meta.xml type info
     if (ctx.eval.field_types.get(obj_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |fname, ftype| {
             _ = ftype;
@@ -2412,7 +2403,23 @@ fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
         }
     }
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
-    try desc.fields.put(ctx.arena, "fields", Value{ .object = fields_map_obj });
+    return Value{ .object = fields_map_obj };
+}
+
+fn createDescribeResult(ctx: *BuiltinContext, obj_name: []const u8) !Value {
+    const desc = try ctx.arena.create(types.ObjectInstance);
+    desc.* = .{ .class_name = "DescribeSObjectResult" };
+    const is_custom = hasCustomObjectSuffix(obj_name);
+    try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
+    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "read") });
+    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "create") });
+    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "edit") });
+    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = resolveObjectCrudPermission(ctx.eval, obj_name, "delete") });
+    try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
+    try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
+
+    // Fields map
+    try desc.fields.put(ctx.arena, "fields", try createFieldDescribeMapValue(ctx, obj_name));
 
     const local_name = describeLocalName(obj_name);
     const entity_label: []const u8 = ctx.eval.object_labels.get(obj_name) orelse local_name;

@@ -11755,8 +11755,8 @@ pub const Evaluator = struct {
                 try obj.object.fields.put(self.arena, "fieldSets", field_sets);
                 return field_sets;
             }
-            // Schema.SObjectType.fields → lightweight FieldDescribeMap keyed on the owner SObject.
-            // Follow-up `.fieldName` access resolves via Schema.SObjectField token creation.
+            // Schema.SObjectType.<X>.fields — share builder with `getDescribe().fields` so
+            // `getMap()` and case-insensitive lookups see a populated FieldDescribeMap.
             if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectType") and
                 std.ascii.eqlIgnoreCase(fa.field, "fields"))
             {
@@ -11765,10 +11765,8 @@ pub const Evaluator = struct {
                     if (name_val == .string) name_val.string else "SObject"
                 else
                     "SObject";
-                const fdm = try self.arena.create(types.ObjectInstance);
-                fdm.* = .{ .class_name = "FieldDescribeMap" };
-                try fdm.fields.put(self.arena, "owner", Value{ .string = object_name });
-                const fv = Value{ .object = fdm };
+                var ctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                const fv = try builtins.createFieldDescribeMapValue(&ctx, object_name);
                 try obj.object.fields.put(self.arena, "fields", fv);
                 return fv;
             }

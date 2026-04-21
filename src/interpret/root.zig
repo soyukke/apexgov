@@ -4480,6 +4480,31 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.getMap()" {
+    // Regression for a bug where the two describe-map paths produced different sizes.
+    // Consumers like fflib_SObjectDescribe.FieldsMap assert the two match, so we must
+    // populate the FieldDescribeMap identically no matter which entry point is used.
+    const source =
+        \\public class FieldMapParityProbe {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> viaSchemaShortcut = Schema.SObjectType.Account.fields.getMap();
+        \\        Map<String, Schema.SObjectField> viaDescribe = Account.SObjectType.getDescribe().fields.getMap();
+        \\        if (viaSchemaShortcut.size() != viaDescribe.size()) {
+        \\            return 'mismatch:' + String.valueOf(viaSchemaShortcut.size()) + '-vs-' + String.valueOf(viaDescribe.size());
+        \\        }
+        \\        if (viaSchemaShortcut.size() < 5) return 'too-small:' + String.valueOf(viaSchemaShortcut.size());
+        \\        return 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FieldMapParityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
 test "E2E: String.split with regex metacharacters routes through the regex engine" {
     // Apex's `String.split(regex)` takes a regex, so `split('\\s+')` must collapse any run
     // of whitespace. The prior interpreter stripped backslashes and did a literal split,
