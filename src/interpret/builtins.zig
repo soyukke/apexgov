@@ -4044,6 +4044,52 @@ fn dispatchObjSchemaDescribeField(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula")) {
+        // Field-meta.xml <defaultValue> round-trip not wired yet; resolve
+        // well-known standard-field defaults so that utility classes using
+        // `(String) Task.Status.getDescribe().getDefaultValue()` style code
+        // get sensible values instead of null.
+        if (object_type) |obj_name| {
+            if (standardFieldDefault(obj_name, field_name)) |default_str| {
+                return Value{ .string = default_str };
+            }
+        }
+        if (obj.fields.get("defaultValue")) |dv| return dv;
+        return Value.null_val;
+    }
+    return null;
+}
+
+/// Known default values for a handful of standard-object fields that are
+/// frequently read via `.getDefaultValue()` in utility code.  Returns null
+/// when no default is known.
+fn standardFieldDefault(object_type: []const u8, field_name: []const u8) ?[]const u8 {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(object_type, "Task")) {
+        if (ci.eqlIgnoreCase(field_name, "Status")) return "Not Started";
+        if (ci.eqlIgnoreCase(field_name, "Priority")) return "Normal";
+        if (ci.eqlIgnoreCase(field_name, "Type")) return "";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Event")) {
+        if (ci.eqlIgnoreCase(field_name, "ShowAs")) return "Busy";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Case")) {
+        if (ci.eqlIgnoreCase(field_name, "Status")) return "New";
+        if (ci.eqlIgnoreCase(field_name, "Priority")) return "Medium";
+        if (ci.eqlIgnoreCase(field_name, "Origin")) return "";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Lead")) {
+        if (ci.eqlIgnoreCase(field_name, "Status")) return "Open - Not Contacted";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Opportunity")) {
+        if (ci.eqlIgnoreCase(field_name, "StageName")) return "";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Contract")) {
+        if (ci.eqlIgnoreCase(field_name, "Status")) return "Draft";
+    }
+    if (ci.eqlIgnoreCase(object_type, "Order")) {
+        if (ci.eqlIgnoreCase(field_name, "Status")) return "Draft";
+    }
     return null;
 }
 

@@ -13151,3 +13151,27 @@ test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
     defer result.deinit();
     try std.testing.expectEqualStrings("0:1:2", result.value.string);
 }
+
+test "E2E: standard-field describe exposes known default values" {
+    // Anonymized probe: utility classes frequently pre-seed required
+    // picklists via `(String) Task.Status.getDescribe().getDefaultValue()`.
+    // Well-known standard-field defaults (Task.Status -> "Not Started",
+    // Case.Priority -> "Medium", Lead.Status -> "Open - Not Contacted")
+    // should round-trip through the describe API so inserts succeed.
+    const source =
+        \\public class StandardFieldDefaultProbe {
+        \\    public static String test() {
+        \\        String taskStatus = (String) Task.Status.getDescribe().getDefaultValue();
+        \\        String casePriority = (String) Case.Priority.getDescribe().getDefaultValue();
+        \\        String leadStatus = (String) Lead.Status.getDescribe().getDefaultValue();
+        \\        return taskStatus + '|' + casePriority + '|' + leadStatus;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "StandardFieldDefaultProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Not Started|Medium|Open - Not Contacted", result.value.string);
+}

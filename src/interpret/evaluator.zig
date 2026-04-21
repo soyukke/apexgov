@@ -3989,6 +3989,7 @@ pub const Evaluator = struct {
                     "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
                     "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
                     "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",          "AppMenuItem",
+                    "LeadStatus",                 "UserPreference",         "UserLogin",                    "LoginIp",             "LeadHistory",            "AccountHistory",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
@@ -16274,10 +16275,10 @@ pub const Evaluator = struct {
             "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
             "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowDefinitionView",
             "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",              "BatchApexErrorEvent",
-            "AsyncOperationEvent",     "AsyncOperationStatus",   "EventBusSubscriber",
+            "AsyncOperationEvent",     "AsyncOperationStatus",   "EventBusSubscriber",  "LeadStatus",             "UserPreference",       "UserLogin",            "LoginIp",
             // Standard object-Share sharing tables.
-             "AccountShare",           "OpportunityShare",     "CaseShare",            "LeadShare",
-            "ContactShare",            "CampaignShare",          "ContractShare",       "ProductShare",           "AssetShare",           "OrderShare",           "QuoteShare",
+            "AccountShare",            "OpportunityShare",       "CaseShare",           "LeadShare",              "ContactShare",         "CampaignShare",        "ContractShare",
+            "ProductShare",            "AssetShare",             "OrderShare",          "QuoteShare",
         };
         for (known) |kt| {
             if (std.ascii.eqlIgnoreCase(name, kt)) return true;
