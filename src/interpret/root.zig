@@ -4231,6 +4231,42 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
     try std.testing.expectEqualStrings("LastName", result.value.string);
 }
 
+test "E2E: ternary with enum literals carries hint into overload resolution" {
+    // Models a builder whose primitive overload normalises the argument into
+    // an enum before delegating to the enum overload through a ternary:
+    //   public Builder setMode(Boolean on) { return setMode(on ? Mode.A : Mode.B); }
+    // Before the hint fix, the inner setMode(on ? ... : ...) could not find
+    // either overload (the ternary result was an untyped string), so the
+    // call returned null and broke method chains.
+    const source =
+        \\public class TernaryEnumHintProbe {
+        \\    public enum Mode { A, B }
+        \\    public class Builder {
+        \\        public Mode state;
+        \\        public Builder setMode(Boolean on) {
+        \\            return setMode(on ? Mode.A : Mode.B);
+        \\        }
+        \\        public Builder setMode(Mode m) {
+        \\            this.state = m;
+        \\            return this;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Builder b = new Builder();
+        \\        Builder chained = b.setMode(true).setMode(false);
+        \\        if (chained == null) return 'null-chain';
+        \\        return String.valueOf(chained.state);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TernaryEnumHintProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("B", result.value.string);
+}
+
 test "E2E: TriggerOperation-typed parameter dispatches through enum overload" {
     // Models a framework where `executeWith(TriggerOperation)` coexists with a
     // `executeWith(String)` lookup overload. Interpreting the enum-typed

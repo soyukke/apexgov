@@ -7693,11 +7693,31 @@ pub const Evaluator = struct {
                 if (std.mem.indexOfScalar(u8, rendered, '<') != null) return rendered;
                 return null;
             },
+            .ternary => |te| {
+                // `cond ? then : else` — if both branches have a compatible hint
+                // (typically enum expressions like `flag ? MyEnum.A : MyEnum.B`),
+                // surface it so overload resolution can prefer the enum-typed
+                // parameter. If either branch lacks a hint or they disagree,
+                // fall back to null so the regular Value-based scoring runs.
+                const then_hint = self.extractExprTypeHint(te.then_expr, current_env) orelse
+                    self.enumAccessTypeName(te.then_expr) orelse null;
+                const else_hint = self.extractExprTypeHint(te.else_expr, current_env) orelse
+                    self.enumAccessTypeName(te.else_expr) orelse null;
+                if (then_hint != null and else_hint != null and
+                    std.ascii.eqlIgnoreCase(then_hint.?, else_hint.?))
+                {
+                    return then_hint;
+                }
+                if (then_hint != null) return then_hint;
+                if (else_hint != null) return else_hint;
+                return null;
+            },
             .identifier, .field_access => {
                 if (self.resolveAssignmentTargetType(expr, current_env)) |type_name| {
                     return stripTypeNamespace(type_name);
                 }
-                return null;
+                // Fall back to enum detection for bare `MyEnum.VALUE` forms.
+                return self.enumAccessTypeName(expr);
             },
             .method_call => |mc| {
                 const arg_count = mc.args.len;
