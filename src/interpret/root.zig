@@ -3081,6 +3081,26 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Datetime.format supports ISO week/year/day-of-week/day-of-year patterns" {
+    const source =
+        \\public class IsoDateFormatProbe {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstanceGmt(2020, 1, 1, 0, 0, 0);
+        \\        Datetime dtMidYear = Datetime.newInstanceGmt(2020, 7, 15, 0, 0, 0);
+        \\        return dt.formatGmt('w') + ',' + dt.formatGmt('Y') + ',' +
+        \\               dtMidYear.formatGmt('w') + ',' + dtMidYear.formatGmt('u') + ',' +
+        \\               dtMidYear.formatGmt('D');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IsoDateFormatProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1,2020,29,3,197", result.value.string);
+}
+
 test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date and Time" {
     const source =
         \\public class DateMathAndEncodingProbe {

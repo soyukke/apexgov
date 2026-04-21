@@ -10642,6 +10642,14 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(method, "month")) return Value{ .integer = dt.m };
             return Value{ .integer = dt.d };
         }
+        // dayOfYear() — 1-based day of year (Apex Date/Datetime helper)
+        if (std.ascii.eqlIgnoreCase(method, "dayOfYear")) {
+            const dt = parseIsoDate(s) orelse return Value.null_val;
+            const is_leap = (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
+            var doy: i32 = @as(i32, dayOfYear(dt.m, dt.d));
+            if (is_leap and dt.m > 2) doy += 1;
+            return Value{ .integer = doy };
+        }
         // addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
         if (std.ascii.eqlIgnoreCase(method, "addYears") or
             std.ascii.eqlIgnoreCase(method, "addMonths") or
@@ -10682,6 +10690,9 @@ pub const Evaluator = struct {
         }
         // formatGMT — format a DateTime string according to a pattern
         if (std.ascii.eqlIgnoreCase(method, "formatGMT") or std.ascii.eqlIgnoreCase(method, "formatGmt")) {
+            if (args.len > 0 and args[0] == .string) {
+                return self.formatDateTimePattern(s, args[0].string);
+            }
             // Parse ISO date: YYYY-MM-DDTHH:MM:SS
             if (s.len >= 19 and s[4] == '-' and s[7] == '-' and s[10] == 'T') {
                 const year = s[0..4];
@@ -12246,6 +12257,40 @@ pub const Evaluator = struct {
         return (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
     }
 
+    /// ISO 8601 day-of-week: Monday=1 ... Sunday=7.
+    fn isoDayOfWeek(year: i32, month: u8, day: u8) u8 {
+        // 1970-01-01 was a Thursday (ISO dow=4).
+        const epoch_days = isoDateToEpochDays(year, month, day);
+        const r = @mod(epoch_days + 3, 7); // Mon=0..Sun=6
+        return @as(u8, @intCast(r + 1));
+    }
+
+    const IsoWeek = struct { year: i32, week: u8 };
+
+    /// ISO 8601 week-of-year / week-year. Week 1 contains the first Thursday.
+    fn isoWeekOfYear(year: i32, month: u8, day: u8) IsoWeek {
+        // Day-of-year (1-based).
+        const is_leap = (@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0));
+        var doy: i32 = @as(i32, dayOfYear(month, day));
+        if (is_leap and month > 2) doy += 1;
+        const dow: i32 = @as(i32, isoDayOfWeek(year, month, day));
+        const woy_num = @divFloor((doy - dow + 10), 7);
+        if (woy_num < 1) {
+            // Week belongs to the previous year's last ISO week (52 or 53).
+            return isoWeekOfYear(year - 1, 12, 31);
+        }
+        const is_leap_this = if ((@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0))) true else false;
+        _ = is_leap_this;
+        // How many ISO weeks does this year have? Either 52 or 53.
+        const jan1_dow: i32 = @as(i32, isoDayOfWeek(year, 1, 1));
+        const dec31_dow: i32 = @as(i32, isoDayOfWeek(year, 12, 31));
+        const weeks_in_year: i32 = if (jan1_dow == 4 or dec31_dow == 4) 53 else 52;
+        if (woy_num > weeks_in_year) {
+            return IsoWeek{ .year = year + 1, .week = 1 };
+        }
+        return IsoWeek{ .year = year, .week = @as(u8, @intCast(woy_num)) };
+    }
+
     /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
     fn formatDateTimePattern(self: *Evaluator, s: []const u8, pattern: []const u8) !Value {
         const dt = parseIsoDate(s) orelse return Value{ .string = s };
@@ -12334,6 +12379,32 @@ pub const Evaluator = struct {
                 },
                 'a' => {
                     try result.appendSlice(self.arena, if (dt.h < 12) "AM" else "PM");
+                },
+                'w', 'Y' => {
+                    // ISO week (week-of-week-based-year) and week-year pair.
+                    // Week 1 is the week containing the first Thursday.
+                    const iso = isoWeekOfYear(dt.y, dt.m, dt.d);
+                    if (c == 'w') {
+                        const ws = try std.fmt.allocPrint(self.arena, "{d}", .{iso.week});
+                        try result.appendSlice(self.arena, ws);
+                    } else {
+                        const ys = try std.fmt.allocPrint(self.arena, "{d:0>4}", .{@as(u32, @intCast(iso.year))});
+                        try result.appendSlice(self.arena, ys);
+                    }
+                },
+                'u' => {
+                    // ISO day of week: Monday=1..Sunday=7.
+                    const dow = isoDayOfWeek(dt.y, dt.m, dt.d);
+                    const ds = try std.fmt.allocPrint(self.arena, "{d}", .{dow});
+                    try result.appendSlice(self.arena, ds);
+                },
+                'D' => {
+                    // Day of year (1-based).
+                    const is_leap = (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
+                    var day_of_year: u16 = dayOfYear(dt.m, dt.d);
+                    if (is_leap and dt.m > 2) day_of_year += 1;
+                    const ds = try std.fmt.allocPrint(self.arena, "{d}", .{day_of_year});
+                    try result.appendSlice(self.arena, ds);
                 },
                 '\'' => {
                     // Quoted literal text
