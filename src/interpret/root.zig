@@ -3081,6 +3081,27 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: String indexOf honours the optional fromIndex argument" {
+    const source =
+        \\public class IndexOfFromIndexTest {
+        \\    public static String test() {
+        \\        String s = 'abcdabcd';
+        \\        Integer a = s.indexOf('ab');
+        \\        Integer b = s.indexOf('ab', 1);
+        \\        Integer c = s.indexOf('ab', 5);
+        \\        Integer d = s.lastIndexOf('ab');
+        \\        return String.valueOf(a) + ':' + String.valueOf(b) + ':' + String.valueOf(c) + ':' + String.valueOf(d);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IndexOfFromIndexTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:4:-1:4", result.value.string);
+}
+
 test "E2E: List and Set values satisfy instanceof Iterable" {
     const source =
         \\public class IterableInstanceofTest {

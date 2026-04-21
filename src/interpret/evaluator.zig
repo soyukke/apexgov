@@ -10200,7 +10200,22 @@ pub const Evaluator = struct {
             return Value{ .boolean = std.mem.endsWith(u8, s, args[0].string) };
         }
         if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0 and args[0] == .string) {
-            const idx = std.mem.indexOf(u8, s, args[0].string);
+            // Apex String.indexOf(substring) and String.indexOf(substring, fromIndex)
+            const needle = args[0].string;
+            var from: usize = 0;
+            if (args.len >= 2 and args[1] == .integer) {
+                const raw = args[1].integer;
+                if (raw > 0) {
+                    const raw_u: usize = @intCast(raw);
+                    from = if (raw_u > s.len) s.len else raw_u;
+                }
+            }
+            if (from >= s.len and needle.len > 0) return Value{ .integer = -1 };
+            const idx = std.mem.indexOfPos(u8, s, from, needle);
+            return Value{ .integer = if (idx) |i| @intCast(i) else -1 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "lastIndexOf") and args.len > 0 and args[0] == .string) {
+            const idx = std.mem.lastIndexOf(u8, s, args[0].string);
             return Value{ .integer = if (idx) |i| @intCast(i) else -1 };
         }
         if (std.ascii.eqlIgnoreCase(method, "substring")) {
