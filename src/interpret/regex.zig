@@ -306,10 +306,13 @@ fn matchAt(
                     if (alt) |a| {
                         if (matchAt(a, 0, input, ip, groups, depth + 1, inner_base)) |initial_alt_end| {
                             // The inner match may have greedily consumed characters that the
-                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). Iterate the
-                            // alt_end from the greedy max down to the shortest valid length
-                            // and try the rest at each. Only positions where the inner
-                            // pattern still matches `input[ip..alt_end]` exactly are tried.
+                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
+                            // fails, try shorter inner matches down to the minimum valid length.
+                            // Fast path: when the alternative is a single greedy atom (`.*`,
+                            // `\w+`, `[abc]*`, etc.), any shorter length is valid by
+                            // construction, so we skip re-verifying via `matchAt` and just
+                            // iterate one char at a time — O(n) instead of O(n²).
+                            const greedy = greedyAtomBounds(a);
                             var alt_end: usize = initial_alt_end;
                             while (true) {
                                 if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
@@ -319,24 +322,28 @@ fn matchAt(
                                 }
                                 if (grp_idx > 0) groups.*[grp_idx] = null;
                                 if (alt_end <= ip) break;
-                                // Shrink by one character and verify inner still matches.
-                                var next_end: usize = alt_end - 1;
-                                const sub_input = input[0..next_end];
-                                const sub_match = matchAt(a, 0, sub_input, ip, groups, depth + 1, inner_base);
-                                if (sub_match) |e| {
-                                    // Inner may match a shorter prefix — use the longest length
-                                    // that still matches, which could be less than `next_end`.
-                                    next_end = e;
+                                if (greedy) |g| {
+                                    // Fast path: decrement until we'd violate the atom's lower
+                                    // bound (`ip + min_reps`); no `matchAt` needed.
+                                    const min_end = ip + g.min;
+                                    if (alt_end <= min_end) break;
+                                    alt_end -= 1;
                                 } else {
-                                    // No valid shorter inner match — give up on this alternative.
-                                    break;
+                                    // General path: verify shrunken input still matches.
+                                    var next_end: usize = alt_end - 1;
+                                    const sub_input = input[0..next_end];
+                                    const sub_match = matchAt(a, 0, sub_input, ip, groups, depth + 1, inner_base);
+                                    if (sub_match) |e| {
+                                        next_end = e;
+                                    } else {
+                                        break;
+                                    }
+                                    if (next_end == alt_end) {
+                                        if (next_end == 0) break;
+                                        next_end -= 1;
+                                    }
+                                    alt_end = next_end;
                                 }
-                                if (next_end == alt_end) {
-                                    // Avoid infinite loop when shrink produced no progress.
-                                    if (next_end == 0) break;
-                                    next_end -= 1;
-                                }
-                                alt_end = next_end;
                             }
                         }
                     } else break;
@@ -501,6 +508,25 @@ fn charClassMatches(pat: []const u8, pp: usize, c: u8) bool {
         }
     }
     return if (negate) !matched else matched;
+}
+
+/// Inspect the body of a capturing group to decide whether any inner-match length
+/// between `min` and the greedy maximum is valid. True only when the body is a
+/// single atom followed by `*`, `+`, `?`, or `{n,m}` — the common `.*`, `\w+`,
+/// `[abc]*` shapes that drive the fast shrink path in `matchAt`.
+fn greedyAtomBounds(pat: []const u8) ?struct { min: usize } {
+    const al = atomLength(pat, 0);
+    if (al == 0) return null;
+    const quant_str = pat[al..];
+    if (quant_str.len == 0) return null;
+    const q = parseQuantifier(quant_str);
+    // The atom + quantifier must be the entire body. Anything trailing invalidates
+    // the assumption that every shorter length is a valid match.
+    if (al + q.len != pat.len) return null;
+    if (!q.greedy) return null;
+    // `{n}` (fixed repetitions) doesn't allow shrinking below that exact length.
+    if (q.min == q.max) return null;
+    return .{ .min = q.min };
 }
 
 // ---------------------------------------------------------------------------
