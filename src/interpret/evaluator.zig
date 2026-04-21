@@ -16004,7 +16004,8 @@ pub const Evaluator = struct {
             "Pricebook2",              "PricebookEntry",         "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense", "EmailTemplate",
             "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
             "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowDefinitionView",
-            "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",
+            "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",              "BatchApexErrorEvent",
+            "AsyncOperationEvent",     "AsyncOperationStatus",
         };
         for (known) |kt| {
             if (std.ascii.eqlIgnoreCase(name, kt)) return true;

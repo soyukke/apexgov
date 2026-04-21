@@ -4480,6 +4480,41 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: Type.forName returns null for names that don't resolve" {
+    // Regression: metadata-driven trigger frameworks (apex-trigger-actions-framework
+    // at al.) read Apex class names from custom metadata and rely on
+    // `Type.forName(bogus).newInstance()` raising a NullPointerException to flag
+    // invalid configurations. The interpreter now returns a real null Type for names
+    // that aren't recognised — user classes, loaded SObjects, primitives, and the
+    // generic collection syntax still resolve.
+    const source =
+        \\public class TypeForNameNullProbe {
+        \\    public static String test() {
+        \\        Type missing = Type.forName('TotallyMadeUpClassName');
+        \\        if (missing != null) return 'expected-null';
+        \\        Type self = Type.forName('TypeForNameNullProbe');
+        \\        if (self == null) return 'missing-self';
+        \\        Type account = Type.forName('Account');
+        \\        if (account == null) return 'missing-account';
+        \\        Exception npe = null;
+        \\        try {
+        \\            Object o = Type.forName('TotallyMadeUpClassName').newInstance();
+        \\        } catch (System.NullPointerException e) {
+        \\            npe = e;
+        \\        }
+        \\        if (npe == null) return 'no-npe';
+        \\        return 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypeForNameNullProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
 test "E2E: fflib_IDGenerator.generate provides a fake id when class source is absent" {
     // fflib-apex-common tests reference fflib_IDGenerator from the sibling fflib-apex-mocks
     // package, but when only fflib-apex-common is loaded the class is missing and tests
@@ -7730,12 +7765,15 @@ test "AuraHandledException is caught in try-catch" {
 }
 
 test "Type.forName returns null for non-existent class" {
+    // Matches Apex semantics: bogus names resolve to null; loaded user classes, known
+    // SObjects, primitives, and the collection generics still produce a Type token.
     const source =
         \\public class TypeForNameTest {
         \\    public static void testForName() {
-        \\        System.assertNotEquals(null, Type.forName('NonExistentClass'));
+        \\        System.assertEquals(null, Type.forName('NonExistentClass'));
         \\        System.assertEquals(null, Type.forName('Outer.NonExistentInner'));
         \\        System.assertNotEquals(null, Type.forName('Map<Id,Account>'));
+        \\        System.assertNotEquals(null, Type.forName('TypeForNameTest'));
         \\    }
         \\}
     ;

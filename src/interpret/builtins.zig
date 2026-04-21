@@ -1811,12 +1811,52 @@ fn dispatchStaticType(ctx: *BuiltinContext, method_name: []const u8, args: []con
                 return Value.null_val;
             }
         }
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Type" };
-        try obj.fields.put(ctx.arena, "name", args[0]);
-        return Value{ .object = obj };
+        // Bare class name — resolve conservatively so that `Type.forName('Bogus')`
+        // returns null (matching Apex semantics) while user classes, standard
+        // SObjects, and the common system primitives still round-trip to a Type
+        // value. Frameworks downstream can then catch `NullPointerException` on
+        // `null.newInstance()` for bogus names.
+        if (isResolvableTypeName(ctx, lookup_name)) {
+            const obj = try ctx.arena.create(types.ObjectInstance);
+            obj.* = .{ .class_name = "Type" };
+            try obj.fields.put(ctx.arena, "name", args[0]);
+            return Value{ .object = obj };
+        }
+        return Value.null_val;
     }
     return Value.null_val;
+}
+
+/// Returns true when a bare class name (no `.`) is resolvable via user code,
+/// a known standard SObject, a system primitive, or a well-known system class.
+/// Used by `Type.newInstance()` to decide whether to throw NullPointerException
+/// on unknown class names.
+fn isResolvableTypeName(ctx: *BuiltinContext, name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (ctx.eval.classes.get(name) != null) return true;
+    var it = ctx.eval.classes.iterator();
+    while (it.next()) |e| {
+        if (std.ascii.eqlIgnoreCase(e.key_ptr.*, name)) return true;
+    }
+    if (ctx.eval.isSObjectTypeNamePublic(name)) return true;
+    const primitives = [_][]const u8{
+        "String",       "Integer",           "Long",      "Double",   "Decimal",      "Boolean", "Date",
+        "Datetime",     "Time",              "Id",        "Blob",     "Object",       "Schema",  "System",
+        "SObject",      "Type",              "JSON",      "Test",     "Database",     "Http",    "HttpRequest",
+        "HttpResponse", "UserInfo",          "Limits",    "Assert",   "UUID",         "Pattern", "Matcher",
+        "Messaging",    "EventBus",          "ApexPages", "UserInfo", "EncodingUtil", "Network", "Url",
+        "URL",          "FeatureManagement", "Crypto",    "Request",  "OrgLimits",
+    };
+    for (primitives) |p| {
+        if (std.ascii.eqlIgnoreCase(p, name)) return true;
+    }
+    // Custom metadata / event / etc. suffixes are resolvable through describe paths.
+    if (std.mem.endsWith(u8, name, "__c") or std.mem.endsWith(u8, name, "__e") or
+        std.mem.endsWith(u8, name, "__mdt") or std.mem.endsWith(u8, name, "__b"))
+    {
+        return true;
+    }
+    return false;
 }
 
 fn dispatchStaticCrypto(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
