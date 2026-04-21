@@ -11212,10 +11212,18 @@ pub const Evaluator = struct {
                 try eval_args.append(self.arena, try self.evalExpr(arg, current_env));
             }
 
-            // Execute parent constructor first (if has super_class and parent has constructor)
+            // Execute parent constructor first (if has super_class and parent has constructor).
+            // Skip the implicit parent call if the child's chosen constructor explicitly
+            // invokes super(...) or this(...). Also skip if the parent only declares
+            // non-zero-arg constructors (the child must then call super(...) explicitly,
+            // which we evaluate inside its body instead).
             if (class_decl.super_class) |sc| {
                 if (self.findClass(sc.name)) |parent_decl| {
-                    try self.runConstructor(parent_decl, instance, &.{});
+                    const child_chosen = self.findMatchingConstructor(class_decl, eval_args.items);
+                    const child_explicit = if (child_chosen) |cc| ctorStartsWithSuperOrThis(cc) else false;
+                    if (!child_explicit and classHasNoArgCtor(parent_decl)) {
+                        try self.runConstructor(parent_decl, instance, &.{});
+                    }
                 }
             }
 
@@ -14230,6 +14238,79 @@ pub const Evaluator = struct {
                 else => {},
             }
         }
+    }
+
+    fn classHasNoArgCtor(class_decl: *ast.ClassDecl) bool {
+        var has_any_ctor = false;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .constructor_decl => |cd| {
+                    has_any_ctor = true;
+                    if (cd.params.len == 0) return true;
+                },
+                else => {},
+            }
+        }
+        // No explicit constructors ⇒ synthetic no-arg default exists.
+        return !has_any_ctor;
+    }
+
+    fn ctorStartsWithSuperOrThis(cd: *ast.ConstructorDecl) bool {
+        if (cd.body.len == 0) return false;
+        const first = cd.body[0];
+        if (first != .expr_stmt) return false;
+        const e = first.expr_stmt;
+        if (e.* != .call) return false;
+        const callee = e.call.callee;
+        return std.mem.eql(u8, callee, "super") or std.mem.eql(u8, callee, "this");
+    }
+
+    fn findMatchingConstructor(self: *Evaluator, class_decl: *ast.ClassDecl, args: []const Value) ?*ast.ConstructorDecl {
+        var candidates: [8]*ast.ConstructorDecl = undefined;
+        var count: usize = 0;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .constructor_decl => |cd| {
+                    if (cd.params.len == args.len and count < candidates.len) {
+                        candidates[count] = cd;
+                        count += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+        if (count == 0) return null;
+        if (count == 1) return candidates[0];
+        var best: ?*ast.ConstructorDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |cd| {
+            var score: i32 = 0;
+            for (cd.params, 0..) |param, i| {
+                if (i >= args.len) break;
+                const pt = param.type_ref.name;
+                const arg = args[i];
+                if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                    score += 2;
+                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                    score += 2;
+                } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
+                    score += 2;
+                } else if (arg == .object) {
+                    if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) {
+                        score += 3;
+                    } else if (self.isSubclassOf(arg.object.class_name, pt)) {
+                        score += 2;
+                    }
+                } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
+                    score += 2;
+                }
+            }
+            if (best == null or score > best_score) {
+                best = cd;
+                best_score = score;
+            }
+        }
+        return best;
     }
 
     fn runConstructor(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, args: []const Value) anyerror!void {

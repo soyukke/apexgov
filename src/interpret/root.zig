@@ -3081,6 +3081,35 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: explicit super constructor forwards args without extra implicit call" {
+    const source =
+        \\public virtual class ExplicitSuperBaseBag {
+        \\    protected List<Object> entries;
+        \\    public ExplicitSuperBaseBag(List<Object> entries) {
+        \\        this.entries = entries.clone();
+        \\    }
+        \\    public Integer size() { return this.entries == null ? -1 : this.entries.size(); }
+        \\}
+        \\public class ExplicitSuperChildBag extends ExplicitSuperBaseBag {
+        \\    public ExplicitSuperChildBag(List<Object> entries) {
+        \\        super(entries);
+        \\    }
+        \\}
+        \\public class ExplicitSuperCtorTest {
+        \\    public static String test() {
+        \\        ExplicitSuperChildBag bag = new ExplicitSuperChildBag(new List<Object>{ 'a', 'b', 'c' });
+        \\        return String.valueOf(bag.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ExplicitSuperCtorTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
 test "E2E: super method dispatch uses parent implementation" {
     const source =
         \\public virtual class BaseCounter {
