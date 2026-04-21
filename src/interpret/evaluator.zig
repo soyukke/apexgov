@@ -12300,9 +12300,24 @@ pub const Evaluator = struct {
         // resolve the chain to a real class but still need a non-null Type.
         if (std.ascii.eqlIgnoreCase(fa.field, "class") and fa.object.* == .field_access) {
             if (self.collectDottedIdentifierChain(fa.object)) |chain| {
+                // Flow.Interview.<FlowName>.class mirrors real-platform semantics:
+                // when the flow metadata does not exist, Apex's Type literal still
+                // evaluates but getName() returns just "Flow.Interview" so that
+                // framework utilities can throw a "flow not found" error.  We have
+                // no flow metadata, so use the heuristic "is there a user class
+                // with this leaf name?" to decide whether to keep the full path.
+                const display_name: []const u8 = blk: {
+                    if (std.ascii.startsWithIgnoreCase(chain, "Flow.Interview.")) {
+                        const leaf = chain["Flow.Interview.".len..];
+                        if (leaf.len > 0 and std.mem.indexOfScalar(u8, leaf, '.') == null) {
+                            if (self.findClass(leaf) == null) break :blk "Flow.Interview";
+                        }
+                    }
+                    break :blk chain;
+                };
                 const type_obj = try self.arena.create(types.ObjectInstance);
                 type_obj.* = .{ .class_name = "Type" };
-                try type_obj.fields.put(self.arena, "name", Value{ .string = chain });
+                try type_obj.fields.put(self.arena, "name", Value{ .string = display_name });
                 return Value{ .object = type_obj };
             }
         }

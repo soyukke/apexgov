@@ -13053,11 +13053,14 @@ test "E2E: multi-level dotted class literal returns non-null Type" {
     // on this in order to forward the Type to its NameExtractor hook).
     const source =
         \\public class MultiLevelClassLiteralProbe {
+        \\    public class MyFlow {}
         \\    public static String test() {
         \\        System.Type t1 = Flow.Interview.MyFlow.class;
         \\        System.Type t2 = Outer.Middle.Inner.class;
-        \\        return (t1 == null ? 'null' : t1.getName()) + ':' +
-        \\               (t2 == null ? 'null' : t2.getName());
+        \\        System.Type t3 = Flow.Interview.DefinitelyNotAFlow.class;
+        \\        return (t1 == null ? 'null' : t1.getName()) + '|' +
+        \\               (t2 == null ? 'null' : t2.getName()) + '|' +
+        \\               (t3 == null ? 'null' : t3.getName());
         \\    }
         \\}
     ;
@@ -13066,7 +13069,11 @@ test "E2E: multi-level dotted class literal returns non-null Type" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("Flow.Interview.MyFlow:Outer.Middle.Inner", result.value.string);
+    // Flow.Interview.<Leaf> collapses to just "Flow.Interview" when the leaf
+    // does not name a loaded class (mirrors Apex's "flow doesn't exist"
+    // runtime behaviour). The generic Outer.Middle.Inner chain keeps its
+    // full path.
+    try std.testing.expectEqualStrings("Flow.Interview.MyFlow|Outer.Middle.Inner|Flow.Interview", result.value.string);
 }
 
 test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
