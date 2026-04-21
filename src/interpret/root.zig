@@ -13211,3 +13211,29 @@ test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
     defer result.deinit();
     try std.testing.expectEqualStrings("2:false:1", result.value.string);
 }
+
+test "E2E: String.substring clamps negative bounds instead of panicking" {
+    // Anonymized probe: DSL evaluators that scan formulas frequently call
+    // `input.substring(startIdx, endIdx)` with negative indices derived from
+    // `indexOf(...)` returning -1. A previously unchecked @intCast to usize
+    // on the negative clamped bound tripped a runtime panic. The substring
+    // should now clamp both ends into [0, s.len] and return a best-effort
+    // slice rather than aborting.
+    const source =
+        \\public class SubstringNegativeBoundProbe {
+        \\    public static String test() {
+        \\        String src = 'abcdef';
+        \\        String part = src.substring(2, -1);
+        \\        return String.valueOf(part.length());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SubstringNegativeBoundProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // start=2, clamped end=0 → start > end, so the best-effort fallback
+    // returns the original string rather than panicking.
+    try std.testing.expectEqualStrings("6", result.value.string);
+}

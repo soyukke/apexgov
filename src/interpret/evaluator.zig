@@ -10404,8 +10404,13 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "substring")) {
             if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
-                const start: usize = @intCast(@max(args[0].integer, 0));
-                const end: usize = @intCast(@min(args[1].integer, @as(i64, @intCast(s.len))));
+                const s_len_i64: i64 = @intCast(s.len);
+                // Clamp both ends into [0, s.len] so the usize cast cannot
+                // underflow when callers pass negative bounds.
+                const start_i64 = @max(args[0].integer, 0);
+                const end_i64 = @max(@min(args[1].integer, s_len_i64), 0);
+                const start: usize = @intCast(start_i64);
+                const end: usize = @intCast(end_i64);
                 if (start <= end and end <= s.len) return Value{ .string = s[start..end] };
             } else if (args.len >= 1 and args[0] == .integer) {
                 const start: usize = @intCast(@max(args[0].integer, 0));
