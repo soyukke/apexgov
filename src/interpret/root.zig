@@ -3081,6 +3081,32 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: nested for-each iterates elements of inner list rather than chunking" {
+    const source =
+        \\public class NestedForEachTest {
+        \\    public static String test() {
+        \\        List<List<String>> outer = new List<List<String>>{
+        \\            new List<String>{ 'a', 'b' },
+        \\            new List<String>{ 'c', 'd' }
+        \\        };
+        \\        List<String> collected = new List<String>();
+        \\        for (List<String> inner : outer) {
+        \\            for (String s : inner) {
+        \\                collected.add(s);
+        \\            }
+        \\        }
+        \\        return String.join(collected, ',');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NestedForEachTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("a,b,c,d", result.value.string);
+}
+
 test "E2E: addError on a detached SObject records the error without throwing" {
     const source =
         \\public class AddErrorAttachTest {

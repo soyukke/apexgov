@@ -1651,8 +1651,30 @@ pub const Evaluator = struct {
                     self.pending_exception = Value{ .object = exc };
                     return error.ApexException;
                 } else if (iterable == .list) {
-                    // Check if elem_type is List<...> for chunked SOQL for loop
-                    const is_list_type = std.ascii.eqlIgnoreCase(fes.elem_type.name, "List") and fes.elem_type.params.len > 0;
+                    // Chunk-into-batches applies only to SOQL for-loops like
+                    //   for (List<Account> batch : [SELECT Id FROM Account])
+                    // where the iterable is a flat list of SObjects and the loop
+                    // variable's declared type is List<Something>. In a plain
+                    //   for (List<String> inner : outerListOfLists)
+                    // we must iterate element-wise, otherwise `inner` ends up
+                    // holding the outer list itself.
+                    const elem_type_is_list = std.ascii.eqlIgnoreCase(fes.elem_type.name, "List") and fes.elem_type.params.len > 0;
+                    const iterable_is_list_of_lists = blk: {
+                        if (iterable.list.element_type) |et| {
+                            if (std.ascii.startsWithIgnoreCase(et, "List")) break :blk true;
+                            if (std.ascii.startsWithIgnoreCase(et, "Set")) break :blk true;
+                            if (std.ascii.startsWithIgnoreCase(et, "Map")) break :blk true;
+                        }
+                        for (iterable.list.items.items) |item| {
+                            switch (item) {
+                                .list, .set, .map => break :blk true,
+                                else => {},
+                            }
+                            break;
+                        }
+                        break :blk false;
+                    };
+                    const is_list_type = elem_type_is_list and !iterable_is_list_of_lists;
                     if (is_list_type) {
                         // Chunked iteration: iterate in chunks of 200
                         const chunk_size: usize = 200;
