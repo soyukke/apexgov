@@ -4480,6 +4480,36 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: Contact exposes Tasks and Account exposes Cases as child relationships" {
+    // `getChildRelationships()` must include well-known standard relationships so that
+    // fflib_QueryFactory's `subselectQuery('Tasks')` style lookups succeed. Prior to this
+    // the interpreter only knew a handful of pairs, so any test that drove the walker
+    // through Account->Cases or Contact->Tasks threw "Relationship does not exist".
+    const source =
+        \\public class ChildRelationshipProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeSObjectResult contactDesc = Contact.SObjectType.getDescribe();
+        \\        Schema.DescribeSObjectResult accountDesc = Account.SObjectType.getDescribe();
+        \\        Boolean contactHasTasks = false;
+        \\        for (Schema.ChildRelationship c : contactDesc.getChildRelationships()) {
+        \\            if (c.getRelationshipName() == 'Tasks') { contactHasTasks = true; break; }
+        \\        }
+        \\        Boolean accountHasCases = false;
+        \\        for (Schema.ChildRelationship c : accountDesc.getChildRelationships()) {
+        \\            if (c.getRelationshipName() == 'Cases') { accountHasCases = true; break; }
+        \\        }
+        \\        return String.valueOf(contactHasTasks) + '|' + String.valueOf(accountHasCases);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ChildRelationshipProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|true", result.value.string);
+}
+
 test "E2E: relationship-style field names describe as REFERENCE" {
     // fflib_QueryFactory walks `CreatedBy.Name` by looking up `CreatedBy`'s describe and
     // verifying it's a lookup (`getSoapType() == ID`). The interpreter used to report the
