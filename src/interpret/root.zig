@@ -13124,3 +13124,30 @@ test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
     defer result.deinit();
     try std.testing.expectEqualStrings("false:true", result.value.string);
 }
+
+test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
+    // Anonymized probe: setSavepoint/rollback are DML statements in Apex's
+    // governor accounting. Finalizer handlers use this to detect illegal DML
+    // ("Limits.getDmlStatements() increased after the finalizer body ran"),
+    // so the counters must bump just like insert/update.
+    const source =
+        \\public class SavepointDmlCounterProbe {
+        \\    public static String test() {
+        \\        Integer before = Limits.getDmlStatements();
+        \\        Database.SavePoint sp = Database.setSavepoint();
+        \\        Integer afterSet = Limits.getDmlStatements();
+        \\        Database.rollback(sp);
+        \\        Integer afterRollback = Limits.getDmlStatements();
+        \\        return String.valueOf(before) + ':' +
+        \\               String.valueOf(afterSet) + ':' +
+        \\               String.valueOf(afterRollback);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SavepointDmlCounterProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("0:1:2", result.value.string);
+}

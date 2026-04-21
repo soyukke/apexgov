@@ -13478,11 +13478,16 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setSavepoint")) {
+            // Setting a savepoint counts as a DML statement in Apex's governor
+            // limits, matching real platform semantics.
+            self.limits_dml += 1;
             const sp = try self.arena.create(types.ObjectInstance);
             sp.* = .{ .class_name = "Database.SavePoint" };
             return Value{ .object = sp };
         }
         if (std.ascii.eqlIgnoreCase(method, "rollback")) {
+            // Database.rollback(savepoint) also counts as a DML statement.
+            self.limits_dml += 1;
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "executeBatch")) {
