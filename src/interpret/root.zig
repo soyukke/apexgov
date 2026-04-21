@@ -4480,6 +4480,34 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: relationship-style field names describe as REFERENCE" {
+    // fflib_QueryFactory walks `CreatedBy.Name` by looking up `CreatedBy`'s describe and
+    // verifying it's a lookup (`getSoapType() == ID`). The interpreter used to report the
+    // field as STRING, so the walker threw NonReferenceFieldException. `CreatedBy`,
+    // `Owner`, `LastModifiedBy`, etc. must describe as REFERENCE with a relationship name
+    // equal to the field itself and `getReferenceTo()` pointing at User/Group.
+    const source =
+        \\public class RelationshipDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.SObjectField token = Schema.SObjectType.Contact.fields.getMap().get('CreatedBy');
+        \\        if (token == null) return 'no-token';
+        \\        Schema.DescribeFieldResult d = token.getDescribe();
+        \\        Schema.DisplayType dt = d.getType();
+        \\        String rel = d.getRelationshipName();
+        \\        List<Schema.SObjectType> refs = d.getReferenceTo();
+        \\        String refName = (refs != null && refs.size() > 0) ? refs[0].getDescribe().getName() : 'none';
+        \\        return String.valueOf(dt) + '|' + rel + '|' + refName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RelationshipDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("REFERENCE|CreatedBy|User", result.value.string);
+}
+
 test "E2E: Matcher.groupCount reflects the pattern and matches() populates currentMatch" {
     // Java/Apex contract: `Matcher.groupCount()` reports the number of capture groups in
     // the *pattern* — not the number actually captured. After `matches()` succeeds, the

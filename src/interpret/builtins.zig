@@ -2193,11 +2193,17 @@ fn defaultRelationshipName(arena: std.mem.Allocator, field_name: []const u8) !?[
     if (std.mem.endsWith(u8, field_name, "Id") and field_name.len > 2) {
         return field_name[0 .. field_name.len - 2];
     }
+    // A field named after the relationship itself (e.g. `CreatedBy`, `Owner`) is its own
+    // relationship name — it's the dot-path prefix SOQL uses for cross-object access.
+    if (standardReferenceTargetForFieldName(field_name) != null) {
+        return field_name;
+    }
     return null;
 }
 
 fn standardReferenceTargetForFieldName(field_name: []const u8) ?[]const u8 {
     const known = [_]struct { field_name: []const u8, target_type: []const u8 }{
+        // <Id> variants — the actual lookup columns.
         .{ .field_name = "AccountId", .target_type = "Account" },
         .{ .field_name = "ContactId", .target_type = "Contact" },
         .{ .field_name = "OpportunityId", .target_type = "Opportunity" },
@@ -2214,6 +2220,32 @@ fn standardReferenceTargetForFieldName(field_name: []const u8) ?[]const u8 {
         .{ .field_name = "ProfileId", .target_type = "Profile" },
         .{ .field_name = "UserRoleId", .target_type = "UserRole" },
         .{ .field_name = "UserLicenseId", .target_type = "UserLicense" },
+        .{ .field_name = "ManagerId", .target_type = "User" },
+        .{ .field_name = "ReportsToId", .target_type = "Contact" },
+        .{ .field_name = "ParentId", .target_type = "Account" },
+        .{ .field_name = "WhoId", .target_type = "Name" },
+        .{ .field_name = "WhatId", .target_type = "Name" },
+        // Relationship names — `CreatedBy`, `Owner`, etc. are the dot-path prefix that
+        // cross-object SOQL uses (e.g. `CreatedBy.Name`). Treating them as references with
+        // their lookup target lets fflib_QueryFactory's path walker succeed.
+        .{ .field_name = "CreatedBy", .target_type = "User" },
+        .{ .field_name = "LastModifiedBy", .target_type = "User" },
+        .{ .field_name = "Owner", .target_type = "User" },
+        .{ .field_name = "Manager", .target_type = "User" },
+        .{ .field_name = "ReportsTo", .target_type = "Contact" },
+        .{ .field_name = "Parent", .target_type = "Account" },
+        .{ .field_name = "Account", .target_type = "Account" },
+        .{ .field_name = "Contact", .target_type = "Contact" },
+        .{ .field_name = "Opportunity", .target_type = "Opportunity" },
+        .{ .field_name = "Case", .target_type = "Case" },
+        .{ .field_name = "Lead", .target_type = "Lead" },
+        .{ .field_name = "Campaign", .target_type = "Campaign" },
+        .{ .field_name = "Pricebook2", .target_type = "Pricebook2" },
+        .{ .field_name = "PricebookEntry", .target_type = "PricebookEntry" },
+        .{ .field_name = "Product2", .target_type = "Product2" },
+        .{ .field_name = "Quote", .target_type = "Quote" },
+        .{ .field_name = "Profile", .target_type = "Profile" },
+        .{ .field_name = "UserRole", .target_type = "UserRole" },
     };
     inline for (known) |entry| {
         if (std.ascii.eqlIgnoreCase(field_name, entry.field_name)) return entry.target_type;
@@ -2849,6 +2881,11 @@ fn inferFieldTypeForObject(object_type: []const u8, field_name: []const u8) []co
     // Well-known lookup fields report as REFERENCE so that relationshipName resolves.
     // A generic "<xxx>Id" is treated as a reference only when the prefix looks like an SObject.
     if (std.mem.endsWith(u8, field_name, "Id") or std.mem.endsWith(u8, field_name, "Id__c")) {
+        return "REFERENCE";
+    }
+    // Standard relationship names ("CreatedBy", "Owner", etc.) are REFERENCE even though
+    // they don't end with "Id" — they're the dot-path prefix used for cross-object SOQL.
+    if (standardReferenceTargetForFieldName(field_name) != null) {
         return "REFERENCE";
     }
     if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted") or
