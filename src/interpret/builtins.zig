@@ -2817,7 +2817,7 @@ fn dispatchStringInstance(ctx: *BuiltinContext, s: []const u8, method_name: []co
 
 /// Double / Decimal インスタンスメソッド: setScale, doubleValue, intValue, round, abs 等
 fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8, args: []const Value) !?Value {
-    // setScale(scale) — 小数点以下桁数を丸める (Decimal)
+    // setScale(scale) / setScale(scale, RoundingMode) — 小数点以下桁数を丸める (Decimal)
     if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
         if (args.len > 0) {
             const scale: i64 = switch (args[0]) {
@@ -2826,9 +2826,36 @@ fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8,
                 .double => |dv| @intFromFloat(dv),
                 else => 0,
             };
+            const mode: []const u8 = if (args.len > 1) switch (args[1]) {
+                .string => |s| s,
+                else => "HALF_UP",
+            } else "HALF_UP";
             if (scale >= 0 and scale <= 18) {
                 const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
-                return Value{ .double = @round(d * factor) / factor };
+                const scaled = d * factor;
+                const adjusted: f64 = if (std.ascii.eqlIgnoreCase(mode, "DOWN"))
+                    @trunc(scaled)
+                else if (std.ascii.eqlIgnoreCase(mode, "UP"))
+                    (if (scaled >= 0) @ceil(scaled) else @floor(scaled))
+                else if (std.ascii.eqlIgnoreCase(mode, "FLOOR"))
+                    @floor(scaled)
+                else if (std.ascii.eqlIgnoreCase(mode, "CEILING"))
+                    @ceil(scaled)
+                else if (std.ascii.eqlIgnoreCase(mode, "HALF_DOWN")) blk: {
+                    const f = @floor(scaled);
+                    const frac = scaled - f;
+                    break :blk if (frac > 0.5) @ceil(scaled) else f;
+                } else if (std.ascii.eqlIgnoreCase(mode, "HALF_EVEN")) blk: {
+                    const rounded = @round(scaled);
+                    // Ties go to even
+                    const f = @floor(scaled);
+                    const frac = scaled - f;
+                    if (frac == 0.5 or frac == -0.5) {
+                        if (@mod(rounded, 2.0) != 0) break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
+                    }
+                    break :blk rounded;
+                } else @round(scaled);
+                return Value{ .double = adjusted / factor };
             }
         }
         return Value{ .double = d };

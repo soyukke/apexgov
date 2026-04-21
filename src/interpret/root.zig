@@ -3081,6 +3081,25 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Decimal.setScale honours RoundingMode.DOWN" {
+    const source =
+        \\public class SetScaleRoundingProbe {
+        \\    public static String test() {
+        \\        Decimal value = 1.2345;
+        \\        Decimal truncated = value.setScale(3, RoundingMode.DOWN);
+        \\        Decimal halfUp = value.setScale(3, RoundingMode.HALF_UP);
+        \\        return String.valueOf(truncated) + '|' + String.valueOf(halfUp);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SetScaleRoundingProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1.234|1.235", result.value.string);
+}
+
 test "E2E: Datetime.format supports ISO week/year/day-of-week/day-of-year patterns" {
     const source =
         \\public class IsoDateFormatProbe {
