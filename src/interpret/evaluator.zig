@@ -9393,6 +9393,22 @@ pub const Evaluator = struct {
             }
         }
 
+        // Time objects: expose h/m/s/ms components directly from stored fields.
+        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time")) {
+            if (std.ascii.eqlIgnoreCase(method, "hour")) {
+                return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "minute")) {
+                return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "second")) {
+                return obj.object.fields.get("second") orelse Value{ .integer = 0 };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "millisecond")) {
+                return obj.object.fields.get("millisecond") orelse Value{ .integer = 0 };
+            }
+        }
+
         // Date/DateTime objects: extract the inner date string and dispatch as string methods
         if (obj == .object) {
             if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
@@ -12127,6 +12143,7 @@ pub const Evaluator = struct {
             if (cn.len > 0 and cn.len < 256) {
                 if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date") or std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
                 if (std.ascii.eqlIgnoreCase(cn, "Datetime")) return std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
+                if (std.ascii.eqlIgnoreCase(cn, "Time")) return std.ascii.eqlIgnoreCase(tn, "Time");
                 if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(cn, "SObjectField")) {
                     return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(tn, "SObjectField");
                 }

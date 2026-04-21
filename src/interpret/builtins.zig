@@ -614,7 +614,14 @@ fn dispatchStaticTime(ctx: *BuiltinContext, method_name: []const u8, args: []con
         const s = clamp(if (args.len > 2 and args[2] == .integer) args[2].integer else 0, 59);
         const ms = clamp(if (args.len > 3 and args[3] == .integer) args[3].integer else 0, 999);
         const time_str = try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ h, m, s, ms });
-        return Value{ .string = time_str };
+        const obj = try ctx.arena.create(types.ObjectInstance);
+        obj.* = .{ .class_name = "Time" };
+        try obj.fields.put(ctx.arena, "value", Value{ .string = time_str });
+        try obj.fields.put(ctx.arena, "hour", Value{ .integer = h });
+        try obj.fields.put(ctx.arena, "minute", Value{ .integer = m });
+        try obj.fields.put(ctx.arena, "second", Value{ .integer = s });
+        try obj.fields.put(ctx.arena, "millisecond", Value{ .integer = ms });
+        return Value{ .object = obj };
     }
     return Value.null_val;
 }
