@@ -14820,6 +14820,18 @@ pub const Evaluator = struct {
             }
         }
         if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
+        // Match dotted form against its simple tail (and vice versa) so that a
+        // `ModeTarget2.Mode` declared-type hint scores against a bare `Mode`
+        // parameter declaration. This is common when user code references an
+        // inner enum from outside the declaring class.
+        if (!(hint_has_generics and pt_has_generics)) {
+            if (std.mem.lastIndexOfScalar(u8, hint_base, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(hint_base[di + 1 ..], pt_base)) return 3;
+            }
+            if (std.mem.lastIndexOfScalar(u8, pt_base, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(pt_base[di + 1 ..], hint_base)) return 3;
+            }
+        }
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
 
         if (isCollectionTypeName(hint_base)) {

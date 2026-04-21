@@ -4504,6 +4504,32 @@ test "E2E: bitwise operators on integers return integer results" {
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
+test "E2E: qualified enum hint matches unqualified enum parameter" {
+    // When a caller stores an inner enum (`OuterClass.InnerEnum`) in a local and
+    // passes it to an overloaded method, the parameter is often declared with
+    // the simple name (`InnerEnum`). Overload resolution must match the trailing
+    // component so the enum-typed overload wins over a Boolean sibling.
+    const source =
+        \\public class EnumHintTailProbe {
+        \\    public enum Mode { LEGACY, USER_MODE, SYSTEM_MODE }
+        \\    public static String picked = '';
+        \\    public static void pick(Boolean b) { picked = 'boolean'; }
+        \\    public static void pick(Mode m) { picked = 'mode:' + m; }
+        \\    public static String test() {
+        \\        EnumHintTailProbe.Mode m = EnumHintTailProbe.Mode.SYSTEM_MODE;
+        \\        pick(m);
+        \\        return picked;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EnumHintTailProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("mode:SYSTEM_MODE", result.value.string);
+}
+
 test "E2E: Map.equals delegates pairwise value comparison" {
     // Apex-style user classes often override `equals` by comparing internal
     // collections (e.g. apex-expression's Environment delegates to
