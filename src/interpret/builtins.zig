@@ -2479,7 +2479,12 @@ fn createChildRelationshipsValue(ctx: *BuiltinContext, parent_type: []const u8) 
         .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
         .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
         .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
+        .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
+        .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
         .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
+        .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
+        .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+        .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
     };
     for (standard) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.parent, parent_type)) continue;
