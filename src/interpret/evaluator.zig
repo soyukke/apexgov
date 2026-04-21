@@ -7334,6 +7334,29 @@ pub const Evaluator = struct {
                                     is_compatible = true;
                                     break;
                                 }
+                                // Check interfaces at this level
+                                for (cd.interfaces) |iface| {
+                                    if (std.ascii.eqlIgnoreCase(iface.name, target)) {
+                                        is_compatible = true;
+                                        break;
+                                    }
+                                    // Trailing-component match so that `TriggerAction.BeforeInsert`
+                                    // matches an `implements BeforeInsert` declaration inside
+                                    // the class that owns `TriggerAction`.
+                                    if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
+                                        if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) {
+                                            is_compatible = true;
+                                            break;
+                                        }
+                                    }
+                                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
+                                        if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) {
+                                            is_compatible = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (is_compatible) break;
                                 if (cd.super_class) |sc| {
                                     if (std.ascii.eqlIgnoreCase(sc.name, target)) {
                                         is_compatible = true;
@@ -7362,7 +7385,19 @@ pub const Evaluator = struct {
                                 }
                             }
                         }
-                        // If not compatible and not an interface/generic cast, allow it (Apex is lenient)
+                        // If the target names a loaded interface declaration but neither
+                        // the source nor any of its ancestors implement it, Apex raises
+                        // TypeException. We only throw when we're confident target is
+                        // an interface in user code — otherwise preserve the historical
+                        // lenient cast for unknown/generic target names.
+                        if (!is_compatible and self.isKnownInterfaceName(target)) {
+                            const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
+                            const exc = try self.arena.create(types.ObjectInstance);
+                            exc.* = .{ .class_name = "System.TypeException" };
+                            try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                            self.pending_exception = Value{ .object = exc };
+                            return error.ApexException;
+                        }
                     }
                 } else if (val == .sobject) {
                     // SObject casts are always allowed (Account → SObject, etc.)
@@ -15036,6 +15071,35 @@ pub const Evaluator = struct {
     /// Public wrapper around the internal `isSObjectTypeName` used by builtin dispatch.
     pub fn isSObjectTypeNamePublic(self: *Evaluator, name: []const u8) bool {
         return self.isSObjectTypeName(name);
+    }
+
+    /// Returns true when `name` matches an interface declaration loaded from the source
+    /// set, including inner interfaces declared as `Outer.Inner`. Used by the cast path
+    /// to decide whether to throw TypeException for a failed interface cast.
+    fn isKnownInterfaceName(self: *Evaluator, name: []const u8) bool {
+        if (name.len == 0) return false;
+        // Top-level interface?
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            const cd = entry.value_ptr.*;
+            for (cd.members) |member| {
+                switch (member) {
+                    .interface_decl => |iface| {
+                        // Match either "Outer.Inner" or just "Inner"
+                        if (std.ascii.eqlIgnoreCase(iface.name, name)) return true;
+                        if (std.mem.lastIndexOfScalar(u8, name, '.')) |di| {
+                            if (std.ascii.eqlIgnoreCase(name[0..di], entry.key_ptr.*) and
+                                std.ascii.eqlIgnoreCase(name[di + 1 ..], iface.name))
+                            {
+                                return true;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return false;
     }
 
     fn findClass(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {

@@ -4480,6 +4480,35 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: incompatible interface cast raises System.TypeException" {
+    // Trigger frameworks cast a dynamically-instantiated object to the interface
+    // matching the current trigger context, relying on Apex to throw TypeException
+    // when the class doesn't implement it. The interpreter previously allowed all
+    // object→interface casts silently, which suppressed the expected failure.
+    const source =
+        \\public class InterfaceCastProbe {
+        \\    public interface Routable {}
+        \\    public class NonRoutable {}
+        \\    public static String test() {
+        \\        Object o = new NonRoutable();
+        \\        Exception ex = null;
+        \\        try {
+        \\            Routable r = (Routable) o;
+        \\        } catch (System.TypeException e) {
+        \\            ex = e;
+        \\        }
+        \\        return ex == null ? 'no-exception' : 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InterfaceCastProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
 test "E2E: Type.forName returns null for names that don't resolve" {
     // Regression: metadata-driven trigger frameworks (apex-trigger-actions-framework
     // at al.) read Apex class names from custom metadata and rely on
