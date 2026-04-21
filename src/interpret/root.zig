@@ -4174,7 +4174,25 @@ test "E2E: Datetime.date() returns date portion" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+    try std.testing.expectEqualStrings("7/19/2024", result.value.string);
+}
+
+test "E2E: Date/Datetime no-arg format uses locale short pattern" {
+    const source =
+        \\public class DefaultFormatProbe {
+        \\    public static String test() {
+        \\        Date d = Date.newInstance(2015, 1, 1);
+        \\        Datetime dt = Datetime.newInstance(2015, 1, 1, 14, 30, 0);
+        \\        return d.format() + '|' + dt.format();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DefaultFormatProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1/1/2015|1/1/2015, 2:30 PM", result.value.string);
 }
 
 test "E2E: Datetime.newInstance(milliseconds) single arg" {

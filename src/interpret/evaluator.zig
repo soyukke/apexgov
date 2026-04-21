@@ -9415,6 +9415,24 @@ pub const Evaluator = struct {
                 std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime"))
             {
                 if (builtins.extractDateString(obj)) |date_str| {
+                    // No-arg format(): Salesforce default is M/d/yyyy for Date, M/d/yyyy, h:mm a for Datetime.
+                    if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
+                        if (parseIsoDate(date_str)) |dt| {
+                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
+                                return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}", .{
+                                    dt.m, dt.d, @as(u32, @intCast(dt.y)),
+                                }) };
+                            }
+                            const hour12: u8 = blk: {
+                                const h_mod = dt.h % 12;
+                                break :blk if (h_mod == 0) 12 else h_mod;
+                            };
+                            const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
+                            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}", .{
+                                dt.m, dt.d, @as(u32, @intCast(dt.y)), hour12, dt.mi, am_pm,
+                            }) };
+                        }
+                    }
                     const result = try self.evalStringMethod(date_str, method, args);
                     // Wrap date() result back into a Date object, and addDays etc. keep their type
                     if (result == .string) {
