@@ -7173,6 +7173,16 @@ pub const Evaluator = struct {
                         }
                     }
                 }
+                // Last resort: dispatch as `this.callee(args)` on the current receiver so
+                // that inherited builtin methods (e.g. `Exception.setMessage`) still fire
+                // when a user subclass calls them without an explicit `this.` qualifier.
+                if (current_env.get("this")) |this_val| {
+                    if (this_val == .object or this_val == .sobject or this_val == .string or
+                        this_val == .list or this_val == .map or this_val == .set)
+                    {
+                        return self.evalInstanceMethod(this_val, call.callee, args.items, current_env);
+                    }
+                }
                 return Value.null_val;
             },
 

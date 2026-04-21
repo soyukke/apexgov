@@ -4504,6 +4504,34 @@ test "E2E: bitwise operators on integers return integer results" {
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
+test "E2E: bare method call inside a subclass resolves to inherited builtin" {
+    // fflib_HttpException and similar user exception subclasses call bare
+    // `setMessage(s)` from their constructors. The interpreter used to leave the
+    // message empty because the `.call` branch gave up when no user-defined
+    // `setMessage` matched. Falling back to `this.setMessage(s)` on the current
+    // receiver routes the call to the inherited Exception builtin.
+    const source =
+        \\public class BareCallFallbackProbe {
+        \\    public class Boom extends Exception {
+        \\        public Boom(String m) { setMessage(m); }
+        \\    }
+        \\    public static String test() {
+        \\        try {
+        \\            throw new Boom('payload');
+        \\        } catch (Boom e) {
+        \\            return e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BareCallFallbackProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("payload", result.value.string);
+}
+
 test "E2E: static field initializer can forward-reference a later static field" {
     // Apex's real compiler allows:
     //
