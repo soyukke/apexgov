@@ -4231,6 +4231,39 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
     try std.testing.expectEqualStrings("LastName", result.value.string);
 }
 
+test "E2E: enum-valued string argument disambiguates overloads" {
+    const source =
+        \\public class EnumOverloadProbe {
+        \\    public enum Direction { ASC, DESC }
+        \\    public class Ordering {
+        \\        public String field;
+        \\        public Direction direction;
+        \\        public Boolean nullsLast;
+        \\        public Ordering(String sobjType, String fieldName, Direction direction) {
+        \\            this(fieldName + '!', direction, false);
+        \\        }
+        \\        public Ordering(String field, Direction direction, Boolean nullsLast) {
+        \\            this.field = field;
+        \\            this.direction = direction;
+        \\            this.nullsLast = nullsLast;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        // Must pick the (String, Direction, Boolean) overload even though the string
+        \\        // 'ASC' would otherwise score equally against (String, String, Direction).
+        \\        EnumOverloadProbe.Ordering ord = new EnumOverloadProbe.Ordering('Name', EnumOverloadProbe.Direction.ASC, false);
+        \\        return ord.field;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EnumOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Name", result.value.string);
+}
+
 test "E2E: Datetime.newInstance(milliseconds) single arg" {
     const source =
         \\public class DtMillisTest {

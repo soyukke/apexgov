@@ -7685,7 +7685,14 @@ pub const Evaluator = struct {
     fn extractExprTypeHint(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) ?[]const u8 {
         switch (expr.*) {
             .cast_expr => |ce| return self.renderTypeRef(ce.target_type),
-            .new_expr => |ne| return self.renderTypeRef(ne.type_name),
+            .new_expr => |ne| {
+                // Only surface container-shape hints (Set<X>, List<X>, Map<K,V>) so that
+                // generic-element overloads can disambiguate. For user types we rely on
+                // the regular subclass-scoring pass in the ranker.
+                const rendered = self.renderTypeRef(ne.type_name);
+                if (std.mem.indexOfScalar(u8, rendered, '<') != null) return rendered;
+                return null;
+            },
             .identifier, .field_access => {
                 if (self.resolveAssignmentTargetType(expr, current_env)) |type_name| {
                     return stripTypeNamespace(type_name);
@@ -11414,11 +11421,24 @@ pub const Evaluator = struct {
             // Initialize instance fields from class (non-static) — after ancestors
             self.initInstanceFields(class_decl, instance) catch {};
 
-            // Evaluate constructor args
+            // Evaluate constructor args. Capture enum-access type hints so
+            // overload resolution can distinguish `(String, Enum, Boolean)`
+            // from `(String, String, Enum)` when a literal like
+            // `MyEnum.VALUE` appears in the middle position.
             var eval_args: std.ArrayListUnmanaged(Value) = .empty;
+            var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
+            var any_enum_hint = false;
             for (ne.args) |*arg| {
+                const enum_hint = self.enumAccessTypeName(arg);
+                if (enum_hint != null) any_enum_hint = true;
+                try ctor_type_hints.append(self.arena, enum_hint);
                 try eval_args.append(self.arena, try self.evalExpr(arg, current_env));
             }
+            const prev_ctor_hints = self.cast_type_hints;
+            if (any_enum_hint) self.cast_type_hints = ctor_type_hints.items;
+            defer if (any_enum_hint) {
+                self.cast_type_hints = prev_ctor_hints;
+            };
 
             // Execute parent constructor first (if has super_class and parent has constructor).
             // Skip the implicit parent call if the child's chosen constructor explicitly
@@ -14494,6 +14514,95 @@ pub const Evaluator = struct {
         return score;
     }
 
+    /// If `expr` syntactically accesses an enum value (e.g. `SortOrder.ASCENDING`,
+    /// `fflib_QueryFactory.SortOrder.ASCENDING`), return the enum type name for use
+    /// as an overload-resolution type hint. Returns null otherwise.
+    fn enumAccessTypeName(self: *Evaluator, expr: *const ast.Expr) ?[]const u8 {
+        if (expr.* != .field_access) return null;
+        const fa = expr.field_access;
+        // Direct identifier owner: SortOrder.ASCENDING (bare enum) — also handles
+        // dotted identifiers the parser collapsed into a single name.
+        if (fa.object.* == .identifier) {
+            const owner_name = fa.object.identifier.name;
+            if (self.findVisibleEnumDecl(owner_name)) |ed| {
+                for (ed.values) |v| {
+                    if (std.ascii.eqlIgnoreCase(v, fa.field)) return ed.name;
+                }
+            }
+            // Qualified identifier "Outer.Enum" that the parser did not split up.
+            if (std.mem.lastIndexOfScalar(u8, owner_name, '.')) |di| {
+                const outer_name = owner_name[0..di];
+                const enum_name = owner_name[di + 1 ..];
+                if (self.findClass(outer_name)) |cd| {
+                    if (findEnumInClassMembers(cd, enum_name)) |ed| {
+                        for (ed.values) |v| {
+                            if (std.ascii.eqlIgnoreCase(v, fa.field)) return ed.name;
+                        }
+                    }
+                }
+            }
+        }
+        // Nested owner: ClassName.EnumName.VALUE
+        if (fa.object.* == .field_access) {
+            const inner = fa.object.field_access;
+            if (inner.object.* == .identifier) {
+                const outer_name = inner.object.identifier.name;
+                const enum_name = inner.field;
+                if (self.findClass(outer_name)) |cd| {
+                    if (findEnumInClassMembers(cd, enum_name)) |ed| {
+                        for (ed.values) |v| {
+                            if (std.ascii.eqlIgnoreCase(v, fa.field)) return ed.name;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn findEnumInClassMembers(cd: *ast.ClassDecl, enum_name: []const u8) ?*ast.EnumDecl {
+        for (cd.members) |member| {
+            switch (member) {
+                .enum_decl => |ed| {
+                    if (std.ascii.eqlIgnoreCase(ed.name, enum_name)) return ed;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// True when `arg_str` looks like a value of the enum type named by `param_type`.
+    /// Handles both bare enum names ("SortOrder") and qualified forms
+    /// ("fflib_QueryFactory.SortOrder").
+    fn stringMatchesEnumParamType(self: *Evaluator, arg_str: []const u8, param_type: []const u8) bool {
+        if (arg_str.len == 0) return false;
+        const simple = if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di| param_type[di + 1 ..] else param_type;
+        if (simple.len == 0) return false;
+        if (self.findVisibleEnumDecl(simple)) |ed| {
+            for (ed.values) |v| {
+                if (std.ascii.eqlIgnoreCase(v, arg_str)) return true;
+            }
+        }
+        // Also scan all classes for an enum member with this simple name.
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .enum_decl => |ed| {
+                        if (std.ascii.eqlIgnoreCase(ed.name, simple)) {
+                            for (ed.values) |v| {
+                                if (std.ascii.eqlIgnoreCase(v, arg_str)) return true;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return false;
+    }
+
     fn overloadScoreForTypeHint(self: *Evaluator, raw_hint: []const u8, raw_param_type: []const u8) i32 {
         if (std.ascii.eqlIgnoreCase(raw_hint, raw_param_type)) return 6;
         const hint = stripTypeNamespace(raw_hint);
@@ -14673,6 +14782,7 @@ pub const Evaluator = struct {
             }
         }
         // Pick best candidate using type scoring
+        const arg_type_hints = self.cast_type_hints;
         const chosen: ?*ast.ConstructorDecl = if (count == 0) best_any else if (count == 1) candidates[0] else blk: {
             var best: ?*ast.ConstructorDecl = null;
             var best_score: i32 = -1;
@@ -14682,6 +14792,11 @@ pub const Evaluator = struct {
                     if (i >= args.len) break;
                     const pt = param.type_ref.name;
                     const arg = args[i];
+                    const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+                    if (arg_hint) |hint| {
+                        const hint_score = self.overloadScoreForTypeHint(hint, self.renderTypeRef(param.type_ref));
+                        if (hint_score > 0) score += hint_score;
+                    }
                     if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
                         score += 2;
                     } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
