@@ -602,10 +602,17 @@ fn dispatchStaticMath(method_name: []const u8, args: []const Value) !?Value {
 
 fn dispatchStaticTime(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
-        const h = if (args.len > 0 and args[0] == .integer) args[0].integer else 0;
-        const m = if (args.len > 1 and args[1] == .integer) args[1].integer else 0;
-        const s = if (args.len > 2 and args[2] == .integer) args[2].integer else 0;
-        const ms = if (args.len > 3 and args[3] == .integer) args[3].integer else 0;
+        const clamp = struct {
+            fn run(v: i64, max: i64) u32 {
+                if (v < 0) return 0;
+                if (v > max) return @intCast(max);
+                return @intCast(v);
+            }
+        }.run;
+        const h = clamp(if (args.len > 0 and args[0] == .integer) args[0].integer else 0, 23);
+        const m = clamp(if (args.len > 1 and args[1] == .integer) args[1].integer else 0, 59);
+        const s = clamp(if (args.len > 2 and args[2] == .integer) args[2].integer else 0, 59);
+        const ms = clamp(if (args.len > 3 and args[3] == .integer) args[3].integer else 0, 999);
         const time_str = try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ h, m, s, ms });
         return Value{ .string = time_str };
     }
@@ -652,6 +659,22 @@ fn dispatchStaticDateTime(ctx: *BuiltinContext, method_name: []const u8, args: [
         return try makeDatetimeValue(ctx.arena, try currentDateTimeString(ctx.arena));
     }
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
+        // Datetime.newInstance(Date, Time) — combine a date and a time-of-day.
+        // Date is stored as an ObjectInstance with a "value" field. Time is
+        // currently represented as a plain "HH:MM:SS.fff" string.
+        if (args.len == 2 and args[0] == .object) {
+            const date_val = if (args[0].object.fields.get("value")) |v| (if (v == .string) v.string else "1970-01-01") else "1970-01-01";
+            const time_val: []const u8 = switch (args[1]) {
+                .string => |s| s,
+                .object => |obj| blk: {
+                    if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
+                    break :blk "00:00:00";
+                },
+                else => "00:00:00",
+            };
+            const hhmmss = if (time_val.len >= 8) time_val[0..8] else "00:00:00";
+            return try makeDatetimeValue(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{s}T{s}Z", .{ date_val, hhmmss }));
+        }
         if (args.len >= 6) {
             const y = numericAsI64.from(args[0], 2026);
             const mo = numericAsI64.from(args[1], 1);
@@ -1738,7 +1761,25 @@ fn dispatchStaticBlob(ctx: *BuiltinContext, method_name: []const u8, args: []con
 }
 
 fn dispatchStaticEncodingUtil(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "urlEncode") and args.len > 0 and args[0] == .string) return args[0];
+    if (std.ascii.eqlIgnoreCase(method_name, "urlEncode") and args.len > 0 and args[0] == .string) {
+        // application/x-www-form-urlencoded: unreserved letters/digits and -_.*
+        // pass through, spaces become '+', everything else is percent-encoded.
+        var out = std.ArrayListUnmanaged(u8).empty;
+        for (args[0].string) |ch| {
+            const is_safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9') or
+                ch == '-' or ch == '_' or ch == '.' or ch == '*';
+            if (is_safe) {
+                try out.append(ctx.arena, ch);
+            } else if (ch == ' ') {
+                try out.append(ctx.arena, '+');
+            } else {
+                try out.append(ctx.arena, '%');
+                try out.append(ctx.arena, "0123456789ABCDEF"[(ch >> 4) & 0x0F]);
+                try out.append(ctx.arena, "0123456789ABCDEF"[ch & 0x0F]);
+            }
+        }
+        return Value{ .string = try out.toOwnedSlice(ctx.arena) };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Encode") and args.len > 0) {
         if (args[0] == .object) return args[0].object.fields.get("value") orelse Value{ .string = "" };
         return Value{ .string = "base64encoded" };
@@ -2795,6 +2836,20 @@ fn dispatchDoubleInstance(ctx: *BuiltinContext, d: f64, method_name: []const u8,
     if (std.ascii.eqlIgnoreCase(method_name, "round")) return Value{ .integer = @intFromFloat(@round(d)) };
     // abs()
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
+    // pow(exponent) — Decimal raised to the given integer exponent
+    if (std.ascii.eqlIgnoreCase(method_name, "pow") and args.len > 0) {
+        const exp: f64 = switch (args[0]) {
+            .integer => |i| @floatFromInt(i),
+            .long => |i| @floatFromInt(i),
+            .double => |dv| dv,
+            else => 0,
+        };
+        const result = std.math.pow(f64, d, exp);
+        if (@floor(result) == result and !std.math.isNan(result) and !std.math.isInf(result) and @abs(result) < 9_007_199_254_740_992.0) {
+            return Value{ .integer = @intFromFloat(result) };
+        }
+        return Value{ .double = result };
+    }
     // format()
     if (std.ascii.eqlIgnoreCase(method_name, "format")) {
         return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d}", .{d}) };

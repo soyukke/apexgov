@@ -3081,6 +3081,29 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date and Time" {
+    const source =
+        \\public class DateMathAndEncodingProbe {
+        \\    public static String test() {
+        \\        Date d1 = Date.newInstance(2020, 1, 1);
+        \\        Date d2 = Date.newInstance(2020, 1, 3);
+        \\        Integer between = d1.daysBetween(d2);
+        \\        Decimal pow = (Decimal.valueOf('2')).pow(3);
+        \\        String enc = EncodingUtil.urlEncode('Hello World');
+        \\        Time t = Time.newInstance(0, 0, 0, 0);
+        \\        Datetime dt = Datetime.newInstance(d1, t);
+        \\        return String.valueOf(between) + '|' + String.valueOf(pow) + '|' + enc + '|' + String.valueOf(dt);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DateMathAndEncodingProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|8|Hello+World|2020-01-01T00:00:00Z", result.value.string);
+}
+
 test "E2E: Type literals from distinct classes are not collapsed as map keys" {
     const source =
         \\public class TypeKeyedMapTest {

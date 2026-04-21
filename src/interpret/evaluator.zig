@@ -10633,6 +10633,37 @@ pub const Evaluator = struct {
         {
             return self.dateTimeAdd(s, method, args);
         }
+        // daysBetween(other) — number of days from self to `other`
+        if (std.ascii.eqlIgnoreCase(method, "daysBetween") and args.len > 0) {
+            const other_str: []const u8 = switch (args[0]) {
+                .string => |os| os,
+                .object => |obj| blk: {
+                    if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
+                    break :blk s;
+                },
+                else => s,
+            };
+            const a = parseIsoDate(s) orelse return Value.null_val;
+            const b = parseIsoDate(other_str) orelse return Value.null_val;
+            const a_days = isoDateToEpochDays(a.y, a.m, a.d);
+            const b_days = isoDateToEpochDays(b.y, b.m, b.d);
+            return Value{ .integer = b_days - a_days };
+        }
+        // monthsBetween(other) — approximate month difference
+        if (std.ascii.eqlIgnoreCase(method, "monthsBetween") and args.len > 0) {
+            const other_str: []const u8 = switch (args[0]) {
+                .string => |os| os,
+                .object => |obj| blk: {
+                    if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
+                    break :blk s;
+                },
+                else => s,
+            };
+            const a = parseIsoDate(s) orelse return Value.null_val;
+            const b = parseIsoDate(other_str) orelse return Value.null_val;
+            const diff = (@as(i64, b.y) - @as(i64, a.y)) * 12 + (@as(i64, b.m) - @as(i64, a.m));
+            return Value{ .integer = diff };
+        }
         // formatGMT — format a DateTime string according to a pattern
         if (std.ascii.eqlIgnoreCase(method, "formatGMT") or std.ascii.eqlIgnoreCase(method, "formatGmt")) {
             // Parse ISO date: YYYY-MM-DDTHH:MM:SS
@@ -12187,6 +12218,15 @@ pub const Evaluator = struct {
     fn dayOfYear(m: u8, d: u8) u16 {
         const cumulative = [_]u16{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
         return cumulative[m - 1] + d;
+    }
+
+    /// 年月日から 1970-01-01 を原点とする連続日数を返す。負の年でも動作する。
+    fn isoDateToEpochDays(year: i32, month: u8, day: u8) i64 {
+        const y = @as(i64, year);
+        const doy = @as(i64, dayOfYear(month, day));
+        const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
+        const leap_adj: i64 = if (month > 2) is_leap else 0;
+        return (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
     }
 
     /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
