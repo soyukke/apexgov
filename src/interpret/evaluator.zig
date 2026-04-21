@@ -16308,10 +16308,15 @@ fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {
         const cn = arg.object.class_name;
         // Exact class name match (case-insensitive)
         if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
-        // Also check simple name (e.g., "MockEventBus" matches param type "EventBus" → no, but
-        // "LoggerDataStore.EventBus" inner class: check if param type matches the simple name)
+        // Match when the class_name is dotted ("Outer.Inner") and pt uses the simple form.
         if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
             if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
+        }
+        // Match when the param type is dotted ("System.Type") and the class_name uses
+        // the simple form ("Type") — happens whenever the interpreter stores built-in
+        // objects with their Apex simple names while user code spells the qualified form.
+        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(pt[di + 1 ..], cn)) return 3;
         }
         // Date/DateTime objects should score well for their specific types
         if (std.ascii.eqlIgnoreCase(cn, "Date")) {

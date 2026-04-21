@@ -4480,6 +4480,31 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: overload resolution matches Type arg against System.Type param" {
+    // When user code declares the qualified `System.Type` form on a parameter,
+    // the interpreter stores the runtime Type value with its simple class name
+    // ("Type"). Overload scoring now matches either spelling so `foo(Type)` wins
+    // over a `foo(String)` sibling — required by Trigger Actions' bypass(Type).
+    const source =
+        \\public class OverloadTypeProbe {
+        \\    public static String last = '';
+        \\    public static void pick(String s) { last = 'string'; }
+        \\    public static void pick(System.Type t) { last = 'type:' + t.getName(); }
+        \\    public class Inner {}
+        \\    public static String test() {
+        \\        pick(Inner.class);
+        \\        return last;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "OverloadTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("type:OverloadTypeProbe.Inner", result.value.string);
+}
+
 test "E2E: incompatible interface cast raises System.TypeException" {
     // Trigger frameworks cast a dynamically-instantiated object to the interface
     // matching the current trigger context, relying on Apex to throw TypeException
