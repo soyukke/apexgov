@@ -109,14 +109,60 @@ fn isValidDateString(s: []const u8) bool {
 }
 
 fn normalizeDateTimeValueOfInput(arena: std.mem.Allocator, s: []const u8) !?[]const u8 {
-    if (!isValidDateString(s)) return null;
-    if (s.len == 10) {
-        return try std.fmt.allocPrint(arena, "{s}T00:00:00Z", .{s[0..10]});
+    if (isValidDateString(s)) {
+        if (s.len == 10) {
+            return try std.fmt.allocPrint(arena, "{s}T00:00:00Z", .{s[0..10]});
+        }
+        if (s.len >= 19 and (s[10] == ' ' or s[10] == 'T') and s[13] == ':' and s[16] == ':') {
+            return try std.fmt.allocPrint(arena, "{s}T{s}Z", .{ s[0..10], s[11..19] });
+        }
+        return s;
     }
-    if (s.len >= 19 and (s[10] == ' ' or s[10] == 'T') and s[13] == ':' and s[16] == ':') {
-        return try std.fmt.allocPrint(arena, "{s}T{s}Z", .{ s[0..10], s[11..19] });
+    // Accept loose formats like "2006-5-4 3:2:1" — Apex's Datetime.valueOf() is
+    // forgiving about single-digit month/day/hour/minute/second components.
+    if (parseLooseDateTime(arena, s)) |normalized| return normalized;
+    return null;
+}
+
+/// Accept `yyyy-M-d [H:m[:s]]` style strings (1–2 digit fields, optional time) and
+/// re-emit the canonical `yyyy-MM-ddTHH:mm:ssZ` representation.
+/// Returns null when the input doesn't match the loose pattern.
+fn parseLooseDateTime(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 {
+    const input = std.mem.trim(u8, raw, " \t\r\n");
+    const date_end = std.mem.indexOfAny(u8, input, " T") orelse input.len;
+    const date_part = input[0..date_end];
+    const time_part = if (date_end < input.len) input[date_end + 1 ..] else "";
+    var date_it = std.mem.splitScalar(u8, date_part, '-');
+    const year_s = date_it.next() orelse return null;
+    const month_s = date_it.next() orelse return null;
+    const day_s = date_it.next() orelse return null;
+    if (date_it.next() != null) return null;
+    const year = std.fmt.parseInt(i32, year_s, 10) catch return null;
+    const month = std.fmt.parseInt(i32, month_s, 10) catch return null;
+    const day = std.fmt.parseInt(i32, day_s, 10) catch return null;
+    if (year < 1 or month < 1 or month > 12 or day < 1 or day > 31) return null;
+
+    var hour: i32 = 0;
+    var minute: i32 = 0;
+    var second: i32 = 0;
+    if (time_part.len > 0) {
+        const trimmed_time = std.mem.trim(u8, time_part, " \t");
+        var time_it = std.mem.splitScalar(u8, trimmed_time, ':');
+        const h_s = time_it.next() orelse return null;
+        const m_s = time_it.next() orelse return null;
+        const s_s = time_it.next() orelse "0";
+        if (time_it.next() != null) return null;
+        hour = std.fmt.parseInt(i32, h_s, 10) catch return null;
+        minute = std.fmt.parseInt(i32, m_s, 10) catch return null;
+        // strip optional fractional seconds / TZ suffix
+        const s_clean_end = for (s_s, 0..) |ch, idx| {
+            if (!std.ascii.isDigit(ch)) break idx;
+        } else s_s.len;
+        const s_clean = s_s[0..s_clean_end];
+        second = if (s_clean.len == 0) 0 else (std.fmt.parseInt(i32, s_clean, 10) catch return null);
+        if (hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59) return null;
     }
-    return s;
+    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{ @as(u32, @intCast(year)), @as(u32, @intCast(month)), @as(u32, @intCast(day)), @as(u32, @intCast(hour)), @as(u32, @intCast(minute)), @as(u32, @intCast(second)) }) catch null;
 }
 
 /// 静的メソッド呼び出しを試行する。
@@ -1617,7 +1663,38 @@ fn dispatchStaticPattern(ctx: *BuiltinContext, method_name: []const u8, args: []
         try obj.fields.put(ctx.arena, "pattern", args[0]);
         return Value{ .object = obj };
     }
+    // Pattern.matches(regex, input) — static convenience for "entire input matches regex".
+    if (std.ascii.eqlIgnoreCase(method_name, "matches") and args.len >= 2 and
+        args[0] == .string and args[1] == .string)
+    {
+        return Value{ .boolean = try regex.matches(ctx.arena, args[0].string, args[1].string) };
+    }
+    // Pattern.quote(s) — wrap the input so it matches literally.
+    if (std.ascii.eqlIgnoreCase(method_name, "quote") and args.len >= 1 and args[0] == .string) {
+        var buf = std.ArrayListUnmanaged(u8).empty;
+        try buf.appendSlice(ctx.arena, "\\Q");
+        try buf.appendSlice(ctx.arena, args[0].string);
+        try buf.appendSlice(ctx.arena, "\\E");
+        return Value{ .string = buf.items };
+    }
     return Value.null_val;
+}
+
+/// Build the Type value for a Schema.<SObject> lookup.
+/// Returns null when (lookup,inner) isn't the Schema.<KnownSObject> pattern, so callers can
+/// preserve their original fallback (typically returning null_val).
+/// Experience Cloud / Communities gate: `Schema.Network` is treated as "not present" so
+/// common runtime feature checks (`Type.forName('Schema.Network') != null`) stay valid for
+/// orgs without Experience Cloud enabled — matches the current NebulaLogger test expectations.
+fn schemaSObjectTypeValue(ctx: *BuiltinContext, lookup_name: []const u8, inner_name: []const u8) ?Value {
+    if (!std.ascii.eqlIgnoreCase(lookup_name, "Schema")) return null;
+    if (std.ascii.eqlIgnoreCase(inner_name, "Network")) return null;
+    if (!ctx.eval.isSObjectTypeNamePublic(inner_name)) return null;
+    const obj = ctx.arena.create(types.ObjectInstance) catch return null;
+    obj.* = .{ .class_name = "Type" };
+    // Store the bare SObject name so newInstance() produces an .sobject value.
+    obj.fields.put(ctx.arena, "name", Value{ .string = inner_name }) catch return null;
+    return Value{ .object = obj };
 }
 
 fn dispatchStaticType(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -1662,8 +1739,12 @@ fn dispatchStaticType(ctx: *BuiltinContext, method_name: []const u8, args: []con
                         else => {},
                     }
                 }
-                if (!found_inner) return Value.null_val;
+                if (!found_inner) {
+                    if (schemaSObjectTypeValue(ctx, lookup_name, inner_name)) |v| return v;
+                    return Value.null_val;
+                }
             } else {
+                if (schemaSObjectTypeValue(ctx, lookup_name, inner_name)) |v| return v;
                 return Value.null_val;
             }
         }
@@ -2680,7 +2761,7 @@ fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const 
                 if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) break :blk known_type;
             }
         }
-        break :blk inferFieldType(field_name);
+        break :blk inferFieldTypeForObject(object_type, field_name);
     };
     const ft: []const u8 = mapXmlTypeToDisplayType(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
@@ -2741,6 +2822,17 @@ fn mapXmlTypeToDisplayType(xml_type: []const u8) []const u8 {
 
 /// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
 fn inferFieldType(field_name: []const u8) []const u8 {
+    return inferFieldTypeForObject("", field_name);
+}
+
+/// Infer an xml-form type for a standard SObject field.
+/// `object_type` is optional ("" for unknown); when provided, well-known object/field pairs
+/// resolve to their real DisplayType so `DescribeFieldResult.getType()` reports something
+/// sensible even without field-meta.xml being loaded.
+fn inferFieldTypeForObject(object_type: []const u8, field_name: []const u8) []const u8 {
+    if (object_type.len > 0) {
+        if (inferStandardPicklistType(object_type, field_name)) |t| return t;
+    }
     if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
         return "Integer";
@@ -2769,6 +2861,56 @@ fn inferFieldType(field_name: []const u8) []const u8 {
     return "String";
 }
 
+/// Return the xml-form type for well-known standard picklists ("Account.Rating" etc.).
+/// Null means "no override — fall back to generic inference."
+fn inferStandardPicklistType(object_type: []const u8, field_name: []const u8) ?[]const u8 {
+    const Entry = struct {
+        object: []const u8,
+        field: []const u8,
+        xml_type: []const u8,
+    };
+    const picklists = [_]Entry{
+        .{ .object = "Account", .field = "Rating", .xml_type = "Picklist" },
+        .{ .object = "Account", .field = "Industry", .xml_type = "Picklist" },
+        .{ .object = "Account", .field = "Type", .xml_type = "Picklist" },
+        .{ .object = "Account", .field = "Ownership", .xml_type = "Picklist" },
+        .{ .object = "Account", .field = "AccountSource", .xml_type = "Picklist" },
+        .{ .object = "Contact", .field = "LeadSource", .xml_type = "Picklist" },
+        .{ .object = "Contact", .field = "Salutation", .xml_type = "Picklist" },
+        .{ .object = "Lead", .field = "Status", .xml_type = "Picklist" },
+        .{ .object = "Lead", .field = "LeadSource", .xml_type = "Picklist" },
+        .{ .object = "Lead", .field = "Industry", .xml_type = "Picklist" },
+        .{ .object = "Lead", .field = "Rating", .xml_type = "Picklist" },
+        .{ .object = "Opportunity", .field = "StageName", .xml_type = "Picklist" },
+        .{ .object = "Opportunity", .field = "Type", .xml_type = "Picklist" },
+        .{ .object = "Opportunity", .field = "LeadSource", .xml_type = "Picklist" },
+        .{ .object = "Opportunity", .field = "ForecastCategory", .xml_type = "Picklist" },
+        .{ .object = "Opportunity", .field = "ForecastCategoryName", .xml_type = "Picklist" },
+        .{ .object = "Case", .field = "Status", .xml_type = "Picklist" },
+        .{ .object = "Case", .field = "Origin", .xml_type = "Picklist" },
+        .{ .object = "Case", .field = "Priority", .xml_type = "Picklist" },
+        .{ .object = "Case", .field = "Reason", .xml_type = "Picklist" },
+        .{ .object = "Case", .field = "Type", .xml_type = "Picklist" },
+        .{ .object = "Task", .field = "Priority", .xml_type = "Picklist" },
+        .{ .object = "Task", .field = "Status", .xml_type = "Picklist" },
+        .{ .object = "Task", .field = "Subject", .xml_type = "Combobox" },
+        .{ .object = "Event", .field = "Subject", .xml_type = "Combobox" },
+        .{ .object = "Campaign", .field = "Type", .xml_type = "Picklist" },
+        .{ .object = "Campaign", .field = "Status", .xml_type = "Picklist" },
+        .{ .object = "User", .field = "UserType", .xml_type = "Picklist" },
+        .{ .object = "User", .field = "TimeZoneSidKey", .xml_type = "Picklist" },
+        .{ .object = "User", .field = "LanguageLocaleKey", .xml_type = "Picklist" },
+        .{ .object = "User", .field = "LocaleSidKey", .xml_type = "Picklist" },
+        .{ .object = "User", .field = "EmailEncodingKey", .xml_type = "Picklist" },
+    };
+    for (picklists) |e| {
+        if (std.ascii.eqlIgnoreCase(e.object, object_type) and std.ascii.eqlIgnoreCase(e.field, field_name)) {
+            return e.xml_type;
+        }
+    }
+    return null;
+}
+
 pub fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
     if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
@@ -2777,7 +2919,7 @@ pub fn getSObjectFieldDisplayType(ctx: *BuiltinContext, sob: *types.SObject, fie
             }
         }
     }
-    return mapXmlTypeToDisplayType(inferFieldType(field_name));
+    return mapXmlTypeToDisplayType(inferFieldTypeForObject(sob.type_name, field_name));
 }
 
 pub fn normalizeSObjectFieldAssignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {

@@ -10694,6 +10694,30 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(method, "month")) return Value{ .integer = dt.m };
             return Value{ .integer = dt.d };
         }
+        // hour() / minute() / second() / millisecond() — Datetime components.
+        // yearGmt / monthGmt / dayGmt / hourGmt / minuteGmt / secondGmt mirror these;
+        // since we store UTC-ish ISO strings, both variants return the same value.
+        if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt") or
+            std.ascii.eqlIgnoreCase(method, "minute") or std.ascii.eqlIgnoreCase(method, "minuteGmt") or
+            std.ascii.eqlIgnoreCase(method, "second") or std.ascii.eqlIgnoreCase(method, "secondGmt") or
+            std.ascii.eqlIgnoreCase(method, "millisecond") or std.ascii.eqlIgnoreCase(method, "millisecondGmt"))
+        {
+            const dt = parseIsoDate(s) orelse return Value{ .integer = 0 };
+            if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt")) return Value{ .integer = dt.h };
+            if (std.ascii.eqlIgnoreCase(method, "minute") or std.ascii.eqlIgnoreCase(method, "minuteGmt")) return Value{ .integer = dt.mi };
+            if (std.ascii.eqlIgnoreCase(method, "second") or std.ascii.eqlIgnoreCase(method, "secondGmt")) return Value{ .integer = dt.sec };
+            // millisecond — we currently store seconds-only; default to 0.
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "yearGmt") or
+            std.ascii.eqlIgnoreCase(method, "monthGmt") or
+            std.ascii.eqlIgnoreCase(method, "dayGmt"))
+        {
+            const dt = parseIsoDate(s) orelse return Value.null_val;
+            if (std.ascii.eqlIgnoreCase(method, "yearGmt")) return Value{ .integer = dt.y };
+            if (std.ascii.eqlIgnoreCase(method, "monthGmt")) return Value{ .integer = dt.m };
+            return Value{ .integer = dt.d };
+        }
         // dayOfYear() — 1-based day of year (Apex Date/Datetime helper)
         if (std.ascii.eqlIgnoreCase(method, "dayOfYear")) {
             const dt = parseIsoDate(s) orelse return Value.null_val;
@@ -15001,6 +15025,12 @@ pub const Evaluator = struct {
 
     pub fn instantiateClassPublic(self: *Evaluator, class_name: []const u8) !Value {
         return self.instantiateClass(class_name);
+    }
+
+    /// True for a bare SObject simple name (e.g. "Account", "MyObject__c").
+    /// Public wrapper around the internal `isSObjectTypeName` used by builtin dispatch.
+    pub fn isSObjectTypeNamePublic(self: *Evaluator, name: []const u8) bool {
+        return self.isSObjectTypeName(name);
     }
 
     fn findClass(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {

@@ -4395,6 +4395,115 @@ test "E2E: enum-valued string argument disambiguates overloads" {
     try std.testing.expectEqualStrings("Name", result.value.string);
 }
 
+test "E2E: Type.forName with Schema prefix instantiates a known standard SObject" {
+    // `Type.forName('Schema.Account').newInstance()` is a common pattern for reflection-style
+    // code (formula evaluators, feature toggles). Our interpreter should treat Schema.<Std>
+    // as a non-null Type whose newInstance() yields an SObject value.
+    const source =
+        \\public class SchemaTypeProbe {
+        \\    public static String test() {
+        \\        Type t = Type.forName('Schema.Account');
+        \\        if (t == null) return 'null-type';
+        \\        SObject so = (SObject) t.newInstance();
+        \\        Schema.SObjectType r = so.getSObjectType();
+        \\        return r.getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Account", result.value.string);
+}
+
+test "E2E: Type.forName('Schema.Network') remains null for Experience-Cloud gating" {
+    // Code such as `if (Type.forName('Schema.Network') != null) { ... }` uses Network as a
+    // capability check for Experience Cloud. The interpreter simulates an org where
+    // Experience Cloud is off, so this lookup must stay null even though Account etc. don't.
+    const source =
+        \\public class NetworkGateProbe {
+        \\    public static String test() {
+        \\        Type n = Type.forName('Schema.Network');
+        \\        if (n == null) return 'gated-off';
+        \\        return 'gated-on';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "NetworkGateProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("gated-off", result.value.string);
+}
+
+test "E2E: Account.Rating describe reports Picklist instead of String" {
+    // Standard picklist fields on well-known SObjects should resolve to DisplayType.PICKLIST
+    // even when the fixture doesn't ship field-meta.xml for them.
+    const source =
+        \\public class PicklistDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.SObjectType t = Account.SObjectType;
+        \\        Schema.DescribeSObjectResult d = t.getDescribe();
+        \\        Schema.DisplayType dt = d.fields.getMap().get('Rating').getDescribe().getType();
+        \\        return String.valueOf(dt);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PicklistDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("PICKLIST", result.value.string);
+}
+
+test "E2E: Datetime.valueOf accepts loose single-digit components" {
+    // `Datetime.valueOf('2006-5-4 3:2:1')` is real-world input seen in utility code that
+    // re-parses user-entered strings. Apex accepts it; we need to as well.
+    const source =
+        \\public class DtLooseProbe {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.valueOf('2006-5-4 3:2:1');
+        \\        return String.valueOf(dt.year()) + '-' + String.valueOf(dt.month()) + '-' + String.valueOf(dt.day()) +
+        \\            ' ' + String.valueOf(dt.hour()) + ':' + String.valueOf(dt.minute()) + ':' + String.valueOf(dt.second());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DtLooseProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
+}
+
+test "E2E: Pattern.matches static and nested capture groups round-trip" {
+    // Validates two recently-fixed building blocks together:
+    //   - Pattern.matches(regex, input) works as the "full-match" static form.
+    //   - A pattern with nested capture groups reports inner indices without overwriting
+    //     the outer group's capture (prior bug silently merged outer and first inner).
+    const source =
+        \\public class RegexCaptureProbe {
+        \\    public static String test() {
+        \\        Boolean ok = Pattern.matches('(_B[0-9]+B_)', '_B0B_');
+        \\        Pattern p = Pattern.compile('(([a-z]+) ([a-z]+))');
+        \\        Matcher m = p.matcher('foo bar');
+        \\        if (!m.find()) return 'no-match';
+        \\        return String.valueOf(ok) + '|' + m.group(1) + '|' + m.group(2) + '|' + m.group(3);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "RegexCaptureProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|foo bar|foo|bar", result.value.string);
+}
+
 test "E2E: Datetime.newInstance(milliseconds) single arg" {
     const source =
         \\public class DtMillisTest {
