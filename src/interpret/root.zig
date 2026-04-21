@@ -4480,6 +4480,50 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: Matcher.groupCount reflects the pattern and matches() populates currentMatch" {
+    // Java/Apex contract: `Matcher.groupCount()` reports the number of capture groups in
+    // the *pattern* — not the number actually captured. After `matches()` succeeds, the
+    // matcher should also expose `group(n)` for inspection (fflib_SObjectSelector tests
+    // depend on this to validate generated SOQL).
+    const source =
+        \\public class MatcherStateProbe {
+        \\    public static String test() {
+        \\        Pattern p = Pattern.compile('SELECT (.*) FROM (.+)');
+        \\        Matcher m = p.matcher('SELECT Id, Name FROM Account');
+        \\        if (m.groupCount() != 2) return 'bad-groupCount:' + String.valueOf(m.groupCount());
+        \\        if (!m.matches()) return 'no-match';
+        \\        return m.group(1) + '|' + m.group(2);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MatcherStateProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Id, Name|Account", result.value.string);
+}
+
+test "E2E: greedy capture groups backtrack when the tail needs characters" {
+    // Ensures `(.*)` followed by a literal doesn't swallow past the literal.
+    const source =
+        \\public class GreedyBacktrackProbe {
+        \\    public static String test() {
+        \\        Pattern p = Pattern.compile('a(.*)c');
+        \\        Matcher m = p.matcher('abbbc');
+        \\        if (!m.matches()) return 'no-match';
+        \\        return m.group(1);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "GreedyBacktrackProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("bbb", result.value.string);
+}
+
 test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.getMap()" {
     // Regression for a bug where the two describe-map paths produced different sizes.
     // Consumers like fflib_SObjectDescribe.FieldsMap assert the two match, so we must

@@ -3505,7 +3505,6 @@ fn dispatchObjPattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
         try matcher.fields.put(ctx.arena, "pos", Value{ .integer = 0 });
         const matches = try ctx.arena.create(types.ListValue);
         matches.* = .{};
-        var group_count: i64 = 0;
         try matcher.fields.put(ctx.arena, "matches", Value{ .list = matches });
         if (obj.fields.get("pattern")) |pat_val| {
             if (pat_val == .string) {
@@ -3519,7 +3518,6 @@ fn dispatchObjPattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
                     group_starts.* = .{};
                     const group_ends = try ctx.arena.create(types.ListValue);
                     group_ends.* = .{};
-                    var match_group_count: i64 = 0;
                     for (0..regex.max_groups) |gi| {
                         if (m.group(gi)) |span| {
                             if (m.groupSlice(gi, args[0].string)) |s| {
@@ -3529,10 +3527,8 @@ fn dispatchObjPattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
                             }
                             try group_starts.items.append(ctx.arena, Value{ .integer = @intCast(span.start) });
                             try group_ends.items.append(ctx.arena, Value{ .integer = @intCast(span.end) });
-                            if (gi > 0) match_group_count += 1;
                         } else if (gi > 0) break;
                     }
-                    if (match_group_count > group_count) group_count = match_group_count;
                     try match_obj.fields.put(ctx.arena, "groups", Value{ .list = match_groups });
                     try match_obj.fields.put(ctx.arena, "groupStarts", Value{ .list = group_starts });
                     try match_obj.fields.put(ctx.arena, "groupEnds", Value{ .list = group_ends });
@@ -3540,10 +3536,38 @@ fn dispatchObjPattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
                 }
             }
         }
+        // `groupCount` reflects the capture groups in the *pattern*, not the number of
+        // matches actually captured — Apex/Java semantics. Counting from the pattern keeps
+        // it available even before `find()` is called and regardless of match success.
+        const pattern_value = obj.fields.get("pattern") orelse Value{ .string = "" };
+        const group_count: i64 = if (pattern_value == .string) countCapturingGroups(pattern_value.string) else 0;
         try matcher.fields.put(ctx.arena, "groupCount", Value{ .integer = group_count });
         return Value{ .object = matcher };
     }
     return Value.null_val;
+}
+
+/// Count unescaped capture groups in a regex pattern string (excludes `(?:`, `(?=`, `(?!`,
+/// `(?<=`, `(?<!`). Accepts both raw and Apex double-escaped patterns — a `\\(`
+/// still doesn't open a group.
+fn countCapturingGroups(pattern: []const u8) i64 {
+    var count: i64 = 0;
+    var i: usize = 0;
+    while (i < pattern.len) : (i += 1) {
+        if (pattern[i] == '\\' and i + 1 < pattern.len) {
+            // Skip the escaped char so things like `\(` don't count.
+            i += 1;
+            continue;
+        }
+        if (pattern[i] != '(') continue;
+        // Non-capturing / lookahead / lookbehind prefixes.
+        if (i + 2 < pattern.len and pattern[i + 1] == '?') {
+            const c = pattern[i + 2];
+            if (c == ':' or c == '=' or c == '!' or c == '<') continue;
+        }
+        count += 1;
+    }
+    return count;
 }
 
 fn dispatchObjMatcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
@@ -3590,10 +3614,30 @@ fn dispatchObjMatcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_n
     if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
         const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
         const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
-        if (pattern_value == .string and input_value == .string) {
-            return Value{ .boolean = try regex.matches(ctx.arena, pattern_value.string, input_value.string) };
+        if (pattern_value != .string or input_value != .string) return Value{ .boolean = false };
+        // Apex's Matcher.matches() not only returns true/false but also positions the matcher
+        // so that `group(n)` reports captures for the whole-input match. Pre-built matches
+        // always start at position 0; we expose the first whole-input match as `currentMatch`
+        // and reset `pos` so subsequent `find()` calls are consistent with Java semantics.
+        const whole_match = try regex.matches(ctx.arena, pattern_value.string, input_value.string);
+        if (!whole_match) return Value{ .boolean = false };
+        if (obj.fields.get("matches")) |existing| {
+            if (existing == .list and existing.list.items.items.len > 0) {
+                for (existing.list.items.items) |candidate| {
+                    if (candidate != .object) continue;
+                    if (candidate.object.fields.get("groups")) |groups| {
+                        if (groups != .list or groups.list.items.items.len == 0) continue;
+                        const whole = groups.list.items.items[0];
+                        if (whole == .string and std.mem.eql(u8, whole.string, input_value.string)) {
+                            try obj.fields.put(ctx.arena, "currentMatch", candidate);
+                            try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
+                            return Value{ .boolean = true };
+                        }
+                    }
+                }
+            }
         }
-        return Value{ .boolean = false };
+        return Value{ .boolean = true };
     }
     return null;
 }

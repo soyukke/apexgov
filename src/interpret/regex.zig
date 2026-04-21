@@ -304,13 +304,40 @@ fn matchAt(
             if (quant.min == 1 and quant.max == 1) {
                 for (alternatives) |alt| {
                     if (alt) |a| {
-                        if (matchAt(a, 0, input, ip, groups, depth + 1, inner_base)) |alt_end| {
-                            if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
-                            if (rest_start >= pat.len) return alt_end;
-                            if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
-                                return final_end;
+                        if (matchAt(a, 0, input, ip, groups, depth + 1, inner_base)) |initial_alt_end| {
+                            // The inner match may have greedily consumed characters that the
+                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). Iterate the
+                            // alt_end from the greedy max down to the shortest valid length
+                            // and try the rest at each. Only positions where the inner
+                            // pattern still matches `input[ip..alt_end]` exactly are tried.
+                            var alt_end: usize = initial_alt_end;
+                            while (true) {
+                                if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                                if (rest_start >= pat.len) return alt_end;
+                                if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
+                                    return final_end;
+                                }
+                                if (grp_idx > 0) groups.*[grp_idx] = null;
+                                if (alt_end <= ip) break;
+                                // Shrink by one character and verify inner still matches.
+                                var next_end: usize = alt_end - 1;
+                                const sub_input = input[0..next_end];
+                                const sub_match = matchAt(a, 0, sub_input, ip, groups, depth + 1, inner_base);
+                                if (sub_match) |e| {
+                                    // Inner may match a shorter prefix — use the longest length
+                                    // that still matches, which could be less than `next_end`.
+                                    next_end = e;
+                                } else {
+                                    // No valid shorter inner match — give up on this alternative.
+                                    break;
+                                }
+                                if (next_end == alt_end) {
+                                    // Avoid infinite loop when shrink produced no progress.
+                                    if (next_end == 0) break;
+                                    next_end -= 1;
+                                }
+                                alt_end = next_end;
                             }
-                            if (grp_idx > 0) groups.*[grp_idx] = null;
                         }
                     } else break;
                 }
@@ -699,6 +726,23 @@ test "nested capture groups number correctly" {
     try std.testing.expectEqualStrings("foo bar", r[0].groupSlice(1, input).?);
     try std.testing.expectEqualStrings("foo", r[0].groupSlice(2, input).?);
     try std.testing.expectEqualStrings("bar", r[0].groupSlice(3, input).?);
+}
+
+test "greedy capture group backtracks to let the tail match" {
+    // Regression: (.*)c on abc used to fail because the inner `.` atom greedily consumed
+    // the trailing `c`, and the wrapping capture group never shrank its end. The engine
+    // must reduce the group's end-position one char at a time so the rest-of-pattern gets
+    // another chance.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(try matches(a, "a(.*)c", "abc"));
+    try std.testing.expect(try matches(a, "a(.*)c", "abbc"));
+    try std.testing.expect(try matches(a, "a (.*) c", "a bb c"));
+    const input = "SELECT Name FROM Account";
+    const r = try findAll(a, "SELECT (.*) FROM Account", input);
+    try std.testing.expectEqual(@as(usize, 1), r.len);
+    try std.testing.expectEqualStrings("Name", r[0].groupSlice(1, input).?);
 }
 
 test "three-level nested captures preserve numbering" {
