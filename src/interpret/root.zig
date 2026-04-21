@@ -3081,6 +3081,27 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Type literals from distinct classes are not collapsed as map keys" {
+    const source =
+        \\public class TypeKeyedMapTest {
+        \\    public class Alpha {}
+        \\    public class Beta {}
+        \\    public static String test() {
+        \\        Map<Type, String> byType = new Map<Type, String>();
+        \\        byType.put(Alpha.class, 'alpha');
+        \\        byType.put(Beta.class, 'beta');
+        \\        return byType.get(Alpha.class) + ',' + byType.get(Beta.class) + ',' + String.valueOf(byType.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TypeKeyedMapTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("alpha,beta,2", result.value.string);
+}
+
 test "E2E: Trigger.operationType is null outside of a trigger context" {
     const source =
         \\public class TriggerOperationTypeProbe {

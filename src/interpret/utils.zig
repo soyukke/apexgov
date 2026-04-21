@@ -262,6 +262,15 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
                     if (bv == .string) break :blk bv.string;
                 }
             }
+            // Type (from SomeClass.class) → return the resolved class name so that
+            // Map<Type, X> keys don't collapse to a single "Type:[instance]" slot.
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
+            {
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+            }
             // Use simple name (after last dot) like Apex does
             const cn = obj.class_name;
             const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
