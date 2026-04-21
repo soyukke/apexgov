@@ -3081,6 +3081,25 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: addError on a detached SObject records the error without throwing" {
+    const source =
+        \\public class AddErrorAttachTest {
+        \\    public static String test() {
+        \\        Account a = new Account();
+        \\        a.addError('shouldnt throw');
+        \\        if (!a.hasErrors()) return 'missed';
+        \\        return 'attached:' + String.valueOf(a.getErrors().size()) + ':' + a.getErrors()[0].getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AddErrorAttachTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("attached:1:shouldnt throw", result.value.string);
+}
+
 test "E2E: field assignment on static variable whose name collides with a class" {
     const source =
         \\public class ShadowedHolder {

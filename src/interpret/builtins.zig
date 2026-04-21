@@ -4012,18 +4012,54 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
     if (std.ascii.eqlIgnoreCase(method_name, "isClone")) {
         return Value{ .boolean = sob.is_clone };
     }
-    // addError → throw DmlException (supports 1-arg msg or 2-arg field,msg)
+    // addError → attach a Database.Error to the SObject. Matches Apex semantics:
+    // the method itself does not throw — the surrounding DML (or trigger dispatcher)
+    // is responsible for translating the attached errors into a DmlException when it
+    // commits.
     if (std.ascii.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
-        const exc = try ctx.arena.create(types.ObjectInstance);
-        exc.* = .{ .class_name = "DmlException" };
         const msg_val = if (args.len >= 2) args[1] else args[0];
         const field_val: ?Value = if (args.len >= 2) args[0] else null;
-        try exc.fields.put(ctx.arena, "message", msg_val);
-        if (field_val) |fv| try exc.fields.put(ctx.arena, "field", fv);
-        ctx.eval.pending_exception = Value{ .object = exc };
-        // Also attach an error object to the SObject so that addError effects (DML failures)
-        // are reflected in SaveResult.errors. The evaluator's executeDml catches this.
-        return error.ApexException;
+        const err_obj = try ctx.arena.create(types.ObjectInstance);
+        err_obj.* = .{ .class_name = "Database.Error" };
+        try err_obj.fields.put(ctx.arena, "message", msg_val);
+        try err_obj.fields.put(ctx.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+        const fields_list = try ctx.arena.create(types.ListValue);
+        fields_list.* = .{};
+        if (field_val) |fv| {
+            const field_name: []const u8 = switch (fv) {
+                .string => |s| s,
+                .object => |ob| blk: {
+                    if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
+                    if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
+                    break :blk "";
+                },
+                else => "",
+            };
+            try fields_list.items.append(ctx.arena, Value{ .string = field_name });
+            try err_obj.fields.put(ctx.arena, "field", Value{ .string = field_name });
+        }
+        try err_obj.fields.put(ctx.arena, "fields", Value{ .list = fields_list });
+
+        const errors_list = if (utils.sobjectGet(&sob.fields, "errors")) |existing|
+            if (existing == .list) existing.list else blk: {
+                const lst = try ctx.arena.create(types.ListValue);
+                lst.* = .{};
+                break :blk lst;
+            }
+        else blk: {
+            const lst = try ctx.arena.create(types.ListValue);
+            lst.* = .{};
+            break :blk lst;
+        };
+        try errors_list.items.append(ctx.arena, Value{ .object = err_obj });
+        try utils.sobjectPut(&sob.fields, ctx.arena, "errors", Value{ .list = errors_list });
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "hasErrors")) {
+        if (utils.sobjectGet(&sob.fields, "errors")) |existing| {
+            if (existing == .list) return Value{ .boolean = existing.list.items.items.len > 0 };
+        }
+        return Value{ .boolean = false };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
         // Case-insensitive lookup

@@ -2104,6 +2104,29 @@ pub const Evaluator = struct {
             }
         }
 
+        // If the before trigger attached errors via addError(), convert them into a
+        // DmlException before the actual DML runs. Without this the DML would quietly
+        // persist records that Apex would have rejected.
+        for (record_list.items) |item| {
+            if (item != .sobject) continue;
+            if (utils.sobjectGet(&item.sobject.fields, "errors")) |errs_val| {
+                if (errs_val == .list and errs_val.list.items.items.len > 0) {
+                    const first = errs_val.list.items.items[0];
+                    var msg: []const u8 = "Trigger added error";
+                    if (first == .object) {
+                        if (first.object.fields.get("message")) |m| {
+                            if (m == .string) msg = m.string;
+                        }
+                    }
+                    const exc = try self.arena.create(types.ObjectInstance);
+                    exc.* = .{ .class_name = "DmlException" };
+                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                    self.pending_exception = Value{ .object = exc };
+                    return error.ApexException;
+                }
+            }
+        }
+
         // Execute actual DML
         switch (op) {
             .insert => {
@@ -9573,6 +9596,12 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
                 return utils.sobjectGet(&obj.sobject.fields, "errors") orelse try self.makeEmptyList();
             }
+            if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
+                if (utils.sobjectGet(&obj.sobject.fields, "errors")) |errs_val| {
+                    if (errs_val == .list) return Value{ .boolean = errs_val.list.items.items.len > 0 };
+                }
+                return Value{ .boolean = false };
+            }
             if (std.ascii.eqlIgnoreCase(method, "getId")) {
                 return utils.sobjectGet(&obj.sobject.fields, "Id") orelse
                     utils.sobjectGet(&obj.sobject.fields, "id") orelse Value.null_val;
@@ -9596,17 +9625,48 @@ pub const Evaluator = struct {
                 }
                 return Value{ .map = map };
             }
-            // addError(msg) or addError(field, msg)
+            // sobject.addError(msg) or addError(field, msg) — per Apex semantics this
+            // attaches an Error to the record's getErrors() list rather than throwing;
+            // only the enclosing DML (insert/update) converts the attached errors into
+            // a DmlException at commit time.
             if (std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                // Salesforce: addError(String message) or addError(String fieldName, String message)
                 const msg_val = if (args.len >= 2) args[1] else args[0];
                 const field_val: ?Value = if (args.len >= 2) args[0] else null;
-                try exc.fields.put(self.arena, "message", msg_val);
-                if (field_val) |fv| try exc.fields.put(self.arena, "field", fv);
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
+                const err_obj = try self.arena.create(types.ObjectInstance);
+                err_obj.* = .{ .class_name = "Database.Error" };
+                try err_obj.fields.put(self.arena, "message", msg_val);
+                try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+                const fields_list = try self.arena.create(types.ListValue);
+                fields_list.* = .{};
+                if (field_val) |fv| {
+                    const field_name: []const u8 = switch (fv) {
+                        .string => |s| s,
+                        .object => |ob| blk: {
+                            if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
+                            if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
+                            break :blk "";
+                        },
+                        else => "",
+                    };
+                    try fields_list.items.append(self.arena, Value{ .string = field_name });
+                    try err_obj.fields.put(self.arena, "field", Value{ .string = field_name });
+                }
+                try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+
+                var errors_list = if (utils.sobjectGet(&obj.sobject.fields, "errors")) |existing|
+                    if (existing == .list) existing.list else blk: {
+                        const lst = try self.arena.create(types.ListValue);
+                        lst.* = .{};
+                        break :blk lst;
+                    }
+                else blk: {
+                    const lst = try self.arena.create(types.ListValue);
+                    lst.* = .{};
+                    break :blk lst;
+                };
+                try errors_list.items.append(self.arena, Value{ .object = err_obj });
+                try utils.sobjectPut(&obj.sobject.fields, self.arena, "errors", Value{ .list = errors_list });
+                return Value.void_val;
             }
         }
 
