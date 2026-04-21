@@ -3081,6 +3081,30 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: field assignment on static variable whose name collides with a class" {
+    const source =
+        \\public class ShadowedHolder {
+        \\    public class Entry {
+        \\        public String payload;
+        \\    }
+        \\}
+        \\public class ShadowedStaticTest {
+        \\    private static ShadowedHolder.Entry entry = new ShadowedHolder.Entry();
+        \\    public static String test() {
+        \\        entry.payload = 'set-via-static';
+        \\        ShadowedHolder.Entry alias = entry;
+        \\        return alias.payload;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "ShadowedStaticTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("set-via-static", result.value.string);
+}
+
 test "E2E: inherited method reaches intermediate override via virtual dispatch" {
     const source =
         \\public virtual class VirtualDispatchBase {

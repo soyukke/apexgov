@@ -7898,12 +7898,13 @@ pub const Evaluator = struct {
                 // Handle static field assignment: ClassName.fieldName = val
                 if (fa.object.* == .identifier) {
                     const cls = fa.object.identifier.name;
-                    // Check if it's a class name (not a local variable)
+                    // Check if it's a class name (not a local variable or a static field
+                    // in the enclosing class/inheritance chain).
                     const is_class = self.findClass(cls) != null or
                         std.ascii.eqlIgnoreCase(cls, "RestContext") or
                         std.ascii.eqlIgnoreCase(cls, "System") or
                         std.ascii.eqlIgnoreCase(cls, "Trigger");
-                    const is_var = current_env.get(cls) != null;
+                    const is_var = current_env.get(cls) != null or self.resolveBareStaticValue(current_env, cls) != null;
                     if (is_class and !is_var) {
                         // Lazy static init: ensure the class is initialized before writing
                         self.ensureStaticInit(cls);
