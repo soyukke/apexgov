@@ -3081,6 +3081,23 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Trigger.operationType is null outside of a trigger context" {
+    const source =
+        \\public class TriggerOperationTypeProbe {
+        \\    public static String test() {
+        \\        System.TriggerOperation op = Trigger.operationType;
+        \\        return op == null ? 'null' : 'non-null:' + String.valueOf(op);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TriggerOperationTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("null", result.value.string);
+}
+
 test "E2E: String indexOf honours the optional fromIndex argument" {
     const source =
         \\public class IndexOfFromIndexTest {

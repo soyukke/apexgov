@@ -11821,6 +11821,9 @@ pub const Evaluator = struct {
                     if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
                         return Value{ .integer = 0 };
                     }
+                    if (std.ascii.eqlIgnoreCase(fa.field, "operationType")) {
+                        return Value.null_val;
+                    }
                 }
             }
 
