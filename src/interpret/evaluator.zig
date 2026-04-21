@@ -10531,12 +10531,18 @@ pub const Evaluator = struct {
                 @as(u32, @intCast(dt.y)), dt.m, dt.d,
             }) };
         }
-        // time() — Datetime から Time 部分を返す (HH:MM:SS)
+        // time() — Datetime から Time 部分を ObjectInstance として返す
         if (std.ascii.eqlIgnoreCase(method, "time")) {
             const dt = parseIsoDate(s) orelse return Value{ .string = "00:00:00" };
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>2}:{d:0>2}:{d:0>2}.000Z", .{
-                dt.h, dt.mi, dt.sec,
-            }) };
+            const time_str = try std.fmt.allocPrint(self.arena, "{d:0>2}:{d:0>2}:{d:0>2}.000", .{ dt.h, dt.mi, dt.sec });
+            const time_obj = try self.arena.create(types.ObjectInstance);
+            time_obj.* = .{ .class_name = "Time" };
+            try time_obj.fields.put(self.arena, "value", Value{ .string = time_str });
+            try time_obj.fields.put(self.arena, "hour", Value{ .integer = @as(i64, dt.h) });
+            try time_obj.fields.put(self.arena, "minute", Value{ .integer = @as(i64, dt.mi) });
+            try time_obj.fields.put(self.arena, "second", Value{ .integer = @as(i64, dt.sec) });
+            try time_obj.fields.put(self.arena, "millisecond", Value{ .integer = 0 });
+            return Value{ .object = time_obj };
         }
         // getTime() — Datetime からエポックミリ秒を返す
         if (std.ascii.eqlIgnoreCase(method, "getTime")) {
@@ -13837,6 +13843,25 @@ pub const Evaluator = struct {
 
         if (left == .object and right == .object) {
             if (utils.valueEql(left, right)) return true;
+
+            // Built-in value classes (Date / Datetime / Time / Blob) compare by
+            // their stored "value" (and for Time, the component fields) rather
+            // than by ObjectInstance identity.
+            const builtin_value_class = blk: {
+                const cn = left.object.class_name;
+                if (!std.ascii.eqlIgnoreCase(cn, right.object.class_name)) break :blk false;
+                break :blk std.ascii.eqlIgnoreCase(cn, "Date") or
+                    std.ascii.eqlIgnoreCase(cn, "Datetime") or
+                    std.ascii.eqlIgnoreCase(cn, "Time") or
+                    std.ascii.eqlIgnoreCase(cn, "Blob");
+            };
+            if (builtin_value_class) {
+                const lv = left.object.fields.get("value") orelse Value.null_val;
+                const rv = right.object.fields.get("value") orelse Value.null_val;
+                if (lv == .string and rv == .string) {
+                    return std.mem.eql(u8, lv.string, rv.string);
+                }
+            }
 
             if (self.findClass(left.object.class_name)) |left_class| {
                 if (self.findMethodInHierarchyTyped(null, left_class, "equals", &.{right}) != null or

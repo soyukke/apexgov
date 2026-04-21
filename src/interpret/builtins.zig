@@ -83,7 +83,8 @@ pub fn extractDateString(val: Value) ?[]const u8 {
     if (val == .string) return val.string;
     if (val == .object) {
         if (std.ascii.eqlIgnoreCase(val.object.class_name, "Date") or
-            std.ascii.eqlIgnoreCase(val.object.class_name, "Datetime"))
+            std.ascii.eqlIgnoreCase(val.object.class_name, "Datetime") or
+            std.ascii.eqlIgnoreCase(val.object.class_name, "Time"))
         {
             if (val.object.fields.get("value")) |v| {
                 if (v == .string) return v.string;

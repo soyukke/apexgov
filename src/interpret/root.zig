@@ -3081,6 +3081,27 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: Datetime.time returns a Time object and built-in value classes compare by value" {
+    const source =
+        \\public class TimeValueClassProbe {
+        \\    public static String test() {
+        \\        Datetime dt = Datetime.newInstanceGmt(2020, 1, 1, 3, 4, 5);
+        \\        Time derived = dt.time();
+        \\        Time manual = Time.newInstance(3, 4, 5, 0);
+        \\        Boolean eq = derived == manual;
+        \\        Integer hour = derived.hour();
+        \\        return String.valueOf(eq) + '|' + String.valueOf(hour);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TimeValueClassProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|3", result.value.string);
+}
+
 test "E2E: Decimal.setScale honours RoundingMode.DOWN" {
     const source =
         \\public class SetScaleRoundingProbe {
