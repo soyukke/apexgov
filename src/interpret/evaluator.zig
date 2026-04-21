@@ -7026,15 +7026,20 @@ pub const Evaluator = struct {
                 // Try as instance method on `this` first
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
+                        const actual_decl: ?*ast.ClassDecl = self.findClass(this_val.object.class_name);
                         const dispatch_decl = blk: {
                             if (self.current_class) |current_class_name| {
                                 if (self.findClass(current_class_name)) |owner_decl| break :blk owner_decl;
                             }
-                            break :blk self.findClass(this_val.object.class_name) orelse return Value.null_val;
+                            break :blk actual_decl orelse return Value.null_val;
                         };
                         {
-                            // Look for method in class hierarchy
-                            const md = self.findMethodInHierarchy(null, dispatch_decl, call.callee, args.items.len);
+                            // Virtual dispatch: start at the runtime (child) class and walk up.
+                            // Without this, an inherited method calling another method of the
+                            // same receiver (e.g. parent.getStringValue() → toString()) would
+                            // miss the child's override because it would search only from the
+                            // defining (parent) class upward.
+                            const md = self.findMethodInHierarchy(actual_decl, dispatch_decl, call.callee, args.items.len);
                             if (md != null) {
                                 // Snapshot field values before the call
                                 var pre_fields: [16]Value = undefined;
@@ -11196,14 +11201,25 @@ pub const Evaluator = struct {
                 }
             }
 
-            // Initialize parent class fields first (so child fields can shadow)
-            if (class_decl.super_class) |sc| {
-                if (self.findClass(sc.name)) |parent_decl| {
-                    self.initInstanceFields(parent_decl, instance) catch {};
+            // Initialize ancestor fields top-down (grandparents before parent) so child
+            // field declarations can shadow, and every inherited field with an
+            // initializer actually runs.
+            {
+                var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+                defer chain.deinit(self.arena);
+                var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc| self.findClass(sc.name) else null;
+                while (cursor) |cd_cursor| {
+                    try chain.append(self.arena, cd_cursor);
+                    cursor = if (cd_cursor.super_class) |sc| self.findClass(sc.name) else null;
+                }
+                var i: usize = chain.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    self.initInstanceFields(chain.items[i], instance) catch {};
                 }
             }
 
-            // Initialize instance fields from class (non-static) — after parent
+            // Initialize instance fields from class (non-static) — after ancestors
             self.initInstanceFields(class_decl, instance) catch {};
 
             // Evaluate constructor args
@@ -13830,9 +13846,12 @@ pub const Evaluator = struct {
             }
         }.run;
 
+        // Walk the runtime-type chain first so intermediate overrides are seen.
         if (actual_class) |ac| {
-            if (ac != class_decl) {
-                considerOwner(self, ac, method_name, args, arg_type_hints, &best, &best_score);
+            var cur: ?*ast.ClassDecl = ac;
+            while (cur) |cd| {
+                considerOwner(self, cd, method_name, args, arg_type_hints, &best, &best_score);
+                cur = if (cd.super_class) |sc| self.findClass(sc.name) else null;
             }
         }
 
@@ -13851,9 +13870,12 @@ pub const Evaluator = struct {
     }
 
     fn findResolvedMethodInHierarchy(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, arg_count: usize) ?ResolvedInstanceMethod {
+        // Walk the runtime-type chain first so intermediate overrides are seen.
         if (actual_class) |ac| {
-            if (ac != class_decl) {
-                if (self.findMethodInClass(ac, method_name, arg_count)) |md| return .{ .owner = ac, .method = md };
+            var cur: ?*ast.ClassDecl = ac;
+            while (cur) |cd| {
+                if (self.findMethodInClass(cd, method_name, arg_count)) |md| return .{ .owner = cd, .method = md };
+                cur = if (cd.super_class) |sc| self.findClass(sc.name) else null;
             }
         }
         if (self.findMethodInClass(class_decl, method_name, arg_count)) |md| return .{ .owner = class_decl, .method = md };
@@ -13870,11 +13892,14 @@ pub const Evaluator = struct {
         return null;
     }
 
-    /// Type-aware version of findMethodInHierarchy
+    /// Type-aware version of findMethodInHierarchy. Walks the runtime (child)
+    /// type chain first so intermediate overrides aren't skipped.
     fn findMethodInHierarchyTyped(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
         if (actual_class) |ac| {
-            if (ac != class_decl) {
-                if (self.findBestMethodInClass(ac, method_name, args)) |md| return md;
+            var cur: ?*ast.ClassDecl = ac;
+            while (cur) |cd| {
+                if (self.findBestMethodInClass(cd, method_name, args)) |md| return md;
+                cur = if (cd.super_class) |sc| self.findClass(sc.name) else null;
             }
         }
         if (self.findBestMethodInClass(class_decl, method_name, args)) |md| return md;
@@ -13896,15 +13921,18 @@ pub const Evaluator = struct {
     /// 2. The provided class_decl
     /// 3. Parent classes via super_class chain
     fn findMethodInHierarchy(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, arg_count: usize) ?*ast.MethodDecl {
-        // 1. Search actual class first (child override) if different from class_decl
+        // Virtual dispatch: walk the full runtime-type chain first (child overrides
+        // may live at any intermediate ancestor, not just at the most-derived class).
         if (actual_class) |ac| {
-            if (ac != class_decl) {
-                if (self.findMethodInClass(ac, method_name, arg_count)) |md| return md;
+            var cur: ?*ast.ClassDecl = ac;
+            while (cur) |cd| {
+                if (self.findMethodInClass(cd, method_name, arg_count)) |md| return md;
+                cur = if (cd.super_class) |sc| self.findClass(sc.name) else null;
             }
         }
-        // 2. Search the provided class_decl
+        // Fallback: search from the statically-known declaring class upward
+        // (used for super.method() dispatch or when the actual class isn't loaded).
         if (self.findMethodInClass(class_decl, method_name, arg_count)) |md| return md;
-        // 3. Walk up parent chain
         var current: ?*ast.ClassDecl = class_decl;
         while (current) |cd| {
             if (cd.super_class) |sc| {

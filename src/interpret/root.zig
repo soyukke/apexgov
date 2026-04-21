@@ -3081,6 +3081,60 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: inherited method reaches intermediate override via virtual dispatch" {
+    const source =
+        \\public virtual class VirtualDispatchBase {
+        \\    protected List<String> buffer = new List<String>();
+        \\    public virtual void add(String value) { buffer.add(value); }
+        \\    public virtual String render() { return String.join(buffer, ''); }
+        \\    public String publicRender() { return render(); }
+        \\}
+        \\public virtual class VirtualDispatchMiddle extends VirtualDispatchBase {
+        \\    public override String render() { return String.join(buffer, ','); }
+        \\}
+        \\public class VirtualDispatchLeaf extends VirtualDispatchMiddle {
+        \\}
+        \\public class VirtualDispatchTest {
+        \\    public static String test() {
+        \\        VirtualDispatchLeaf leaf = new VirtualDispatchLeaf();
+        \\        leaf.add('a');
+        \\        leaf.add('b');
+        \\        return leaf.publicRender();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "VirtualDispatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("a,b", result.value.string);
+}
+
+test "E2E: grandparent field initializers run when grandchild is constructed" {
+    const source =
+        \\public virtual class AncestorFieldBase {
+        \\    protected List<String> bucket = new List<String>{ 'seed' };
+        \\}
+        \\public virtual class AncestorFieldMid extends AncestorFieldBase {
+        \\}
+        \\public class AncestorFieldLeaf extends AncestorFieldMid {
+        \\    public Integer count() { return bucket == null ? -1 : bucket.size(); }
+        \\}
+        \\public class AncestorFieldTest {
+        \\    public static String test() {
+        \\        return String.valueOf(new AncestorFieldLeaf().count());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AncestorFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
 test "E2E: explicit super constructor forwards args without extra implicit call" {
     const source =
         \\public virtual class ExplicitSuperBaseBag {
