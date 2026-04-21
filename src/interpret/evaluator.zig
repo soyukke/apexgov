@@ -8732,6 +8732,12 @@ pub const Evaluator = struct {
                     }
                 }
 
+                // Invocable.Action.createCustomAction(actionType, actionName)
+                if (std.ascii.eqlIgnoreCase(outer_class, "Invocable") and std.ascii.eqlIgnoreCase(inner, "Action")) {
+                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                    if (try builtins.dispatchStatic(&bctx, "Invocable.Action", mc.method, args.items)) |v| return v;
+                }
+
                 if (std.ascii.eqlIgnoreCase(outer_class, "Flow") and std.ascii.eqlIgnoreCase(inner, "Interview")) {
                     if (std.ascii.eqlIgnoreCase(mc.method, "createInterview") and args.items.len > 0 and args.items[0] == .string) {
                         if (!self.hasFlowDefinition(args.items[0].string)) {

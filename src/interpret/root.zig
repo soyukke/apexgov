@@ -13182,3 +13182,32 @@ test "E2E: standard-field describe exposes known default values" {
     defer result.deinit();
     try std.testing.expectEqualStrings("Not Started|Medium|Open - Not Contacted", result.value.string);
 }
+
+test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
+    // Anonymized probe: utility frameworks call
+    // `Invocable.Action.createCustomAction('Flow', flowName).invoke()` directly;
+    // when the flow doesn't exist the resulting list must contain one
+    // failure-result per invocation so callers can surface "flow not found"
+    // errors without knowing the underlying framework's private error model.
+    const source =
+        \\public class InvocableActionFlowFailureProbe {
+        \\    public static String test() {
+        \\        Invocable.Action action = Invocable.Action.createCustomAction('Flow', 'NoSuchFlow');
+        \\        action.setInvocations(new List<Map<String, Object>>{
+        \\            new Map<String, Object>(),
+        \\            new Map<String, Object>()
+        \\        });
+        \\        List<Invocable.Action.Result> results = action.invoke();
+        \\        return String.valueOf(results.size()) + ':' +
+        \\               String.valueOf(results[0].isSuccess()) + ':' +
+        \\               String.valueOf(results[0].getErrors().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvocableActionFlowFailureProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2:false:1", result.value.string);
+}

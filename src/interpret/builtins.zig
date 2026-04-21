@@ -265,6 +265,32 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
     if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatchStaticEncodingUtil(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatchStaticMessaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatchStaticEventBus(method_name);
+    if (ci.eqlIgnoreCase(class_name, "Invocable.Action")) {
+        if (ci.eqlIgnoreCase(method_name, "createCustomAction") and args.len >= 2) {
+            // Return an Invocable.Action instance carrying the action type
+            // ("Flow"/"ApexAction"/...) and the named callable. setInvocations()
+            // later attaches the input list, and invoke() synthesizes a
+            // single-successful-result list per invocation.
+            const action = try ctx.arena.create(types.ObjectInstance);
+            action.* = .{ .class_name = "Invocable.Action" };
+            try action.fields.put(ctx.arena, "actionType", args[0]);
+            try action.fields.put(ctx.arena, "name", args[1]);
+            // When the caller asks for a flow but we do not have the flow
+            // metadata loaded, mark the action as "not existent" so that
+            // invoke() emits failure results rather than pretending to
+            // succeed.
+            var exists: bool = true;
+            if (args[0] == .string and args[1] == .string) {
+                if (std.ascii.eqlIgnoreCase(args[0].string, "Flow")) {
+                    if (ctx.eval.classes.get(args[1].string) == null) {
+                        exists = false;
+                    }
+                }
+            }
+            try action.fields.put(ctx.arena, "exists", Value{ .boolean = exists });
+            return Value{ .object = action };
+        }
+    }
     if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatchStaticHttp(ctx, method_name);
@@ -3571,16 +3597,36 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             list.* = .{};
             const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
             const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
+            // An action marked non-existent (set by createCustomAction when the
+            // target cannot be resolved) yields a failure result per invocation.
+            const exists: bool = blk: {
+                if (obj.fields.get("exists")) |ev| {
+                    if (ev == .boolean) break :blk ev.boolean;
+                }
+                break :blk true;
+            };
             var i: usize = 0;
             while (i < count) : (i += 1) {
                 const res = try ctx.arena.create(types.ObjectInstance);
                 res.* = .{ .class_name = "Invocable.Action.Result" };
-                try res.fields.put(ctx.arena, "success", Value{ .boolean = true });
+                try res.fields.put(ctx.arena, "success", Value{ .boolean = exists });
                 const out_map = try ctx.arena.create(types.MapValue);
                 out_map.* = .{};
                 try res.fields.put(ctx.arena, "outputParameters", Value{ .map = out_map });
                 const err_list = try ctx.arena.create(types.ListValue);
                 err_list.* = .{};
+                if (!exists) {
+                    const err_obj = try ctx.arena.create(types.ObjectInstance);
+                    err_obj.* = .{ .class_name = "Invocable.Action.Error" };
+                    try err_obj.fields.put(ctx.arena, "code", Value{ .string = "INVALID_TYPE" });
+                    const action_name: Value = obj.fields.get("name") orelse Value{ .string = "" };
+                    const msg = if (action_name == .string)
+                        try std.fmt.allocPrint(ctx.arena, "No action with name {s} found.", .{action_name.string})
+                    else
+                        try std.fmt.allocPrint(ctx.arena, "No action found.", .{});
+                    try err_obj.fields.put(ctx.arena, "message", Value{ .string = msg });
+                    try err_list.items.append(ctx.arena, Value{ .object = err_obj });
+                }
                 try res.fields.put(ctx.arena, "errors", Value{ .list = err_list });
                 try list.items.append(ctx.arena, Value{ .object = res });
             }
