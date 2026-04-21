@@ -4195,6 +4195,42 @@ test "E2E: Date/Datetime no-arg format uses locale short pattern" {
     try std.testing.expectEqualStrings("1/1/2015|1/1/2015, 2:30 PM", result.value.string);
 }
 
+test "E2E: inline new-Set literal drives generic overload resolution" {
+    const source =
+        \\public class InlineSetOverloadProbe {
+        \\    public String chooseSet(Set<String> names) { return 'String'; }
+        \\    public String chooseSet(Set<Contact> items) { return 'Contact'; }
+        \\    public static String test() {
+        \\        InlineSetOverloadProbe p = new InlineSetOverloadProbe();
+        \\        return p.chooseSet(new Set<Contact>{ new Contact(LastName = 'X') });
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InlineSetOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Contact", result.value.string);
+}
+
+test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
+    const source =
+        \\public class SchemaFieldsProbe {
+        \\    public static String test() {
+        \\        Schema.SObjectField f = Schema.Contact.SObjectType.fields.lastName;
+        \\        return f.getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaFieldsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("LastName", result.value.string);
+}
+
 test "E2E: Datetime.newInstance(milliseconds) single arg" {
     const source =
         \\public class DtMillisTest {

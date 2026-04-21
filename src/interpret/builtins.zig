@@ -2474,7 +2474,14 @@ fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, obje
         return;
     }
     if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
-        for ([_][]const u8{ "AccountId", "FirstName", "LastName", "Email" }) |field_name| {
+        for ([_][]const u8{
+            "AccountId",         "FirstName",      "LastName",     "Email",
+            "Phone",             "MobilePhone",    "HomePhone",    "OtherPhone",
+            "Fax",               "Title",          "Department",   "Birthdate",
+            "MailingCity",       "MailingCountry", "MailingState", "MailingStreet",
+            "MailingPostalCode", "LeadSource",     "Description",  "OwnerId",
+            "ReportsToId",
+        }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
         return;
@@ -2538,12 +2545,73 @@ fn addDescribeFieldsFromStore(ctx: *BuiltinContext, fields_kv: *types.MapValue, 
     }
 }
 
+/// Canonicalize a field name into its API form.
+/// Priority: field-meta.xml-derived types (exact key) → well-known per-object lists
+/// → upper-first fallback. Always returns a non-empty slice.
+fn canonicalFieldApiName(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) []const u8 {
+    if (ctx.eval.field_types.get(object_type)) |type_map| {
+        for (type_map.keys()) |known| {
+            if (std.ascii.eqlIgnoreCase(known, field_name)) return known;
+        }
+    }
+    const canonical_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
+        .{ .object = "Account", .fields = &.{
+            "Id",                "Name",         "ParentId",      "OwnerId",            "Phone",
+            "Fax",               "Website",      "AccountNumber", "Industry",           "Type",
+            "BillingStreet",     "BillingCity",  "BillingState",  "BillingPostalCode",  "BillingCountry",
+            "ShippingStreet",    "ShippingCity", "ShippingState", "ShippingPostalCode", "ShippingCountry",
+            "NumberOfEmployees", "Description",  "Rating",        "AnnualRevenue",
+        } },
+        .{ .object = "Contact", .fields = &.{
+            "Id",          "AccountId",      "FirstName",    "LastName",      "Name",
+            "Email",       "Phone",          "MobilePhone",  "HomePhone",     "OtherPhone",
+            "Fax",         "Title",          "Department",   "Birthdate",     "LeadSource",
+            "MailingCity", "MailingCountry", "MailingState", "MailingStreet", "MailingPostalCode",
+            "Description", "OwnerId",        "ReportsToId",
+        } },
+        .{ .object = "Lead", .fields = &.{
+            "Id",      "FirstName",  "LastName", "Company",  "Email", "Phone", "Status",
+            "OwnerId", "LeadSource", "Rating",   "Industry",
+        } },
+        .{ .object = "User", .fields = &.{
+            "Id",    "Username", "Email",    "FirstName",      "LastName",          "Name",         "ProfileId",
+            "Alias", "UserType", "IsActive", "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
+        } },
+        .{ .object = "Profile", .fields = &.{
+            "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
+        } },
+        .{ .object = "Opportunity", .fields = &.{
+            "Id",      "Name",        "AccountId", "StageName",  "CloseDate",   "Amount",
+            "OwnerId", "Probability", "Type",      "LeadSource", "Description", "IsPrivate",
+        } },
+        .{ .object = "Task", .fields = &.{
+            "Id", "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId", "OwnerId",
+        } },
+    };
+    inline for (canonical_sets) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.object, object_type)) {
+            for (entry.fields) |canonical| {
+                if (std.ascii.eqlIgnoreCase(canonical, field_name)) return canonical;
+            }
+        }
+    }
+    // Fallback: upper-case the first letter only, leave the rest alone.
+    if (field_name.len > 0 and std.ascii.isLower(field_name[0])) {
+        var buf = ctx.arena.alloc(u8, field_name.len) catch return field_name;
+        buf[0] = std.ascii.toUpper(field_name[0]);
+        @memcpy(buf[1..], field_name[1..]);
+        return buf;
+    }
+    return field_name;
+}
+
 fn createFieldDescribeResultWithType(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
-    const metadata = lookupFieldMetadata(ctx, object_type, field_name);
-    try fdr.fields.put(ctx.arena, "name", Value{ .string = field_name });
-    try fdr.fields.put(ctx.arena, "localName", Value{ .string = describeLocalName(field_name) });
+    const canonical_name: []const u8 = canonicalFieldApiName(ctx, object_type, field_name);
+    const metadata = lookupFieldMetadata(ctx, object_type, canonical_name);
+    try fdr.fields.put(ctx.arena, "name", Value{ .string = canonical_name });
+    try fdr.fields.put(ctx.arena, "localName", Value{ .string = describeLocalName(canonical_name) });
     try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse defaultFieldLabel(field_name) else defaultFieldLabel(field_name) });
     try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
@@ -2643,11 +2711,12 @@ fn inferFieldType(field_name: []const u8) []const u8 {
         return "Integer";
     if (std.ascii.eqlIgnoreCase(field_name, "DoNotCall")) return "Boolean";
     if (std.ascii.eqlIgnoreCase(field_name, "ActivityDate")) return "Date";
-    if (std.ascii.eqlIgnoreCase(field_name, "Id") or
-        std.ascii.eqlIgnoreCase(field_name, "OwnerId") or
-        std.mem.endsWith(u8, field_name, "Id") or
-        std.mem.endsWith(u8, field_name, "Id__c"))
-        return "Id";
+    if (std.ascii.eqlIgnoreCase(field_name, "Id")) return "Id";
+    // Well-known lookup fields report as REFERENCE so that relationshipName resolves.
+    // A generic "<xxx>Id" is treated as a reference only when the prefix looks like an SObject.
+    if (std.mem.endsWith(u8, field_name, "Id") or std.mem.endsWith(u8, field_name, "Id__c")) {
+        return "REFERENCE";
+    }
     if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted") or
         std.ascii.eqlIgnoreCase(field_name, "IsActive") or
         std.mem.startsWith(u8, field_name, "Is") or

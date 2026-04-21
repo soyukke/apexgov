@@ -7685,6 +7685,7 @@ pub const Evaluator = struct {
     fn extractExprTypeHint(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) ?[]const u8 {
         switch (expr.*) {
             .cast_expr => |ce| return self.renderTypeRef(ce.target_type),
+            .new_expr => |ne| return self.renderTypeRef(ne.type_name),
             .identifier, .field_access => {
                 if (self.resolveAssignmentTargetType(expr, current_env)) |type_name| {
                     return stripTypeNamespace(type_name);
@@ -11669,6 +11670,34 @@ pub const Evaluator = struct {
                 const field_sets = try builtins.createFieldSetCollectionValue(self.arena, self, object_name);
                 try obj.object.fields.put(self.arena, "fieldSets", field_sets);
                 return field_sets;
+            }
+            // Schema.SObjectType.fields → lightweight FieldDescribeMap keyed on the owner SObject.
+            // Follow-up `.fieldName` access resolves via Schema.SObjectField token creation.
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectType") and
+                std.ascii.eqlIgnoreCase(fa.field, "fields"))
+            {
+                if (obj.object.fields.get("fields")) |existing| return existing;
+                const object_name = if (obj.object.fields.get("name")) |name_val|
+                    if (name_val == .string) name_val.string else "SObject"
+                else
+                    "SObject";
+                const fdm = try self.arena.create(types.ObjectInstance);
+                fdm.* = .{ .class_name = "FieldDescribeMap" };
+                try fdm.fields.put(self.arena, "owner", Value{ .string = object_name });
+                const fv = Value{ .object = fdm };
+                try obj.object.fields.put(self.arena, "fields", fv);
+                return fv;
+            }
+            // FieldDescribeMap.<fieldName> → SObjectField token for <fieldName> on the owner SObject.
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "FieldDescribeMap")) {
+                if (std.ascii.eqlIgnoreCase(fa.field, "map")) {
+                    if (obj.object.fields.get("map")) |m| return m;
+                }
+                if (obj.object.fields.get("owner")) |owner_val| {
+                    if (owner_val == .string) {
+                        return try self.makeSObjectFieldToken(owner_val.string, fa.field);
+                    }
+                }
             }
             if ((std.ascii.eqlIgnoreCase(obj.object.class_name, "DescribeSObjectResult") or
                 std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.DescribeSObjectResult")) and
