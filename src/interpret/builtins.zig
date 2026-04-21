@@ -2459,23 +2459,14 @@ fn addDescribeFieldIfMissing(ctx: *BuiltinContext, fields_kv: *types.MapValue, o
 fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
     if (std.ascii.eqlIgnoreCase(object_type, "Account")) {
         for ([_][]const u8{
-            "Phone",
-            "Website",
-            "Industry",
-            "Type",
-            "BillingStreet",
-            "BillingCity",
-            "BillingState",
-            "BillingPostalCode",
-            "BillingCountry",
-            "ShippingStreet",
-            "ShippingCity",
-            "ShippingState",
-            "ShippingPostalCode",
-            "ShippingCountry",
-            "NumberOfEmployees",
-            "Description",
-            "Rating",
+            "ParentId",           "AccountNumber",     "Phone",
+            "Fax",                "Website",           "Industry",
+            "Type",               "BillingStreet",     "BillingCity",
+            "BillingState",       "BillingPostalCode", "BillingCountry",
+            "ShippingStreet",     "ShippingCity",      "ShippingState",
+            "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
+            "Description",        "Rating",            "AnnualRevenue",
+            "Site",               "Sic",               "TickerSymbol",
         }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
@@ -2506,8 +2497,27 @@ fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, obje
         }
         return;
     }
+    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity")) {
+        for ([_][]const u8{
+            "AccountId",        "StageName",            "CloseDate",  "Amount",
+            "Probability",      "Type",                 "LeadSource", "Description",
+            "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
+            "ForecastCategory", "ForecastCategoryName", "NextStep",
+        }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
     if (std.ascii.eqlIgnoreCase(object_type, "User")) {
-        for ([_][]const u8{ "Username", "Email", "FirstName", "LastName", "ProfileId", "Alias", "UserType", "IsActive" }) |field_name| {
+        for ([_][]const u8{
+            "Username",       "Email",             "FirstName",    "LastName",
+            "ProfileId",      "Alias",             "UserType",     "IsActive",
+            "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
+            "LastLoginDate",  "ManagerId",         "CompanyName",  "Department",
+            "Phone",          "MobilePhone",       "Title",        "UserRoleId",
+            "Division",       "Street",            "City",         "State",
+            "PostalCode",     "Country",
+        }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
         return;
@@ -2520,6 +2530,23 @@ fn addKnownDescribeFields(ctx: *BuiltinContext, fields_kv: *types.MapValue, obje
     }
     if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) {
         for ([_][]const u8{ "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId" }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Case")) {
+        for ([_][]const u8{
+            "AccountId",  "ContactId",     "OwnerId",      "ParentId",
+            "Status",     "Priority",      "Origin",       "Reason",
+            "Subject",    "Description",   "Type",         "IsClosed",
+            "ClosedDate", "SuppliedEmail", "SuppliedName", "SuppliedPhone",
+        }) |field_name| {
+            try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
+        }
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "CaseComment")) {
+        for ([_][]const u8{ "ParentId", "CommentBody", "IsPublished" }) |field_name| {
             try addDescribeFieldIfMissing(ctx, fields_kv, object_type, field_name);
         }
         return;
