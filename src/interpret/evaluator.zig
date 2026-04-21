@@ -7430,7 +7430,14 @@ pub const Evaluator = struct {
                 }
                 if (val == .list) {
                     const tn = ie.type_name.name;
-                    if (!std.ascii.eqlIgnoreCase(tn, "List")) return Value{ .boolean = false };
+                    const tn_base = blk: {
+                        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| break :blk tn[di + 1 ..];
+                        break :blk tn;
+                    };
+                    // Apex List implements Iterable<Object>
+                    const is_list_match = std.ascii.eqlIgnoreCase(tn, "List");
+                    const is_iter_match = std.ascii.eqlIgnoreCase(tn_base, "Iterable");
+                    if (!is_list_match and !is_iter_match) return Value{ .boolean = false };
                     // If no element type params specified, match any list
                     if (ie.type_name.params.len == 0) return Value{ .boolean = true };
                     // Check element type against actual list items
@@ -7448,7 +7455,11 @@ pub const Evaluator = struct {
                     return Value{ .boolean = true }; // empty list or unknown element type matches any
                 }
                 if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
-                if (val == .set) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Set") };
+                if (val == .set) {
+                    const tn = ie.type_name.name;
+                    const tn_base = if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
+                    return Value{ .boolean = std.ascii.eqlIgnoreCase(tn, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
+                }
                 if (val == .string) {
                     if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
                     if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {

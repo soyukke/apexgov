@@ -3081,6 +3081,27 @@ test "E2E: static field set before enqueueJob is visible in execute" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: List and Set values satisfy instanceof Iterable" {
+    const source =
+        \\public class IterableInstanceofTest {
+        \\    public static String test() {
+        \\        Object l = new List<String>{ 'a' };
+        \\        Object s = new Set<String>{ 'b' };
+        \\        Object m = new Map<String, Integer>{ 'k' => 1 };
+        \\        return (l instanceof Iterable<Object>) + ':' +
+        \\               (s instanceof Iterable<Object>) + ':' +
+        \\               (m instanceof Iterable<Object>);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "IterableInstanceofTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:true:false", result.value.string);
+}
+
 test "E2E: nested for-each iterates elements of inner list rather than chunking" {
     const source =
         \\public class NestedForEachTest {
