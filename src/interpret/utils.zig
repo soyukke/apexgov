@@ -438,7 +438,8 @@ pub fn formatApexDouble(arena: std.mem.Allocator, d: f64) ![]const u8 {
     const s = try std.fmt.allocPrint(arena, "{d}", .{d});
     // 既に小数点があればそのまま
     if (std.mem.indexOf(u8, s, ".") != null) return s;
-    // 無ければ ".0" を付加
+    // 整数値の場合は ".0" を付加 (Double セマンティクス: "1.0", "10.0")
+    // Decimal / Integer 側は既に別パスで扱うためここでは変更しない。
     arena.free(s);
     return try std.fmt.allocPrint(arena, "{d}.0", .{d});
 }

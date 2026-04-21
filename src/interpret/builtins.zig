@@ -472,14 +472,23 @@ fn dispatchStaticDecimal(ctx: *BuiltinContext, method_name: []const u8, args: []
         return switch (args[0]) {
             .null_val => Value.null_val,
             .string => |s| blk: {
+                // Preserve integer scale when the source has no decimal point:
+                // Apex `Decimal.valueOf("1")` keeps scale 0, so String.valueOf
+                // later renders "1" rather than "1.0". Parse integrals through
+                // the integer path so downstream String.valueOf behaves the same.
+                if (std.mem.indexOfAny(u8, s, ".eE") == null) {
+                    if (std.fmt.parseInt(i64, std.mem.trim(u8, s, " "), 10)) |n| {
+                        break :blk Value{ .integer = n };
+                    } else |_| {}
+                }
                 const parsed = std.fmt.parseFloat(f64, s) catch {
                     return ctx.throwException("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}));
                 };
                 break :blk Value{ .double = parsed };
             },
-            .integer => |i| Value{ .double = @floatFromInt(i) },
+            .integer => args[0],
             .double => args[0],
-            .long => |i| Value{ .double = @floatFromInt(i) },
+            .long => args[0],
             else => return ctx.throwException("System.TypeException", "Invalid decimal value"),
         };
     }
