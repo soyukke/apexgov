@@ -11441,15 +11441,28 @@ pub const Evaluator = struct {
             // Initialize instance fields from class (non-static) — after ancestors
             self.initInstanceFields(class_decl, instance) catch {};
 
-            // Evaluate constructor args. Capture enum-access type hints so
+            // Evaluate constructor args. Capture enum-only type hints so
             // overload resolution can distinguish `(String, Enum, Boolean)`
-            // from `(String, String, Enum)` when a literal like
-            // `MyEnum.VALUE` appears in the middle position.
+            // from `(String, String, Enum)` when a typed variable or enum
+            // literal appears in the middle position. We intentionally stay
+            // narrower than method-call hinting (enumAccessTypeName plus
+            // declared enum-typed locals) because broader hinting regresses
+            // overloads that rely on raw argument-shape scoring.
             var eval_args: std.ArrayListUnmanaged(Value) = .empty;
             var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
             var any_enum_hint = false;
             for (ne.args) |*arg| {
-                const enum_hint = self.enumAccessTypeName(arg);
+                const enum_hint = self.enumAccessTypeName(arg) orelse blk: {
+                    // Also surface declared enum-typed local variables like
+                    // `Mode direction = Mode.A; new Ordering(name, direction, flag)`.
+                    if (arg.* != .identifier) break :blk null;
+                    if (self.resolveAssignmentTargetType(arg, current_env)) |t| {
+                        const base = typeBaseName(stripTypeNamespace(t));
+                        if (isSystemEnumTypeName(base)) break :blk base;
+                        if (self.findVisibleEnumDecl(base) != null) break :blk base;
+                    }
+                    break :blk null;
+                };
                 if (enum_hint != null) any_enum_hint = true;
                 try ctor_type_hints.append(self.arena, enum_hint);
                 try eval_args.append(self.arena, try self.evalExpr(arg, current_env));

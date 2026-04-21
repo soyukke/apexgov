@@ -4231,6 +4231,44 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
     try std.testing.expectEqualStrings("LastName", result.value.string);
 }
 
+test "E2E: constructor overloads prefer declared-variable hint over name-only scoring" {
+    // Two 3-arg inner-class constructors:
+    //   Box(String, String, Mode)
+    //   Box(String, Mode, Boolean)
+    // When called with `new Box(name, dir, flag)` where `dir` is declared as
+    // Mode and `flag` as Boolean, the second overload should win. Before
+    // hinting, the constructor resolver tied on raw argument shape and
+    // picked the first-declared one, leading to mis-dispatched calls that
+    // silently returned null or threw NPEs downstream.
+    const source =
+        \\public class CtorHintProbe {
+        \\    public enum Mode { A, B }
+        \\    public class Box {
+        \\        public String label;
+        \\        public Box(String sobjType, String fieldName, Mode direction) {
+        \\            this.label = 'three-string:' + fieldName;
+        \\        }
+        \\        public Box(String field, Mode direction, Boolean nullsLast) {
+        \\            this.label = 'string-enum-bool:' + field + ':' + direction + ':' + nullsLast;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        String name = 'Account.Name';
+        \\        Mode dir = Mode.A;
+        \\        Boolean flag = false;
+        \\        Box b = new Box(name, dir, flag);
+        \\        return b.label;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CtorHintProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("string-enum-bool:Account.Name:A:false", result.value.string);
+}
+
 test "E2E: ternary with enum literals carries hint into overload resolution" {
     // Models a builder whose primitive overload normalises the argument into
     // an enum before delegating to the enum overload through a ternary:
