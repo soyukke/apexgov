@@ -4480,6 +4480,52 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: bitwise operators on integers return integer results" {
+    // `&`/`|`/`^` on integer operands must yield integer results rather than
+    // booleans. fflib_Uuid (and other reflection-heavy helpers) build bitmasks
+    // via `(v & 0x0f) | 0x40` and were returning `false` because the AST used to
+    // fold `&` into the same node as `&&`, which short-circuited based on
+    // `coerceToBool(integer)` returning false.
+    const source =
+        \\public class BitwiseIntProbe {
+        \\    public static String test() {
+        \\        Integer andR = 30 & 15;
+        \\        Integer orR = 30 | 64;
+        \\        Integer xorR = 30 ^ 15;
+        \\        return String.valueOf(andR) + ',' + String.valueOf(orR) + ',' + String.valueOf(xorR);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BitwiseIntProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("14,94,17", result.value.string);
+}
+
+test "E2E: bitwise operators on booleans return boolean results" {
+    // NebulaLogger uses `collectionA != null & collectionB.isEmpty() == false`
+    // where `&` is applied to two Booleans. The result must stay a Boolean so
+    // `if (...)` treats it truthfully.
+    const source =
+        \\public class BitwiseBoolProbe {
+        \\    public static String test() {
+        \\        List<String> headers = new List<String>{'a'};
+        \\        Boolean ok = headers != null & headers.isEmpty() == false;
+        \\        if (ok) return 'true';
+        \\        return 'false';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "BitwiseBoolProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: method call on property-backed identifier invokes the getter" {
     // `foo.size()` for a property-backed `foo` used to return null when the call
     // happened inside another getter, because the method-call fast path bailed

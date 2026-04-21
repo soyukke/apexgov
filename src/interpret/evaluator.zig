@@ -16386,6 +16386,44 @@ fn evalBinary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, are
         .strict_neq => return .{ .boolean = !eval.strictValuesEqual(left, right) },
         .and_op => return .{ .boolean = (utils.coerceToBool(left) catch false) and (utils.coerceToBool(right) catch false) },
         .or_op => return .{ .boolean = (utils.coerceToBool(left) catch false) or (utils.coerceToBool(right) catch false) },
+        .bit_and, .bit_or, .bit_xor => {
+            // Apex accepts `&`/`|`/`^` on both Boolean and integer operands. Preserve
+            // the operand type: two Booleans produce a Boolean, mixed integer/long
+            // values produce the wider integer type. Anything else collapses to null.
+            if (left == .boolean and right == .boolean) {
+                const lb = left.boolean;
+                const rb = right.boolean;
+                const b = switch (op) {
+                    .bit_and => lb and rb,
+                    .bit_or => lb or rb,
+                    .bit_xor => lb != rb,
+                    else => unreachable,
+                };
+                return Value{ .boolean = b };
+            }
+            const li: i64 = switch (left) {
+                .integer => |v| v,
+                .long => |v| v,
+                .boolean => |b| if (b) 1 else 0,
+                .null_val => 0,
+                else => return Value.null_val,
+            };
+            const ri: i64 = switch (right) {
+                .integer => |v| v,
+                .long => |v| v,
+                .boolean => |b| if (b) 1 else 0,
+                .null_val => 0,
+                else => return Value.null_val,
+            };
+            const use_long = left == .long or right == .long;
+            const v: i64 = switch (op) {
+                .bit_and => li & ri,
+                .bit_or => li | ri,
+                .bit_xor => li ^ ri,
+                else => unreachable,
+            };
+            return if (use_long) Value{ .long = v } else Value{ .integer = v };
+        },
         else => {},
     }
 

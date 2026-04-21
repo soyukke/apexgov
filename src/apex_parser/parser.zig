@@ -931,7 +931,7 @@ const Parser = struct {
         var left = try self.parseBitwiseXor();
         while (self.matchKind(.pipe)) {
             const right = try self.parseBitwiseXor();
-            left = try self.makeBinary(left, .or_op, right);
+            left = try self.makeBinary(left, .bit_or, right);
         }
         return left;
     }
@@ -940,8 +940,7 @@ const Parser = struct {
         var left = try self.parseBitwiseAnd();
         while (self.matchKind(.caret)) {
             const right = try self.parseBitwiseAnd();
-            // XOR — reuse neq in AST for simplicity
-            left = try self.makeBinary(left, .neq, right);
+            left = try self.makeBinary(left, .bit_xor, right);
         }
         return left;
     }
@@ -950,7 +949,7 @@ const Parser = struct {
         var left = try self.parseEquality();
         while (self.matchKind(.ampersand)) {
             const right = try self.parseEquality();
-            left = try self.makeBinary(left, .and_op, right);
+            left = try self.makeBinary(left, .bit_and, right);
         }
         return left;
     }

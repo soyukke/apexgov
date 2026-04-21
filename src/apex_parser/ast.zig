@@ -58,6 +58,9 @@ pub const BinaryOp = enum {
     strict_neq,
     and_op,
     or_op,
+    bit_and,
+    bit_or,
+    bit_xor,
 };
 
 pub const UnaryOp = enum {
