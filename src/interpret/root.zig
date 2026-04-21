@@ -4231,6 +4231,63 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
     try std.testing.expectEqualStrings("LastName", result.value.string);
 }
 
+test "E2E: TriggerOperation-typed parameter dispatches through enum overload" {
+    // Models a framework where `executeWith(TriggerOperation)` coexists with a
+    // `executeWith(String)` lookup overload. Interpreting the enum-typed
+    // variable as a string should still dispatch to the enum-typed method.
+    const source =
+        \\public class EnumParamDispatchProbe {
+        \\    public static String log = '';
+        \\    public static void executeWith(String relationshipName) {
+        \\        log += 'str:' + relationshipName + '|';
+        \\    }
+        \\    public static void executeWith(TriggerOperation op) {
+        \\        log += 'enum:' + op.name() + '|';
+        \\    }
+        \\    public static void handle(TriggerOperation op) {
+        \\        executeWith(op);
+        \\    }
+        \\    public static String test() {
+        \\        handle(TriggerOperation.BEFORE_INSERT);
+        \\        return log;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EnumParamDispatchProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // The enum overload must run — the String one would have printed "str:...".
+    try std.testing.expectEqualStrings("enum:BEFORE_INSERT|", result.value.string);
+}
+
+test "E2E: LoggingLevel enum hint does not force enum overload for string literal peers" {
+    // When the parameter is not enum-typed, a bare string argument must still
+    // select the String overload even if another overload takes an enum type.
+    const source =
+        \\public class EnumHintGuardProbe {
+        \\    public static String log = '';
+        \\    public static void record(LoggingLevel level, Exception e) {
+        \\        log = 'exc';
+        \\    }
+        \\    public static void record(LoggingLevel level, String message) {
+        \\        log = 'str:' + message;
+        \\    }
+        \\    public static String test() {
+        \\        record(LoggingLevel.INFO, 'hello');
+        \\        return log;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "EnumHintGuardProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("str:hello", result.value.string);
+}
+
 test "E2E: enum-valued string argument disambiguates overloads" {
     const source =
         \\public class EnumOverloadProbe {

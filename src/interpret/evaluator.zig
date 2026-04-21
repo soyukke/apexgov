@@ -14477,11 +14477,18 @@ pub const Evaluator = struct {
             const param_base = typeBaseName(rendered_param_type);
             const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
 
+            var enum_bridge = false;
             if (arg_hint) |hint| {
                 const hint_score = self.overloadScoreForTypeHint(hint, rendered_param_type);
                 if (hint_score > 0) {
                     score += hint_score;
                     if (arg == .null_val) continue;
+                    // Enum values are stored as plain strings internally; when the
+                    // declared hint matches an enum-typed parameter, accept the
+                    // arg even though overloadScoreForArg would score it as 0.
+                    if (arg == .string and (isSystemEnumTypeName(rendered_param_type) or self.findVisibleEnumDecl(if (std.mem.lastIndexOfScalar(u8, rendered_param_type, '.')) |di| rendered_param_type[di + 1 ..] else rendered_param_type) != null)) {
+                        enum_bridge = true;
+                    }
                 }
             }
 
@@ -14508,7 +14515,12 @@ pub const Evaluator = struct {
                 }
             }
 
-            if (arg_score <= 0) return null;
+            if (arg_score <= 0) {
+                // Without an enum bridge we reject; with one, the hint already
+                // credited the match and we skip the argument score.
+                if (enum_bridge) continue;
+                return null;
+            }
             score += arg_score;
         }
         return score;
@@ -14579,6 +14591,8 @@ pub const Evaluator = struct {
         if (arg_str.len == 0) return false;
         const simple = if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di| param_type[di + 1 ..] else param_type;
         if (simple.len == 0) return false;
+        // System built-in enums (TriggerOperation, LoggingLevel, AccessType, etc.)
+        if (isSystemEnumValue(simple, arg_str)) return true;
         if (self.findVisibleEnumDecl(simple)) |ed| {
             for (ed.values) |v| {
                 if (std.ascii.eqlIgnoreCase(v, arg_str)) return true;
@@ -15980,6 +15994,54 @@ pub const Evaluator = struct {
 // ---------------------------------------------------------------------------
 // 静的ヘルパー
 // ---------------------------------------------------------------------------
+
+/// True when (enum_simple_name, value) matches a well-known built-in System enum.
+/// Used for overload resolution since enum values are represented as plain strings.
+fn isSystemEnumValue(enum_simple: []const u8, value: []const u8) bool {
+    if (enum_simple.len == 0 or value.len == 0) return false;
+    const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+    const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+    const access_types = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
+    const access_levels = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
+    const quiddity_vals = [_][]const u8{ "ANONYMOUS", "AURA", "BATCH_APEX", "BATCH_CHUNK_PARALLEL", "BATCH_CHUNK_SERIAL", "BULK_API", "FUTURE", "INVOCABLE_ACTION", "IOT", "LIGHTNING_OUT", "QUEUEABLE", "QUICK_ACTION", "REMOTE_ACTION", "REST", "RUNTEST_ASYNC", "RUNTEST_DEPLOY", "RUNTEST_SYNC", "SCHEDULED", "SOAP", "SYNCHRONOUS", "VF", "WAVE" };
+    const system_mode = [_][]const u8{ "SANDBOX", "PROD", "DEVELOPER", "TRIAL", "SCRATCH_ORG" };
+    if (std.ascii.eqlIgnoreCase(enum_simple, "TriggerOperation")) {
+        for (trigger_ops) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(enum_simple, "LoggingLevel")) {
+        for (logging_levels) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(enum_simple, "AccessType")) {
+        for (access_types) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(enum_simple, "AccessLevel")) {
+        for (access_levels) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(enum_simple, "Quiddity")) {
+        for (quiddity_vals) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(enum_simple, "OrganizationType") or std.ascii.eqlIgnoreCase(enum_simple, "InstanceType")) {
+        for (system_mode) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        return false;
+    }
+    return false;
+}
+
+/// True if `pt` looks like a known built-in System enum type name (simple or qualified).
+fn isSystemEnumTypeName(pt: []const u8) bool {
+    const simple = if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| pt[di + 1 ..] else pt;
+    if (simple.len == 0) return false;
+    const names = [_][]const u8{ "TriggerOperation", "LoggingLevel", "AccessType", "AccessLevel", "Quiddity", "DisplayType", "SoapType" };
+    for (names) |n| {
+        if (std.ascii.eqlIgnoreCase(n, simple)) return true;
+    }
+    return false;
+}
 
 /// メソッドオーバーロード解決用: 引数の Value とパラメータ型名のスコア計算。
 fn overloadScoreForArg(arg: Value, pt: []const u8) i32 {

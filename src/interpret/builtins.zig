@@ -240,6 +240,10 @@ fn dispatchStaticSystem(ctx: *BuiltinContext, method_name: []const u8, args: []c
         const msg = if (args.len >= 2) try utils.coerceToString(args[1], ctx.arena) else if (args.len > 0) try utils.coerceToString(args[0], ctx.arena) else "";
         try ctx.stdout.appendSlice(ctx.arena, msg);
         try ctx.stdout.append(ctx.arena, '\n');
+        // If APEXGOV_DEBUG=1 is set, also echo to stderr immediately for debugging.
+        if (std.process.hasNonEmptyEnvVarConstant("APEXGOV_DEBUG")) {
+            std.debug.print("[debug] {s}\n", .{msg});
+        }
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
