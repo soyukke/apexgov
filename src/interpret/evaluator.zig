@@ -9813,6 +9813,9 @@ pub const Evaluator = struct {
                 map.* = .{};
                 for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
                     if (v == .null_val) continue;
+                    // Synthetic bookkeeping keys stored by addError/attachments/etc. are
+                    // not real fields and should not appear in getPopulatedFieldsAsMap.
+                    if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
                     try map.entries.put(self.arena, k, v);
                 }
                 return Value{ .map = map };
@@ -12291,6 +12294,18 @@ pub const Evaluator = struct {
             }
         }
 
+        // Multi-level dotted class literal: A.B.C.class (chain of identifiers).
+        // Used for things like `Flow.Interview.MyFlow.class` where we cannot
+        // resolve the chain to a real class but still need a non-null Type.
+        if (std.ascii.eqlIgnoreCase(fa.field, "class") and fa.object.* == .field_access) {
+            if (self.collectDottedIdentifierChain(fa.object)) |chain| {
+                const type_obj = try self.arena.create(types.ObjectInstance);
+                type_obj.* = .{ .class_name = "Type" };
+                try type_obj.fields.put(self.arena, "name", Value{ .string = chain });
+                return Value{ .object = type_obj };
+            }
+        }
+
         // ClassName.class → Type object
         // Use fully-qualified name when the class is an inner class of current_class
         if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.field, "class")) {
@@ -12327,6 +12342,46 @@ pub const Evaluator = struct {
         const synthetic_fa = try self.arena.create(ast.FieldAccess);
         synthetic_fa.* = .{ .object = placeholder_expr, .field = field_name, .null_safe = false };
         return self.evalFieldAccess(synthetic_fa, obj, current_env);
+    }
+
+    /// expr が `Identifier.Field.Field...` の形で全てドット連結のパスになっている場合、
+    /// そのパスを `A.B.C` の形式で返す。非ドット式が混ざっていれば null を返す。
+    fn collectDottedIdentifierChain(self: *Evaluator, expr: *const ast.Expr) ?[]const u8 {
+        var parts = std.ArrayListUnmanaged([]const u8){};
+        defer parts.deinit(self.arena);
+        var cur: *const ast.Expr = expr;
+        while (true) {
+            switch (cur.*) {
+                .identifier => |id| {
+                    parts.append(self.arena, id.name) catch return null;
+                    break;
+                },
+                .field_access => |fa| {
+                    parts.append(self.arena, fa.field) catch return null;
+                    cur = fa.object;
+                },
+                else => return null,
+            }
+        }
+        // Reverse: parts holds leaf-to-root, we want root-to-leaf.
+        std.mem.reverse([]const u8, parts.items);
+        // Compute total length
+        var total: usize = 0;
+        for (parts.items, 0..) |p, i| {
+            if (i > 0) total += 1; // dot
+            total += p.len;
+        }
+        const buf = self.arena.alloc(u8, total) catch return null;
+        var idx: usize = 0;
+        for (parts.items, 0..) |p, i| {
+            if (i > 0) {
+                buf[idx] = '.';
+                idx += 1;
+            }
+            std.mem.copyForwards(u8, buf[idx..], p);
+            idx += p.len;
+        }
+        return buf;
     }
 
     // -----------------------------------------------------------------------
@@ -15880,6 +15935,62 @@ pub const Evaluator = struct {
         }
 
         if (trimmed[0] == '{') {
+            // Framework classes like Invocable.Action.Result are neither SObjects nor
+            // user-defined Apex classes — but tests do `(Invocable.Action.Result) JSON.deserialize(...)`
+            // and then call getOutputParameters()/isSuccess() on the result. Produce an
+            // ObjectInstance so our class-specific dispatch can handle the getters.
+            const is_framework_obj = std.mem.startsWith(u8, type_hint, "Invocable.") or
+                std.mem.startsWith(u8, type_hint, "Flow.") or
+                std.mem.startsWith(u8, type_hint, "Messaging.") or
+                std.mem.startsWith(u8, type_hint, "Auth.") or
+                std.mem.startsWith(u8, type_hint, "Reports.");
+            if (is_framework_obj) {
+                const obj = self.arena.create(types.ObjectInstance) catch return null;
+                obj.* = .{ .class_name = type_hint };
+                // Parse key/value pairs into fields generically
+                var jd: i32 = 0;
+                var js: usize = 1;
+                var ji: usize = 1;
+                while (ji < trimmed.len) : (ji += 1) {
+                    if (trimmed[ji] == '"' and jd == 0) {
+                        const key_start = ji + 1;
+                        ji += 1;
+                        while (ji < trimmed.len and trimmed[ji] != '"') : (ji += 1) {}
+                        const key_name = trimmed[key_start..ji];
+                        ji += 1;
+                        while (ji < trimmed.len and trimmed[ji] != ':') : (ji += 1) {}
+                        ji += 1;
+                        while (ji < trimmed.len and (trimmed[ji] == ' ' or trimmed[ji] == '\t')) : (ji += 1) {}
+                        js = ji;
+                        var val_depth: i32 = 0;
+                        while (ji < trimmed.len) : (ji += 1) {
+                            if (trimmed[ji] == '"') {
+                                ji += 1;
+                                while (ji < trimmed.len and trimmed[ji] != '"') : (ji += 1) {
+                                    if (trimmed[ji] == '\\') ji += 1;
+                                }
+                            } else if (trimmed[ji] == '{' or trimmed[ji] == '[') {
+                                val_depth += 1;
+                            } else if (trimmed[ji] == '}' or trimmed[ji] == ']') {
+                                if (val_depth == 0) break;
+                                val_depth -= 1;
+                            } else if (trimmed[ji] == ',' and val_depth == 0) break;
+                        }
+                        const val_str = std.mem.trim(u8, trimmed[js..ji], " \t\r\n");
+                        if (val_str.len > 0) {
+                            if (self.parseJsonValue(val_str, "Object")) |v| {
+                                obj.fields.put(self.arena, key_name, v) catch {};
+                            }
+                        }
+                    } else if (trimmed[ji] == '{' or trimmed[ji] == '[') {
+                        jd += 1;
+                    } else if (trimmed[ji] == '}' or trimmed[ji] == ']') {
+                        if (jd == 0) break;
+                        jd -= 1;
+                    }
+                }
+                return Value{ .object = obj };
+            }
             // Check if type_hint is a user-defined class → ObjectInstance
             const is_user_class = self.findClass(type_hint) != null;
             if (is_user_class) {
@@ -16158,7 +16269,10 @@ pub const Evaluator = struct {
             "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
             "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowDefinitionView",
             "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",              "BatchApexErrorEvent",
-            "AsyncOperationEvent",     "AsyncOperationStatus",
+            "AsyncOperationEvent",     "AsyncOperationStatus",   "EventBusSubscriber",
+            // Standard object-Share sharing tables.
+             "AccountShare",           "OpportunityShare",     "CaseShare",            "LeadShare",
+            "ContactShare",            "CampaignShare",          "ContractShare",       "ProductShare",           "AssetShare",           "OrderShare",           "QuoteShare",
         };
         for (known) |kt| {
             if (std.ascii.eqlIgnoreCase(name, kt)) return true;

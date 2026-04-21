@@ -3525,6 +3525,68 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "Flow.Interview")) {
         if (try dispatchObjFlowInterview(ctx, obj, method_name, args)) |v| return v;
     }
+    if (ci.eqlIgnoreCase(cn, "Invocable.Action.Result")) {
+        if (ci.eqlIgnoreCase(method_name, "isSuccess")) {
+            return obj.fields.get("success") orelse Value{ .boolean = true };
+        }
+        if (ci.eqlIgnoreCase(method_name, "getOutputParameters")) {
+            if (obj.fields.get("outputParameters")) |v| {
+                if (v == .map) return v;
+            }
+            const map = try ctx.arena.create(types.MapValue);
+            map.* = .{};
+            const val = Value{ .map = map };
+            try obj.fields.put(ctx.arena, "outputParameters", val);
+            return val;
+        }
+        if (ci.eqlIgnoreCase(method_name, "getErrors")) {
+            if (obj.fields.get("errors")) |v| {
+                if (v == .list) return v;
+            }
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            const val = Value{ .list = list };
+            try obj.fields.put(ctx.arena, "errors", val);
+            return val;
+        }
+        if (ci.eqlIgnoreCase(method_name, "getAction")) {
+            return obj.fields.get("action") orelse Value.null_val;
+        }
+    }
+    if (ci.eqlIgnoreCase(cn, "Invocable.Action.Error")) {
+        if (ci.eqlIgnoreCase(method_name, "getCode")) {
+            return obj.fields.get("code") orelse Value{ .string = "" };
+        }
+        if (ci.eqlIgnoreCase(method_name, "getMessage")) {
+            return obj.fields.get("message") orelse Value{ .string = "" };
+        }
+    }
+    if (ci.eqlIgnoreCase(cn, "Invocable.Action")) {
+        if (ci.eqlIgnoreCase(method_name, "setInvocations")) {
+            if (args.len > 0) try obj.fields.put(ctx.arena, "invocations", args[0]);
+            return Value.void_val;
+        }
+        if (ci.eqlIgnoreCase(method_name, "invoke")) {
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
+            const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const res = try ctx.arena.create(types.ObjectInstance);
+                res.* = .{ .class_name = "Invocable.Action.Result" };
+                try res.fields.put(ctx.arena, "success", Value{ .boolean = true });
+                const out_map = try ctx.arena.create(types.MapValue);
+                out_map.* = .{};
+                try res.fields.put(ctx.arena, "outputParameters", Value{ .map = out_map });
+                const err_list = try ctx.arena.create(types.ListValue);
+                err_list.* = .{};
+                try res.fields.put(ctx.arena, "errors", Value{ .list = err_list });
+                try list.items.append(ctx.arena, Value{ .object = res });
+            }
+            return Value{ .list = list };
+        }
+    }
     if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult")) {
         if (try dispatchObjDescribeSObject(ctx, obj, method_name)) |v| return v;
     }
@@ -4684,6 +4746,9 @@ fn dispatchSObjectInstance(ctx: *BuiltinContext, sob: *types.SObject, method_nam
         map.* = .{};
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (v == .null_val) continue;
+            // Synthetic bookkeeping keys (addError stash, attachment metadata, etc.)
+            // are not real SObject fields and must not appear in the populated map.
+            if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
             try map.entries.put(ctx.arena, k, v);
         }
         return Value{ .map = map };

@@ -13045,3 +13045,82 @@ test "E2E: List.sort propagates Comparable exceptions" {
     defer result.deinit();
     try std.testing.expectEqualStrings("unsupported sort type", result.value.string);
 }
+
+test "E2E: multi-level dotted class literal returns non-null Type" {
+    // Anonymized probe: `Flow.Interview.X.class` style expressions resolve to a
+    // Type object whose name is the full dotted path, even when the chain does
+    // not correspond to a loaded class (the TriggerActionFlow framework relies
+    // on this in order to forward the Type to its NameExtractor hook).
+    const source =
+        \\public class MultiLevelClassLiteralProbe {
+        \\    public static String test() {
+        \\        System.Type t1 = Flow.Interview.MyFlow.class;
+        \\        System.Type t2 = Outer.Middle.Inner.class;
+        \\        return (t1 == null ? 'null' : t1.getName()) + ':' +
+        \\               (t2 == null ? 'null' : t2.getName());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MultiLevelClassLiteralProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Flow.Interview.MyFlow:Outer.Middle.Inner", result.value.string);
+}
+
+test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
+    // Anonymized probe: frameworks that deserialize into framework classes such
+    // as Invocable.Action.Result must expose isSuccess()/getOutputParameters()
+    // after the round-trip so that trigger-action Flow plumbing can stitch the
+    // outputs back into SObject records.
+    const source =
+        \\public class InvocableResultRoundTripProbe {
+        \\    public static String test() {
+        \\        Map<String, Object> seed = new Map<String, Object>{
+        \\            'success' => true,
+        \\            'outputParameters' => new Map<String, Object>()
+        \\        };
+        \\        String json = JSON.serialize(seed);
+        \\        Invocable.Action.Result result = (Invocable.Action.Result) JSON.deserialize(
+        \\            json,
+        \\            Invocable.Action.Result.class
+        \\        );
+        \\        result.getOutputParameters().putAll(new Map<String, Object>{ 'k' => 'v' });
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\               String.valueOf(result.getOutputParameters().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InvocableResultRoundTripProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true:1", result.value.string);
+}
+
+test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
+    // Anonymized probe: after addError() attaches an in-memory Database.Error
+    // to the SObject, the populated-fields map must still only surface real
+    // SObject fields — otherwise downstream copies such as "for (String fn :
+    // rec.getPopulatedFieldsAsMap().keySet()) rec.put(fn, ...)" blow up with
+    // "Invalid field errors" on common schemas.
+    const source =
+        \\public class PopulatedFieldsErrorsHidingProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Probe');
+        \\        account.addError('boom');
+        \\        Map<String, Object> populated = account.getPopulatedFieldsAsMap();
+        \\        return String.valueOf(populated.containsKey('errors')) + ':' +
+        \\               String.valueOf(populated.containsKey('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "PopulatedFieldsErrorsHidingProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("false:true", result.value.string);
+}
