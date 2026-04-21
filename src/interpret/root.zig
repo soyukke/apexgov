@@ -4480,6 +4480,29 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
+test "E2E: String.split with regex metacharacters routes through the regex engine" {
+    // Apex's `String.split(regex)` takes a regex, so `split('\\s+')` must collapse any run
+    // of whitespace. The prior interpreter stripped backslashes and did a literal split,
+    // producing a single-element list and breaking formula parsers.
+    const source =
+        \\public class SplitRegexProbe {
+        \\    public static String test() {
+        \\        List<String> parts = '_D0D_ + _D1D_'.split('\\s+');
+        \\        Assert.areEqual(3, parts.size());
+        \\        List<String> dotSplit = 'a.b.c'.split('[.]');
+        \\        Assert.areEqual(3, dotSplit.size());
+        \\        return parts[0] + '|' + parts[1] + '|' + parts[2];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SplitRegexProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("_D0D_|+|_D1D_", result.value.string);
+}
+
 test "E2E: Pattern.matches static and nested capture groups round-trip" {
     // Validates two recently-fixed building blocks together:
     //   - Pattern.matches(regex, input) works as the "full-match" static form.

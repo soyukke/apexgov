@@ -10299,42 +10299,49 @@ pub const Evaluator = struct {
                 @intCast(args[1].integer)
             else
                 null;
-            var unescaped_buf = std.ArrayListUnmanaged(u8).empty;
-            var pi: usize = 0;
-            while (pi < pattern.len) : (pi += 1) {
-                if (pattern[pi] == '\\' and pi + 1 < pattern.len) {
-                    pi += 1;
-                    try unescaped_buf.append(self.arena, pattern[pi]);
-                    continue;
-                }
-                try unescaped_buf.append(self.arena, pattern[pi]);
-            }
-            const split_str = unescaped_buf.items;
-            if (split_str.len == 0) {
+            if (pattern.len == 0) {
                 // 空デリミタ: 各文字を要素として返す (Apex の String.split('') 挙動)
                 for (0..s.len) |ci| {
                     try list.items.append(self.arena, Value{ .string = s[ci .. ci + 1] });
                 }
-            } else {
-                if (split_limit) |limit| {
-                    if (limit <= 1) {
-                        try list.items.append(self.arena, Value{ .string = s });
-                    } else {
-                        var start: usize = 0;
-                        var splits_done: usize = 0;
-                        while (splits_done + 1 < limit) {
-                            const next = std.mem.indexOfPos(u8, s, start, split_str) orelse break;
-                            try list.items.append(self.arena, Value{ .string = s[start..next] });
-                            start = next + split_str.len;
-                            splits_done += 1;
-                        }
-                        try list.items.append(self.arena, Value{ .string = s[start..] });
-                    }
-                } else {
-                    var iter = std.mem.splitSequence(u8, s, split_str);
-                    while (iter.next()) |part| {
+                return Value{ .list = list };
+            }
+            // Apex's String.split(regex) treats the argument as a regex. We route through
+            // the regex engine whenever the pattern contains any regex metacharacters
+            // (backslash, character classes, alternation, quantifiers, anchors) so that
+            // common Apex idioms like `split('\\s+')` or `split('[.]')` behave correctly.
+            // For plain-text delimiters (e.g. ","), keep the faster literal path.
+            const regex_chars = "\\[].|?*+()^${}";
+            const has_regex_meta = std.mem.indexOfAny(u8, pattern, regex_chars) != null;
+            if (has_regex_meta) {
+                if (splitByRegex(self.arena, pattern, s, split_limit)) |parts| {
+                    for (parts) |part| {
                         try list.items.append(self.arena, Value{ .string = part });
                     }
+                    return Value{ .list = list };
+                } else |_| {
+                    // Regex engine rejected the pattern — fall through to literal split.
+                }
+            }
+            const split_str = pattern;
+            if (split_limit) |limit| {
+                if (limit <= 1) {
+                    try list.items.append(self.arena, Value{ .string = s });
+                } else {
+                    var start: usize = 0;
+                    var splits_done: usize = 0;
+                    while (splits_done + 1 < limit) {
+                        const next = std.mem.indexOfPos(u8, s, start, split_str) orelse break;
+                        try list.items.append(self.arena, Value{ .string = s[start..next] });
+                        start = next + split_str.len;
+                        splits_done += 1;
+                    }
+                    try list.items.append(self.arena, Value{ .string = s[start..] });
+                }
+            } else {
+                var iter = std.mem.splitSequence(u8, s, split_str);
+                while (iter.next()) |part| {
+                    try list.items.append(self.arena, Value{ .string = part });
                 }
             }
             return Value{ .list = list };
@@ -16057,6 +16064,37 @@ pub const Evaluator = struct {
 // ---------------------------------------------------------------------------
 // 静的ヘルパー
 // ---------------------------------------------------------------------------
+
+/// Apex-compatible `String.split(regex)` implementation backed by the interpret regex engine.
+/// `split_limit` mirrors the `split(regex, limit)` overload: when set and > 1, only that many
+/// segments are produced (the final one absorbs any unsplit tail); limit == 1 is a no-op.
+/// Callers remain responsible for the "empty regex splits every character" case — this helper
+/// only handles non-empty patterns.
+fn splitByRegex(arena: std.mem.Allocator, pattern: []const u8, s: []const u8, split_limit: ?usize) ![][]const u8 {
+    var parts = std.ArrayListUnmanaged([]const u8).empty;
+    const matches = try regex.findAll(arena, pattern, s);
+    if (split_limit) |lim| {
+        if (lim <= 1) {
+            try parts.append(arena, s);
+            return parts.items;
+        }
+    }
+    var start: usize = 0;
+    var splits_done: usize = 0;
+    for (matches) |m| {
+        const span = m.groups[0] orelse continue;
+        if (split_limit) |lim| {
+            if (splits_done + 1 >= lim) break;
+        }
+        // Zero-width match on the current cursor — skip to avoid infinite splitting.
+        if (span.start == start and span.end == start) continue;
+        try parts.append(arena, s[start..span.start]);
+        start = span.end;
+        splits_done += 1;
+    }
+    try parts.append(arena, s[start..]);
+    return parts.items;
+}
 
 /// True when (enum_simple_name, value) matches a well-known built-in System enum.
 /// Used for overload resolution since enum values are represented as plain strings.
