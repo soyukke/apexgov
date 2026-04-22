@@ -3989,7 +3989,8 @@ pub const Evaluator = struct {
                     "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
                     "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
                     "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",          "AppMenuItem",
-                    "LeadStatus",                 "UserPreference",         "UserLogin",                    "LoginIp",             "LeadHistory",            "AccountHistory",
+                    "LeadStatus",                 "UserPreference",         "UserLogin",                    "LoginIp",             "LeadHistory",            "AccountHistory",       "EventBusSubscriber",
+                    "BatchApexErrorEvent",        "AsyncOperationEvent",    "AsyncOperationStatus",
                 };
                 var is_known = false;
                 for (known_types) |kt| {
@@ -5905,6 +5906,7 @@ pub const Evaluator = struct {
             .{ "ChildOpportunities", "Opportunity" },
             .{ "ChildCases", "Case" },
             .{ "Assets", "Asset" },
+            .{ "AssetContactRoles", "AssetContactRole" },
             .{ "Orders", "Order" },
             .{ "Quotes", "Quote" },
             .{ "Contracts", "Contract" },
