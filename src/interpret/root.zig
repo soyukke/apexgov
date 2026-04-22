@@ -13340,3 +13340,30 @@ test "E2E: Database.QueryLocator exposes iterator over query rows" {
     defer result.deinit();
     try std.testing.expectEqualStrings("Acme:2", result.value.string);
 }
+
+test "E2E: sobject.Field.addError(msg) attaches error to the field" {
+    // Anonymized probe: domain validation code idiomatically writes
+    // `opp.AccountId.addError('...')` — the Apex compiler rewrites that into
+    // a field-scoped addError on the owning SObject. Our interpreter previously
+    // evaluated the left-hand field reference first, which dereferenced a null
+    // Id and NPE'd. Detect the receiver pattern and attach the error directly
+    // to the SObject with the field name recorded.
+    const source =
+        \\public class FieldAddErrorMagicProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(Name = 'Needs account', Type = 'Existing');
+        \\        opp.AccountId.addError('You must provide an Account');
+        \\        Database.Error first = opp.getErrors()[0];
+        \\        return String.valueOf(opp.hasErrors()) + '|' +
+        \\               first.getMessage() + '|' +
+        \\               first.getFields()[0];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FieldAddErrorMagicProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true|You must provide an Account|AccountId", result.value.string);
+}

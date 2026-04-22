@@ -8265,6 +8265,51 @@ pub const Evaluator = struct {
             if (self.call_stack.items.len > 0)
                 self.call_stack.items[self.call_stack.items.len - 1].line = mc.loc.line;
         }
+
+        // Apex platform magic: `record.FieldName.addError(msg)` is sugar for
+        // `record.addError(FieldName, msg)` — it attaches an error to the field
+        // on the record rather than dereferencing the field's value. Detect the
+        // pattern before evaluating the receiver so we don't NPE on null field
+        // values.
+        if (std.ascii.eqlIgnoreCase(mc.method, "addError") and
+            mc.args.len == 1 and
+            mc.object.* == .field_access)
+        {
+            const fa = mc.object.field_access;
+            const receiver_val = self.evalExpr(fa.object, current_env) catch Value.null_val;
+            if (receiver_val == .sobject) {
+                const msg_val = try self.evalExpr(&mc.args[0], current_env);
+                const msg_str: []const u8 = switch (msg_val) {
+                    .string => |s| s,
+                    else => try utils.coerceToString(msg_val, self.arena),
+                };
+                const err_obj = try self.arena.create(types.ObjectInstance);
+                err_obj.* = .{ .class_name = "Database.Error" };
+                try err_obj.fields.put(self.arena, "message", Value{ .string = msg_str });
+                try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+                try err_obj.fields.put(self.arena, "field", Value{ .string = fa.field });
+                const fields_list = try self.arena.create(types.ListValue);
+                fields_list.* = .{};
+                try fields_list.items.append(self.arena, Value{ .string = fa.field });
+                try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+
+                var errors_list = if (utils.sobjectGet(&receiver_val.sobject.fields, "errors")) |existing|
+                    if (existing == .list) existing.list else blk: {
+                        const lst = try self.arena.create(types.ListValue);
+                        lst.* = .{};
+                        break :blk lst;
+                    }
+                else blk: {
+                    const lst = try self.arena.create(types.ListValue);
+                    lst.* = .{};
+                    break :blk lst;
+                };
+                try errors_list.items.append(self.arena, Value{ .object = err_obj });
+                try utils.sobjectPut(&receiver_val.sobject.fields, self.arena, "errors", Value{ .list = errors_list });
+                return Value.void_val;
+            }
+        }
+
         // Null-safe operator (?.) - if object is null, return null
         if (mc.null_safe) {
             const obj_val = self.evalExpr(mc.object, current_env) catch |err| {
