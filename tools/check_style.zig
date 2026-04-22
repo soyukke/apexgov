@@ -25,6 +25,9 @@
 //!     --function-line-limit <n>
 //!                          Line limit for function_too_long (default: 70).
 //!     --disable <rule>     Disable a rule by name. Repeatable. See rule list below.
+//!     --disable-path <prefix>:<rule>
+//!                          Suppress a rule only for files whose path starts
+//!                          with <prefix>. Repeatable.
 //!     --update-baseline    Regenerate the baseline from current violations.
 //!     --strict             Report every violation and fail on any. Ignores baseline.
 //!     -h, --help           Print help.
@@ -105,10 +108,16 @@ fn parseRule(name: []const u8) ?Rule {
 
 // -------- Config: rule toggles + tunables --------
 
+const PathSuppression = struct {
+    prefix: []const u8,
+    rule: Rule,
+};
+
 const Config = struct {
     line_limit: usize = line_limit_default,
     function_line_limit: usize = function_line_limit_default,
     enabled: RuleMask = [_]bool{true} ** rule_count,
+    path_suppressions: std.ArrayListUnmanaged(PathSuppression) = .empty,
 
     fn isEnabled(self: *const Config, r: Rule) bool {
         return self.enabled[@intFromEnum(r)];
@@ -116,6 +125,17 @@ const Config = struct {
 
     fn disable(self: *Config, r: Rule) void {
         self.enabled[@intFromEnum(r)] = false;
+    }
+
+    /// Returns true iff rule is globally enabled AND not suppressed for `path`.
+    /// Path suppressions match on prefix so passing a directory like
+    /// `src/interpret/` covers every file underneath.
+    fn shouldReport(self: *const Config, r: Rule, path: []const u8) bool {
+        if (!self.isEnabled(r)) return false;
+        for (self.path_suppressions.items) |sup| {
+            if (sup.rule == r and mem.startsWith(u8, path, sup.prefix)) return false;
+        }
+        return true;
     }
 };
 
@@ -160,20 +180,20 @@ fn checkLine(
     var line = raw;
     if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
 
-    if (cfg.isEnabled(.tab_character) and mem.indexOfScalar(u8, line, '\t') != null) {
+    if (cfg.shouldReport(.tab_character, path) and mem.indexOfScalar(u8, line, '\t') != null) {
         try counter.bump(path, .tab_character);
     }
-    if (cfg.isEnabled(.control_character) and hasControlCharacter(line)) {
+    if (cfg.shouldReport(.control_character, path) and hasControlCharacter(line)) {
         try counter.bump(path, .control_character);
     }
-    if (cfg.isEnabled(.trailing_whitespace) and line.len > 0) {
+    if (cfg.shouldReport(.trailing_whitespace, path) and line.len > 0) {
         const last = line[line.len - 1];
         if (last == ' ' or last == '\t') try counter.bump(path, .trailing_whitespace);
     }
-    if (cfg.isEnabled(.line_too_long) and lineTooLong(cfg, line)) {
+    if (cfg.shouldReport(.line_too_long, path) and lineTooLong(cfg, line)) {
         try counter.bump(path, .line_too_long);
     }
-    if (cfg.isEnabled(.debug_print) and mem.indexOf(u8, line, "std.debug.print") != null) {
+    if (cfg.shouldReport(.debug_print, path) and mem.indexOf(u8, line, "std.debug.print") != null) {
         try counter.bump(path, .debug_print);
     }
 }
@@ -218,10 +238,10 @@ fn checkAst(
     path: []const u8,
     content: []const u8,
 ) !void {
-    const want_fn_len = cfg.isEnabled(.function_too_long);
-    const want_fn_name = cfg.isEnabled(.function_not_snake_case);
-    const want_precedence = cfg.isEnabled(.ambiguous_precedence);
-    const want_defer = cfg.isEnabled(.defer_no_blank_line);
+    const want_fn_len = cfg.shouldReport(.function_too_long, path);
+    const want_fn_name = cfg.shouldReport(.function_not_snake_case, path);
+    const want_precedence = cfg.shouldReport(.ambiguous_precedence, path);
+    const want_defer = cfg.shouldReport(.defer_no_blank_line, path);
     if (!want_fn_len and !want_fn_name and !want_precedence and !want_defer) return;
 
     const content_z = try allocator.dupeZ(u8, content);
@@ -445,13 +465,13 @@ fn checkFile(
 ) !void {
     _ = try counter.getOrInsert(path);
 
-    if (cfg.isEnabled(.file_not_snake_case) and !isSnakeCase(fileStem(path))) {
+    if (cfg.shouldReport(.file_not_snake_case, path) and !isSnakeCase(fileStem(path))) {
         try counter.bump(path, .file_not_snake_case);
     }
 
     if (content.len == 0) return;
 
-    if (cfg.isEnabled(.missing_final_newline) and content[content.len - 1] != '\n') {
+    if (cfg.shouldReport(.missing_final_newline, path) and content[content.len - 1] != '\n') {
         try counter.bump(path, .missing_final_newline);
     }
 
@@ -685,6 +705,26 @@ fn parseArgs(allocator: mem.Allocator, process_args: std.process.Args) !Args {
                 std.process.exit(2);
             };
             out.cfg.disable(rule);
+        } else if (mem.eql(u8, arg, "--disable-path")) {
+            const v = it.next() orelse return error.MissingValue;
+            const colon = mem.indexOfScalar(u8, v, ':') orelse {
+                std.debug.print(
+                    "error: --disable-path expects <path-prefix>:<rule>, got {s}\n",
+                    .{v},
+                );
+                std.process.exit(2);
+            };
+            const prefix = v[0..colon];
+            const rule_name = v[colon + 1 ..];
+            const rule = parseRule(rule_name) orelse {
+                std.debug.print("error: unknown rule {s}. Known rules:\n", .{rule_name});
+                for (rule_names) |n| std.debug.print("  {s}\n", .{n});
+                std.process.exit(2);
+            };
+            try out.cfg.path_suppressions.append(allocator, .{
+                .prefix = try allocator.dupe(u8, prefix),
+                .rule = rule,
+            });
         } else if (mem.eql(u8, arg, "--update-baseline")) {
             out.mode = .update;
         } else if (mem.eql(u8, arg, "--strict")) {
@@ -715,6 +755,9 @@ fn printHelp() !void {
         \\  --function-line-limit <n>
         \\                       Line limit for function_too_long (default: 70).
         \\  --disable <rule>     Disable a rule. Repeatable.
+        \\  --disable-path <prefix>:<rule>
+        \\                       Suppress a rule for files whose path starts
+        \\                       with <prefix>. Repeatable.
         \\  --update-baseline    Regenerate the baseline from current violations.
         \\  --strict             Report every violation; ignore baseline. Fails on any.
         \\  -h, --help           Print this help.

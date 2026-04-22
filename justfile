@@ -17,6 +17,14 @@ ci:
 # ZIG_STYLE_CHECKER 環境変数で checker 本体のパスを差し替え可能。
 style_checker := env("ZIG_STYLE_CHECKER", "tools/check_style.zig")
 
+# 共通オプション:
+# - src/interpret/ と src/apex_parser/ は Apex ランタイム/パーサ実装で
+#   Apex 言語仕様の識別子 (camelCase) をミラーするため、
+#   function_not_snake_case だけ除外する。
+style_checker_args := "--root src " + \
+    "--disable-path src/interpret/:function_not_snake_case " + \
+    "--disable-path src/apex_parser/:function_not_snake_case"
+
 # zig fmt でフォーマット崩れを検出 (書き換えはしない)
 fmt-check:
     zig fmt --check src
@@ -27,15 +35,15 @@ fmt:
 
 # baseline と比較して新規違反があれば fail
 lint:
-    zig run {{style_checker}} -- --root src
+    zig run {{style_checker}} -- {{style_checker_args}}
 
 # baseline を無視して全違反を列挙
 lint-strict:
-    zig run {{style_checker}} -- --root src --strict
+    zig run {{style_checker}} -- {{style_checker_args}} --strict
 
 # baseline を現在の違反で再スナップショット
 lint-update-baseline:
-    zig run {{style_checker}} -- --root src --update-baseline
+    zig run {{style_checker}} -- {{style_checker_args}} --update-baseline
 
 # fmt-check + lint をまとめて実行 (PR 前の最低限チェック)
 check: fmt-check lint
