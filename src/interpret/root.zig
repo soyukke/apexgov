@@ -12352,6 +12352,38 @@ test "E2E: List constructor preserves SObjects from Set" {
     try std.testing.expectEqualStrings("1:Account", result.value.string);
 }
 
+test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning object" {
+    // Anonymized probe: fflib_SObjectUnitOfWork's upsert-by-external-id path
+    // validates `record.getSObjectType() == fieldDescribe.getSObjectType()`
+    // and then calls `fieldDescribe.isIdLookup()`. We used to return null
+    // from getSObjectType on a DescribeFieldResult and always-false from
+    // isIdLookup, so every upsert-by-external-id test blew up with
+    // "Invalid argument: externalIdField. Field supplied is not a known
+    //  field on the target sObject." even for the trivial Opportunity.Id
+    // case. The fix: consult the `objectType` the describe was built with
+    // for getSObjectType, and return true from isIdLookup for Id (and for
+    // fields marked external id in field-meta.xml).
+    const source =
+        \\public class DescribeFieldOwnerProbe {
+        \\    public static String test() {
+        \\        DescribeFieldResult fdr = Opportunity.Id.getDescribe();
+        \\        SObjectType fieldOwner = fdr.getSObjectType();
+        \\        Boolean idLookup = fdr.isIdLookup();
+        \\        SObjectType recType = new Opportunity(Name='T').getSObjectType();
+        \\        return String.valueOf(fieldOwner) + '|' +
+        \\            String.valueOf(recType == fieldOwner) + '|' +
+        \\            String.valueOf(idLookup);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "DescribeFieldOwnerProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Opportunity|true|true", result.value.string);
+}
+
 test "E2E: List<SObject>.getSObjectType infers from homogeneous members, stays null when mixed" {
     // Real Apex infers the SObjectType of a generic List<SObject> at runtime
     // when every element has the same concrete SObjectType. Mixed (or empty)

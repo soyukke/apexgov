@@ -4749,6 +4749,40 @@ fn dispatchObjDescribeFieldResult(ctx: *BuiltinContext, obj: *types.ObjectInstan
         return Value{ .object = obj };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    // Schema.DescribeFieldResult.getSObjectType() returns the SObjectType of
+    // the object that owns this field. fflib's upsert-by-external-id validation
+    // compares `record.getSObjectType() == fieldDescribe.getSObjectType()` and
+    // threw "Invalid argument: externalIdField" when we returned null here.
+    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+        if (obj.fields.get("objectType")) |ov| {
+            if (ov == .string and ov.string.len > 0) {
+                const sot = try ctx.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(ctx.arena, "name", Value{ .string = ov.string });
+                return Value{ .object = sot };
+            }
+        }
+        return Value.null_val;
+    }
+    // Schema.DescribeFieldResult.isIdLookup(): true for Id and any explicitly
+    // id-lookup field (custom external IDs expose this flag via field-meta).
+    if (std.ascii.eqlIgnoreCase(method_name, "isIdLookup")) {
+        if (std.ascii.eqlIgnoreCase(field_name, "Id")) return Value{ .boolean = true };
+        if (object_type) |obj_name| {
+            if (lookupFieldMetadata(ctx, obj_name, field_name)) |meta| {
+                if (meta.is_external_id) return Value{ .boolean = true };
+            }
+        }
+        return obj.fields.get("isIdLookup") orelse Value{ .boolean = false };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isExternalId")) {
+        if (object_type) |obj_name| {
+            if (lookupFieldMetadata(ctx, obj_name, field_name)) |meta| {
+                if (meta.is_external_id) return Value{ .boolean = true };
+            }
+        }
+        return obj.fields.get("isExternalId") orelse Value{ .boolean = false };
+    }
     return null;
 }
 
