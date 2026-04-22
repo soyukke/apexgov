@@ -16,7 +16,7 @@ test-fixtures:
         echo "Missing .local-fixtures/apex/repos" >&2
         exit 1
     fi
-    APEXGOV_ENABLE_FIXTURE_TESTS=1 zig test src/root.zig --test-filter "fixture "
+    APEXGOV_ENABLE_FIXTURE_TESTS=1 zig test -O ReleaseFast src/root.zig --test-filter "fixture "
 
 # ReleaseFast ビルド
 build-fast:
