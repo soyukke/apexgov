@@ -1914,8 +1914,13 @@ pub const Evaluator = struct {
                 if (result) |r| {
                     if (ts.finally_body) |fb| _ = try self.execBlock(fb, current_env);
                     return r;
-                } else |_| {
-                    if (ts.catches.len > 0) {
+                } else |body_err| {
+                    if (ts.catches.len == 0) {
+                        // No catches — run finally and propagate.
+                        if (ts.finally_body) |fb| _ = self.execBlock(fb, current_env) catch {};
+                        return body_err;
+                    }
+                    {
                         // Get the pending exception info
                         const exc_val = if (self.pending_exception) |pe| pe else blk: {
                             const exc = try self.arena.create(types.ObjectInstance);
@@ -1969,13 +1974,18 @@ pub const Evaluator = struct {
                         const selected = matched_catch orelse generic_catch orelse &ts.catches[0];
                         const catch_env = try current_env.child();
                         try catch_env.define(selected.name, Value{ .object = exc_obj });
-                        const catch_result = try self.execBlock(selected.body, catch_env);
-                        if (ts.finally_body) |fb| _ = try self.execBlock(fb, current_env);
-                        return catch_result;
+                        // If the catch body itself throws (or `throw e;` rethrows),
+                        // the Apex spec says the `finally` block still runs before
+                        // the exception propagates. Catch the error, run finally,
+                        // then rethrow.
+                        if (self.execBlock(selected.body, catch_env)) |catch_result| {
+                            if (ts.finally_body) |fb| _ = try self.execBlock(fb, current_env);
+                            return catch_result;
+                        } else |catch_err| {
+                            if (ts.finally_body) |fb| _ = self.execBlock(fb, current_env) catch {};
+                            return catch_err;
+                        }
                     }
-                    self.pending_exception = null;
-                    if (ts.finally_body) |fb| _ = try self.execBlock(fb, current_env);
-                    return .normal;
                 }
             },
             .throw_stmt => |ts| {

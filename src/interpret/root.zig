@@ -13394,3 +13394,59 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     defer result.deinit();
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
+
+test "E2E: try/finally runs after catch rethrows and when no catch matches" {
+    // Anonymized probe: UnitOfWork-style frameworks emit their trailing events
+    // (onCommitWorkFinished etc.) from the finally block while the catch
+    // rethrows for the caller's sake. Our interpreter previously returned
+    // directly from the catch rethrow and swallowed the finally, losing half
+    // the events. Also covers the "no catch clause" branch: when the try body
+    // throws and no catch matches, the finally must still run and the
+    // exception must propagate rather than being silently suppressed.
+    const source =
+        \\public class TryFinallyRethrowProbe {
+        \\    public static List<String> events = new List<String>();
+        \\    public static String test() {
+        \\        try {
+        \\            rethrowPath();
+        \\        } catch (Exception e) {
+        \\            events.add('outerCatch');
+        \\        }
+        \\        try {
+        \\            noCatchPath();
+        \\        } catch (Exception e) {
+        \\            events.add('outerNoCatch:' + e.getMessage());
+        \\        }
+        \\        return String.join(events, '|');
+        \\    }
+        \\    static void rethrowPath() {
+        \\        try {
+        \\            events.add('start-rethrow');
+        \\            throw new IllegalArgumentException('boom');
+        \\        } catch (Exception e) {
+        \\            events.add('innerCatch');
+        \\            throw e;
+        \\        } finally {
+        \\            events.add('rethrowFinally');
+        \\        }
+        \\    }
+        \\    static void noCatchPath() {
+        \\        try {
+        \\            events.add('start-nocatch');
+        \\            throw new IllegalArgumentException('noCatchBoom');
+        \\        } finally {
+        \\            events.add('noCatchFinally');
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "TryFinallyRethrowProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "start-rethrow|innerCatch|rethrowFinally|outerCatch|start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
+        result.value.string,
+    );
+}
