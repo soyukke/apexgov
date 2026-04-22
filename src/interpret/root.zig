@@ -13395,6 +13395,34 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe covers common standards" {
+    // Anonymized probe: ActionPlansV4's SectionHeader utility iterates
+    //   for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {...}
+    // before falling back to a default icon, and queries
+    //   Schema.getGlobalDescribe().get(name.toLowerCase()).getDescribe().isCustom()
+    // for standard objects the old whitelist didn't cover (CaseComment,
+    // Contract, Asset, …). Previously describeTabs() returned null and the
+    // for-each NPE'd, and getGlobalDescribe().get('casecomment') came back
+    // as null so the downstream `.getDescribe()` blew up too.
+    const source =
+        \\public class SchemaStubProbe {
+        \\    public static String test() {
+        \\        Integer tabCount = Schema.describeTabs().size();
+        \\        String caseCommentFound = Schema.getGlobalDescribe().get('casecomment') != null ? 'Y' : 'N';
+        \\        String contractFound = Schema.getGlobalDescribe().get('contract') != null ? 'Y' : 'N';
+        \\        String assetFound = Schema.getGlobalDescribe().get('asset') != null ? 'Y' : 'N';
+        \\        return 'tabs=' + tabCount + '|cc=' + caseCommentFound + '|co=' + contractFound + '|as=' + assetFound;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SchemaStubProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("tabs=0|cc=Y|co=Y|as=Y", result.value.string);
+}
+
 test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE matches" {
     // Anonymized probe: ActionPlansV4's @TestSetup queries
     //   SELECT ... FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard'

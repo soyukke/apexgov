@@ -1493,8 +1493,20 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         const known_types = [_][]const u8{
-            "Account", "Contact",  "Opportunity", "Task",  "Lead",            "Case",           "User",
-            "Group",   "Solution", "Campaign",    "Event", "ContentDocument", "ContentVersion",
+            "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
+            "Case",              "User",                    "Group",              "Solution",               "Campaign",
+            "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
+            "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
+            "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
+            "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
+            "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
+            "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
+            "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
+            "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
+            "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
+            "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
+            "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
+            "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
         };
         for (known_types) |obj_name| {
             const sot = try ctx.arena.create(types.ObjectInstance);
@@ -1575,6 +1587,15 @@ fn dispatchStaticSchema(ctx: *BuiltinContext, method_name: []const u8, args: []c
             const desc = try createDescribeResult(ctx, obj_name);
             try list.items.append(ctx.arena, desc);
         }
+        return Value{ .list = list };
+    }
+    // Minimal Schema.describeTabs() stub: return an empty list so utility
+    // code (e.g. ActionPlansV4's SectionHeader controller) that iterates
+    // `for (DescribeTabSetResult tsr : Schema.describeTabs())` falls through
+    // to its default-icon branch instead of NPE-ing on a null return.
+    if (std.ascii.eqlIgnoreCase(method_name, "describeTabs")) {
+        const list = try ctx.arena.create(types.ListValue);
+        list.* = .{};
         return Value{ .list = list };
     }
     return Value.null_val;
