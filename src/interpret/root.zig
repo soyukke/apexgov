@@ -13395,6 +13395,35 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store" {
+    // Anonymized probe: ActionPlansV4's trigger tests assert that a deleted
+    // object's dependent records still live in the recycle bin by running
+    //   SELECT COUNT() FROM X WHERE IsDeleted = TRUE ALL ROWS
+    // Our plain-COUNT path only walked `self.store`, so the count was 0
+    // even though the corresponding non-COUNT `SELECT Id ... ALL ROWS`
+    // correctly surfaced the trashed record. Fix: also walk `self.trash`
+    // with the same WHERE predicate when ALL ROWS is present.
+    const source =
+        \\public class CountAllRowsProbe {
+        \\    public static String test() {
+        \\        Account a = new Account(Name='Doomed');
+        \\        insert a;
+        \\        delete a;
+        \\        Integer active = [SELECT COUNT() FROM Account];
+        \\        Integer trashed = [SELECT COUNT() FROM Account WHERE IsDeleted = TRUE ALL ROWS];
+        \\        Integer total = [SELECT COUNT() FROM Account ALL ROWS];
+        \\        return 'active=' + active + '|trashed=' + trashed + '|total=' + total;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "CountAllRowsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("active=0|trashed=1|total=1", result.value.string);
+}
+
 test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" {
     // Anonymized probe: ActionPlansV4-style trigger uses addError() in
     // AFTER_UNDELETE to abort the restore when a platform condition fails.

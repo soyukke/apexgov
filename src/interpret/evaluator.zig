@@ -3674,6 +3674,18 @@ pub const Evaluator = struct {
                         break;
                     }
                 }
+                // ALL ROWS: also count trashed records.
+                if (include_all_rows) {
+                    var trash_iter = self.trash.iterator();
+                    while (trash_iter.next()) |entry| {
+                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, ft)) {
+                            for (entry.value_ptr.items) |record| {
+                                if (self.matchesWhere(record, soql, current_env)) count += 1;
+                            }
+                            break;
+                        }
+                    }
+                }
                 return Value{ .integer = count };
             }
             return Value{ .integer = 0 };
