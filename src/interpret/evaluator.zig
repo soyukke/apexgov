@@ -3704,12 +3704,12 @@ pub const Evaluator = struct {
             {
                 // Already handled by COUNT() path above — shouldn't reach here, but guard
             } else {
-                return self.executeAggregateQuery(soql, current_env);
+                return self.executeAggregateQuery(soql, current_env, include_all_rows);
             }
         }
         // GROUP BY without SUM/AVG/MIN/MAX (e.g., SELECT Field, COUNT(Id) ... GROUP BY Field)
         if (std.ascii.indexOfIgnoreCase(soql, "group by") != null) {
-            return self.executeAggregateQuery(soql, current_env);
+            return self.executeAggregateQuery(soql, current_env, include_all_rows);
         }
 
         // Regular SELECT query
@@ -5239,7 +5239,7 @@ pub const Evaluator = struct {
 
     /// Execute an aggregate SOQL query (with SUM/AVG/MIN/MAX/COUNT and optional GROUP BY).
     /// Returns List<AggregateResult>.
-    fn executeAggregateQuery(self: *Evaluator, soql: []const u8, current_env: *Env) !Value {
+    fn executeAggregateQuery(self: *Evaluator, soql: []const u8, current_env: *Env, include_all_rows: bool) !Value {
         const from_type_agg = extractFromType(soql) orelse return self.makeEmptyList();
         const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
         const from_start = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
@@ -5312,6 +5312,21 @@ pub const Evaluator = struct {
                         try matched.append(self.arena, record);
                 }
                 break;
+            }
+        }
+        // Include trashed records when ALL ROWS was present on the aggregate query
+        // (the outer executeSoql strips the keyword before delegating here, so we
+        // receive the decision as an explicit parameter instead of re-parsing).
+        if (include_all_rows) {
+            var trash_iter = self.trash.iterator();
+            while (trash_iter.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type_agg)) {
+                    for (entry.value_ptr.items) |record| {
+                        if (self.matchesWhere(record, soql, current_env))
+                            try matched.append(self.arena, record);
+                    }
+                    break;
+                }
             }
         }
 

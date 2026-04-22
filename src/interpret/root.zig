@@ -13395,6 +13395,38 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {
+    // Anonymized probe: the aggregate path (SUM/AVG/MIN/MAX/COUNT(field))
+    // previously walked only `self.store`, same bug as plain COUNT(). Confirm
+    // a deleted record still contributes to the total when ALL ROWS is set.
+    const source =
+        \\public class AggAllRowsProbe {
+        \\    public static Double test() {
+        \\        Account a = new Account(Name='A', AnnualRevenue=100);
+        \\        Account b = new Account(Name='B', AnnualRevenue=25);
+        \\        insert a;
+        \\        insert b;
+        \\        delete b;
+        \\        List<AggregateResult> ar = [SELECT SUM(AnnualRevenue) s FROM Account ALL ROWS];
+        \\        return (Double) ar[0].get('s');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AggAllRowsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    // Apex returns the sum as a Decimal/Double; our numeric values may box to
+    // integer or double — accept whichever, but the total must be 125.
+    const total: f64 = switch (result.value) {
+        .integer => |i| @floatFromInt(i),
+        .double => |d| d,
+        else => -1,
+    };
+    try std.testing.expectEqual(@as(f64, 125), total);
+}
+
 test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store" {
     // Anonymized probe: ActionPlansV4's trigger tests assert that a deleted
     // object's dependent records still live in the recycle bin by running
