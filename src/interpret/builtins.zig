@@ -1026,26 +1026,41 @@ fn dispatchStaticJson(ctx: *BuiltinContext, method_name: []const u8, args: []con
                                     const list = try ctx.arena.create(types.ListValue);
                                     list.* = .{};
                                     const arr_content = json_str[val_start + 1 .. if (arr_pos > 0) arr_pos - 1 else val_start + 1];
-                                    var elem_start2: usize = 0;
-                                    var elem_depth: i32 = 0;
+                                    // Split array content by top-level commas, honouring strings
+                                    // and nested object/array depth. Then dispatch each element
+                                    // through deserializeUntyped so primitives (strings, numbers,
+                                    // booleans, null) and nested objects/arrays all round-trip.
+                                    var seg_start: usize = 0;
+                                    var seg_depth: i32 = 0;
                                     var ei: usize = 0;
                                     while (ei < arr_content.len) : (ei += 1) {
-                                        if (arr_content[ei] == '"') {
+                                        const ch = arr_content[ei];
+                                        if (ch == '"') {
                                             ei += 1;
                                             while (ei < arr_content.len and arr_content[ei] != '"') : (ei += 1) {
                                                 if (arr_content[ei] == '\\') ei += 1;
                                             }
-                                        } else if (arr_content[ei] == '{') {
-                                            if (elem_depth == 0) elem_start2 = ei;
-                                            elem_depth += 1;
-                                        } else if (arr_content[ei] == '}') {
-                                            elem_depth -= 1;
-                                            if (elem_depth == 0) {
-                                                const elem_json = arr_content[elem_start2 .. ei + 1];
-                                                const nested_args = [_]Value{Value{ .string = elem_json }};
-                                                if (try dispatchStaticJson(ctx, "deserializeUntyped", &nested_args)) |nested_val| {
-                                                    try list.items.append(ctx.arena, nested_val);
+                                        } else if (ch == '{' or ch == '[') {
+                                            seg_depth += 1;
+                                        } else if (ch == '}' or ch == ']') {
+                                            seg_depth -= 1;
+                                        } else if (ch == ',' and seg_depth == 0) {
+                                            const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..ei], " \t\r\n");
+                                            if (seg_trimmed.len > 0) {
+                                                const seg_args = [_]Value{Value{ .string = seg_trimmed }};
+                                                if (try dispatchStaticJson(ctx, "deserializeUntyped", &seg_args)) |v| {
+                                                    try list.items.append(ctx.arena, v);
                                                 }
+                                            }
+                                            seg_start = ei + 1;
+                                        }
+                                    }
+                                    if (seg_start < arr_content.len) {
+                                        const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..], " \t\r\n");
+                                        if (seg_trimmed.len > 0) {
+                                            const seg_args = [_]Value{Value{ .string = seg_trimmed }};
+                                            if (try dispatchStaticJson(ctx, "deserializeUntyped", &seg_args)) |v| {
+                                                try list.items.append(ctx.arena, v);
                                             }
                                         }
                                     }
