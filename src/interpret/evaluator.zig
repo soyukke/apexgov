@@ -3532,7 +3532,7 @@ pub const Evaluator = struct {
     // SOQL 実行
     // -----------------------------------------------------------------------
 
-    fn executeSoql(self: *Evaluator, raw: []const u8, current_env: *Env) !Value {
+    pub fn executeSoql(self: *Evaluator, raw: []const u8, current_env: *Env) !Value {
         self.limits_soql += 1;
         // Strip brackets
         var soql = raw;

@@ -3508,6 +3508,41 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
         if (try dispatchObjStandardSetController(ctx, obj, method_name, args)) |v| return v;
     }
+    if (ci.eqlIgnoreCase(cn, "Database.QueryLocator") or ci.eqlIgnoreCase(cn, "QueryLocator")) {
+        if (ci.eqlIgnoreCase(method_name, "getQuery")) {
+            return obj.fields.get("query") orelse Value{ .string = "" };
+        }
+        if (ci.eqlIgnoreCase(method_name, "iterator")) {
+            // Materialize into a List iterator by re-executing the cached query
+            // or reusing a pre-materialized records list.
+            const list: *types.ListValue = blk: {
+                if (obj.fields.get("records")) |rec_v| {
+                    if (rec_v == .list) break :blk rec_v.list;
+                }
+                if (obj.fields.get("query")) |q_val| {
+                    if (q_val == .string) {
+                        const res = ctx.eval.executeSoql(q_val.string, ctx.eval.global_env) catch {
+                            const empty = try ctx.arena.create(types.ListValue);
+                            empty.* = .{};
+                            break :blk empty;
+                        };
+                        if (res == .list) {
+                            try obj.fields.put(ctx.arena, "records", res);
+                            break :blk res.list;
+                        }
+                    }
+                }
+                const empty = try ctx.arena.create(types.ListValue);
+                empty.* = .{};
+                break :blk empty;
+            };
+            const iter = try ctx.arena.create(types.ObjectInstance);
+            iter.* = .{ .class_name = "System.Iterator" };
+            try iter.fields.put(ctx.arena, "__items__", Value{ .list = list });
+            try iter.fields.put(ctx.arena, "__pos__", Value{ .integer = 0 });
+            return Value{ .object = iter };
+        }
+    }
     if (ci.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or ci.eqlIgnoreCase(cn, "FieldSetCollection")) {
         if (ci.eqlIgnoreCase(method_name, "getMap")) {
             return obj.fields.get("map") orelse blk: {

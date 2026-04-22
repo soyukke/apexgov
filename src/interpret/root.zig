@@ -13304,3 +13304,39 @@ test "E2E: Account.ChildAccounts self-reference subquery populates children" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 2), result.value.integer);
 }
+
+test "E2E: Database.QueryLocator exposes iterator over query rows" {
+    // Anonymized probe: selector frameworks return a Database.QueryLocator
+    // from `queryLocatorById(...)` and callers drive it with
+    // `locator.iterator()` / `.hasNext()` / `.next()`. Our interpreter
+    // previously left QueryLocator as an opaque ObjectInstance with no
+    // methods, so `.iterator()` produced null and the next call NPE'd.
+    const source =
+        \\public class QueryLocatorIteratorProbe {
+        \\    public static String test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'Acme'),
+        \\            new Account(Name = 'Beta')
+        \\        };
+        \\        Database.QueryLocator locator = Database.getQueryLocator(
+        \\            'SELECT Id, Name FROM Account ORDER BY Name'
+        \\        );
+        \\        System.Iterator<SObject> it = locator.iterator();
+        \\        Integer count = 0;
+        \\        String firstName = '';
+        \\        while (it.hasNext()) {
+        \\            Account a = (Account) it.next();
+        \\            if (count == 0) firstName = a.Name;
+        \\            count++;
+        \\        }
+        \\        return firstName + ':' + String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "QueryLocatorIteratorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Acme:2", result.value.string);
+}
