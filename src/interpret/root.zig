@@ -13395,6 +13395,49 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: subclass constructor sees field initialised by super() via identifier read" {
+    // Anonymized probe: the common stateful-domain pattern in Apex frameworks
+    // is "super() initialises a Config field; the subclass constructor then
+    // calls config.enable()". Our interpreter pre-loaded instance fields into
+    // the ctor env at entry, so after super() mutated instance.fields the
+    // subclass still read the stale null snapshot and blew up on the next
+    // `configuration.enable()`. Fix: when the local env has a null_val for a
+    // declared instance field, fall back to the live instance.fields value.
+    const source =
+        \\public class SuperFieldVisibilityProbe {
+        \\    public static String test() {
+        \\        Child c = new Child();
+        \\        return (c.cfg.enabled ? 'E' : 'D') + '|' + (c.label == null ? '<null>' : c.label);
+        \\    }
+        \\    public class Conf {
+        \\        public Boolean enabled = false;
+        \\        public void enable() { enabled = true; }
+        \\    }
+        \\    public abstract class Base {
+        \\        public Conf cfg;
+        \\        public String label;
+        \\        public Base() {
+        \\            cfg = new Conf();
+        \\            label = 'parent-set';
+        \\        }
+        \\    }
+        \\    public class Child extends Base {
+        \\        public Child() {
+        \\            super();
+        \\            cfg.enable();
+        \\            label = label + ':child';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SuperFieldVisibilityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("E|parent-set:child", result.value.string);
+}
+
 test "E2E: try/finally runs after catch rethrows and when no catch matches" {
     // Anonymized probe: UnitOfWork-style frameworks emit their trailing events
     // (onCommitWorkFinished etc.) from the finally block while the catch

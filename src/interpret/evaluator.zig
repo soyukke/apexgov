@@ -6953,6 +6953,27 @@ pub const Evaluator = struct {
                     // If value is null_val, still check for instance getter (property may override)
                     if (val != .null_val) return val;
                 }
+                // Fallback: the ctor_env / method env pre-loads instance fields as
+                // snapshots, but after a super() or peer method call mutates
+                // instance.fields, the env snapshot in the caller's frame is stale.
+                // When this is an object and id.name is a declared instance field
+                // (in the class hierarchy) with a non-null value, prefer the live
+                // instance.fields value over the stale null_val snapshot.
+                if (current_env.get("this")) |this_live| {
+                    if (this_live == .object) {
+                        if (utils.sobjectGet(&this_live.object.fields, id.name)) |live| {
+                            if (live != .null_val) {
+                                if (self.findClass(this_live.object.class_name)) |live_cd| {
+                                    if (self.isInstanceField(live_cd, id.name) or
+                                        self.isParentInstanceField(live_cd, id.name))
+                                    {
+                                        return live;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // SObjectType.X (without Schema. prefix) → Schema.SObjectType token for X
                 if (std.mem.startsWith(u8, id.name, "SObjectType.") and
                     std.mem.indexOfScalar(u8, id.name["SObjectType.".len..], '.') == null)
