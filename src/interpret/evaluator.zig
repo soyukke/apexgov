@@ -866,10 +866,13 @@ pub const Evaluator = struct {
         if (gop.value_ptr.items.len > 0) return; // already seeded
 
         // Each SObject type gets a Master RecordType with a unique ID based on index.
-        // Account additionally gets a "Default" record type.
+        // Only seed types that typically carry record types in real orgs —
+        // Task/Event/User/Solution rarely do, and pre-seeding them surfaces
+        // the Master/Default pair to utility classes whose own `uses record
+        // types` heuristic relies on `Database.countQuery` being zero when
+        // none are configured.
         const known_types = [_][]const u8{
-            "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
-            "Solution", "Campaign", "Event",
+            "Account", "Contact", "Opportunity", "Lead", "Case", "Campaign",
         };
         for (known_types, 0..) |obj_name, idx| {
             // Master RecordType — unique ID per SObject type
