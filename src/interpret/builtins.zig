@@ -2491,6 +2491,7 @@ fn createChildRelationshipsValue(ctx: *BuiltinContext, parent_type: []const u8) 
         .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
         .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
         .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
+        .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
         .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
         .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
         .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
@@ -4511,6 +4512,16 @@ fn dispatchObjDescribeSObject(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "create") };
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "edit") };
     if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return obj.fields.get("isDeletable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "delete") };
+    if (std.ascii.eqlIgnoreCase(method_name, "isUndeletable")) {
+        // Undelete requires delete-equivalent CRUD on standard objects; mirror
+        // Apex's behaviour by returning the same result as isDeletable so that
+        // domain frameworks (fflib_SObjectDomain etc.) gate handleAfterUndelete
+        // correctly.
+        return obj.fields.get("isUndeletable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "delete") };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isMergeable")) {
+        return obj.fields.get("isMergeable") orelse Value{ .boolean = resolveObjectCrudPermission(ctx.eval, desc_name, "delete") };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
