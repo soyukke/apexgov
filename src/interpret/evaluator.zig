@@ -7739,6 +7739,22 @@ pub const Evaluator = struct {
                             self.pending_exception = Value{ .object = exc };
                             return error.ApexException;
                         }
+                        // Abstract-class target: Apex rejects a cast to an abstract class
+                        // when the runtime object doesn't extend it. Trigger this only
+                        // when both sides are known user classes so the lenient fallback
+                        // still covers unknown / generic names.
+                        if (!is_compatible) {
+                            if (self.findClass(target)) |tgt_cd| {
+                                if (tgt_cd.modifiers.is_abstract and self.findClass(src_name) != null) {
+                                    const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
+                                    const exc = try self.arena.create(types.ObjectInstance);
+                                    exc.* = .{ .class_name = "System.TypeException" };
+                                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                                    self.pending_exception = Value{ .object = exc };
+                                    return error.ApexException;
+                                }
+                            }
+                        }
                     }
                 } else if (val == .sobject) {
                     // SObject casts are always allowed (Account → SObject, etc.)

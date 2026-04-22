@@ -12352,6 +12352,63 @@ test "E2E: List constructor preserves SObjects from Set" {
     try std.testing.expectEqualStrings("1:Account", result.value.string);
 }
 
+test "E2E: Formula.builder chain returns a FormulaInstance that evaluates simple formulas" {
+    // Anonymized probe: apex-trigger-actions-framework's FormulaFilter builds
+    // a boolean formula via the chain
+    //     Formula.builder()
+    //         .withReturnType(FormulaEval.FormulaReturnType.Boolean)
+    //         .withType(TriggerRecordSubclass.class)
+    //         .withFormula('record.Name = "X"' or 'CONTAINS(record.Field,"Y")')
+    //         .build();
+    // and then calls `.evaluate(triggerRecordInstance)` per record to decide
+    // inclusion. We stub:
+    //   - the fluent configurators to return the builder,
+    //   - a validation gate on build() that rejects non-global classes and
+    //     unrecognisable formulas (mirrors real Apex's
+    //     FormulaValidationException),
+    //   - an evaluator for `<path> = "literal"` and `CONTAINS(<path>, "...")`
+    //     that walks the TriggerRecord's `newSobject` / `oldSobject` tower.
+    const source =
+        \\global class FormulaEvalProbe {
+        \\    global class Dummy extends TriggerRecord {}
+        \\    global static String test() {
+        \\        FormulaEval.FormulaInstance equality = Formula.builder()
+        \\            .withReturnType(FormulaEval.FormulaReturnType.Boolean)
+        \\            .withType(Dummy.class)
+        \\            .withFormula('record.Name = "hit"')
+        \\            .build();
+        \\        FormulaEval.FormulaInstance contains = Formula.builder()
+        \\            .withReturnType(FormulaEval.FormulaReturnType.Boolean)
+        \\            .withType(Dummy.class)
+        \\            .withFormula('CONTAINS(record.Description, "needle")')
+        \\            .build();
+        \\        Dummy hitRec = new Dummy();
+        \\        hitRec.newSobject = new Account(Name='hit', Description='needle-in-haystack');
+        \\        Dummy missRec = new Dummy();
+        \\        missRec.newSobject = new Account(Name='miss', Description='nothing');
+        \\        return
+        \\            'eqHit=' + String.valueOf((Boolean) equality.evaluate(hitRec)) +
+        \\            '|eqMiss=' + String.valueOf((Boolean) equality.evaluate(missRec)) +
+        \\            '|ctHit=' + String.valueOf((Boolean) contains.evaluate(hitRec)) +
+        \\            '|ctMiss=' + String.valueOf((Boolean) contains.evaluate(missRec));
+        \\    }
+        \\}
+        \\global abstract class TriggerRecord {
+        \\    global SObject newSobject;
+        \\    global SObject oldSobject;
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "FormulaEvalProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "eqHit=true|eqMiss=false|ctHit=true|ctMiss=false",
+        result.value.string,
+    );
+}
+
 test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mode" {
     // Anonymized probe: fflib_SObjectSelectorTest catches a QueryException
     // thrown by a USER_MODE SOQL query run under a minimum-access user and
