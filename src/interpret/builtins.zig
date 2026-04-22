@@ -3793,6 +3793,14 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) return obj.fields.get("message") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getInaccessibleFields")) {
+        // QueryException exposed by user-mode SOQL carries a
+        // Map<String, Set<String>> of "objectName → inaccessible fields"
+        // (see fflib_SObjectSelectorTest). Return the attached map if we
+        // populated one; otherwise null (matches real Apex when the
+        // exception wasn't raised by an FLS/CRUD check).
+        return obj.fields.get("inaccessibleFields") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getFields")) return obj.fields.get("fields") orelse blk: {
         const list = try ctx.arena.create(types.ListValue);
@@ -5454,6 +5462,14 @@ fn defaultObjectCrudAccess(eval: *evaluator_mod.Evaluator, sobject_type: []const
     if (eval.is_restricted_user) return false;
     if (eval.is_standard_user and (eval.isSetupObject(sobject_type) or hasCustomObjectSuffix(sobject_type))) return false;
     return true;
+}
+
+pub fn resolveObjectCrudPermissionPublic(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+    return resolveObjectCrudPermission(eval, sobject_type, operation);
+}
+
+pub fn resolveFieldReadPermissionPublic(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) bool {
+    return resolveFieldReadPermission(eval, object_type, field_name);
 }
 
 fn resolveObjectCrudPermission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {

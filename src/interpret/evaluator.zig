@@ -3631,6 +3631,57 @@ pub const Evaluator = struct {
         }
     }
 
+    /// Attach the fflib-compatible `getInaccessibleFields()` payload onto a
+    /// freshly-created QueryException. Layout is `Map<String, Set<String>>`
+    /// where the key is the SObject API name and the value is the set of
+    /// fields the running user cannot read. If object-level access is denied
+    /// we surface every SELECT column; if only a subset of fields fail the
+    /// field-level check we list just those fields. Called from the user-mode
+    /// SOQL security gate before the exception is stashed in pending_exception.
+    fn attachInaccessibleFieldsToException(self: *Evaluator, exc: *types.ObjectInstance, soql: []const u8, from_type_name: []const u8) !void {
+        const inaccessible_map = try self.arena.create(types.MapValue);
+        inaccessible_map.* = .{};
+        const field_set = try self.arena.create(types.SetValue);
+        field_set.* = .{};
+
+        const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
+        const from_start = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
+        if (from_start > select_start) {
+            const clause = std.mem.trim(u8, soql[select_start..from_start], " \t\n\r");
+            const object_denied = !self.resolveObjectReadAccessByName(from_type_name);
+            var field_iter = std.mem.splitScalar(u8, clause, ',');
+            while (field_iter.next()) |raw_field| {
+                const trimmed = std.mem.trim(u8, raw_field, " \t\n\r");
+                if (trimmed.len == 0) continue;
+                // Skip subqueries and function expressions (COUNT(), etc.) — they
+                // don't correspond to a single column name the caller would check.
+                if (trimmed[0] == '(' or std.mem.indexOfScalar(u8, trimmed, '(') != null) continue;
+                // Skip dotted relationship fields — only surface root-level names.
+                if (std.mem.indexOfScalar(u8, trimmed, '.') != null) continue;
+                const include = object_denied or !self.resolveFieldReadAccessByName(from_type_name, trimmed);
+                if (!include) continue;
+                const key = try self.arena.dupe(u8, trimmed);
+                try field_set.entries.put(self.arena, key, Value{ .string = key });
+            }
+        }
+
+        if (field_set.entries.count() > 0) {
+            const sobj_key = try self.arena.dupe(u8, from_type_name);
+            try inaccessible_map.entries.put(self.arena, sobj_key, Value{ .set = field_set });
+        }
+        try exc.fields.put(self.arena, "inaccessibleFields", Value{ .map = inaccessible_map });
+    }
+
+    fn resolveObjectReadAccessByName(self: *Evaluator, obj_name: []const u8) bool {
+        if (!self.is_restricted_user) return true;
+        return builtins.resolveObjectCrudPermissionPublic(self, obj_name, "read");
+    }
+
+    fn resolveFieldReadAccessByName(self: *Evaluator, obj_name: []const u8, field_name: []const u8) bool {
+        if (!self.is_restricted_user) return true;
+        return builtins.resolveFieldReadPermissionPublic(self, obj_name, field_name);
+    }
+
     // -----------------------------------------------------------------------
     // SOQL 実行
     // -----------------------------------------------------------------------
@@ -3653,6 +3704,13 @@ pub const Evaluator = struct {
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.QueryException" };
                 try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                // Populate getInaccessibleFields() payload: Map<String, Set<String>>.
+                // fflib_SObjectSelectorTest expects the exception to carry the per-
+                // SObjectType set of fields the running user cannot read. Extract
+                // the bare SELECT column names and keep the ones that fail
+                // resolveFieldReadPermission (or all of them, if the object itself
+                // is unreadable).
+                try self.attachInaccessibleFieldsToException(exc, soql, from_type_name);
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }

@@ -12352,6 +12352,54 @@ test "E2E: List constructor preserves SObjects from Set" {
     try std.testing.expectEqualStrings("1:Account", result.value.string);
 }
 
+test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mode" {
+    // Anonymized probe: fflib_SObjectSelectorTest catches a QueryException
+    // thrown by a USER_MODE SOQL query run under a minimum-access user and
+    // asserts that `qe.getInaccessibleFields().get('Opportunity')` is a Set
+    // containing the inaccessible field names. We used to leave the
+    // exception bare (only `message` set), so the fflib assertion failed
+    // with "Expected: non-null, Actual: null".
+    const source =
+        \\public class InaccessibleFieldsProbe {
+        \\    public static String test() {
+        \\        System.runAs(getMinimumAccessUser()) {
+        \\            try {
+        \\                List<Opportunity> opps = [SELECT Name, Amount FROM Opportunity WITH USER_MODE];
+        \\                return 'no-exception';
+        \\            } catch (QueryException qe) {
+        \\                Map<String, Set<String>> inaccess = qe.getInaccessibleFields();
+        \\                if (inaccess == null) return 'null-map';
+        \\                Set<String> oppFields = inaccess.get('Opportunity');
+        \\                if (oppFields == null) return 'null-set';
+        \\                return 'present|Name=' + String.valueOf(oppFields.contains('Name')) +
+        \\                    '|Amount=' + String.valueOf(oppFields.contains('Amount'));
+        \\            }
+        \\        }
+        \\        return 'fell-through';
+        \\    }
+        \\
+        \\    static User getMinimumAccessUser() {
+        \\        // Synthesize a restricted user inline by returning a User bound
+        \\        // to a "Minimum Access" profile. setupTestUser-style helper kept
+        \\        // terse for the probe.
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce' LIMIT 1];
+        \\        User u = new User(
+        \\            Email='min@probe.test', Username='min@probe-x.test', LastName='min',
+        \\            Alias='min', ProfileId=p.Id, LanguageLocaleKey='en_US',
+        \\            LocaleSidKey='en_US', TimeZoneSidKey='America/Chicago', EmailEncodingKey='UTF-8');
+        \\        insert u;
+        \\        return u;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "InaccessibleFieldsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("present|Name=true|Amount=true", result.value.string);
+}
+
 test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning object" {
     // Anonymized probe: fflib_SObjectUnitOfWork's upsert-by-external-id path
     // validates `record.getSObjectType() == fieldDescribe.getSObjectType()`
