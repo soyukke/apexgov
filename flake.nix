@@ -11,9 +11,10 @@
       in
       {
         devShells.default = pkgs.mkShell {
+          # zig / zls は home-manager (zig-overlay) 側で 0.16 を pin しているのでそちらを使う。
+          # この flake 内で pkgs.zig を追加すると nixpkgs デフォルト (0.15.2) が PATH 先頭に来て
+          # 上書きされるため、あえて入れない。
           buildInputs = with pkgs; [
-            zig
-            zls
             jdk21_headless
           ];
           shellHook = ''

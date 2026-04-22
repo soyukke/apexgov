@@ -4,9 +4,45 @@ _default:
 # CI 相当のローカル実行
 ci:
     zig fmt --check src/
+    just lint
     zig build
     zig build test --summary all
     cd editors/vscode && npm run compile
+
+# --- Zig style checker (tiger style lite) ---
+#
+# `just lint` は src/ の現状を tools/style_baseline.txt と比較し、
+# 増えた違反だけで失敗する (ratcheting baseline)。既存違反を直した後は
+# `just lint-update-baseline` で baseline を更新する。
+# ZIG_STYLE_CHECKER 環境変数で checker 本体のパスを差し替え可能。
+style_checker := env("ZIG_STYLE_CHECKER", "tools/check_style.zig")
+
+# zig fmt でフォーマット崩れを検出 (書き換えはしない)
+fmt-check:
+    zig fmt --check src
+
+# zig fmt でフォーマットを書き換え
+fmt:
+    zig fmt src
+
+# baseline と比較して新規違反があれば fail
+lint:
+    zig run {{style_checker}} -- --root src
+
+# baseline を無視して全違反を列挙
+lint-strict:
+    zig run {{style_checker}} -- --root src --strict
+
+# baseline を現在の違反で再スナップショット
+lint-update-baseline:
+    zig run {{style_checker}} -- --root src --update-baseline
+
+# fmt-check + lint をまとめて実行 (PR 前の最低限チェック)
+check: fmt-check lint
+
+# fmt-check + strict lint をまとめて実行
+check-strict: fmt-check lint-strict
+# --- end zig style checker ---
 
 # fixture-backed な回帰テストを明示実行
 test-fixtures:
