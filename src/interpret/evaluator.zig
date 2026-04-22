@@ -10406,6 +10406,7 @@ pub const Evaluator = struct {
             const new_list = try self.arena.create(types.ListValue);
             new_list.* = .{};
             new_list.element_type = list.element_type;
+            new_list.explicitly_generic = list.explicitly_generic;
             for (list.items.items) |item| {
                 const cloned = if (is_deep and item == .sobject) blk: {
                     const clone = try self.cloneSObject(item.sobject);
@@ -10438,7 +10439,14 @@ pub const Evaluator = struct {
                 // == Opportunity`; fflib_SObjectDomain relies on the inference when
                 // a sibling Map<Id, SObject>.values() gets piped through its generic
                 // construct() shim.
+                //
+                // However, lists that the user *explicitly* constructed with
+                // `new List<SObject>()` (and then populated element-by-element)
+                // must keep returning null — that matches real Apex, and
+                // NebulaLogger's `setRecord(System.Iterable<Id>)` depends on it
+                // to classify ID-collection inputs as `Unknown`.
                 if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
+                    if (list.explicitly_generic) return Value.null_val;
                     if (list.items.items.len == 0) return Value.null_val;
                     var inferred: ?[]const u8 = null;
                     for (list.items.items) |item| {
@@ -11572,7 +11580,20 @@ pub const Evaluator = struct {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
             if (ne.type_name.params.len > 0) {
-                list.element_type = stripTypeNamespace(self.renderTypeRef(ne.type_name.params[0]));
+                const rendered = stripTypeNamespace(self.renderTypeRef(ne.type_name.params[0]));
+                list.element_type = rendered;
+                // Mark truly-generic explicit constructions. Real Apex returns
+                // null from `getSObjectType()` on a list that the user built
+                // with `new List<SObject>()` and populated by hand, even when
+                // every element is the same concrete SObjectType. Lists that
+                // inherit `element_type = "SObject"` later (via parameter
+                // annotation, etc.) keep `explicitly_generic = false`.
+                const rendered_base = typeBaseName(rendered);
+                if (std.ascii.eqlIgnoreCase(rendered_base, "SObject") or
+                    std.ascii.eqlIgnoreCase(rendered_base, "Object"))
+                {
+                    list.explicitly_generic = true;
+                }
             }
             // Single arg that is a Set → convert to list
             if (ne.args.len == 1 and !ne.is_brace_initializer) {

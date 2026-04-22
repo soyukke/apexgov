@@ -12489,14 +12489,15 @@ test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning o
     try std.testing.expectEqualStrings("Opportunity|true|true", result.value.string);
 }
 
-test "E2E: List<SObject>.getSObjectType infers from homogeneous members, stays null when mixed" {
-    // Real Apex infers the SObjectType of a generic List<SObject> at runtime
-    // when every element has the same concrete SObjectType. Mixed (or empty)
-    // lists keep the null return that the raw declared type would give.
-    // fflib_SObjectDomain's test trigger flow passes
-    // `Map<Id, SObject>.values()` to a SObject constructor whose super then
-    // calls `list.getSObjectType()`; the implicit inference is what keeps
-    // that constructor from NPE-ing.
+test "E2E: explicit new List<SObject>() stays null on getSObjectType regardless of contents" {
+    // Real Apex: `new List<SObject>()` is a truly-generic construction; even
+    // if every element you add happens to share the same concrete SObjectType,
+    // `getSObjectType()` returns null. NebulaLogger's
+    // `setRecord(System.Iterable<Id>)` relies on this — it builds a local
+    // `new List<SObject>()` from User Ids and expects
+    // `RecordSObjectClassification__c = 'Unknown'`. The homogeneous-inference
+    // path (see next test) is reserved for lists that acquired
+    // `element_type = "SObject"` indirectly, not explicit user constructions.
     const source =
         \\public class GenericListTypeProbe {
         \\    public static String test() {
@@ -12507,7 +12508,7 @@ test "E2E: List<SObject>.getSObjectType infers from homogeneous members, stays n
         \\        mixed.add(new Account(Name = 'Acme'));
         \\        mixed.add(new Contact(LastName = 'Doe'));
         \\        List<SObject> empty = new List<SObject>();
-        \\        return String.valueOf(homogenous.getSObjectType()) + ':' +
+        \\        return String.valueOf(homogenous.getSObjectType() == null) + ':' +
         \\            String.valueOf(mixed.getSObjectType() == null) + ':' +
         \\            String.valueOf(empty.getSObjectType() == null);
         \\    }
@@ -12518,7 +12519,37 @@ test "E2E: List<SObject>.getSObjectType infers from homogeneous members, stays n
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("Account:true:true", result.value.string);
+    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+}
+
+test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for generic callers" {
+    // Real Apex: when a `Map<Id, SObject>` is populated with homogeneous
+    // records and piped through a generic `List<SObject>` parameter (as
+    // `fflib_SObjectDomain`'s super(records) → this(records, records
+    // .getSObjectType()) does), the underlying list keeps its runtime element
+    // type. The list never went through an explicit `new List<SObject>()`
+    // construction, so it is allowed to resolve its SObjectType via the
+    // homogeneous-inference fallback instead of short-circuiting to null.
+    const source =
+        \\public class MapValuesSObjectTypeProbe {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Acme');
+        \\        a.Id = '001000000000001AAA';
+        \\        Account b = new Account(Name = 'Beta');
+        \\        b.Id = '001000000000002AAA';
+        \\        Map<Id, SObject> byId = new Map<Id, SObject>();
+        \\        byId.put(a.Id, a);
+        \\        byId.put(b.Id, b);
+        \\        return String.valueOf(byId.values().getSObjectType());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MapValuesSObjectTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Account", result.value.string);
 }
 
 test "E2E: concrete typed list reports its SObjectType" {

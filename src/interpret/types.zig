@@ -66,6 +66,15 @@ pub const SObject = struct {
 pub const ListValue = struct {
     items: std.ArrayListUnmanaged(Value) = .empty,
     element_type: ?[]const u8 = null,
+    /// True when the list was created via `new List<SObject>()` or
+    /// `new List<Object>()` in user source — i.e. explicitly constructed as a
+    /// generic SObject list. Real Apex returns null from `getSObjectType()`
+    /// for such lists even if all added elements happen to be the same
+    /// concrete SObjectType. Lists that acquire `element_type = "SObject"`
+    /// indirectly (parameter coercion from an untyped origin, `Map<Id,
+    /// SObject>.values()` piped through a generic parameter, …) leave this
+    /// false and can still resolve to the element type.
+    explicitly_generic: bool = false,
 };
 
 pub const MapValue = struct {
