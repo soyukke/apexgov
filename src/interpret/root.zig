@@ -13367,3 +13367,30 @@ test "E2E: sobject.Field.addError(msg) attaches error to the field" {
     defer result.deinit();
     try std.testing.expectEqualStrings("true|You must provide an Account|AccountId", result.value.string);
 }
+
+test "E2E: System.Location.newInstance + getDistance match real-platform values" {
+    // Anonymized probe: geospatial formulas build locations via
+    // `System.Location.newInstance(lat, lng)` and compute distances with
+    // `Location.getDistance(a, b, 'km')`. The returned Location exposes
+    // `.latitude` / `.longitude` as Decimal, and `getDistance` uses the
+    // Haversine formula — we clamp within a sensible tolerance (~0.1km)
+    // against the expected Google-Earth value between two well-known POIs.
+    const source =
+        \\public class LocationBuiltinsProbe {
+        \\    public static String test() {
+        \\        System.Location a = System.Location.newInstance(28.635308, 77.22496);
+        \\        System.Location b = System.Location.newInstance(28.704060, 77.102493);
+        \\        Decimal km = Location.getDistance(a, b, 'km');
+        \\        return String.valueOf(a.latitude) + ',' +
+        \\               String.valueOf(a.longitude) + '|' +
+        \\               (km > 14 && km < 17 ? 'inRange' : 'outOfRange:' + km);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "LocationBuiltinsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
+}

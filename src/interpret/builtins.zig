@@ -292,6 +292,43 @@ pub fn dispatchStatic(ctx: *BuiltinContext, class_name: []const u8, method_name:
         }
     }
     if (ci.eqlIgnoreCase(class_name, "Test")) return dispatchStaticTest(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Location") or ci.eqlIgnoreCase(class_name, "System.Location")) {
+        if (ci.eqlIgnoreCase(method_name, "newInstance") and args.len >= 2) {
+            const loc = try ctx.arena.create(types.ObjectInstance);
+            loc.* = .{ .class_name = "System.Location" };
+            try loc.fields.put(ctx.arena, "latitude", args[0]);
+            try loc.fields.put(ctx.arena, "longitude", args[1]);
+            return Value{ .object = loc };
+        }
+        if (ci.eqlIgnoreCase(method_name, "getDistance") and args.len >= 3) {
+            // Haversine distance between two locations. Unit is "mi" or "km".
+            const get_coord = struct {
+                fn get(val: Value, field: []const u8) f64 {
+                    if (val != .object) return 0;
+                    const v = val.object.fields.get(field) orelse return 0;
+                    return switch (v) {
+                        .double => |d| d,
+                        .integer => |i| @floatFromInt(i),
+                        .long => |i| @floatFromInt(i),
+                        else => 0,
+                    };
+                }
+            };
+            const lat1 = get_coord.get(args[0], "latitude");
+            const lon1 = get_coord.get(args[0], "longitude");
+            const lat2 = get_coord.get(args[1], "latitude");
+            const lon2 = get_coord.get(args[1], "longitude");
+            const unit_str: []const u8 = if (args[2] == .string) args[2].string else "km";
+            const radius: f64 = if (std.ascii.eqlIgnoreCase(unit_str, "mi")) 3958.8 else 6371.0;
+            const to_rad: f64 = std.math.pi / 180.0;
+            const dlat = (lat2 - lat1) * to_rad;
+            const dlon = (lon2 - lon1) * to_rad;
+            const a = @sin(dlat / 2) * @sin(dlat / 2) +
+                @cos(lat1 * to_rad) * @cos(lat2 * to_rad) * @sin(dlon / 2) * @sin(dlon / 2);
+            const c = 2 * std.math.atan2(@sqrt(a), @sqrt(1 - a));
+            return Value{ .double = radius * c };
+        }
+    }
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatchStaticHttp(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatchStaticCanTheUser(ctx, method_name, args);
