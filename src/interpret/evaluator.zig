@@ -2141,6 +2141,17 @@ pub const Evaluator = struct {
         // Build record list for trigger context
         var record_list = try self.buildRecordList(target);
 
+        // Clear any stale `errors` list from previous DML attempts so a post-trigger
+        // error check only sees errors added during THIS DML, not ones that leaked
+        // from a prior call (e.g., `undelete a` after `addError` ran on `a`).
+        for (record_list.items) |item| {
+            if (item == .sobject) {
+                if (item.sobject.fields.get("errors")) |_| {
+                    _ = item.sobject.fields.orderedRemove("errors");
+                }
+            }
+        }
+
         // Build old records for update/delete triggers
         var old_records: ?std.ArrayListUnmanaged(Value) = null;
         if (old_records_override) |override| {
@@ -2288,6 +2299,43 @@ pub const Evaluator = struct {
         if (after_event) |evt| {
             if (obj_type) |ot| {
                 try self.fireTrigger(ot, evt, &record_list, old_records);
+            }
+        }
+
+        // addError() in an AFTER trigger (delete, undelete, etc.) causes the DML to
+        // fail in real Apex and the transaction rolls back. Mirror that: if any record
+        // gained an `errors` list during the AFTER trigger, reverse the DML where
+        // feasible and raise a DmlException carrying the first error's message.
+        // This is especially important for `undelete`, where frameworks like
+        // ActionPlansV4 add errors in AFTER_UNDELETE and then expect to undelete
+        // again on a retry — which requires the record to still be in the recycle
+        // bin, not already promoted back to the active store.
+        if (after_event != null) {
+            for (record_list.items) |item| {
+                if (item != .sobject) continue;
+                if (utils.sobjectGet(&item.sobject.fields, "errors")) |errs_val| {
+                    if (errs_val == .list and errs_val.list.items.items.len > 0) {
+                        const first = errs_val.list.items.items[0];
+                        var msg: []const u8 = "Trigger added error";
+                        if (first == .object) {
+                            if (first.object.fields.get("message")) |m| {
+                                if (m == .string) msg = m.string;
+                            }
+                        }
+                        // Roll back an undelete: return the record to the recycle bin
+                        // so a retry with no error sees the same trash state. Other
+                        // DML ops don't need this today (no tests depend on delete/
+                        // insert rollback after AFTER-trigger addError).
+                        if (op == .undelete) {
+                            self.rollbackUndelete(&record_list) catch {};
+                        }
+                        const exc = try self.arena.create(types.ObjectInstance);
+                        exc.* = .{ .class_name = "DmlException" };
+                        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+                        self.pending_exception = Value{ .object = exc };
+                        return error.ApexException;
+                    }
+                }
             }
         }
 
@@ -3445,6 +3493,38 @@ pub const Evaluator = struct {
         // Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is deleted
         if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordItem")) {
             try self.updateDuplicateRecordSetCount(obj, -1);
+        }
+    }
+
+    /// Reverse an AFTER_UNDELETE when its trigger added errors: move each record
+    /// back from the active store into the recycle bin, mirroring real Apex's
+    /// transactional rollback so the same record can be undeleted again.
+    fn rollbackUndelete(self: *Evaluator, record_list: *std.ArrayListUnmanaged(Value)) !void {
+        for (record_list.items) |item| {
+            if (item != .sobject) continue;
+            const obj = item.sobject;
+            const rid = obj.id orelse continue;
+            if (self.store.getPtr(obj.type_name)) |recs| {
+                var idx: usize = 0;
+                while (idx < recs.items.len) {
+                    const rec = recs.items[idx];
+                    if (rec == .sobject and rec.sobject.id != null and
+                        std.mem.eql(u8, rec.sobject.id.?, rid))
+                    {
+                        const pulled = recs.orderedRemove(idx);
+                        if (pulled == .sobject) {
+                            try pulled.sobject.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
+                        }
+                        const gop = try self.trash.getOrPut(self.arena, obj.type_name);
+                        if (!gop.found_existing) gop.value_ptr.* = .empty;
+                        try gop.value_ptr.append(self.arena, pulled);
+                        try obj.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
+                        break;
+                    } else {
+                        idx += 1;
+                    }
+                }
+            }
         }
     }
 

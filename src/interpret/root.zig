@@ -13395,6 +13395,42 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" {
+    // Anonymized probe: ActionPlansV4-style trigger uses addError() in
+    // AFTER_UNDELETE to abort the restore when a platform condition fails.
+    // Real Apex raises a DmlException and rolls back so a retry can undelete
+    // again. Before: our undelete returned cleanly and the stale `errors`
+    // entries on the sobject leaked into the next DML cycle; the AFTER
+    // trigger addError path was ignored entirely.
+    const source =
+        \\public class AfterUndeleteAddErrorProbe {
+        \\    public static String test() {
+        \\        Account a = new Account(Name='Doomed');
+        \\        insert a;
+        \\        delete a;
+        \\        String caught = 'none';
+        \\        try {
+        \\            undelete a;
+        \\        } catch (DmlException e) {
+        \\            caught = e.getMessage();
+        \\        }
+        \\        return caught;
+        \\    }
+        \\}
+        \\trigger AfterUndeleteAddErrorProbeTrigger on Account (after undelete) {
+        \\    for (Account a : Trigger.new) {
+        \\        a.addError('blocked-by-trigger');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "AfterUndeleteAddErrorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("blocked-by-trigger", result.value.string);
+}
+
 test "E2E: subclass constructor sees field initialised by super() via identifier read" {
     // Anonymized probe: the common stateful-domain pattern in Apex frameworks
     // is "super() initialises a Config field; the subclass constructor then
