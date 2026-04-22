@@ -14,6 +14,7 @@ const TokenKind = types.TokenKind;
 
 pub const Expr = union(enum) {
     integer_literal: i64,
+    long_literal: i64,
     double_literal: f64,
     string_literal: []const u8,
     boolean_literal: bool,
@@ -57,6 +58,9 @@ pub const BinaryOp = enum {
     strict_neq,
     and_op,
     or_op,
+    bit_and,
+    bit_or,
+    bit_xor,
 };
 
 pub const UnaryOp = enum {
@@ -124,6 +128,7 @@ pub const AssignOp = enum {
 pub const NewExpr = struct {
     type_name: TypeRef,
     args: []Expr,
+    is_brace_initializer: bool = false,
     loc: SourceLoc = .zero,
 };
 

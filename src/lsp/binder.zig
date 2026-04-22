@@ -326,7 +326,14 @@ const Binder = struct {
             },
             .for_stmt => |fs| {
                 _ = try self.pushScope();
-                if (fs.init) |init_stmt| try self.bindStmt(init_stmt.*);
+                if (fs.init) |init_stmt| {
+                    switch (init_stmt.*) {
+                        .block => |init_stmts| {
+                            for (init_stmts) |init_item| try self.bindStmt(init_item);
+                        },
+                        else => try self.bindStmt(init_stmt.*),
+                    }
+                }
                 if (fs.condition) |cond| try self.bindExpr(cond.*);
                 if (fs.update) |upd| try self.bindExpr(upd.*);
                 for (fs.body) |s| try self.bindStmt(s);
@@ -391,6 +398,7 @@ const Binder = struct {
 
     fn bindExpr(self: *Binder, expr: ast.Expr) !void {
         switch (expr) {
+            .integer_literal, .long_literal, .double_literal, .string_literal, .boolean_literal, .null_literal, .this_expr, .super_expr, .soql => {},
             .identifier => |id| {
                 try self.addReference(id.loc.offset, id.name);
             },
@@ -438,8 +446,6 @@ const Binder = struct {
             .grouped => |inner| {
                 try self.bindExpr(inner.*);
             },
-            // リテラルは参照なし
-            .integer_literal, .double_literal, .string_literal, .boolean_literal, .null_literal, .this_expr, .super_expr, .soql => {},
         }
     }
 

@@ -578,16 +578,27 @@ const Parser = struct {
         if (!self.check(.semicolon)) {
             const init_stmt = try self.arena.create(ast.Stmt);
             if (self.looksLikeVarDecl()) {
-                init_stmt.* = try self.parseVarDeclStmt();
-                // Handle multiple var decls: Integer i = 0, j = list.size()
-                while (self.matchKind(.comma)) {
-                    if (self.check(.identifier) and (self.peekKind(1) == .assign or self.peekKind(1) == .semicolon or self.peekKind(1) == .comma)) {
-                        // name = expr or name;
-                        _ = try self.expectIdentifier();
-                        if (self.matchKind(.assign)) {
-                            _ = try self.expression();
-                        }
+                const type_ref = try self.parseTypeRef();
+                var init_stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
+                while (true) {
+                    const decl_loc = self.currentLoc();
+                    const name = try self.expectIdentifier();
+                    var initializer: ?*ast.Expr = null;
+                    if (self.matchKind(.assign)) {
+                        initializer = try self.expression();
                     }
+
+                    const decl = try self.arena.create(ast.VarDecl);
+                    decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = decl_loc };
+                    try init_stmts.append(self.arena, .{ .var_decl = decl });
+
+                    if (!self.matchKind(.comma)) break;
+                }
+
+                if (init_stmts.items.len == 1) {
+                    init_stmt.* = init_stmts.items[0];
+                } else {
+                    init_stmt.* = .{ .block = try init_stmts.toOwnedSlice(self.arena) };
                 }
             } else {
                 const expr = try self.expression();
@@ -920,7 +931,7 @@ const Parser = struct {
         var left = try self.parseBitwiseXor();
         while (self.matchKind(.pipe)) {
             const right = try self.parseBitwiseXor();
-            left = try self.makeBinary(left, .or_op, right);
+            left = try self.makeBinary(left, .bit_or, right);
         }
         return left;
     }
@@ -929,8 +940,7 @@ const Parser = struct {
         var left = try self.parseBitwiseAnd();
         while (self.matchKind(.caret)) {
             const right = try self.parseBitwiseAnd();
-            // XOR — reuse neq in AST for simplicity
-            left = try self.makeBinary(left, .neq, right);
+            left = try self.makeBinary(left, .bit_xor, right);
         }
         return left;
     }
@@ -939,7 +949,7 @@ const Parser = struct {
         var left = try self.parseEquality();
         while (self.matchKind(.ampersand)) {
             const right = try self.parseEquality();
-            left = try self.makeBinary(left, .and_op, right);
+            left = try self.makeBinary(left, .bit_and, right);
         }
         return left;
     }
@@ -1119,6 +1129,7 @@ const Parser = struct {
 
     fn parsePostfix(self: *Parser) !*ast.Expr {
         var expr = try self.parsePrimary();
+        var chain_is_null_safe = false;
 
         // super(args) / this(args) → constructor delegation
         if ((expr.* == .super_expr or expr.* == .this_expr) and self.matchKind(.lparen)) {
@@ -1133,8 +1144,11 @@ const Parser = struct {
         }
 
         while (true) {
-            const is_null_safe = self.check(.question_dot);
-            if (self.matchKind(.dot) or self.matchKind(.question_dot)) {
+            const saw_question_dot = self.matchKind(.question_dot);
+            const saw_dot = if (!saw_question_dot) self.matchKind(.dot) else false;
+            if (saw_dot or saw_question_dot) {
+                const is_null_safe = saw_question_dot or chain_is_null_safe;
+                if (saw_question_dot) chain_is_null_safe = true;
                 const field_name = try self.expectIdentifierOrKeyword();
 
                 // method call: obj.method(args)
@@ -1212,7 +1226,7 @@ const Parser = struct {
             const val = std.fmt.parseInt(i64, num_part, 10) catch 0;
             self.pos += 1;
             const result = try self.arena.create(ast.Expr);
-            result.* = .{ .integer_literal = val };
+            result.* = .{ .long_literal = val };
             return result;
         }
         if (kind == .double_literal) {
@@ -1419,6 +1433,7 @@ const Parser = struct {
         }
 
         var args: []ast.Expr = &.{};
+        var is_brace_initializer = false;
         if (self.matchKind(.lparen)) {
             args = try self.parseArgList();
             try self.expect(.rparen);
@@ -1426,6 +1441,7 @@ const Parser = struct {
 
         // Brace initializer: new List<T>{ item1, item2 } or new Map<K,V>{ key => value, ... }
         if (self.matchKind(.lbrace)) {
+            is_brace_initializer = true;
             var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
             if (!self.check(.rbrace)) {
                 const first_expr = try self.expression();
@@ -1463,7 +1479,7 @@ const Parser = struct {
         }
 
         const node = try self.arena.create(ast.NewExpr);
-        node.* = .{ .type_name = type_name, .args = args, .loc = loc };
+        node.* = .{ .type_name = type_name, .args = args, .is_brace_initializer = is_brace_initializer, .loc = loc };
         const result = try self.arena.create(ast.Expr);
         result.* = .{ .new_expr = node };
         return result;

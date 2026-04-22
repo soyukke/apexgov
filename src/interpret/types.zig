@@ -24,6 +24,7 @@ pub const Value = union(enum) {
     null_val,
     boolean: bool,
     integer: i64,
+    long: i64,
     double: f64,
     string: []const u8,
     sobject: *SObject,
@@ -42,6 +43,7 @@ pub const Value = union(enum) {
             .null_val => false,
             .boolean => |b| b,
             .integer => |i| i != 0,
+            .long => |i| i != 0,
             .double => |d| d != 0.0,
             .string => |s| s.len > 0,
             .void_val => false,
@@ -57,14 +59,27 @@ pub const SObject = struct {
     /// When true, accessing a field not in `fields` throws SObjectException
     /// (set by Security.stripInaccessible)
     is_stripped: bool = false,
+    /// When true, SObject.isClone() returns true (set by .clone()/.deepClone())
+    is_clone: bool = false,
 };
 
 pub const ListValue = struct {
     items: std.ArrayListUnmanaged(Value) = .empty,
+    element_type: ?[]const u8 = null,
+    /// True when the list was created via `new List<SObject>()` or
+    /// `new List<Object>()` in user source — i.e. explicitly constructed as a
+    /// generic SObject list. Real Apex returns null from `getSObjectType()`
+    /// for such lists even if all added elements happen to be the same
+    /// concrete SObjectType. Lists that acquire `element_type = "SObject"`
+    /// indirectly (parameter coercion from an untyped origin, `Map<Id,
+    /// SObject>.values()` piped through a generic parameter, …) leave this
+    /// false and can still resolve to the element type.
+    explicitly_generic: bool = false,
 };
 
 pub const MapValue = struct {
     entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
+    key_values: std.StringArrayHashMapUnmanaged(Value) = .empty,
 };
 
 pub const SetValue = struct {

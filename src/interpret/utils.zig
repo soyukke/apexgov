@@ -17,6 +17,27 @@ fn normalizeDateTimeStr(s: []const u8) []const u8 {
     return s;
 }
 
+fn formatJsonDateTimeStr(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (s.len <= 10 or std.mem.indexOf(u8, s, "T") == null) return s;
+    if (std.mem.endsWith(u8, s, ".000Z")) return s;
+    if (std.mem.endsWith(u8, s, ".000+0000")) {
+        return std.fmt.allocPrint(arena, "{s}.000Z", .{s[0 .. s.len - 9]});
+    }
+    if (std.mem.endsWith(u8, s, "Z")) {
+        return std.fmt.allocPrint(arena, "{s}.000Z", .{s[0 .. s.len - 1]});
+    }
+    return s;
+}
+
+fn numericAsF64(v: Value) ?f64 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .long => |i| @floatFromInt(i),
+        .double => |d| d,
+        else => null,
+    };
+}
+
 /// Apex == セマンティクスで値を比較する。
 /// String は大文字小文字を区別しない。
 pub fn valueEql(a: Value, b: Value) bool {
@@ -28,12 +49,11 @@ pub fn valueEql(a: Value, b: Value) bool {
     if (a_tag == .null_val or b_tag == .null_val) return false;
 
     if (a_tag != b_tag) {
-        // integer/double cross-comparison
-        if (a_tag == .integer and b_tag == .double) {
-            return @as(f64, @floatFromInt(a.integer)) == b.double;
-        }
-        if (a_tag == .double and b_tag == .integer) {
-            return a.double == @as(f64, @floatFromInt(b.integer));
+        // Numeric cross-comparison
+        if (numericAsF64(a)) |af| {
+            if (numericAsF64(b)) |bf| {
+                return af == bf;
+            }
         }
         // Date/DateTime object vs string cross-comparison
         if (a_tag == .object and b_tag == .string) {
@@ -68,6 +88,7 @@ pub fn valueEql(a: Value, b: Value) bool {
     return switch (a) {
         .boolean => |av| av == b.boolean,
         .integer => |av| av == b.integer,
+        .long => |av| av == b.long,
         .double => |av| av == b.double,
         .string => |av| blk: {
             if (std.ascii.eqlIgnoreCase(av, b.string)) break :blk true;
@@ -150,6 +171,25 @@ pub fn valueEql(a: Value, b: Value) bool {
                     return std.ascii.eqlIgnoreCase(a_norm, b_norm);
                 }
             }
+            if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(av.class_name, "SObjectField")) and
+                (std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectField") or
+                    std.ascii.eqlIgnoreCase(b.object.class_name, "SObjectField")))
+            {
+                const a_name = av.fields.get("fieldName") orelse av.fields.get("name") orelse return false;
+                const b_name = b.object.fields.get("fieldName") orelse b.object.fields.get("name") orelse return false;
+                if (a_name != .string or b_name != .string) return false;
+
+                const same_object_type = blk: {
+                    const a_object_type = av.fields.get("objectType");
+                    const b_object_type = b.object.fields.get("objectType");
+                    if (a_object_type == null or b_object_type == null) break :blk true;
+                    if (a_object_type.? != .string or b_object_type.? != .string) break :blk false;
+                    break :blk std.ascii.eqlIgnoreCase(a_object_type.?.string, b_object_type.?.string);
+                };
+
+                return same_object_type and std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+            }
             return false;
         },
     };
@@ -161,6 +201,7 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .null_val => "null",
         .boolean => |b| if (b) "true" else "false",
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
+        .long => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .double => |d| try formatApexDouble(arena, d),
         .string => |s| s,
         .void_val => "void",
@@ -204,6 +245,14 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
                     if (n == .string) break :blk n.string;
                 }
             }
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
+                if (obj.fields.get("fieldName")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+            }
             // Date/Datetime/Blob → return the stored value string
             if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
                 std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
@@ -211,6 +260,15 @@ pub fn coerceToString(v: Value, arena: std.mem.Allocator) ![]const u8 {
             {
                 if (obj.fields.get("value")) |bv| {
                     if (bv == .string) break :blk bv.string;
+                }
+            }
+            // Type (from SomeClass.class) → return the resolved class name so that
+            // Map<Type, X> keys don't collapse to a single "Type:[instance]" slot.
+            if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+                std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
+            {
+                if (obj.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
                 }
             }
             // Use simple name (after last dot) like Apex does
@@ -227,6 +285,7 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .null_val => "null",
         .boolean => |b| if (b) "true" else "false",
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
+        .long => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
         .string => |s| try std.fmt.allocPrint(arena, "\"{s}\"", .{s}),
         .void_val => "null",
@@ -278,7 +337,13 @@ pub fn toJson(v: Value, arena: std.mem.Allocator) ![]const u8 {
                 std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
             {
                 if (obj.fields.get("value")) |val| {
-                    if (val == .string) break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{val.string});
+                    if (val == .string) {
+                        const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
+                            try formatJsonDateTimeStr(arena, val.string)
+                        else
+                            val.string;
+                        break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
+                    }
                 }
             }
             var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -373,7 +438,8 @@ pub fn formatApexDouble(arena: std.mem.Allocator, d: f64) ![]const u8 {
     const s = try std.fmt.allocPrint(arena, "{d}", .{d});
     // 既に小数点があればそのまま
     if (std.mem.indexOf(u8, s, ".") != null) return s;
-    // 無ければ ".0" を付加
+    // 整数値の場合は ".0" を付加 (Double セマンティクス: "1.0", "10.0")
+    // Decimal / Integer 側は既に別パスで扱うためここでは変更しない。
     arena.free(s);
     return try std.fmt.allocPrint(arena, "{d}.0", .{d});
 }

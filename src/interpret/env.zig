@@ -44,6 +44,15 @@ pub const Env = struct {
         return null;
     }
 
+    pub fn has(self: *const Env, name: []const u8) bool {
+        if (self.bindings.contains(name)) return true;
+        for (self.bindings.keys()) |k| {
+            if (std.ascii.eqlIgnoreCase(k, name)) return true;
+        }
+        if (self.parent) |p| return p.has(name);
+        return false;
+    }
+
     pub fn getDeclaredType(self: *const Env, name: []const u8) ?[]const u8 {
         if (self.declared_types.get(name)) |t| return t;
         for (self.declared_types.keys(), self.declared_types.values()) |k, v| {
@@ -139,4 +148,15 @@ test "defineTyped stores declared type" {
     try env.defineTyped("account", .null_val, "Account");
 
     try std.testing.expectEqualStrings("Account", env.getDeclaredType("account").?);
+}
+
+test "has returns true for null-valued bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var env = Env.init(arena.allocator());
+    try env.define("thing", .null_val);
+
+    try std.testing.expect(env.has("thing"));
+    try std.testing.expect(!env.has("missing"));
 }

@@ -80,7 +80,7 @@ pub fn findAll(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
         var pos = search_start;
         while (pos <= input.len) : (pos += 1) {
             var groups: [max_groups]?Span = .{null} ** max_groups;
-            if (matchAt(pat, 0, input, pos, &groups, 0)) |end_pos| {
+            if (matchAt(pat, 0, input, pos, &groups, 0, 0)) |end_pos| {
                 best_end = end_pos;
                 best_start = pos;
                 best_groups = groups;
@@ -106,7 +106,7 @@ pub fn findAll(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
 pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8) !bool {
     const pat = try preprocessPattern(arena, pattern);
     var groups: [max_groups]?Span = .{null} ** max_groups;
-    if (matchAt(pat, 0, input, 0, &groups, 0)) |end| {
+    if (matchAt(pat, 0, input, 0, &groups, 0, 0)) |end| {
         return end == input.len;
     }
     return false;
@@ -194,6 +194,11 @@ fn isRegexEscapeChar(c: u8) bool {
 // ---------------------------------------------------------------------------
 
 /// 再帰バックトラッキングマッチャー。マッチ成功時に入力終了位置を返す。
+///
+/// `group_base` is the capture-group index of the enclosing group, i.e. the offset that
+/// applies to any `(` encountered while scanning `pat`. The top-level caller passes 0.
+/// Without this offset, recursing on a sub-pattern would restart counting at 1 and
+/// cause sibling/nested groups to collide on the same index.
 fn matchAt(
     pat: []const u8,
     pat_pos: usize,
@@ -201,6 +206,7 @@ fn matchAt(
     input_pos: usize,
     groups: *[max_groups]?Span,
     depth: u32,
+    group_base: u8,
 ) ?usize {
     if (depth > 200) return null;
     const pp = pat_pos;
@@ -210,12 +216,12 @@ fn matchAt(
         // ^ アンカー — 入力の先頭にのみマッチ
         if (pat[pp] == '^') {
             if (ip != 0) return null;
-            return matchAt(pat, pp + 1, input, ip, groups, depth + 1);
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1, group_base);
         }
         // $ アンカー — 入力の末尾にのみマッチ
         if (pat[pp] == '$') {
             if (ip != input.len) return null;
-            return matchAt(pat, pp + 1, input, ip, groups, depth + 1);
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1, group_base);
         }
         // グループ (キャプチャ、非キャプチャ、lookahead)
         if (pat[pp] == '(') {
@@ -231,7 +237,7 @@ fn matchAt(
                 var la_matched = false;
                 for (la_alts) |alt| {
                     if (alt) |a| {
-                        if (matchAt(a, 0, input, ip, groups, depth + 1) != null) {
+                        if (matchAt(a, 0, input, ip, groups, depth + 1, group_base) != null) {
                             la_matched = true;
                             break;
                         }
@@ -241,7 +247,7 @@ fn matchAt(
                 // Zero-width: don't consume input, continue with rest
                 const rest_start = group_end + 1;
                 if (rest_start >= pat.len) return ip;
-                return matchAt(pat, rest_start, input, ip, groups, depth + 1);
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1, group_base);
             }
 
             // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
@@ -255,7 +261,7 @@ fn matchAt(
                 var L: usize = 0;
                 const limit = @min(ip, max_lb);
                 while (L <= limit) : (L += 1) {
-                    if (matchAt(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1)) |end_pos| {
+                    if (matchAt(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1, group_base)) |end_pos| {
                         if (end_pos == L) {
                             lb_matched = true;
                             break;
@@ -265,7 +271,7 @@ fn matchAt(
                 if (is_positive != lb_matched) return null;
                 const rest_start = group_end + 1;
                 if (rest_start >= pat.len) return ip;
-                return matchAt(pat, rest_start, input, ip, groups, depth + 1);
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1, group_base);
             }
 
             // Non-capturing group: (?:...)
@@ -274,7 +280,7 @@ fn matchAt(
 
             const quant = parseQuantifier(after);
             const grp_idx: u8 = if (is_non_capturing) 0 else blk: {
-                var idx: u8 = 1;
+                var idx: u8 = group_base + 1;
                 var gi: usize = 0;
                 while (gi < pp) : (gi += 1) {
                     if (pat[gi] == '\\') {
@@ -289,25 +295,62 @@ fn matchAt(
                 }
                 break :blk if (idx > max_groups - 1) max_groups - 1 else idx;
             };
+            // When recursing into an alternative inside this group, pass `grp_idx`
+            // (or `group_base` for non-capturing groups) so inner `(`s number correctly.
+            const inner_base: u8 = if (is_non_capturing) group_base else grp_idx;
             const alternatives = splitAlternatives(group_inner);
             const rest_start = group_end + 1 + quant.len;
 
             if (quant.min == 1 and quant.max == 1) {
                 for (alternatives) |alt| {
                     if (alt) |a| {
-                        if (matchAt(a, 0, input, ip, groups, depth + 1)) |alt_end| {
-                            if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
-                            if (rest_start >= pat.len) return alt_end;
-                            if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1)) |final_end| {
-                                return final_end;
+                        if (matchAt(a, 0, input, ip, groups, depth + 1, inner_base)) |initial_alt_end| {
+                            // The inner match may have greedily consumed characters that the
+                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
+                            // fails, try shorter inner matches down to the minimum valid length.
+                            // Fast path: when the alternative is a single greedy atom (`.*`,
+                            // `\w+`, `[abc]*`, etc.), any shorter length is valid by
+                            // construction, so we skip re-verifying via `matchAt` and just
+                            // iterate one char at a time — O(n) instead of O(n²).
+                            const greedy = greedyAtomBounds(a);
+                            var alt_end: usize = initial_alt_end;
+                            while (true) {
+                                if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                                if (rest_start >= pat.len) return alt_end;
+                                if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
+                                    return final_end;
+                                }
+                                if (grp_idx > 0) groups.*[grp_idx] = null;
+                                if (alt_end <= ip) break;
+                                if (greedy) |g| {
+                                    // Fast path: decrement until we'd violate the atom's lower
+                                    // bound (`ip + min_reps`); no `matchAt` needed.
+                                    const min_end = ip + g.min;
+                                    if (alt_end <= min_end) break;
+                                    alt_end -= 1;
+                                } else {
+                                    // General path: verify shrunken input still matches.
+                                    var next_end: usize = alt_end - 1;
+                                    const sub_input = input[0..next_end];
+                                    const sub_match = matchAt(a, 0, sub_input, ip, groups, depth + 1, inner_base);
+                                    if (sub_match) |e| {
+                                        next_end = e;
+                                    } else {
+                                        break;
+                                    }
+                                    if (next_end == alt_end) {
+                                        if (next_end == 0) break;
+                                        next_end -= 1;
+                                    }
+                                    alt_end = next_end;
+                                }
                             }
-                            if (grp_idx > 0) groups.*[grp_idx] = null;
                         }
                     } else break;
                 }
                 return null;
             }
-            return matchQuantifiedGroup(pat, pp, group_end, rest_start, quant, input, ip, groups, grp_idx, depth);
+            return matchQuantifiedGroup(pat, pp, group_end, rest_start, quant, input, ip, groups, grp_idx, depth, group_base, inner_base);
         }
 
         // Backreference: \1..\9 — match the same text as captured by group N
@@ -320,7 +363,7 @@ fn matchAt(
             const rest_start = pp + 2;
             const new_ip = ip + ref_text.len;
             if (rest_start >= pat.len) return new_ip;
-            return matchAt(pat, rest_start, input, new_ip, groups, depth + 1);
+            return matchAt(pat, rest_start, input, new_ip, groups, depth + 1, group_base);
         }
 
         // 単一アトム＋量詞
@@ -346,7 +389,7 @@ fn matchAt(
                 if (try_count >= quant.min) {
                     const try_ip = positions[@min(try_count, positions.len - 1)];
                     if (rest_start >= pat.len) return try_ip;
-                    if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+                    if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
                 }
                 if (try_count == 0) break;
                 try_count -= 1;
@@ -356,7 +399,7 @@ fn matchAt(
             while (try_count <= count) : (try_count += 1) {
                 const try_ip = positions[@min(try_count, positions.len - 1)];
                 if (rest_start >= pat.len) return try_ip;
-                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
             }
         }
         return null;
@@ -467,6 +510,25 @@ fn charClassMatches(pat: []const u8, pp: usize, c: u8) bool {
     return if (negate) !matched else matched;
 }
 
+/// Inspect the body of a capturing group to decide whether any inner-match length
+/// between `min` and the greedy maximum is valid. True only when the body is a
+/// single atom followed by `*`, `+`, `?`, or `{n,m}` — the common `.*`, `\w+`,
+/// `[abc]*` shapes that drive the fast shrink path in `matchAt`.
+fn greedyAtomBounds(pat: []const u8) ?struct { min: usize } {
+    const al = atomLength(pat, 0);
+    if (al == 0) return null;
+    const quant_str = pat[al..];
+    if (quant_str.len == 0) return null;
+    const q = parseQuantifier(quant_str);
+    // The atom + quantifier must be the entire body. Anything trailing invalidates
+    // the assumption that every shorter length is a valid match.
+    if (al + q.len != pat.len) return null;
+    if (!q.greedy) return null;
+    // `{n}` (fixed repetitions) doesn't allow shrinking below that exact length.
+    if (q.min == q.max) return null;
+    return .{ .min = q.min };
+}
+
 // ---------------------------------------------------------------------------
 // 量詞パーサー
 // ---------------------------------------------------------------------------
@@ -556,17 +618,33 @@ fn splitAlternatives(inner: []const u8) [8]?[]const u8 {
     var count: usize = 0;
     var start: usize = 0;
     var depth: u32 = 0;
-    for (inner, 0..) |c, i| {
-        if (c == '(') depth += 1;
-        if (c == ')') {
-            if (depth > 0) depth -= 1;
+    var in_class: bool = false;
+    var i: usize = 0;
+    while (i < inner.len) : (i += 1) {
+        const c = inner[i];
+        // Skip escaped characters
+        if (c == '\\' and i + 1 < inner.len) {
+            i += 1;
+            continue;
         }
-        if (c == '|' and depth == 0) {
-            if (count < result.len) {
-                result[count] = inner[start..i];
-                count += 1;
+        if (!in_class) {
+            if (c == '[') {
+                in_class = true;
+                continue;
             }
-            start = i + 1;
+            if (c == '(') depth += 1;
+            if (c == ')') {
+                if (depth > 0) depth -= 1;
+            }
+            if (c == '|' and depth == 0) {
+                if (count < result.len) {
+                    result[count] = inner[start..i];
+                    count += 1;
+                }
+                start = i + 1;
+            }
+        } else {
+            if (c == ']') in_class = false;
         }
     }
     if (count < result.len) {
@@ -586,6 +664,8 @@ fn matchQuantifiedGroup(
     groups: *[max_groups]?Span,
     grp_idx: u8,
     depth: u32,
+    group_base: u8,
+    inner_base: u8,
 ) ?usize {
     const inner = pat[group_start + 1 .. group_end];
     var reps: [64]usize = undefined;
@@ -593,7 +673,7 @@ fn matchQuantifiedGroup(
     var ip = start_ip;
     reps[0] = ip;
     while (rep_count < quant.max) {
-        if (matchAt(inner, 0, input, ip, groups, depth + 1)) |end| {
+        if (matchAt(inner, 0, input, ip, groups, depth + 1, inner_base)) |end| {
             if (end == ip) break;
             ip = end;
             rep_count += 1;
@@ -612,7 +692,7 @@ fn matchQuantifiedGroup(
                         null;
                 }
                 if (rest_start >= pat.len) return try_ip;
-                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
             }
             if (try_reps == 0) break;
             try_reps -= 1;
@@ -628,7 +708,7 @@ fn matchQuantifiedGroup(
                     null;
             }
             if (rest_start >= pat.len) return try_ip;
-            if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1)) |end| return end;
+            if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
         }
     }
     return null;
@@ -656,6 +736,54 @@ test "capture groups" {
     try std.testing.expectEqualStrings("user@host", result[0].groupSlice(0, input).?);
     try std.testing.expectEqualStrings("user", result[0].groupSlice(1, input).?);
     try std.testing.expectEqualStrings("host", result[0].groupSlice(2, input).?);
+}
+
+test "nested capture groups number correctly" {
+    // Regression for a bug where inner capture groups silently overwrote the outer's
+    // index, because the recursive matcher restarted group numbering from 1 on every
+    // sub-pattern. Patterns like `((A) (B))` need group(1)=outer, group(2)=A, group(3)=B.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "foo bar";
+    const r = try findAll(a, "(([a-z]+) ([a-z]+))", input);
+    try std.testing.expectEqual(@as(usize, 1), r.len);
+    try std.testing.expectEqualStrings("foo bar", r[0].groupSlice(0, input).?);
+    try std.testing.expectEqualStrings("foo bar", r[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("foo", r[0].groupSlice(2, input).?);
+    try std.testing.expectEqualStrings("bar", r[0].groupSlice(3, input).?);
+}
+
+test "greedy capture group backtracks to let the tail match" {
+    // Regression: (.*)c on abc used to fail because the inner `.` atom greedily consumed
+    // the trailing `c`, and the wrapping capture group never shrank its end. The engine
+    // must reduce the group's end-position one char at a time so the rest-of-pattern gets
+    // another chance.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(try matches(a, "a(.*)c", "abc"));
+    try std.testing.expect(try matches(a, "a(.*)c", "abbc"));
+    try std.testing.expect(try matches(a, "a (.*) c", "a bb c"));
+    const input = "SELECT Name FROM Account";
+    const r = try findAll(a, "SELECT (.*) FROM Account", input);
+    try std.testing.expectEqual(@as(usize, 1), r.len);
+    try std.testing.expectEqualStrings("Name", r[0].groupSlice(1, input).?);
+}
+
+test "three-level nested captures preserve numbering" {
+    // Mirrors the FormulaEvaluator compare-expression pattern which combines
+    // (operand) (op) (operand) inside an outer group.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = "AAA ___ BBB";
+    const r = try findAll(a, "(([A-Z]+) (_+) ([A-Z]+))", input);
+    try std.testing.expectEqual(@as(usize, 1), r.len);
+    try std.testing.expectEqualStrings("AAA ___ BBB", r[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("AAA", r[0].groupSlice(2, input).?);
+    try std.testing.expectEqualStrings("___", r[0].groupSlice(3, input).?);
+    try std.testing.expectEqualStrings("BBB", r[0].groupSlice(4, input).?);
 }
 
 test "character class" {
