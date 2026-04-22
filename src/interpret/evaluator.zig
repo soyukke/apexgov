@@ -7215,10 +7215,16 @@ pub const Evaluator = struct {
                 // (bare identifier in getter body referencing another property)
                 // Skip if we're already inside this property's getter to avoid infinite recursion
                 // (self-referencing getter pattern: backing field access, not getter re-invocation)
+                // ALSO skip when the identifier is a typed local / parameter binding — a
+                // parameter with a nullable value (e.g. passed null from a caller) must
+                // not be silently promoted to the property getter's result. Distinguish
+                // by checking `getDeclaredType`: parameters/declared locals carry one,
+                // ctor-env instance-field pre-loads do not.
                 if (current_env.get("this")) |this_check| {
                     if (this_check == .object) {
                         const already_in_instance_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
-                        if (!already_in_instance_getter) {
+                        const shadowed_by_typed_local = current_env.getDeclaredType(id.name) != null;
+                        if (!already_in_instance_getter and !shadowed_by_typed_local) {
                             if (self.findClass(this_check.object.class_name)) |this_cd| {
                                 var scan_cd: ?*ast.ClassDecl = this_cd;
                                 while (scan_cd) |scd| {
@@ -7242,7 +7248,7 @@ pub const Evaluator = struct {
                                     scan_cd = if (scd.super_class) |sc| self.findClass(sc.name) else null;
                                 }
                             }
-                        } else {
+                        } else if (already_in_instance_getter) {
                             // Inside own getter: return backing field value directly
                             if (self.findFieldDeclWithOwner(this_check.object.class_name, id.name)) |lookup| {
                                 if (lookup.field_decl.modifiers.is_static) {
