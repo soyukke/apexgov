@@ -7148,12 +7148,14 @@ pub const Evaluator = struct {
                     // If value is null_val, still check for instance getter (property may override)
                     if (val != .null_val) return val;
                 }
-                // Fallback: the ctor_env / method env pre-loads instance fields as
-                // snapshots, but after a super() or peer method call mutates
-                // instance.fields, the env snapshot in the caller's frame is stale.
-                // When this is an object and id.name is a declared instance field
-                // (in the class hierarchy) with a non-null value, prefer the live
-                // instance.fields value over the stale null_val snapshot.
+                // Fallback: runConstructor pre-loads instance fields into the
+                // ctor env as snapshots, but after `super()` (or any peer
+                // mutation) the snapshot goes stale. When the env binding was
+                // a snapshot (no declared_type attached — params/locals from
+                // defineTyped DO carry one), and the live instance.fields
+                // entry is non-null, prefer the instance value. Params set to
+                // null intentionally stay null because they carry a declared
+                // type and therefore bypass this fallback.
                 if (current_env.get("this")) |this_live| {
                     if (this_live == .object) {
                         if (utils.sobjectGet(&this_live.object.fields, id.name)) |live| {
@@ -7162,7 +7164,12 @@ pub const Evaluator = struct {
                                     if (self.isInstanceField(live_cd, id.name) or
                                         self.isParentInstanceField(live_cd, id.name))
                                     {
-                                        return live;
+                                        // Only refresh when the env entry is an untyped
+                                        // ctor pre-load. A typed binding (parameter /
+                                        // declared local) is authoritative.
+                                        if (current_env.getDeclaredType(id.name) == null) {
+                                            return live;
+                                        }
                                     }
                                 }
                             }
@@ -14718,13 +14725,16 @@ pub const Evaluator = struct {
                     try method_env.define(k, v);
                 };
             }
-            // Then define method parameters (so they shadow instance fields with same name)
+            // Then define method parameters (so they shadow instance fields with same name).
+            // Always use defineTyped — instance-field pre-loads above set the value but no
+            // declared type, so a later identifier lookup that reads `getDeclaredType` to
+            // distinguish "real param binding" from "stale ctor pre-load" would otherwise
+            // misclassify the parameter and fall back to instance.fields (bug:
+            // nothingToProcessShouldExitEarly).
             for (method.params, 0..) |param, i| {
                 const val = if (i < args.len) try self.prepareMethodArgValue(args[i]) else Value.null_val;
-                method_env.set(param.name, val) catch {
-                    const declared_type = self.renderTypeRef(param.type_ref);
-                    try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);
-                };
+                const declared_type = self.renderTypeRef(param.type_ref);
+                try method_env.defineTyped(param.name, self.annotateDeclaredCollectionType(val, declared_type), declared_type);
             }
             const saved_class = self.current_class;
             self.current_class = owner_decl.name;
