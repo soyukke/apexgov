@@ -10334,10 +10334,37 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
             if (list.element_type) |element_type| {
                 const base_type = typeBaseName(element_type);
-                if (std.ascii.eqlIgnoreCase(base_type, "SObject") or
-                    std.ascii.eqlIgnoreCase(base_type, "Object") or
+                if (std.ascii.eqlIgnoreCase(base_type, "Object") or
                     isCollectionTypeName(base_type))
                 {
+                    return Value.null_val;
+                }
+                // Generic List<SObject> on the declaration side: look at the actual
+                // elements. If every item is the same concrete SObjectType (the
+                // common case when a typed list was coerced through a SObject
+                // parameter — e.g. `Map<Id, SObject>.values()` then passed into a
+                // super(records) that declares `List<SObject>`), report that type
+                // instead of null. Real Apex runs `List<Opportunity>.getSObjectType()
+                // == Opportunity`; fflib_SObjectDomain relies on the inference when
+                // a sibling Map<Id, SObject>.values() gets piped through its generic
+                // construct() shim.
+                if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
+                    if (list.items.items.len == 0) return Value.null_val;
+                    var inferred: ?[]const u8 = null;
+                    for (list.items.items) |item| {
+                        if (item != .sobject) return Value.null_val;
+                        if (inferred) |prev| {
+                            if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name)) return Value.null_val;
+                        } else {
+                            inferred = item.sobject.type_name;
+                        }
+                    }
+                    if (inferred) |type_name| {
+                        const sot = try self.arena.create(types.ObjectInstance);
+                        sot.* = .{ .class_name = "Schema.SObjectType" };
+                        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
+                        return Value{ .object = sot };
+                    }
                     return Value.null_val;
                 }
                 const sot = try self.arena.create(types.ObjectInstance);

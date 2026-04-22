@@ -12352,14 +12352,27 @@ test "E2E: List constructor preserves SObjects from Set" {
     try std.testing.expectEqualStrings("1:Account", result.value.string);
 }
 
-test "E2E: List<SObject>.getSObjectType stays null for concrete members" {
+test "E2E: List<SObject>.getSObjectType infers from homogeneous members, stays null when mixed" {
+    // Real Apex infers the SObjectType of a generic List<SObject> at runtime
+    // when every element has the same concrete SObjectType. Mixed (or empty)
+    // lists keep the null return that the raw declared type would give.
+    // fflib_SObjectDomain's test trigger flow passes
+    // `Map<Id, SObject>.values()` to a SObject constructor whose super then
+    // calls `list.getSObjectType()`; the implicit inference is what keeps
+    // that constructor from NPE-ing.
     const source =
         \\public class GenericListTypeProbe {
         \\    public static String test() {
-        \\        List<SObject> rows = new List<SObject>();
-        \\        rows.add(new Account(Name = 'Acme'));
-        \\        return String.valueOf(rows.getSObjectType() == null) + ':' +
-        \\            String.valueOf(rows.get(0).getSObjectType());
+        \\        List<SObject> homogenous = new List<SObject>();
+        \\        homogenous.add(new Account(Name = 'Acme'));
+        \\        homogenous.add(new Account(Name = 'Beta'));
+        \\        List<SObject> mixed = new List<SObject>();
+        \\        mixed.add(new Account(Name = 'Acme'));
+        \\        mixed.add(new Contact(LastName = 'Doe'));
+        \\        List<SObject> empty = new List<SObject>();
+        \\        return String.valueOf(homogenous.getSObjectType()) + ':' +
+        \\            String.valueOf(mixed.getSObjectType() == null) + ':' +
+        \\            String.valueOf(empty.getSObjectType() == null);
         \\    }
         \\}
     ;
@@ -12368,7 +12381,7 @@ test "E2E: List<SObject>.getSObjectType stays null for concrete members" {
         .entry_method = "test",
     });
     defer result.deinit();
-    try std.testing.expectEqualStrings("true:Account", result.value.string);
+    try std.testing.expectEqualStrings("Account:true:true", result.value.string);
 }
 
 test "E2E: concrete typed list reports its SObjectType" {
