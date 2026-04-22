@@ -13395,6 +13395,49 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
+test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE matches" {
+    // Anonymized probe: ActionPlansV4's @TestSetup queries
+    //   SELECT ... FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard'
+    // and then inserts a User without setting IsActive, later asserting
+    //   SELECT ... FROM User WHERE Email = 'x' AND IsActive = TRUE
+    // Two bugs had to line up: (a) extractWhereFieldValue dropped bare
+    // TRUE / FALSE tokens on the floor, so applyQueriedSyntheticProfileFlags
+    // never saw the permission and the Profile WHERE predicate never matched
+    // — we synthesized a Profile without the flag and matchesWhere filtered
+    // it out. (b) User.IsActive was unset on a fresh insert, so the WHERE
+    // IsActive=TRUE filter yielded no rows and the single-record assignment
+    // threw "List has no rows for assignment to SObject".
+    const source =
+        \\public class UserDefaultsWhereProbe {
+        \\    public static String test() {
+        \\        Integer matchedProfiles = 0;
+        \\        for (Profile p : [SELECT Id, PermissionsModifyAllData FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard' LIMIT 1]) {
+        \\            if (p.PermissionsModifyAllData == true) matchedProfiles++;
+        \\            User u = new User();
+        \\            u.Email = 'probe@example.com';
+        \\            u.Username = 'probe@probe-test.com';
+        \\            u.LastName = 'probe';
+        \\            u.Alias = 'pr';
+        \\            u.ProfileId = p.Id;
+        \\            u.LanguageLocaleKey = 'en_US';
+        \\            u.LocaleSidKey = 'en_US';
+        \\            u.TimeZoneSidKey = 'America/Chicago';
+        \\            u.EmailEncodingKey = 'UTF-8';
+        \\            insert u;
+        \\        }
+        \\        Integer activeMatches = [SELECT COUNT() FROM User WHERE Email = 'probe@example.com' AND IsActive = TRUE];
+        \\        return 'profiles=' + matchedProfiles + '|activeUsers=' + activeMatches;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "UserDefaultsWhereProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("profiles=1|activeUsers=1", result.value.string);
+}
+
 test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {
     // Anonymized probe: the aggregate path (SUM/AVG/MIN/MAX/COUNT(field))
     // previously walked only `self.store`, same bug as plain COUNT(). Confirm

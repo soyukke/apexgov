@@ -3261,6 +3261,19 @@ pub const Evaluator = struct {
                 try utils.sobjectPut(&obj.fields, self.arena, field_name, default_value);
             }
         }
+        // Platform-level defaults that don't live in field-meta.xml. Real Apex
+        // sets these for common standard objects when the caller omits them;
+        // without the defaults tests that filter by IsActive=TRUE etc. miss
+        // their freshly-inserted records.
+        try self.applyStandardObjectDefaults(obj);
+    }
+
+    fn applyStandardObjectDefaults(self: *Evaluator, obj: *types.SObject) !void {
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "User")) {
+            if (self.getSObjectFieldValueCaseInsensitive(obj, "IsActive") == null) {
+                try utils.sobjectPut(&obj.fields, self.arena, "IsActive", Value{ .boolean = true });
+            }
+        }
     }
 
     fn updateRecord(self: *Evaluator, obj: *types.SObject) anyerror!void {
@@ -4829,6 +4842,23 @@ pub const Evaluator = struct {
                     const start = j;
                     while (j < where_clause.len and where_clause[j] != '\'') j += 1;
                     return where_clause[start..j];
+                }
+                // Bare literal (TRUE / FALSE / number / unquoted identifier) — consume
+                // up to the next WHERE terminator so predicates like
+                // `PermissionsModifyAllData = TRUE` resolve to the string "TRUE"
+                // rather than returning null and being skipped during synthesis.
+                if (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(') {
+                    const start = j;
+                    while (j < where_clause.len) : (j += 1) {
+                        const ch = where_clause[j];
+                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == ')' or ch == ',') break;
+                        // Stop at AND/OR boundary (defensive — WHERE terminators
+                        // beyond whitespace).
+                    }
+                    if (j > start) {
+                        const raw = std.mem.trim(u8, where_clause[start..j], " \t\n\r");
+                        if (raw.len > 0) return raw;
+                    }
                 }
                 if (j < where_clause.len and where_clause[j] == ':') {
                     j += 1;
