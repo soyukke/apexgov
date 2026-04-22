@@ -13237,3 +13237,70 @@ test "E2E: String.substring clamps negative bounds instead of panicking" {
     // returns the original string rather than panicking.
     try std.testing.expectEqualStrings("6", result.value.string);
 }
+
+test "E2E: multi-level Account.Parent.Parent.Name SOQL chain hydrates" {
+    // Anonymized probe: expression-DSL and relationship-walking utilities
+    // issue SOQL like
+    // `SELECT Account.Parent.Parent.Name FROM Contact` and then traverse
+    // the result via `contact.Account.Parent.Parent.Name`. Each hop must
+    // be materialized as an SObject with the requested field copied in —
+    // previously only the first hop (`Account`) was hydrated, so any code
+    // that dereferenced the intermediate parents got null.
+    const source =
+        \\public class MultiLevelParentChainProbe {
+        \\    public static String test() {
+        \\        Account greatGrand = new Account(Name = 'GreatGrandParent');
+        \\        insert greatGrand;
+        \\        Account grand = new Account(Name = 'GrandParent', ParentId = greatGrand.Id);
+        \\        insert grand;
+        \\        Account parent = new Account(Name = 'Parent', ParentId = grand.Id);
+        \\        insert parent;
+        \\        Contact child = new Contact(LastName = 'Child', AccountId = parent.Id);
+        \\        insert child;
+        \\
+        \\        Contact queried = [
+        \\            SELECT Id, Account.Parent.Parent.Name
+        \\            FROM Contact
+        \\            WHERE Id = :child.Id
+        \\        ];
+        \\        return queried.Account.Parent.Parent.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "MultiLevelParentChainProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("GreatGrandParent", result.value.string);
+}
+
+test "E2E: Account.ChildAccounts self-reference subquery populates children" {
+    // Anonymized probe: self-referencing child relationship `ChildAccounts`
+    // is keyed on Account.ParentId, not AccountId. Subqueries over this
+    // relationship must walk the ParentId foreign key to gather children.
+    const source =
+        \\public class SelfRefChildSubqueryProbe {
+        \\    public static Integer test() {
+        \\        Account parent = new Account(Name = 'Parent');
+        \\        insert parent;
+        \\        Account c1 = new Account(Name = 'Child1', ParentId = parent.Id);
+        \\        Account c2 = new Account(Name = 'Child2', ParentId = parent.Id);
+        \\        insert new List<Account>{ c1, c2 };
+        \\
+        \\        Account queried = [
+        \\            SELECT Id, (SELECT Id FROM ChildAccounts)
+        \\            FROM Account
+        \\            WHERE Id = :parent.Id
+        \\        ];
+        \\        return queried.ChildAccounts.size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, source, .{
+        .entry_class = "SelfRefChildSubqueryProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i64, 2), result.value.integer);
+}

@@ -2526,6 +2526,10 @@ fn createChildRelationshipsValue(ctx: *BuiltinContext, parent_type: []const u8) 
         .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
         .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
         .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
+        // Self-referencing hierarchy relationships.
+        .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
+        .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
+        .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
     };
     for (standard) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.parent, parent_type)) continue;

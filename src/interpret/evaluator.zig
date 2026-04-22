@@ -5899,6 +5899,15 @@ pub const Evaluator = struct {
             .{ "OpportunityContactRoles", "OpportunityContactRole" },
             .{ "CampaignMemberStatuses", "CampaignMemberStatus" },
             .{ "CampaignMembers", "CampaignMember" },
+            // Self-referencing standard relationships (Parent/Owner hierarchy).
+            .{ "ChildAccounts", "Account" },
+            .{ "ParentAccounts", "Account" },
+            .{ "ChildOpportunities", "Opportunity" },
+            .{ "ChildCases", "Case" },
+            .{ "Assets", "Asset" },
+            .{ "Orders", "Order" },
+            .{ "Quotes", "Quote" },
+            .{ "Contracts", "Contract" },
         };
         inline for (mappings) |m| {
             if (std.ascii.eqlIgnoreCase(relationship, m[0])) return m[1];
@@ -5927,6 +5936,17 @@ pub const Evaluator = struct {
     fn resolveForeignKey(self: *Evaluator, child_type: []const u8, parent_type: []const u8, relationship: []const u8) []const u8 {
         if (self.resolveCustomChildRelationship(parent_type, relationship)) |custom| {
             if (std.ascii.eqlIgnoreCase(custom.child_type, child_type)) return custom.fk_field;
+        }
+        // Self-referencing hierarchy relationships use ParentId regardless of
+        // the logical parent type name.
+        const hierarchy_rels = .{
+            "ChildAccounts",
+            "ChildOpportunities",
+            "ChildCases",
+            "ParentAccounts",
+        };
+        inline for (hierarchy_rels) |r| {
+            if (std.ascii.eqlIgnoreCase(relationship, r)) return "ParentId";
         }
         // Standard convention: ParentType + "Id"
         const common_fks = .{
@@ -5961,62 +5981,92 @@ pub const Evaluator = struct {
     fn applyParentFieldLookups(self: *Evaluator, soql: []const u8, from_type: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
         const select_clause = extractParentFields(soql) orelse return;
 
-        // Find fields like Account.Name, Account.ShippingState, parent__r.Name
+        // Find fields like Account.Name, Account.ShippingState, parent__r.Name,
+        // and also multi-level chains such as Account.Parent.Parent.Name.
         var iter = std.mem.splitScalar(u8, select_clause, ',');
         while (iter.next()) |field_part| {
             const trimmed = std.mem.trim(u8, field_part, " \t\n\r");
             // Skip sub-queries (start with '(')
             if (trimmed.len > 0 and trimmed[0] == '(') continue;
-            // Look for dotted fields like Account.Name
-            if (std.mem.indexOf(u8, trimmed, ".")) |dot_pos| {
-                const parent_ref = trimmed[0..dot_pos];
-                const child_field = trimmed[dot_pos + 1 ..];
-                // Determine the FK field: Account → AccountId, parent__r → parent__c
-                const fk_field = self.parentRefToFk(parent_ref);
-                const parent_type = self.parentRefToTypeForSObject(from_type, parent_ref);
+            // Skip non-dotted fields
+            if (std.mem.indexOfScalar(u8, trimmed, '.') == null) continue;
 
-                // For each record, look up the parent and set the nested field
-                for (records.items) |*rec| {
-                    if (rec.* == .sobject) {
-                        // Get the FK value
-                        if (utils.sobjectGet(&rec.sobject.fields, fk_field)) |fk_val| {
-                            if (fk_val == .string) {
-                                // Look up parent record in store
-                                if (parent_type) |pt| {
-                                    if (self.findRecordById(pt, fk_val.string)) |parent_rec| {
-                                        // Create or get the parent sobject on this record
-                                        var parent_sob: *types.SObject = undefined;
-                                        if (utils.sobjectGet(&rec.sobject.fields, parent_ref)) |existing| {
-                                            if (existing == .sobject) {
-                                                parent_sob = existing.sobject;
-                                            } else {
-                                                parent_sob = try self.arena.create(types.SObject);
-                                                parent_sob.* = .{ .type_name = pt };
-                                                try rec.sobject.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
-                                            }
-                                        } else {
-                                            parent_sob = try self.arena.create(types.SObject);
-                                            parent_sob.* = .{ .type_name = pt };
-                                            try rec.sobject.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
-                                        }
-                                        // Copy the requested field from the parent
-                                        if (parent_rec == .sobject) {
-                                            if (self.getSObjectFieldValueCaseInsensitive(parent_rec.sobject, child_field)) |field_val| {
-                                                try parent_sob.fields.put(self.arena, child_field, field_val);
-                                            }
-                                            // Also copy Id
-                                            if (parent_rec.sobject.id) |pid| {
-                                                parent_sob.id = pid;
-                                                try parent_sob.fields.put(self.arena, "Id", Value{ .string = pid });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            for (records.items) |*rec| {
+                if (rec.* != .sobject) continue;
+                try self.hydrateParentChain(rec.sobject, from_type, trimmed);
             }
+        }
+    }
+
+    /// Walk a dotted SELECT path like `Account.Parent.Parent.Name` and
+    /// materialize each intermediate SObject on `host`, copying the final
+    /// leaf value across at the end.  Handles arbitrary-depth parent chains
+    /// including self-referencing hierarchies.
+    fn hydrateParentChain(
+        self: *Evaluator,
+        host: *types.SObject,
+        host_type: []const u8,
+        path: []const u8,
+    ) !void {
+        var remaining = path;
+        var current_sob: *types.SObject = host;
+        var current_type: []const u8 = host_type;
+        while (std.mem.indexOfScalar(u8, remaining, '.')) |dot_pos| {
+            const parent_ref = remaining[0..dot_pos];
+            const rest = remaining[dot_pos + 1 ..];
+            const fk_field = self.parentRefToFk(parent_ref);
+            const parent_type_opt = self.parentRefToTypeForSObject(current_type, parent_ref);
+            const fk_val_opt = utils.sobjectGet(&current_sob.fields, fk_field);
+            if (parent_type_opt == null or fk_val_opt == null) return;
+            if (fk_val_opt.? != .string) return;
+            const parent_type = parent_type_opt.?;
+            const parent_rec = self.findRecordById(parent_type, fk_val_opt.?.string) orelse return;
+            if (parent_rec != .sobject) return;
+
+            // Get or create the parent SObject slot on `current_sob`.
+            var parent_sob: *types.SObject = undefined;
+            if (utils.sobjectGet(&current_sob.fields, parent_ref)) |existing| {
+                if (existing == .sobject) {
+                    parent_sob = existing.sobject;
+                } else {
+                    parent_sob = try self.arena.create(types.SObject);
+                    parent_sob.* = .{ .type_name = parent_type };
+                    try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
+                }
+            } else {
+                parent_sob = try self.arena.create(types.SObject);
+                parent_sob.* = .{ .type_name = parent_type };
+                try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
+            }
+
+            // Always copy the parent's Id so subsequent deep lookups can
+            // consume it through the same fk_field convention.
+            if (parent_rec.sobject.id) |pid| {
+                parent_sob.id = pid;
+                try parent_sob.fields.put(self.arena, "Id", Value{ .string = pid });
+            }
+
+            // If this is the last segment's parent, copy the leaf field value.
+            if (std.mem.indexOfScalar(u8, rest, '.') == null) {
+                if (self.getSObjectFieldValueCaseInsensitive(parent_rec.sobject, rest)) |field_val| {
+                    try parent_sob.fields.put(self.arena, rest, field_val);
+                }
+                return;
+            }
+
+            // Otherwise mirror across the parent's own FK fields so the
+            // next iteration can chase them.  Copy any FK fields we might
+            // need (identified by looking ahead at the next segment's FK).
+            const next_dot = std.mem.indexOfScalar(u8, rest, '.').?;
+            const next_parent_ref = rest[0..next_dot];
+            const next_fk = self.parentRefToFk(next_parent_ref);
+            if (self.getSObjectFieldValueCaseInsensitive(parent_rec.sobject, next_fk)) |nfk_val| {
+                try parent_sob.fields.put(self.arena, next_fk, nfk_val);
+            }
+
+            current_sob = parent_sob;
+            current_type = parent_type;
+            remaining = rest;
         }
     }
 
@@ -6160,6 +6210,18 @@ pub const Evaluator = struct {
         const fk_field = self.parentRefToFk(ref);
         if (self.getFieldMetadata(object_type, fk_field)) |meta| {
             if (meta.reference_to) |target_type| return target_type;
+        }
+        // Self-referencing "Parent" lookup: on Account, Parent → Account; on
+        // Case, Parent → Case; etc.  Only Account / Case / Opportunity have a
+        // ParentId field at the platform level.
+        if (std.ascii.eqlIgnoreCase(ref, "Parent")) {
+            if (std.ascii.eqlIgnoreCase(object_type, "Account") or
+                std.ascii.eqlIgnoreCase(object_type, "Case") or
+                std.ascii.eqlIgnoreCase(object_type, "Opportunity") or
+                std.ascii.eqlIgnoreCase(object_type, "Contact"))
+            {
+                return object_type;
+            }
         }
         return self.parentRefToType(ref);
     }
