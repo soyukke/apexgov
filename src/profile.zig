@@ -4,6 +4,7 @@
 //! マルチトランザクション分割、ベースライン比較によるリグレッション検出に対応。
 
 const std = @import("std");
+const Io = std.Io;
 const model = @import("model.zig");
 const config = @import("config.zig");
 
@@ -36,7 +37,7 @@ const BaselineDocument = struct {
     profiles: []const BaselineProfile = &.{},
 };
 
-pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Config) !std.ArrayList(model.ProfileResult) {
+pub fn run(gpa: std.mem.Allocator, io: Io, inputs: []const []const u8, cfg: config.Config) !std.ArrayList(model.ProfileResult) {
     var files: std.ArrayList([]const u8) = .empty;
     defer {
         for (files.items) |path| gpa.free(path);
@@ -44,14 +45,14 @@ pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Confi
     }
 
     for (inputs) |input| {
-        try collectLogs(gpa, input, &files);
+        try collectLogs(gpa, io, input, &files);
     }
 
     var results: std.ArrayList(model.ProfileResult) = .empty;
     errdefer model.deinitProfiles(gpa, &results);
 
     for (files.items) |path| {
-        try parseLogTransactions(gpa, path, cfg, &results);
+        try parseLogTransactions(gpa, io, path, cfg, &results);
     }
 
     return results;
@@ -59,6 +60,7 @@ pub fn run(gpa: std.mem.Allocator, inputs: []const []const u8, cfg: config.Confi
 
 pub fn compareWithBaseline(
     gpa: std.mem.Allocator,
+    io: Io,
     current: []const model.ProfileResult,
     baseline_path: ?[]const u8,
     threshold_percent: u8,
@@ -68,7 +70,7 @@ pub fn compareWithBaseline(
 
     if (baseline_path == null) return regressions;
 
-    const raw = try std.fs.cwd().readFileAlloc(gpa, baseline_path.?, 4 * 1024 * 1024);
+    const raw = try Io.Dir.cwd().readFileAlloc(io, baseline_path.?, gpa, .limited(4 * 1024 * 1024));
     defer gpa.free(raw);
 
     var parsed = try std.json.parseFromSlice(BaselineDocument, gpa, raw, .{
@@ -140,8 +142,8 @@ fn exceedsPercent(current: u64, baseline: u64, threshold_percent: u8) bool {
     return lhs > rhs;
 }
 
-fn collectLogs(gpa: std.mem.Allocator, input: []const u8, files: *std.ArrayList([]const u8)) !void {
-    collectLogsInDirectory(gpa, input, files) catch |err| switch (err) {
+fn collectLogs(gpa: std.mem.Allocator, io: Io, input: []const u8, files: *std.ArrayList([]const u8)) !void {
+    collectLogsInDirectory(gpa, io, input, files) catch |err| switch (err) {
         error.NotDir => {
             try files.append(gpa, try gpa.dupe(u8, input));
         },
@@ -149,14 +151,14 @@ fn collectLogs(gpa: std.mem.Allocator, input: []const u8, files: *std.ArrayList(
     };
 }
 
-fn collectLogsInDirectory(gpa: std.mem.Allocator, root: []const u8, files: *std.ArrayList([]const u8)) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
+fn collectLogsInDirectory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList([]const u8)) !void {
+    var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
 
     var walker = try dir.walk(gpa);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!isLogFile(entry.path)) continue;
 
@@ -177,11 +179,12 @@ const TransactionMetrics = struct {
 
 fn parseLogTransactions(
     gpa: std.mem.Allocator,
+    io: Io,
     path: []const u8,
     cfg: config.Config,
     results: *std.ArrayList(model.ProfileResult),
 ) !void {
-    const content = try std.fs.cwd().readFileAlloc(gpa, path, 32 * 1024 * 1024);
+    const content = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32 * 1024 * 1024));
     defer gpa.free(content);
 
     var current = TransactionMetrics{};
@@ -342,7 +345,7 @@ test "run splits multi-transaction log file" {
         \\  Maximum heap size: 9100 out of 12000000
         \\08:05:01.0 (9)|EXECUTION_FINISHED
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "multi.log", .data = log });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "multi.log", .data = log });
 
     const log_path = try std.fs.path.join(
         std.testing.allocator,
@@ -351,7 +354,7 @@ test "run splits multi-transaction log file" {
     defer std.testing.allocator.free(log_path);
 
     const inputs = [_][]const u8{log_path};
-    var profiles = try run(std.testing.allocator, &inputs, config.Config.defaults());
+    var profiles = try run(std.testing.allocator, std.testing.io, &inputs, config.Config.defaults());
     defer model.deinitProfiles(std.testing.allocator, &profiles);
 
     try std.testing.expectEqual(@as(usize, 2), profiles.items.len);
@@ -389,7 +392,7 @@ test "compareWithBaseline reports regression by label and mode" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -420,7 +423,7 @@ test "compareWithBaseline reports regression by label and mode" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -455,7 +458,7 @@ test "compareWithBaseline can disambiguate by transaction index" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -476,7 +479,7 @@ test "compareWithBaseline can disambiguate by transaction index" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -498,7 +501,7 @@ test "compareWithBaseline returns empty when baseline path is null" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, null, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, null, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
 }
@@ -520,7 +523,7 @@ test "compareWithBaseline matches by basename when label is unknown" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -541,7 +544,7 @@ test "compareWithBaseline matches by basename when label is unknown" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);

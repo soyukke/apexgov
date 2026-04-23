@@ -51,7 +51,7 @@ pub fn parseLeadingUnsigned(raw: []const u8) ?u64 {
 pub fn trimTrailingDelimiter(raw: []const u8) []const u8 {
     var out = std.mem.trim(u8, raw, " \t");
     while (out.len > 0 and (out[out.len - 1] == ';' or out[out.len - 1] == ')')) {
-        out = std.mem.trimRight(u8, out[0 .. out.len - 1], " \t");
+        out = std.mem.trimEnd(u8, out[0 .. out.len - 1], " \t");
     }
     return out;
 }
@@ -59,7 +59,7 @@ pub fn trimTrailingDelimiter(raw: []const u8) []const u8 {
 pub fn trimTrailingSemicolon(raw: []const u8) []const u8 {
     var out = std.mem.trim(u8, raw, " \t");
     while (out.len > 0 and out[out.len - 1] == ';') {
-        out = std.mem.trimRight(u8, out[0 .. out.len - 1], " \t");
+        out = std.mem.trimEnd(u8, out[0 .. out.len - 1], " \t");
     }
     return out;
 }
@@ -128,7 +128,7 @@ pub fn extractParameterTypePart(segment_raw: []const u8) []const u8 {
     if (segment.len == 0) return "?";
 
     while (std.mem.startsWith(u8, segment, "final ")) {
-        segment = std.mem.trimLeft(u8, segment[6..], " \t");
+        segment = std.mem.trimStart(u8, segment[6..], " \t");
     }
 
     var angle_depth: i32 = 0;
@@ -167,7 +167,7 @@ pub fn extractParameterTypePart(segment_raw: []const u8) []const u8 {
             else => {},
         }
         if ((c == ' ' or c == '\t') and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-            const left = std.mem.trimRight(u8, segment[0..i], " \t");
+            const left = std.mem.trimEnd(u8, segment[0..i], " \t");
             if (left.len == 0) return "?";
             return left;
         }
@@ -229,7 +229,7 @@ pub fn equalsCanonicalType(raw_type: []const u8, canonical_type: []const u8) boo
 }
 
 pub fn extractTypeFromNewExpression(expr_after_new_raw: []const u8) ?[]const u8 {
-    const expr = std.mem.trimLeft(u8, expr_after_new_raw, " \t");
+    const expr = std.mem.trimStart(u8, expr_after_new_raw, " \t");
     if (expr.len == 0) return null;
 
     var angle_depth: i32 = 0;

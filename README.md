@@ -196,7 +196,7 @@ regression_percent = 15
 
 ## Build and Test
 
-Requires [Zig](https://ziglang.org/) (0.15+). Alternatively, use `nix develop` for a reproducible environment with Zig + ZLS.
+Requires [Zig](https://ziglang.org/) 0.16+. The flake's devShell deliberately does not ship zig/zls — install them separately (e.g. via home-manager with `zig-overlay`) so that `zig` on your PATH resolves to 0.16.
 
 ```bash
 zig build          # Build (zig-out/bin/apexgov)

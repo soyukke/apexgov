@@ -51,13 +51,13 @@ pub fn parseClassStart(line: []const u8) ?[]const u8 {
         start = idx + 7;
     }
     const class_start = start orelse return null;
-    const rest = std.mem.trimLeft(u8, line[class_start..], " \t");
+    const rest = std.mem.trimStart(u8, line[class_start..], " \t");
     return extractLeadingIdentifier(rest);
 }
 
 pub fn parseTriggerStart(line: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, line, "trigger ")) return null;
     if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
-    const rest = std.mem.trimLeft(u8, line[8..], " \t");
+    const rest = std.mem.trimStart(u8, line[8..], " \t");
     return extractLeadingIdentifier(rest);
 }

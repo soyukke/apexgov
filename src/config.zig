@@ -4,6 +4,7 @@
 //! CI リグレッション閾値などの設定を手書き TOML パーサーで読み込む。
 
 const std = @import("std");
+const Io = std.Io;
 
 pub const Budget = struct {
     cpu_ms: u32,
@@ -63,10 +64,10 @@ const Section = enum {
     ci,
 };
 
-pub fn load(gpa: std.mem.Allocator, path: ?[]const u8) !Config {
+pub fn load(gpa: std.mem.Allocator, io: Io, path: ?[]const u8) !Config {
     if (path == null) return Config.defaults();
 
-    const content = try std.fs.cwd().readFileAlloc(gpa, path.?, 1024 * 1024);
+    const content = try Io.Dir.cwd().readFileAlloc(io, path.?, gpa, .limited(1024 * 1024));
     defer gpa.free(content);
 
     return parse(content);

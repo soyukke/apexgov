@@ -129,7 +129,7 @@ pub fn collectDoWhileStartConditionsFromStripped(
 }
 
 pub fn isDoLoopStart(line: []const u8) bool {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (!startsWithIgnoreCase(trimmed, "do")) return false;
     if (trimmed.len == 2) return true;
     const next = trimmed[2];
@@ -140,14 +140,14 @@ pub fn parseDoWhileTailCondition(allocator: std.mem.Allocator, line: []const u8)
     var trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 8 or trimmed[0] != '}') return null;
 
-    trimmed = std.mem.trimLeft(u8, trimmed[1..], " \t");
+    trimmed = std.mem.trimStart(u8, trimmed[1..], " \t");
     if (!startsWithIgnoreCase(trimmed, "while")) return null;
     if (trimmed.len > "while".len) {
         const next = trimmed["while".len];
         if (!(next == ' ' or next == '\t' or next == '(')) return null;
     }
 
-    var rest = std.mem.trimLeft(u8, trimmed["while".len..], " \t");
+    var rest = std.mem.trimStart(u8, trimmed["while".len..], " \t");
     if (rest.len == 0 or rest[0] != '(') return null;
 
     const close = findMatchingParen(rest, 0) orelse return null;

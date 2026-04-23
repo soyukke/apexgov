@@ -69,6 +69,8 @@ pub const FieldSetMetadata = struct {
 
 pub const Evaluator = struct {
     arena: std.mem.Allocator,
+    /// I/O 抽象 (0.16 Io refactor)。ファイル操作・乱数・時刻で利用する。
+    io: std.Io,
     /// classes map 専用 allocator (parse_arena — テスト間で保持される)
     class_arena: ?std.mem.Allocator = null,
     global_env: *Env,
@@ -206,10 +208,10 @@ pub const Evaluator = struct {
         operation_type: ?[]const u8 = null,
     };
 
-    pub fn init(arena: std.mem.Allocator) !Evaluator {
+    pub fn init(arena: std.mem.Allocator, io: std.Io) !Evaluator {
         const global = try arena.create(Env);
         global.* = Env.init(arena);
-        return .{ .arena = arena, .global_env = global };
+        return .{ .arena = arena, .io = io, .global_env = global };
     }
 
     pub fn resetForTest(self: *Evaluator) void {
@@ -419,7 +421,7 @@ pub const Evaluator = struct {
             for (base_paths) |bp| {
                 for (candidates) |sub| {
                     const xml_path = std.fs.path.join(self.arena, &.{ bp, sub, suffix }) catch continue;
-                    const content = std.fs.cwd().readFileAlloc(self.arena, xml_path, 512 * 1024) catch continue;
+                    const content = std.Io.Dir.cwd().readFileAlloc(self.io, xml_path, self.arena, .limited(512 * 1024)) catch continue;
 
                     // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
                     var pos: usize = 0;
@@ -1098,7 +1100,7 @@ pub const Evaluator = struct {
     /// its immediate caller; otherwise Apex preserves the surrounding call
     /// stack and appends the synthetic anonymous entry point.
     pub fn buildStackTraceString(self: *Evaluator) ![]const u8 {
-        var buf = std.ArrayListUnmanaged(u8){};
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
         var i: usize = self.call_stack.items.len;
         const max_frames = blk: {
             if (self.call_stack.items.len == 0) break :blk @as(usize, 0);
@@ -5001,11 +5003,11 @@ pub const Evaluator = struct {
     }
 
     fn findStaticResourceInDir(self: *Evaluator, base_path: []const u8, name: []const u8, extensions: []const []const u8) ?[]const u8 {
-        var dir = std.fs.cwd().openDir(base_path, .{ .iterate = true }) catch return null;
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(self.io, base_path, .{ .iterate = true }) catch return null;
+        defer dir.close(self.io);
         var walker = dir.walk(self.arena) catch return null;
         defer walker.deinit();
-        while (walker.next() catch null) |entry| {
+        while (walker.next(self.io) catch null) |entry| {
             if (entry.kind != .file) continue;
             // Check if the file is in a "staticresources" directory and matches name
             const path_str = entry.path;
@@ -5017,7 +5019,7 @@ pub const Evaluator = struct {
                     const expected = std.fmt.allocPrint(self.arena, "{s}{s}", .{ name, ext }) catch continue;
                     if (std.mem.eql(u8, after_sr, expected)) {
                         const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ base_path, path_str }) catch continue;
-                        if (std.fs.cwd().readFileAlloc(self.arena, full_path, 10 * 1024 * 1024)) |content| {
+                        if (std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(10 * 1024 * 1024))) |content| {
                             return content;
                         } else |_| {}
                     }
@@ -5030,11 +5032,11 @@ pub const Evaluator = struct {
     fn hasFlowDefinition(self: *Evaluator, flow_name: []const u8) bool {
         const suffix = std.fmt.allocPrint(self.arena, "{s}.flow-meta.xml", .{flow_name}) catch return false;
         for (self.source_paths) |base_path| {
-            var dir = std.fs.cwd().openDir(base_path, .{ .iterate = true }) catch continue;
-            defer dir.close();
+            var dir = std.Io.Dir.cwd().openDir(self.io, base_path, .{ .iterate = true }) catch continue;
+            defer dir.close(self.io);
             var walker = dir.walk(self.arena) catch continue;
             defer walker.deinit();
-            while (walker.next() catch null) |entry| {
+            while (walker.next(self.io) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (std.mem.endsWith(u8, entry.path, suffix)) return true;
             }
@@ -5053,11 +5055,11 @@ pub const Evaluator = struct {
             mdt_type;
 
         for (self.source_paths) |sp| {
-            var dir = std.fs.cwd().openDir(sp, .{ .iterate = true }) catch continue;
-            defer dir.close();
+            var dir = std.Io.Dir.cwd().openDir(self.io, sp, .{ .iterate = true }) catch continue;
+            defer dir.close(self.io);
             var walker = dir.walk(self.arena) catch continue;
             defer walker.deinit();
-            while (walker.next() catch null) |entry| {
+            while (walker.next(self.io) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.path, ".md-meta.xml")) continue;
                 // Check if filename matches: customMetadata/<BaseName>.<RecordName>.md-meta.xml
@@ -5077,7 +5079,7 @@ pub const Evaluator = struct {
                         const dev_name = self.arena.dupe(u8, dev_name_raw) catch continue;
 
                         const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ sp, entry.path }) catch continue;
-                        const content = std.fs.cwd().readFileAlloc(self.arena, full_path, 1024 * 1024) catch continue;
+                        const content = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(1024 * 1024)) catch continue;
                         if (try self.parseCustomMetadataXml(mdt_type, content)) |sob| {
                             // Set DeveloperName from filename
                             try sob.fields.put(self.arena, "DeveloperName", Value{ .string = dev_name });
@@ -5235,13 +5237,13 @@ pub const Evaluator = struct {
         if (self.findPermissionSetRecordByName(requested_name) != null) return;
 
         for (self.source_paths) |sp| {
-            var dir = std.fs.cwd().openDir(sp, .{ .iterate = true }) catch continue;
-            defer dir.close();
+            var dir = std.Io.Dir.cwd().openDir(self.io, sp, .{ .iterate = true }) catch continue;
+            defer dir.close(self.io);
 
             var walker = dir.walk(self.arena) catch continue;
             defer walker.deinit();
 
-            while (walker.next() catch null) |entry| {
+            while (walker.next(self.io) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (std.mem.indexOf(u8, entry.path, "permissionsets/") == null) continue;
                 if (!std.mem.endsWith(u8, entry.path, ".permissionset-meta.xml")) continue;
@@ -5253,7 +5255,7 @@ pub const Evaluator = struct {
                 if (!std.ascii.eqlIgnoreCase(permission_set_name, requested_name)) continue;
 
                 const full_path = std.fmt.allocPrint(self.arena, "{s}/{s}", .{ sp, entry.path }) catch continue;
-                const xml = std.fs.cwd().readFileAlloc(self.arena, full_path, 1024 * 1024) catch continue;
+                const xml = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(1024 * 1024)) catch continue;
                 if (self.findPermissionSetRecordByName(permission_set_name) != null) return;
 
                 const permission_set = try self.arena.create(types.SObject);
@@ -5443,7 +5445,7 @@ pub const Evaluator = struct {
 
         for (matched.items) |record| {
             // Build group key from GROUP BY fields
-            var key_buf = std.ArrayListUnmanaged(u8){};
+            var key_buf: std.ArrayListUnmanaged(u8) = .empty;
             for (group_by_fields[0..group_by_count]) |gb_field| {
                 if (key_buf.items.len > 0) try key_buf.append(self.arena, '|');
                 const fv = self.resolveFieldPath(record, gb_field);
@@ -12789,7 +12791,7 @@ pub const Evaluator = struct {
     /// expr が `Identifier.Field.Field...` の形で全てドット連結のパスになっている場合、
     /// そのパスを `A.B.C` の形式で返す。非ドット式が混ざっていれば null を返す。
     fn collectDottedIdentifierChain(self: *Evaluator, expr: *const ast.Expr) ?[]const u8 {
-        var parts = std.ArrayListUnmanaged([]const u8){};
+        var parts: std.ArrayListUnmanaged([]const u8) = .empty;
         defer parts.deinit(self.arena);
         var cur: *const ast.Expr = expr;
         while (true) {
@@ -16299,7 +16301,7 @@ pub const Evaluator = struct {
             // Check that it's preceded by "[] " or "> " (array type indicators)
             if (found >= 3) {
                 const before = source[0..found];
-                const trimmed_before = std.mem.trimRight(u8, before, " \t");
+                const trimmed_before = std.mem.trimEnd(u8, before, " \t");
                 // Check for "[]" suffix → "TypeName[]"
                 if (std.mem.endsWith(u8, trimmed_before, "[]")) {
                     // Find the start of the type name
@@ -17592,7 +17594,7 @@ fn evalSource(source: []const u8, class_name: []const u8, method_name: []const u
 
     const tokens = try lexer_mod.tokenize(source, arena.allocator());
     const decls = try parser_mod.parse(tokens, arena.allocator());
-    var eval = try Evaluator.init(arena.allocator());
+    var eval = try Evaluator.init(arena.allocator(), std.testing.io);
     try eval.loadDecls(decls);
     const result = try eval.callMethod(class_name, method_name, &.{});
 
@@ -17607,7 +17609,7 @@ test "evaluate 1 + 2" {
     defer arena.deinit();
 
     const expr = try parser_mod.parseExpr(tokens, arena.allocator());
-    var eval = try Evaluator.init(arena.allocator());
+    var eval = try Evaluator.init(arena.allocator(), std.testing.io);
     const result = try eval.evalExpr(expr, eval.global_env);
     try std.testing.expectEqual(@as(i64, 3), result.integer);
 }
@@ -17620,7 +17622,7 @@ test "evaluate string equality case-insensitive" {
     defer arena.deinit();
 
     const expr = try parser_mod.parseExpr(tokens, arena.allocator());
-    var eval = try Evaluator.init(arena.allocator());
+    var eval = try Evaluator.init(arena.allocator(), std.testing.io);
     const result = try eval.evalExpr(expr, eval.global_env);
     try std.testing.expect(result.boolean);
 }
@@ -17633,7 +17635,7 @@ test "evaluate null == null" {
     defer arena.deinit();
 
     const expr = try parser_mod.parseExpr(tokens, arena.allocator());
-    var eval = try Evaluator.init(arena.allocator());
+    var eval = try Evaluator.init(arena.allocator(), std.testing.io);
     const result = try eval.evalExpr(expr, eval.global_env);
     try std.testing.expect(result.boolean);
 }

@@ -3,7 +3,28 @@
 //! `check`, `profile` サブコマンドのルーティングと引数パースを行う。
 
 const std = @import("std");
+const Io = std.Io;
 const apexgov = @import("apexgov");
+
+/// stderr にフォーマット文字列を一度で書き出すヘルパ。
+/// lint (tools/check_style.zig の debug_print ルール) で `std.debug` 直出力が
+/// 検出されるため、CLI のエラー/使用法出力にはこちらを使う。
+fn printStderr(io: Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    var state = Io.File.stderr().writer(io, &buf);
+    const w = &state.interface;
+    w.print(fmt, args) catch return;
+    w.flush() catch return;
+}
+
+/// stdout に書き出すヘルパ。typegen の情報ログで使う。
+fn printStdout(io: Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    var state = Io.File.stdout().writer(io, &buf);
+    const w = &state.interface;
+    w.print(fmt, args) catch return;
+    w.flush() catch return;
+}
 
 const CheckOptions = struct {
     config_path: ?[]const u8 = null,
@@ -30,25 +51,34 @@ const ProfileOptions = struct {
     }
 };
 
-pub fn main() void {
+pub fn main(init: std.process.Init) void {
     // 再帰が深い Apex コードの解釈実行に備え、スタックサイズを拡大した
     // ワーカースレッドで実行する（macOS メインスレッドのデフォルトは 8 MB）。
-    const thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainWorker, .{}) catch {
+    const thread = std.Thread.spawn(
+        .{ .stack_size = 64 * 1024 * 1024 },
+        mainWorker,
+        .{init},
+    ) catch {
         std.process.exit(2);
     };
     thread.join();
 }
 
-fn mainWorker() void {
-    const gpa = std.heap.page_allocator;
+fn mainWorker(init: std.process.Init) void {
+    const gpa = init.gpa;
+    const io = init.io;
+    const arena = init.arena.allocator();
 
-    const argv = std.process.argsAlloc(gpa) catch std.process.exit(2);
-    defer std.process.argsFree(gpa, argv);
+    // `Init.Minimal.args` は [:0]const u8 のスライスだが、以降の関数は
+    // []const u8 スライスを前提としているので一度詰め直す。
+    const argv_raw = init.minimal.args.toSlice(arena) catch std.process.exit(2);
+    const argv = arena.alloc([]const u8, argv_raw.len) catch std.process.exit(2);
+    for (argv_raw, 0..) |a, i| argv[i] = a;
 
-    const exit_code = run(gpa, argv) catch |err| {
+    const exit_code = run(gpa, io, argv) catch |err| {
         if (err == error.HelpRequested) return;
-        std.debug.print("error: {s}\n\n", .{@errorName(err)});
-        printUsage();
+        printStderr(io, "error: {s}\n\n", .{@errorName(err)});
+        printUsage(io);
         std.process.exit(2);
     };
 
@@ -57,48 +87,48 @@ fn mainWorker() void {
     }
 }
 
-fn run(gpa: std.mem.Allocator, argv: []const []const u8) !u8 {
+fn run(gpa: std.mem.Allocator, io: Io, argv: []const []const u8) !u8 {
     if (argv.len < 2) {
-        printUsage();
+        printUsage(io);
         return 0;
     }
 
     const cmd = argv[1];
     if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
-        printUsage();
+        printUsage(io);
         return 0;
     }
 
     if (std.mem.eql(u8, cmd, "check")) {
-        return runCheck(gpa, argv[2..]);
+        return runCheck(gpa, io, argv[2..]);
     }
     if (std.mem.eql(u8, cmd, "profile")) {
-        return runProfile(gpa, argv[2..]);
+        return runProfile(gpa, io, argv[2..]);
     }
     if (std.mem.eql(u8, cmd, "interpret")) {
-        return runInterpret(gpa, argv[2..]);
+        return runInterpret(gpa, io, argv[2..]);
     }
     if (std.mem.eql(u8, cmd, "lsp")) {
-        return runLsp(gpa);
+        return runLsp(gpa, io);
     }
     if (std.mem.eql(u8, cmd, "typegen")) {
-        return runTypegen(gpa, argv[2..]);
+        return runTypegen(gpa, io, argv[2..]);
     }
 
     return error.UnknownCommand;
 }
 
-fn runCheck(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    var opts = try parseCheckOptions(gpa, args);
+fn runCheck(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
+    var opts = try parseCheckOptions(gpa, io, args);
     defer opts.deinit(gpa);
 
-    var cfg = try apexgov.config.load(gpa, opts.config_path);
+    var cfg = try apexgov.config.load(gpa, io, opts.config_path);
     cfg.include_tests = opts.include_tests;
 
-    var findings = try apexgov.check.runWithConfig(gpa, opts.paths.items, cfg);
+    var findings = try apexgov.check.runWithConfig(gpa, io, opts.paths.items, cfg);
     defer apexgov.model.deinitFindings(gpa, &findings);
 
-    try emitOutput(opts.out_path, apexgov.report.writeCheck, .{ opts.format, findings.items });
+    try emitOutput(io, opts.out_path, apexgov.report.writeCheck, .{ opts.format, findings.items });
 
     if (opts.threshold) |threshold| {
         const fail_count = countFindingsAtOrAbove(findings.items, threshold);
@@ -108,24 +138,25 @@ fn runCheck(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     return 0;
 }
 
-fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
-    var opts = try parseProfileOptions(gpa, args);
+fn runProfile(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
+    var opts = try parseProfileOptions(gpa, io, args);
     defer opts.deinit(gpa);
 
-    const cfg = try apexgov.config.load(gpa, opts.config_path);
+    const cfg = try apexgov.config.load(gpa, io, opts.config_path);
 
-    var profiles = try apexgov.profile.run(gpa, opts.paths.items, cfg);
+    var profiles = try apexgov.profile.run(gpa, io, opts.paths.items, cfg);
     defer apexgov.model.deinitProfiles(gpa, &profiles);
 
     var regressions = try apexgov.profile.compareWithBaseline(
         gpa,
+        io,
         profiles.items,
         opts.baseline_path,
         cfg.ci.regression_percent,
     );
     defer apexgov.profile.deinitRegressions(gpa, &regressions);
 
-    try emitOutput(opts.out_path, apexgov.report.writeProfile, .{ opts.format, profiles.items });
+    try emitOutput(io, opts.out_path, apexgov.report.writeProfile, .{ opts.format, profiles.items });
 
     var has_violation = false;
     for (profiles.items) |profile| {
@@ -136,19 +167,19 @@ fn runProfile(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 
     if (regressions.items.len > 0) {
-        printRegressions(regressions.items, cfg.ci.regression_percent);
+        printRegressions(io, regressions.items, cfg.ci.regression_percent);
     }
 
     const fail_for_regression = cfg.ci.fail_on_regression and regressions.items.len > 0;
     return if (has_violation or fail_for_regression) 1 else 0;
 }
 
-fn runLsp(gpa: std.mem.Allocator) !u8 {
-    try apexgov.lsp.serve(gpa);
+fn runLsp(gpa: std.mem.Allocator, io: Io) !u8 {
+    try apexgov.lsp.serve(gpa, io);
     return 0;
 }
 
-fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+fn runTypegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     var project_root: ?[]const u8 = null;
     var out_dir: []const u8 = ".sfdx/typings/lwc";
 
@@ -158,7 +189,7 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
             i += 1;
             out_dir = args[i];
         } else if (std.mem.eql(u8, args[i], "-h") or std.mem.eql(u8, args[i], "--help")) {
-            std.debug.print(
+            printStderr(io,
                 \\Usage: apexgov typegen <sfdx-project-root> [--out DIR]
                 \\
                 \\Generate LWC TypeScript type definitions from SFDX metadata.
@@ -174,28 +205,29 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 
     const root = project_root orelse {
-        std.debug.print("error: project root path is required\n", .{});
+        printStderr(io, "error: project root path is required\n", .{});
         return 2;
     };
 
     const typegen = apexgov.typegen;
 
     // 出力ディレクトリを作成
-    std.fs.cwd().makePath(out_dir) catch |err| {
-        std.debug.print("error: cannot create output directory '{s}': {s}\n", .{ out_dir, @errorName(err) });
+    Io.Dir.cwd().createDirPath(io, out_dir) catch |err| {
+        printStderr(io, "error: cannot create output directory '{s}': {s}\n", .{ out_dir, @errorName(err) });
         return 2;
     };
 
     var total_files: u32 = 0;
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(gpa);
-    const writer = buf.writer(gpa);
+    var allocating = Io.Writer.Allocating.init(gpa);
+    defer allocating.deinit();
+    const writer = &allocating.writer;
 
     // ファイルパスをソート済みで収集する（出力を決定的にするため）
-    const root_dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
-        std.debug.print("error: cannot open '{s}': {s}\n", .{ root, @errorName(err) });
+    var root_dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| {
+        printStderr(io, "error: cannot open '{s}': {s}\n", .{ root, @errorName(err) });
         return 2;
     };
+    defer root_dir.close(io);
     var all_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (all_paths.items) |p| gpa.free(p);
@@ -204,7 +236,7 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     {
         var walker = try root_dir.walk(gpa);
         defer walker.deinit();
-        while (try walker.next()) |entry| {
+        while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
             try all_paths.append(gpa, try gpa.dupe(u8, entry.path));
         }
@@ -217,14 +249,14 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 
     // --- @salesforce/schema ---
     {
-        buf.clearRetainingCapacity();
+        allocating.clearRetainingCapacity();
         var schema_count: u32 = 0;
         for (all_paths.items) |entry_path| {
             const basename = std.fs.path.basename(entry_path);
             if (!std.mem.endsWith(u8, basename, ".field-meta.xml")) continue;
 
             const object_name = extractObjectName(entry_path) orelse continue;
-            const field_xml = root_dir.readFileAlloc(gpa, entry_path, 64 * 1024) catch continue;
+            const field_xml = root_dir.readFileAlloc(io, entry_path, gpa, .limited(64 * 1024)) catch continue;
             defer gpa.free(field_xml);
 
             if (typegen.parseFieldMeta(field_xml, object_name)) |field| {
@@ -237,21 +269,21 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         if (schema_count > 0) {
             var path_buf: [4096]u8 = undefined;
             const out_path = std.fmt.bufPrint(&path_buf, "{s}/schema.d.ts", .{out_dir}) catch unreachable;
-            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-            std.debug.print("  schema.d.ts: {d} fields\n", .{schema_count});
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
+            printStdout(io, "  schema.d.ts: {d} fields\n", .{schema_count});
             total_files += 1;
         }
     }
 
     // --- @salesforce/label ---
     {
-        buf.clearRetainingCapacity();
+        allocating.clearRetainingCapacity();
         var label_count: u32 = 0;
         for (all_paths.items) |entry_path| {
             const basename = std.fs.path.basename(entry_path);
             if (!std.mem.endsWith(u8, basename, ".labels-meta.xml")) continue;
 
-            const xml = root_dir.readFileAlloc(gpa, entry_path, 4 * 1024 * 1024) catch continue;
+            const xml = root_dir.readFileAlloc(io, entry_path, gpa, .limited(4 * 1024 * 1024)) catch continue;
             defer gpa.free(xml);
 
             const names = try typegen.parseLabelNames(xml, gpa);
@@ -266,8 +298,8 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         if (label_count > 0) {
             var path_buf: [4096]u8 = undefined;
             const out_path = std.fmt.bufPrint(&path_buf, "{s}/customlabels.d.ts", .{out_dir}) catch unreachable;
-            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-            std.debug.print("  customlabels.d.ts: {d} labels\n", .{label_count});
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
+            printStdout(io, "  customlabels.d.ts: {d} labels\n", .{label_count});
             total_files += 1;
         }
     }
@@ -279,7 +311,7 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
             const basename = std.fs.path.basename(entry_path);
             const meta = parseMetaFilename(basename) orelse continue;
 
-            buf.clearRetainingCapacity();
+            allocating.clearRetainingCapacity();
             if (std.mem.eql(u8, meta.meta_type, "resource")) {
                 try typegen.renderResourceUrl(meta.name, writer);
             } else if (std.mem.eql(u8, meta.meta_type, "messageChannel")) {
@@ -290,14 +322,14 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
 
             var path_buf: [4096]u8 = undefined;
             const out_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}.d.ts", .{ out_dir, meta.name, meta.meta_type }) catch continue;
-            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
             total_files += 1;
         }
     }
 
     // --- @salesforce/apex ---
     {
-        buf.clearRetainingCapacity();
+        allocating.clearRetainingCapacity();
         var method_count: u32 = 0;
         for (all_paths.items) |entry_path| {
             const basename = std.fs.path.basename(entry_path);
@@ -305,7 +337,7 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
             const class_name = basename[0 .. basename.len - ".cls".len];
             if (class_name.len == 0) continue;
 
-            const source = root_dir.readFileAlloc(gpa, entry_path, 1024 * 1024) catch continue;
+            const source = root_dir.readFileAlloc(io, entry_path, gpa, .limited(1024 * 1024)) catch continue;
             defer gpa.free(source);
 
             if (std.ascii.indexOfIgnoreCase(source, "@AuraEnabled") == null) continue;
@@ -322,13 +354,13 @@ fn runTypegen(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
         if (method_count > 0) {
             var path_buf: [4096]u8 = undefined;
             const out_path = std.fmt.bufPrint(&path_buf, "{s}/apex.d.ts", .{out_dir}) catch unreachable;
-            try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = buf.items });
-            std.debug.print("  apex.d.ts: {d} @AuraEnabled methods\n", .{method_count});
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
+            printStdout(io, "  apex.d.ts: {d} @AuraEnabled methods\n", .{method_count});
             total_files += 1;
         }
     }
 
-    std.debug.print("typegen: generated {d} type definition file(s) in {s}\n", .{ total_files, out_dir });
+    printStdout(io, "typegen: generated {d} type definition file(s) in {s}\n", .{ total_files, out_dir });
     return 0;
 }
 
@@ -364,22 +396,22 @@ fn extractObjectName(path: []const u8) ?[]const u8 {
     return before[last_sep + 1 ..];
 }
 
-fn runInterpret(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+fn runInterpret(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     if (args.len > 0 and std.mem.eql(u8, args[0], "test")) {
-        return runInterpretTest(gpa, args[1..]);
+        return runInterpretTest(gpa, io, args[1..]);
     }
     // Default: interpret test
-    return runInterpretTest(gpa, args);
+    return runInterpretTest(gpa, io, args);
 }
 
-fn runInterpretTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
+fn runInterpretTest(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) {
         if (isHelpFlag(args[i])) {
-            std.debug.print(
+            printStderr(io,
                 \\apexgov interpret test
                 \\  Run Apex test classes using the Zig native interpreter.
                 \\  Usage: apexgov interpret test <paths...>
@@ -400,23 +432,23 @@ fn runInterpretTest(gpa: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 
     var write_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&write_buffer);
+    var stderr_writer = Io.File.stderr().writer(io, &write_buffer);
     const writer = &stderr_writer.interface;
 
-    const suite = try apexgov.interpret.runTestSuite(gpa, paths.items, writer);
+    const suite = try apexgov.interpret.runTestSuite(gpa, io, paths.items, writer);
     try writer.flush();
 
     return if (suite.total > 0 and suite.passed == suite.total) 0 else 1;
 }
 
-fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOptions {
+fn parseCheckOptions(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !CheckOptions {
     var opts = CheckOptions{};
     errdefer opts.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) {
         if (isHelpFlag(args[i])) {
-            printCheckHelp();
+            printCheckHelp(io);
             return error.HelpRequested;
         }
         if (try consumeOption(args, &i, "--config")) |v| {
@@ -453,14 +485,14 @@ fn parseCheckOptions(gpa: std.mem.Allocator, args: []const []const u8) !CheckOpt
     return opts;
 }
 
-fn parseProfileOptions(gpa: std.mem.Allocator, args: []const []const u8) !ProfileOptions {
+fn parseProfileOptions(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !ProfileOptions {
     var opts = ProfileOptions{};
     errdefer opts.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) {
         if (isHelpFlag(args[i])) {
-            printProfileHelp();
+            printProfileHelp(io);
             return error.HelpRequested;
         }
         if (try consumeOption(args, &i, "--config")) |v| {
@@ -534,13 +566,13 @@ fn countFindingsAtOrAbove(findings: []const apexgov.model.Finding, threshold: ap
     return count;
 }
 
-fn emitOutput(out_path: ?[]const u8, write_fn: anytype, args: anytype) !void {
+fn emitOutput(io: Io, out_path: ?[]const u8, write_fn: anytype, args: anytype) !void {
     if (out_path) |path| {
-        var file = try createOutputFile(path);
-        defer file.close();
+        var file = try createOutputFile(io, path);
+        defer file.close(io);
 
         var write_buffer: [8192]u8 = undefined;
-        var file_writer = file.writer(&write_buffer);
+        var file_writer = file.writer(io, &write_buffer);
         const writer = &file_writer.interface;
         try @call(.auto, write_fn, .{writer} ++ args);
         try writer.writeAll("\n");
@@ -549,15 +581,15 @@ fn emitOutput(out_path: ?[]const u8, write_fn: anytype, args: anytype) !void {
     }
 
     var write_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&write_buffer);
+    var stdout_writer = Io.File.stdout().writer(io, &write_buffer);
     const writer = &stdout_writer.interface;
     try @call(.auto, write_fn, .{writer} ++ args);
     try writer.writeAll("\n");
     try writer.flush();
 }
 
-fn printUsage() void {
-    std.debug.print(
+fn printUsage(io: Io) void {
+    printStderr(io,
         \\apexgov: offline Apex CPU/Heap checker and profiler
         \\
         \\Usage:
@@ -578,8 +610,8 @@ fn printUsage() void {
     , .{});
 }
 
-fn printCheckHelp() void {
-    std.debug.print(
+fn printCheckHelp(io: Io) void {
+    printStderr(io,
         \\apexgov check
         \\  Static scan for CPU/Heap and governor anti-patterns.
         \\  Default path is `force-app` when omitted.
@@ -587,8 +619,8 @@ fn printCheckHelp() void {
     , .{});
 }
 
-fn printProfileHelp() void {
-    std.debug.print(
+fn printProfileHelp(io: Io) void {
+    printStderr(io,
         \\apexgov profile
         \\  Parse Apex debug logs and compare CPU/Heap usage against budgets.
         \\  Accepts log files or directories containing .log files.
@@ -597,22 +629,24 @@ fn printProfileHelp() void {
     , .{});
 }
 
-fn createOutputFile(path: []const u8) !std.fs.File {
+fn createOutputFile(io: Io, path: []const u8) !Io.File {
     if (std.fs.path.dirname(path)) |parent| {
         if (parent.len > 0) {
-            try std.fs.cwd().makePath(parent);
+            try Io.Dir.cwd().createDirPath(io, parent);
         }
     }
-    return std.fs.cwd().createFile(path, .{ .truncate = true });
+    return Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
 }
 
-fn printRegressions(regressions: []const apexgov.profile.Regression, threshold_percent: u8) void {
-    std.debug.print(
+fn printRegressions(io: Io, regressions: []const apexgov.profile.Regression, threshold_percent: u8) void {
+    printStderr(
+        io,
         "regression: {d} transaction(s) exceeded baseline by >{d}%\n",
         .{ regressions.len, threshold_percent },
     );
     for (regressions) |regression| {
-        std.debug.print(
+        printStderr(
+            io,
             "  {s} [{s}] cpu {d}->{d} heap {d}->{d}\n",
             .{
                 regression.source,

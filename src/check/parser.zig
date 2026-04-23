@@ -177,7 +177,7 @@ pub fn countSignatureParams(signature: []const u8) u16 {
 
 pub fn parseTypeDecl(line: []const u8) ?TypeDecl {
     const brace_idx = std.mem.indexOfScalar(u8, line, '{') orelse return null;
-    const header = std.mem.trimRight(u8, line[0..brace_idx], " \t");
+    const header = std.mem.trimEnd(u8, line[0..brace_idx], " \t");
     if (header.len == 0) return null;
 
     const class_idx = indexOfWordIgnoreCase(header, "class");
@@ -193,9 +193,9 @@ pub fn parseTypeDecl(line: []const u8) ?TypeDecl {
     const is_interface = interface_idx != null and interface_idx.? == keyword_idx;
     const keyword_len: usize = if (is_interface) "interface".len else "class".len;
 
-    var after_keyword = std.mem.trimLeft(u8, header[(keyword_idx + keyword_len)..], " \t");
+    var after_keyword = std.mem.trimStart(u8, header[(keyword_idx + keyword_len)..], " \t");
     const name = extractLeadingIdentifier(after_keyword) orelse return null;
-    after_keyword = std.mem.trimLeft(u8, after_keyword[name.len..], " \t");
+    after_keyword = std.mem.trimStart(u8, after_keyword[name.len..], " \t");
 
     const extends_name = if (!is_interface) parseSingleTypeAfterKeyword(after_keyword, "extends") else null;
     const interfaces_raw = if (is_interface)
@@ -217,7 +217,7 @@ fn parseSingleTypeAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u
 
 fn sliceAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u8 {
     const idx = indexOfWordIgnoreCase(line, keyword) orelse return null;
-    const after = std.mem.trimLeft(u8, line[(idx + keyword.len)..], " \t");
+    const after = std.mem.trimStart(u8, line[(idx + keyword.len)..], " \t");
     if (after.len == 0) return null;
     return after;
 }
@@ -270,7 +270,7 @@ fn registerInterfaceConstraint(
         return;
     }
 
-    var list: std.ArrayListUnmanaged([]const u8) = .{};
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
     try list.append(arena_allocator, try arena_allocator.dupe(u8, interface_name));
     try relations.interfaces_by_type.put(try arena_allocator.dupe(u8, type_name), list);
 }

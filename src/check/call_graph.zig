@@ -99,7 +99,7 @@ fn buildMethodNameIndex(
         const name = entry.value_ptr.name;
         const gop = try index.getOrPut(name);
         if (!gop.found_existing) {
-            gop.value_ptr.* = .{};
+            gop.value_ptr.* = .empty;
         }
         try gop.value_ptr.append(arena_allocator, .{
             .key = entry.key_ptr.*,

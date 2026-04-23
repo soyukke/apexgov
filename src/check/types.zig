@@ -104,7 +104,7 @@ pub const MethodSummary = struct {
     param_signature: []const u8,
     direct: MethodMetrics = .{},
     total: MethodMetrics = .{},
-    calls: std.ArrayListUnmanaged(MethodCall) = .{},
+    calls: std.ArrayListUnmanaged(MethodCall) = .empty,
     state: ResolveState = .unresolved,
 };
 

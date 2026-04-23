@@ -5,6 +5,7 @@
 //! 公開 API (`run`, `runWithConfig`) の再エクスポートとテストを提供する。
 
 const std = @import("std");
+const Io = std.Io;
 const model = @import("model.zig");
 const config = @import("config.zig");
 
@@ -38,15 +39,15 @@ const buildMethodSummaries = call_graph_mod.buildMethodSummaries;
 const scanContent = scanner_mod.scanContent;
 const stripCommentsPreserveLines = preprocessor_mod.stripCommentsPreserveLines;
 
-pub fn run(gpa: std.mem.Allocator, roots: []const []const u8) !std.ArrayList(model.Finding) {
-    return runWithConfig(gpa, roots, config.Config.defaults());
+pub fn run(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.ArrayList(model.Finding) {
+    return runWithConfig(gpa, io, roots, config.Config.defaults());
 }
 
-pub fn runWithConfig(gpa: std.mem.Allocator, roots: []const []const u8, cfg: config.Config) !std.ArrayList(model.Finding) {
+pub fn runWithConfig(gpa: std.mem.Allocator, io: Io, roots: []const []const u8, cfg: config.Config) !std.ArrayList(model.Finding) {
     var findings: std.ArrayList(model.Finding) = .empty;
     errdefer model.deinitFindings(gpa, &findings);
 
-    var files = try collectApexFiles(gpa, roots);
+    var files = try collectApexFiles(gpa, io, roots);
     defer deinitApexFiles(gpa, &files);
 
     var arena = std.heap.ArenaAllocator.init(gpa);

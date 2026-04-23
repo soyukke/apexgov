@@ -1,6 +1,7 @@
 //! lsp — Apex 言語サーバープロトコル (LSP) 実装。
 
 const std = @import("std");
+const Io = std.Io;
 
 pub const types = @import("types.zig");
 pub const transport = @import("transport.zig");
@@ -31,10 +32,10 @@ pub const Transport = transport.Transport;
 pub const DocumentStore = document_store.DocumentStore;
 
 /// LSP サーバーを起動する（stdio）。
-pub fn serve(allocator: std.mem.Allocator) !void {
-    const stdin = std.fs.File{ .handle = std.posix.STDIN_FILENO };
-    const stdout = std.fs.File{ .handle = std.posix.STDOUT_FILENO };
-    var srv = Server.init(allocator, stdin, stdout);
+pub fn serve(allocator: std.mem.Allocator, io: Io) !void {
+    const stdin = Io.File.stdin();
+    const stdout = Io.File.stdout();
+    var srv = Server.init(allocator, io, stdin, stdout);
     defer srv.deinit();
     try srv.run();
 }
