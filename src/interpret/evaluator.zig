@@ -11492,60 +11492,73 @@ pub const Evaluator = struct {
         }
 
         if (!std.ascii.eqlIgnoreCase(namespace, "ChatterFeeds")) return Value.null_val;
-
         if (std.ascii.eqlIgnoreCase(method, "postFeedElement")) {
-            var subject_id: Value = Value.null_val;
-            var message_segments: Value = Value.null_val;
-
-            if (args.len >= 2 and args[1] == .object) {
-                subject_id = utils.sobject_get(
-                    &args[1].object.fields,
-                    "subjectId",
-                ) orelse Value.null_val;
-                message_segments = self.connect_api_extract_message_segments(
-                    args[1],
-                    4,
-                ) orelse Value.null_val;
-            } else if (args.len >= 4) {
-                subject_id = args[1];
-                const text_segments = try self.arena.create(types.ListValue);
-                text_segments.* = .{};
-                const text_segment = try self.connect_api_create_object(
-                    "ConnectApi.TextSegmentInput",
-                );
-                const text_value = switch (args[3]) {
-                    .string => args[3].string,
-                    else => try utils.coerce_to_string(args[3], self.arena),
-                };
-                try text_segment.fields.put(self.arena, "text", Value{ .string = text_value });
-                try text_segments.items.append(self.arena, Value{ .object = text_segment });
-                message_segments = Value{ .list = text_segments };
-            }
-
-            const body_value = try self.connect_api_create_feed_body(message_segments);
-            const feed_id = try self.connect_api_persist_feed_item(subject_id, body_value);
-            const feed_element = try self.connect_api_create_object("ConnectApi.FeedElement");
-            try feed_element.fields.put(self.arena, "id", Value{ .string = feed_id });
-            try feed_element.fields.put(self.arena, "body", body_value);
-            return Value{ .object = feed_element };
+            return try self.connect_api_post_feed_element(args);
         }
-
         if (std.ascii.eqlIgnoreCase(method, "postCommentToFeedElement")) {
-            var message_segments: Value = Value.null_val;
-            if (args.len >= 3 and args[2] == .object) {
-                message_segments = self.connect_api_extract_message_segments(
-                    args[2],
-                    4,
-                ) orelse Value.null_val;
-            }
-            const body_value = try self.connect_api_create_feed_body(message_segments);
-            const comment = try self.connect_api_create_object("ConnectApi.Comment");
-            try comment.fields.put(self.arena, "id", Value{ .string = try self.alloc_id() });
-            try comment.fields.put(self.arena, "body", body_value);
-            return Value{ .object = comment };
+            return try self.connect_api_post_comment(args);
         }
-
         return Value.null_val;
+    }
+
+    fn connect_api_post_feed_element(
+        self: *Evaluator,
+        args: []const Value,
+    ) !Value {
+        var subject_id: Value = Value.null_val;
+        var message_segments: Value = Value.null_val;
+        if (args.len >= 2 and args[1] == .object) {
+            subject_id = utils.sobject_get(
+                &args[1].object.fields,
+                "subjectId",
+            ) orelse Value.null_val;
+            message_segments = self.connect_api_extract_message_segments(args[1], 4) orelse
+                Value.null_val;
+        } else if (args.len >= 4) {
+            subject_id = args[1];
+            message_segments = try self.connect_api_build_text_segments(args[3]);
+        }
+        const body_value = try self.connect_api_create_feed_body(message_segments);
+        const feed_id = try self.connect_api_persist_feed_item(subject_id, body_value);
+        const feed_element = try self.connect_api_create_object("ConnectApi.FeedElement");
+        try feed_element.fields.put(self.arena, "id", Value{ .string = feed_id });
+        try feed_element.fields.put(self.arena, "body", body_value);
+        return Value{ .object = feed_element };
+    }
+
+    fn connect_api_post_comment(
+        self: *Evaluator,
+        args: []const Value,
+    ) !Value {
+        var message_segments: Value = Value.null_val;
+        if (args.len >= 3 and args[2] == .object) {
+            message_segments = self.connect_api_extract_message_segments(args[2], 4) orelse
+                Value.null_val;
+        }
+        const body_value = try self.connect_api_create_feed_body(message_segments);
+        const comment = try self.connect_api_create_object("ConnectApi.Comment");
+        try comment.fields.put(self.arena, "id", Value{ .string = try self.alloc_id() });
+        try comment.fields.put(self.arena, "body", body_value);
+        return Value{ .object = comment };
+    }
+
+    /// Fall-back message_segments builder for the 4-arg postFeedElement form
+    /// (subjectId, feedItemType, text). Wraps the text in a
+    /// ConnectApi.TextSegmentInput list.
+    fn connect_api_build_text_segments(
+        self: *Evaluator,
+        text_arg: Value,
+    ) !Value {
+        const text_segments = try self.arena.create(types.ListValue);
+        text_segments.* = .{};
+        const text_segment = try self.connect_api_create_object("ConnectApi.TextSegmentInput");
+        const text_value = switch (text_arg) {
+            .string => text_arg.string,
+            else => try utils.coerce_to_string(text_arg, self.arena),
+        };
+        try text_segment.fields.put(self.arena, "text", Value{ .string = text_value });
+        try text_segments.items.append(self.arena, Value{ .object = text_segment });
+        return Value{ .list = text_segments };
     }
 
     fn throw_null_pointer_exception(self: *Evaluator) !void {
