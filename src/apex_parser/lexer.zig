@@ -12,7 +12,7 @@ const SourceLoc = types.SourceLoc;
 
 pub fn tokenize(source: []const u8, arena: std.mem.Allocator) ![]Token {
     var lexer = Lexer{ .source = source, .arena = arena };
-    return lexer.scanAll();
+    return lexer.scan_all();
 }
 
 const Lexer = struct {
@@ -22,7 +22,7 @@ const Lexer = struct {
     line: u32 = 1,
     col: u32 = 1,
 
-    fn scanAll(self: *Lexer) ![]Token {
+    fn scan_all(self: *Lexer) ![]Token {
         var tokens: std.ArrayListUnmanaged(Token) = .empty;
         while (true) {
             const tok = try self.next();
@@ -33,10 +33,10 @@ const Lexer = struct {
     }
 
     fn next(self: *Lexer) !Token {
-        self.skipWhitespaceAndComments();
+        self.skip_whitespace_and_comments();
 
         if (self.pos >= self.source.len) {
-            return self.makeToken(.eof, "");
+            return self.make_token(.eof, "");
         }
 
         const start = self.pos;
@@ -44,16 +44,16 @@ const Lexer = struct {
         const c = self.source[self.pos];
 
         // 文字列リテラル (単一引用符)
-        if (c == '\'') return self.scanString(start, start_loc);
+        if (c == '\'') return self.scan_string(start, start_loc);
 
         // 数値リテラル
-        if (std.ascii.isDigit(c)) return self.scanNumber(start, start_loc);
+        if (std.ascii.isDigit(c)) return self.scan_number(start, start_loc);
 
         // 識別子・キーワード
-        if (is_ident_start(c)) return self.scanIdentifier(start, start_loc);
+        if (is_ident_start(c)) return self.scan_identifier(start, start_loc);
 
         // アノテーション
-        if (c == '@') return self.scanAnnotation(start, start_loc);
+        if (c == '@') return self.scan_annotation(start, start_loc);
 
         // ドット始まり小数: .01, .5 etc.
         if (c == '.' and self.pos + 1 < self.source.len and std.ascii.isDigit(self.source[self.pos + 1])) {
@@ -61,21 +61,21 @@ const Lexer = struct {
             while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
                 self.advance();
             }
-            return self.makeTokenAt(.double_literal, self.source[start..self.pos], start_loc);
+            return self.make_token_at(.double_literal, self.source[start..self.pos], start_loc);
         }
 
         // SOQL リテラル [SELECT ...]
         if (c == '[') {
-            if (self.peekSoql()) return self.scanSoql(start, start_loc);
+            if (self.peek_soql()) return self.scan_soql(start, start_loc);
             self.advance();
-            return self.makeTokenAt(.lbracket, self.source[start..self.pos], start_loc);
+            return self.make_token_at(.lbracket, self.source[start..self.pos], start_loc);
         }
 
         // 2文字・1文字演算子
-        return self.scanOperator(start, start_loc);
+        return self.scan_operator(start, start_loc);
     }
 
-    fn scanString(self: *Lexer, start: u32, start_loc: SourceLoc) !Token {
+    fn scan_string(self: *Lexer, start: u32, start_loc: SourceLoc) !Token {
         self.advance(); // skip opening '
         while (self.pos < self.source.len) {
             if (self.source[self.pos] == '\\') {
@@ -85,15 +85,15 @@ const Lexer = struct {
             }
             if (self.source[self.pos] == '\'') {
                 self.advance(); // skip closing '
-                return self.makeTokenAt(.string_literal, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.string_literal, self.source[start..self.pos], start_loc);
             }
             self.advance();
         }
         // 未終端文字列
-        return self.makeTokenAt(.string_literal, self.source[start..self.pos], start_loc);
+        return self.make_token_at(.string_literal, self.source[start..self.pos], start_loc);
     }
 
-    fn scanNumber(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
+    fn scan_number(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         var is_double = false;
         while (self.pos < self.source.len and (std.ascii.isDigit(self.source[self.pos]) or self.source[self.pos] == '.')) {
             if (self.source[self.pos] == '.') {
@@ -105,35 +105,35 @@ const Lexer = struct {
         // long suffix (L/l)
         if (self.pos < self.source.len and (self.source[self.pos] == 'L' or self.source[self.pos] == 'l')) {
             self.advance();
-            return self.makeTokenAt(.long_literal, self.source[start..self.pos], start_loc);
+            return self.make_token_at(.long_literal, self.source[start..self.pos], start_loc);
         }
         // double suffix (D/d)
         if (self.pos < self.source.len and (self.source[self.pos] == 'D' or self.source[self.pos] == 'd')) {
             self.advance();
-            return self.makeTokenAt(.double_literal, self.source[start..self.pos], start_loc);
+            return self.make_token_at(.double_literal, self.source[start..self.pos], start_loc);
         }
         const kind: TokenKind = if (is_double) .double_literal else .integer_literal;
-        return self.makeTokenAt(kind, self.source[start..self.pos], start_loc);
+        return self.make_token_at(kind, self.source[start..self.pos], start_loc);
     }
 
-    fn scanIdentifier(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
-        while (self.pos < self.source.len and isIdentCont(self.source[self.pos])) {
+    fn scan_identifier(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
+        while (self.pos < self.source.len and is_ident_cont(self.source[self.pos])) {
             self.advance();
         }
         const lexeme = self.source[start..self.pos];
-        const kind = keywordKind(lexeme) orelse .identifier;
-        return self.makeTokenAt(kind, lexeme, start_loc);
+        const kind = keyword_kind(lexeme) orelse .identifier;
+        return self.make_token_at(kind, lexeme, start_loc);
     }
 
-    fn scanAnnotation(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
+    fn scan_annotation(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         self.advance(); // skip @
-        while (self.pos < self.source.len and isIdentCont(self.source[self.pos])) {
+        while (self.pos < self.source.len and is_ident_cont(self.source[self.pos])) {
             self.advance();
         }
-        return self.makeTokenAt(.annotation, self.source[start..self.pos], start_loc);
+        return self.make_token_at(.annotation, self.source[start..self.pos], start_loc);
     }
 
-    fn peekSoql(self: *Lexer) bool {
+    fn peek_soql(self: *Lexer) bool {
         // Check if [ is followed by SELECT (case-insensitive), skipping whitespace including newlines
         var i = self.pos + 1;
         while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t' or self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1) {}
@@ -152,7 +152,7 @@ const Lexer = struct {
         return false;
     }
 
-    fn scanSoql(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
+    fn scan_soql(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         var depth: u32 = 0;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
@@ -161,7 +161,7 @@ const Lexer = struct {
                 depth -= 1;
                 if (depth == 0) {
                     self.advance();
-                    return self.makeTokenAt(.soql_literal, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.soql_literal, self.source[start..self.pos], start_loc);
                 }
             }
             // skip line comments inside SOQL (e.g. // comment with 'quotes')
@@ -197,10 +197,10 @@ const Lexer = struct {
             }
             self.advance();
         }
-        return self.makeTokenAt(.soql_literal, self.source[start..self.pos], start_loc);
+        return self.make_token_at(.soql_literal, self.source[start..self.pos], start_loc);
     }
 
-    fn scanOperator(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
+    fn scan_operator(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         const c = self.source[self.pos];
         self.advance();
 
@@ -210,130 +210,130 @@ const Lexer = struct {
             '+' => {
                 if (next_char == '+') {
                     self.advance();
-                    return self.makeTokenAt(.plus_plus, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.plus_plus, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.plus_assign, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.plus_assign, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.plus, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.plus, self.source[start..self.pos], start_loc);
             },
             '-' => {
                 if (next_char == '-') {
                     self.advance();
-                    return self.makeTokenAt(.minus_minus, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.minus_minus, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.minus_assign, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.minus_assign, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.minus, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.minus, self.source[start..self.pos], start_loc);
             },
             '*' => {
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.star_assign, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.star_assign, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.star, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.star, self.source[start..self.pos], start_loc);
             },
             '/' => {
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.slash_assign, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.slash_assign, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.slash, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.slash, self.source[start..self.pos], start_loc);
             },
-            '%' => return self.makeTokenAt(.percent, self.source[start..self.pos], start_loc),
+            '%' => return self.make_token_at(.percent, self.source[start..self.pos], start_loc),
             '=' => {
                 if (next_char == '=') {
                     self.advance();
                     if (self.pos < self.source.len and self.source[self.pos] == '=') {
                         self.advance();
-                        return self.makeTokenAt(.strict_eq, self.source[start..self.pos], start_loc);
+                        return self.make_token_at(.strict_eq, self.source[start..self.pos], start_loc);
                     }
-                    return self.makeTokenAt(.eq, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.eq, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '>') {
                     self.advance();
-                    return self.makeTokenAt(.arrow, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.arrow, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.assign, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.assign, self.source[start..self.pos], start_loc);
             },
             '!' => {
                 if (next_char == '=') {
                     self.advance();
                     if (self.pos < self.source.len and self.source[self.pos] == '=') {
                         self.advance();
-                        return self.makeTokenAt(.strict_neq, self.source[start..self.pos], start_loc);
+                        return self.make_token_at(.strict_neq, self.source[start..self.pos], start_loc);
                     }
-                    return self.makeTokenAt(.neq, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.neq, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.not_op, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.not_op, self.source[start..self.pos], start_loc);
             },
             '<' => {
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.lte, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.lte, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '>') {
                     self.advance();
-                    return self.makeTokenAt(.neq, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.neq, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.lt, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.lt, self.source[start..self.pos], start_loc);
             },
             '>' => {
                 if (next_char == '=') {
                     self.advance();
-                    return self.makeTokenAt(.gte, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.gte, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.gt, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.gt, self.source[start..self.pos], start_loc);
             },
             '&' => {
                 if (next_char == '&') {
                     self.advance();
-                    return self.makeTokenAt(.and_op, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.and_op, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.ampersand, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.ampersand, self.source[start..self.pos], start_loc);
             },
             '|' => {
                 if (next_char == '|') {
                     self.advance();
-                    return self.makeTokenAt(.or_op, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.or_op, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.pipe, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.pipe, self.source[start..self.pos], start_loc);
             },
-            '^' => return self.makeTokenAt(.caret, self.source[start..self.pos], start_loc),
-            '~' => return self.makeTokenAt(.not_op, self.source[start..self.pos], start_loc),
-            '(' => return self.makeTokenAt(.lparen, self.source[start..self.pos], start_loc),
-            ')' => return self.makeTokenAt(.rparen, self.source[start..self.pos], start_loc),
-            '{' => return self.makeTokenAt(.lbrace, self.source[start..self.pos], start_loc),
-            '}' => return self.makeTokenAt(.rbrace, self.source[start..self.pos], start_loc),
-            ']' => return self.makeTokenAt(.rbracket, self.source[start..self.pos], start_loc),
-            '.' => return self.makeTokenAt(.dot, self.source[start..self.pos], start_loc),
-            ',' => return self.makeTokenAt(.comma, self.source[start..self.pos], start_loc),
-            ';' => return self.makeTokenAt(.semicolon, self.source[start..self.pos], start_loc),
-            ':' => return self.makeTokenAt(.colon, self.source[start..self.pos], start_loc),
+            '^' => return self.make_token_at(.caret, self.source[start..self.pos], start_loc),
+            '~' => return self.make_token_at(.not_op, self.source[start..self.pos], start_loc),
+            '(' => return self.make_token_at(.lparen, self.source[start..self.pos], start_loc),
+            ')' => return self.make_token_at(.rparen, self.source[start..self.pos], start_loc),
+            '{' => return self.make_token_at(.lbrace, self.source[start..self.pos], start_loc),
+            '}' => return self.make_token_at(.rbrace, self.source[start..self.pos], start_loc),
+            ']' => return self.make_token_at(.rbracket, self.source[start..self.pos], start_loc),
+            '.' => return self.make_token_at(.dot, self.source[start..self.pos], start_loc),
+            ',' => return self.make_token_at(.comma, self.source[start..self.pos], start_loc),
+            ';' => return self.make_token_at(.semicolon, self.source[start..self.pos], start_loc),
+            ':' => return self.make_token_at(.colon, self.source[start..self.pos], start_loc),
             '?' => {
                 if (next_char == '?') {
                     self.advance();
                     // Check for ??=
                     if (self.pos < self.source.len and self.source[self.pos] == '=') {
                         self.advance();
-                        return self.makeTokenAt(.question_question_equal, self.source[start..self.pos], start_loc);
+                        return self.make_token_at(.question_question_equal, self.source[start..self.pos], start_loc);
                     }
-                    return self.makeTokenAt(.question_question, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.question_question, self.source[start..self.pos], start_loc);
                 }
                 if (next_char == '.') {
                     self.advance();
-                    return self.makeTokenAt(.question_dot, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(.question_dot, self.source[start..self.pos], start_loc);
                 }
-                return self.makeTokenAt(.question, self.source[start..self.pos], start_loc);
+                return self.make_token_at(.question, self.source[start..self.pos], start_loc);
             },
-            else => return self.makeTokenAt(.identifier, self.source[start..self.pos], start_loc),
+            else => return self.make_token_at(.identifier, self.source[start..self.pos], start_loc),
         }
     }
 
-    fn skipWhitespaceAndComments(self: *Lexer) void {
+    fn skip_whitespace_and_comments(self: *Lexer) void {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
             if (c == ' ' or c == '\t' or c == '\r') {
@@ -389,11 +389,11 @@ const Lexer = struct {
         return .{ .line = self.line, .col = self.col, .offset = self.pos };
     }
 
-    fn makeToken(self: *const Lexer, kind: TokenKind, lexeme: []const u8) Token {
+    fn make_token(self: *const Lexer, kind: TokenKind, lexeme: []const u8) Token {
         return .{ .kind = kind, .lexeme = lexeme, .loc = self.loc() };
     }
 
-    fn makeTokenAt(_: *const Lexer, kind: TokenKind, lexeme: []const u8, token_loc: SourceLoc) Token {
+    fn make_token_at(_: *const Lexer, kind: TokenKind, lexeme: []const u8, token_loc: SourceLoc) Token {
         return .{ .kind = kind, .lexeme = lexeme, .loc = token_loc };
     }
 };
@@ -402,11 +402,11 @@ fn is_ident_start(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_';
 }
 
-fn isIdentCont(c: u8) bool {
+fn is_ident_cont(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
-fn keywordKind(lexeme: []const u8) ?TokenKind {
+fn keyword_kind(lexeme: []const u8) ?TokenKind {
     const map = std.StaticStringMap(TokenKind).initComptime(.{
         .{ "if", .if_kw },
         .{ "else", .else_kw },

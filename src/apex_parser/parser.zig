@@ -19,20 +19,20 @@ pub const ParseResult = struct {
 
 pub fn parse(tokens: []const Token, arena: std.mem.Allocator) ![]ast.Decl {
     var p = Parser{ .tokens = tokens, .arena = arena };
-    return p.parseProgram();
+    return p.parse_program();
 }
 
 /// 診断情報付きでパースする。LSP 向け。
-pub fn parseWithDiagnostics(tokens: []const Token, arena: std.mem.Allocator) !ParseResult {
+pub fn parse_with_diagnostics(tokens: []const Token, arena: std.mem.Allocator) !ParseResult {
     var p = Parser{ .tokens = tokens, .arena = arena };
-    const decls = try p.parseProgram();
+    const decls = try p.parse_program();
     return .{
         .decls = decls,
         .diagnostics = try p.diagnostics.toOwnedSlice(arena),
     };
 }
 
-pub fn parseExpr(tokens: []const Token, arena: std.mem.Allocator) !*ast.Expr {
+pub fn parse_expr(tokens: []const Token, arena: std.mem.Allocator) !*ast.Expr {
     var p = Parser{ .tokens = tokens, .arena = arena };
     return p.expression();
 }
@@ -47,9 +47,9 @@ const Parser = struct {
     // トップレベル
     // -----------------------------------------------------------------------
 
-    fn parseProgram(self: *Parser) ![]ast.Decl {
+    fn parse_program(self: *Parser) ![]ast.Decl {
         var decls: std.ArrayListUnmanaged(ast.Decl) = .empty;
-        while (!self.atEnd()) {
+        while (!self.at_end()) {
             // skip annotations at top level
             var annotations: std.ArrayListUnmanaged([]const u8) = .empty;
             while (self.check(.annotation)) {
@@ -57,16 +57,16 @@ const Parser = struct {
                 self.pos += 1;
             }
             // skip modifiers before class/interface/enum
-            const mods = self.parseModifiers();
+            const mods = self.parse_modifiers();
 
             if (self.check(.class_kw)) {
-                try decls.append(self.arena, .{ .class_decl = try self.parseClassDecl(mods, try annotations.toOwnedSlice(self.arena)) });
+                try decls.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
             } else if (self.check(.interface_kw)) {
-                try decls.append(self.arena, .{ .interface_decl = try self.parseInterfaceDecl(mods) });
+                try decls.append(self.arena, .{ .interface_decl = try self.parse_interface_decl(mods) });
             } else if (self.check(.enum_kw)) {
-                try decls.append(self.arena, .{ .enum_decl = try self.parseEnumDecl(mods) });
+                try decls.append(self.arena, .{ .enum_decl = try self.parse_enum_decl(mods) });
             } else if (self.check(.trigger_kw)) {
-                try decls.append(self.arena, .{ .trigger_decl = try self.parseTriggerDecl() });
+                try decls.append(self.arena, .{ .trigger_decl = try self.parse_trigger_decl() });
             } else {
                 // skip unknown token
                 self.pos += 1;
@@ -75,10 +75,10 @@ const Parser = struct {
         return decls.toOwnedSlice(self.arena);
     }
 
-    fn parseClassDecl(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!*ast.ClassDecl {
-        const loc = self.currentLoc();
+    fn parse_class_decl(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!*ast.ClassDecl {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'class'
-        const name = try self.expectIdentifier();
+        const name = try self.expect_identifier();
 
         // sharing mode was parsed as modifiers — detect from preceding tokens
         const sharing: ast.SharingMode = .inherited;
@@ -89,20 +89,20 @@ const Parser = struct {
         // For now, sharing is handled by modifiers parse detecting 'with sharing'
 
         var super_class: ?TypeRef = null;
-        if (self.matchKind(.extends_kw)) {
-            super_class = try self.parseTypeRef();
+        if (self.match_kind(.extends_kw)) {
+            super_class = try self.parse_type_ref();
         }
 
         var interfaces: std.ArrayListUnmanaged(TypeRef) = .empty;
-        if (self.matchKind(.implements_kw)) {
-            try interfaces.append(self.arena, try self.parseTypeRef());
-            while (self.matchKind(.comma)) {
-                try interfaces.append(self.arena, try self.parseTypeRef());
+        if (self.match_kind(.implements_kw)) {
+            try interfaces.append(self.arena, try self.parse_type_ref());
+            while (self.match_kind(.comma)) {
+                try interfaces.append(self.arena, try self.parse_type_ref());
             }
         }
 
         try self.expect(.lbrace);
-        const members = try self.parseClassBody();
+        const members = try self.parse_class_body();
         try self.expect(.rbrace);
 
         const decl = try self.arena.create(ast.ClassDecl);
@@ -119,23 +119,23 @@ const Parser = struct {
         return decl;
     }
 
-    fn parseInterfaceDecl(self: *Parser, mods: ast.Modifiers) !*ast.InterfaceDecl {
-        const loc = self.currentLoc();
+    fn parse_interface_decl(self: *Parser, mods: ast.Modifiers) !*ast.InterfaceDecl {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'interface'
-        const name = try self.expectIdentifier();
+        const name = try self.expect_identifier();
 
         var extends: std.ArrayListUnmanaged(TypeRef) = .empty;
-        if (self.matchKind(.extends_kw)) {
-            try extends.append(self.arena, try self.parseTypeRef());
-            while (self.matchKind(.comma)) {
-                try extends.append(self.arena, try self.parseTypeRef());
+        if (self.match_kind(.extends_kw)) {
+            try extends.append(self.arena, try self.parse_type_ref());
+            while (self.match_kind(.comma)) {
+                try extends.append(self.arena, try self.parse_type_ref());
             }
         }
 
         try self.expect(.lbrace);
         // For now, skip interface body
         var depth: u32 = 1;
-        while (!self.atEnd() and depth > 0) {
+        while (!self.at_end() and depth > 0) {
             if (self.check(.lbrace)) depth += 1;
             if (self.check(.rbrace)) depth -= 1;
             if (depth > 0) self.pos += 1;
@@ -152,18 +152,18 @@ const Parser = struct {
         return decl;
     }
 
-    fn parseEnumDecl(self: *Parser, mods: ast.Modifiers) !*ast.EnumDecl {
-        const loc = self.currentLoc();
+    fn parse_enum_decl(self: *Parser, mods: ast.Modifiers) !*ast.EnumDecl {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'enum'
-        const name = try self.expectIdentifier();
+        const name = try self.expect_identifier();
 
         try self.expect(.lbrace);
         var values: std.ArrayListUnmanaged([]const u8) = .empty;
-        while (!self.atEnd() and !self.check(.rbrace)) {
+        while (!self.at_end() and !self.check(.rbrace)) {
             if (self.check(.identifier)) {
                 try values.append(self.arena, self.current().lexeme);
                 self.pos += 1;
-                _ = self.matchKind(.comma);
+                _ = self.match_kind(.comma);
             } else {
                 self.pos += 1;
             }
@@ -180,10 +180,10 @@ const Parser = struct {
         return decl;
     }
 
-    fn parseTriggerDecl(self: *Parser) !*ast.TriggerDecl {
-        const loc = self.currentLoc();
+    fn parse_trigger_decl(self: *Parser) !*ast.TriggerDecl {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'trigger'
-        const name = try self.expectIdentifier();
+        const name = try self.expect_identifier();
 
         // skip 'on'
         if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "on")) {
@@ -191,18 +191,18 @@ const Parser = struct {
         }
 
         // object name
-        const object_name = try self.expectIdentifier();
+        const object_name = try self.expect_identifier();
 
         // parse event list: (before insert, after insert, ...)
         try self.expect(.lparen);
         var events: std.ArrayListUnmanaged(ast.TriggerEvent) = .empty;
-        while (!self.atEnd() and !self.check(.rparen)) {
+        while (!self.at_end() and !self.check(.rparen)) {
             // Parse "before"/"after" + "insert"/"update"/"delete"/"undelete"
             if (self.check(.identifier)) {
                 const timing = self.current().lexeme;
                 self.pos += 1;
                 // The DML keyword may be a keyword token or identifier
-                const op_lexeme = if (!self.atEnd()) self.current().lexeme else "";
+                const op_lexeme = if (!self.at_end()) self.current().lexeme else "";
                 self.pos += 1;
 
                 if (std.ascii.eqlIgnoreCase(timing, "before")) {
@@ -227,13 +227,13 @@ const Parser = struct {
             } else {
                 self.pos += 1;
             }
-            _ = self.matchKind(.comma);
+            _ = self.match_kind(.comma);
         }
         try self.expect(.rparen);
 
         // parse body { ... }
         try self.expect(.lbrace);
-        const body = try self.parseBlock();
+        const body = try self.parse_block();
         try self.expect(.rbrace);
 
         const decl = try self.arena.create(ast.TriggerDecl);
@@ -247,19 +247,19 @@ const Parser = struct {
         return decl;
     }
 
-    fn parseClassBody(self: *Parser) anyerror![]ast.Decl {
+    fn parse_class_body(self: *Parser) anyerror![]ast.Decl {
         var members: std.ArrayListUnmanaged(ast.Decl) = .empty;
-        while (!self.atEnd() and !self.check(.rbrace)) {
+        while (!self.at_end() and !self.check(.rbrace)) {
             var annotations: std.ArrayListUnmanaged([]const u8) = .empty;
             while (self.check(.annotation)) {
                 const ann_lexeme = self.current().lexeme;
                 self.pos += 1;
                 // Capture annotation params like @IsTest(seeAllData=true)
-                if (self.matchKind(.lparen)) {
+                if (self.match_kind(.lparen)) {
                     // Build full annotation string with params
                     const param_start = self.pos;
                     var depth: u32 = 1;
-                    while (!self.atEnd() and depth > 0) {
+                    while (!self.at_end() and depth > 0) {
                         if (self.check(.lparen)) depth += 1;
                         if (self.check(.rparen)) {
                             depth -= 1;
@@ -283,59 +283,59 @@ const Parser = struct {
                 }
             }
 
-            const mods = self.parseModifiers();
+            const mods = self.parse_modifiers();
 
             if (self.check(.class_kw)) {
-                try members.append(self.arena, .{ .class_decl = try self.parseClassDecl(mods, try annotations.toOwnedSlice(self.arena)) });
+                try members.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
             } else if (self.check(.interface_kw)) {
-                try members.append(self.arena, .{ .interface_decl = try self.parseInterfaceDecl(mods) });
+                try members.append(self.arena, .{ .interface_decl = try self.parse_interface_decl(mods) });
             } else if (self.check(.enum_kw)) {
-                try members.append(self.arena, .{ .enum_decl = try self.parseEnumDecl(mods) });
+                try members.append(self.arena, .{ .enum_decl = try self.parse_enum_decl(mods) });
             } else if (self.check(.lbrace)) {
                 // static initializer block — parse body
                 self.pos += 1;
-                const body = try self.parseBlock();
+                const body = try self.parse_block();
                 try self.expect(.rbrace);
                 try members.append(self.arena, .{ .static_init = body });
             } else {
                 // method or field: Type name ( ... ) { ... } or Type name ;/=
-                const member = try self.parseMethodOrField(mods, try annotations.toOwnedSlice(self.arena));
+                const member = try self.parse_method_or_field(mods, try annotations.toOwnedSlice(self.arena));
                 try members.append(self.arena, member);
             }
         }
         return members.toOwnedSlice(self.arena);
     }
 
-    fn parseMethodOrField(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!ast.Decl {
-        const loc = self.currentLoc();
+    fn parse_method_or_field(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!ast.Decl {
+        const loc = self.current_loc();
 
         // Check for constructor: ClassName(
         // We need to look ahead: if current is identifier and next is lparen, it's a constructor
-        if (self.check(.identifier) and self.peekKind(1) == .lparen) {
-            return self.parseConstructor(mods, loc);
+        if (self.check(.identifier) and self.peek_kind(1) == .lparen) {
+            return self.parse_constructor(mods, loc);
         }
 
-        const type_ref = try self.parseTypeRef();
+        const type_ref = try self.parse_type_ref();
 
         // After type, if next is ( then it could be constructor with return type being class name
         if (self.check(.lparen)) {
-            return self.parseConstructor(mods, loc);
+            return self.parse_constructor(mods, loc);
         }
 
         // Method/field name — keywords like 'when', 'with' can be member names in Apex
-        const name = try self.expectIdentifierOrKeyword();
+        const name = try self.expect_identifier_or_keyword();
 
         // method: name followed by (
-        if (self.matchKind(.lparen)) {
-            const params = try self.parseParams();
+        if (self.match_kind(.lparen)) {
+            const params = try self.parse_params();
             try self.expect(.rparen);
             var body: []ast.Stmt = &.{};
-            if (self.matchKind(.lbrace)) {
-                body = try self.parseBlock();
+            if (self.match_kind(.lbrace)) {
+                body = try self.parse_block();
                 try self.expect(.rbrace);
             } else {
                 // abstract method or interface method
-                _ = self.matchKind(.semicolon);
+                _ = self.match_kind(.semicolon);
             }
 
             const decl = try self.arena.create(ast.MethodDecl);
@@ -356,9 +356,9 @@ const Parser = struct {
         var getter_body: ?[]ast.Stmt = null;
         var setter_body: ?[]ast.Stmt = null;
 
-        if (self.matchKind(.lbrace)) {
+        if (self.match_kind(.lbrace)) {
             // Property declaration: Type name { get { ... } set { ... } }
-            while (!self.atEnd() and !self.check(.rbrace)) {
+            while (!self.at_end() and !self.check(.rbrace)) {
                 // Skip modifiers like 'private', 'public' before get/set
                 while (self.check(.private_kw) or self.check(.public_kw) or self.check(.protected_kw)) {
                     self.pos += 1;
@@ -367,18 +367,18 @@ const Parser = struct {
                     const accessor = self.current().lexeme;
                     self.pos += 1;
                     if (std.ascii.eqlIgnoreCase(accessor, "get")) {
-                        if (self.matchKind(.lbrace)) {
-                            getter_body = try self.parseBlock();
+                        if (self.match_kind(.lbrace)) {
+                            getter_body = try self.parse_block();
                             try self.expect(.rbrace);
                         } else {
-                            _ = self.matchKind(.semicolon);
+                            _ = self.match_kind(.semicolon);
                         }
                     } else if (std.ascii.eqlIgnoreCase(accessor, "set")) {
-                        if (self.matchKind(.lbrace)) {
-                            setter_body = try self.parseBlock();
+                        if (self.match_kind(.lbrace)) {
+                            setter_body = try self.parse_block();
                             try self.expect(.rbrace);
                         } else {
-                            _ = self.matchKind(.semicolon);
+                            _ = self.match_kind(.semicolon);
                         }
                     }
                 } else {
@@ -388,17 +388,17 @@ const Parser = struct {
             }
             try self.expect(.rbrace);
         } else {
-            if (self.matchKind(.assign)) {
+            if (self.match_kind(.assign)) {
                 initializer = try self.expression();
             }
             // Handle comma-separated field declarations: Type a, b, c;
-            while (self.matchKind(.comma)) {
-                _ = try self.expectIdentifier();
-                if (self.matchKind(.assign)) {
+            while (self.match_kind(.comma)) {
+                _ = try self.expect_identifier();
+                if (self.match_kind(.assign)) {
                     _ = try self.expression();
                 }
             }
-            _ = self.matchKind(.semicolon);
+            _ = self.match_kind(.semicolon);
         }
 
         const decl = try self.arena.create(ast.FieldDecl);
@@ -414,14 +414,14 @@ const Parser = struct {
         return .{ .field_decl = decl };
     }
 
-    fn parseConstructor(self: *Parser, mods: ast.Modifiers, loc: SourceLoc) anyerror!ast.Decl {
+    fn parse_constructor(self: *Parser, mods: ast.Modifiers, loc: SourceLoc) anyerror!ast.Decl {
         // skip constructor name (already positioned at it or past type)
         if (self.check(.identifier)) self.pos += 1;
         try self.expect(.lparen);
-        const params = try self.parseParams();
+        const params = try self.parse_params();
         try self.expect(.rparen);
         try self.expect(.lbrace);
-        const body = try self.parseBlock();
+        const body = try self.parse_block();
         try self.expect(.rbrace);
 
         const decl = try self.arena.create(ast.ConstructorDecl);
@@ -434,21 +434,21 @@ const Parser = struct {
         return .{ .constructor_decl = decl };
     }
 
-    fn parseParams(self: *Parser) ![]ast.Param {
+    fn parse_params(self: *Parser) ![]ast.Param {
         var params: std.ArrayListUnmanaged(ast.Param) = .empty;
         if (self.check(.rparen)) return params.toOwnedSlice(self.arena);
 
         // Skip optional 'final' modifier on parameter
-        _ = self.matchKind(.final_kw);
+        _ = self.match_kind(.final_kw);
         try params.append(self.arena, .{
-            .type_ref = try self.parseTypeRef(),
-            .name = try self.expectIdentifier(),
+            .type_ref = try self.parse_type_ref(),
+            .name = try self.expect_identifier(),
         });
-        while (self.matchKind(.comma)) {
-            _ = self.matchKind(.final_kw);
+        while (self.match_kind(.comma)) {
+            _ = self.match_kind(.final_kw);
             try params.append(self.arena, .{
-                .type_ref = try self.parseTypeRef(),
-                .name = try self.expectIdentifier(),
+                .type_ref = try self.parse_type_ref(),
+                .name = try self.expect_identifier(),
             });
         }
         return params.toOwnedSlice(self.arena);
@@ -458,49 +458,49 @@ const Parser = struct {
     // 文 (Statement)
     // -----------------------------------------------------------------------
 
-    fn parseBlock(self: *Parser) anyerror![]ast.Stmt {
+    fn parse_block(self: *Parser) anyerror![]ast.Stmt {
         var stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
-        while (!self.atEnd() and !self.check(.rbrace)) {
-            try stmts.append(self.arena, try self.parseStmt());
+        while (!self.at_end() and !self.check(.rbrace)) {
+            try stmts.append(self.arena, try self.parse_stmt());
         }
         return stmts.toOwnedSlice(self.arena);
     }
 
-    fn parseStmt(self: *Parser) anyerror!ast.Stmt {
-        const kind = self.currentKind();
+    fn parse_stmt(self: *Parser) anyerror!ast.Stmt {
+        const kind = self.current_kind();
 
-        if (kind == .if_kw) return self.parseIfStmt();
-        if (kind == .for_kw) return self.parseForStmt();
-        if (kind == .while_kw) return self.parseWhileStmt();
-        if (kind == .do_kw) return self.parseDoWhileStmt();
-        if (kind == .return_kw) return self.parseReturnStmt();
+        if (kind == .if_kw) return self.parse_if_stmt();
+        if (kind == .for_kw) return self.parse_for_stmt();
+        if (kind == .while_kw) return self.parse_while_stmt();
+        if (kind == .do_kw) return self.parse_do_while_stmt();
+        if (kind == .return_kw) return self.parse_return_stmt();
         if (kind == .break_kw) {
             self.pos += 1;
-            _ = self.matchKind(.semicolon);
+            _ = self.match_kind(.semicolon);
             return .break_stmt;
         }
         if (kind == .continue_kw) {
             self.pos += 1;
-            _ = self.matchKind(.semicolon);
+            _ = self.match_kind(.semicolon);
             return .continue_stmt;
         }
-        if (kind == .switch_kw) return self.parseSwitchStmt();
-        if (kind == .try_kw) return self.parseTryStmt();
-        if (kind == .throw_kw) return self.parseThrowStmt();
-        if (kind == .lbrace) return self.parseBlockStmt();
+        if (kind == .switch_kw) return self.parse_switch_stmt();
+        if (kind == .try_kw) return self.parse_try_stmt();
+        if (kind == .throw_kw) return self.parse_throw_stmt();
+        if (kind == .lbrace) return self.parse_block_stmt();
 
         // DML statements
         if (kind == .insert_kw or kind == .update_kw or kind == .upsert_kw or
             kind == .delete_kw or kind == .undelete_kw or kind == .merge_kw)
         {
-            return self.parseDmlStmt();
+            return self.parse_dml_stmt();
         }
 
         // 'final' local variable: final Type name = ...
         if (kind == .final_kw) {
             self.pos += 1; // skip 'final'
-            if (self.looksLikeVarDecl()) {
-                return self.parseVarDeclStmt();
+            if (self.looks_like_var_decl()) {
+                return self.parse_var_decl_stmt();
             }
             // final not followed by var decl — treat as expression fallthrough
             self.pos -= 1;
@@ -508,8 +508,8 @@ const Parser = struct {
 
         // Variable declaration or expression statement
         // Heuristic: if it looks like Type name = ... or Type name ;
-        if (self.looksLikeVarDecl()) {
-            return self.parseVarDeclStmt();
+        if (self.looks_like_var_decl()) {
+            return self.parse_var_decl_stmt();
         }
 
         // Expression statement
@@ -520,7 +520,7 @@ const Parser = struct {
             const mc = expr.method_call;
             if (std.ascii.eqlIgnoreCase(mc.method, "runAs")) {
                 self.pos += 1; // skip {
-                const block_stmts = try self.parseBlock();
+                const block_stmts = try self.parse_block();
                 try self.expect(.rbrace);
                 const run_as = try self.arena.create(ast.RunAsStmt);
                 run_as.* = .{
@@ -531,22 +531,22 @@ const Parser = struct {
             }
         }
 
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
         return .{ .expr_stmt = expr };
     }
 
-    fn parseIfStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_if_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'if'
         try self.expect(.lparen);
         const condition = try self.expression();
         try self.expect(.rparen);
 
-        const then_body = try self.parseSingleOrBlock();
+        const then_body = try self.parse_single_or_block();
 
         var else_body: ?[]ast.Stmt = null;
-        if (self.matchKind(.else_kw)) {
-            else_body = try self.parseSingleOrBlock();
+        if (self.match_kind(.else_kw)) {
+            else_body = try self.parse_single_or_block();
         }
 
         const stmt = try self.arena.create(ast.IfStmt);
@@ -554,19 +554,19 @@ const Parser = struct {
         return .{ .if_stmt = stmt };
     }
 
-    fn parseForStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_for_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'for'
         try self.expect(.lparen);
 
         // Detect for-each: Type name : expr
-        if (self.looksLikeForEach()) {
-            const elem_type = try self.parseTypeRef();
-            const elem_name = try self.expectIdentifier();
+        if (self.looks_like_for_each()) {
+            const elem_type = try self.parse_type_ref();
+            const elem_name = try self.expect_identifier();
             try self.expect(.colon);
             const iterable = try self.expression();
             try self.expect(.rparen);
-            const body = try self.parseSingleOrBlock();
+            const body = try self.parse_single_or_block();
 
             const stmt = try self.arena.create(ast.ForEachStmt);
             stmt.* = .{ .elem_type = elem_type, .elem_name = elem_name, .iterable = iterable, .body = body, .loc = loc };
@@ -577,14 +577,14 @@ const Parser = struct {
         var init: ?*ast.Stmt = null;
         if (!self.check(.semicolon)) {
             const init_stmt = try self.arena.create(ast.Stmt);
-            if (self.looksLikeVarDecl()) {
-                const type_ref = try self.parseTypeRef();
+            if (self.looks_like_var_decl()) {
+                const type_ref = try self.parse_type_ref();
                 var init_stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
                 while (true) {
-                    const decl_loc = self.currentLoc();
-                    const name = try self.expectIdentifier();
+                    const decl_loc = self.current_loc();
+                    const name = try self.expect_identifier();
                     var initializer: ?*ast.Expr = null;
-                    if (self.matchKind(.assign)) {
+                    if (self.match_kind(.assign)) {
                         initializer = try self.expression();
                     }
 
@@ -592,7 +592,7 @@ const Parser = struct {
                     decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = decl_loc };
                     try init_stmts.append(self.arena, .{ .var_decl = decl });
 
-                    if (!self.matchKind(.comma)) break;
+                    if (!self.match_kind(.comma)) break;
                 }
 
                 if (init_stmts.items.len == 1) {
@@ -606,13 +606,13 @@ const Parser = struct {
             }
             init = init_stmt;
         }
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         var condition: ?*ast.Expr = null;
         if (!self.check(.semicolon)) {
             condition = try self.expression();
         }
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         var update: ?*ast.Expr = null;
         if (!self.check(.rparen)) {
@@ -620,59 +620,59 @@ const Parser = struct {
         }
         try self.expect(.rparen);
 
-        const body = try self.parseSingleOrBlock();
+        const body = try self.parse_single_or_block();
 
         const stmt = try self.arena.create(ast.ForStmt);
         stmt.* = .{ .init = init, .condition = condition, .update = update, .body = body, .loc = loc };
         return .{ .for_stmt = stmt };
     }
 
-    fn parseWhileStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_while_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'while'
         try self.expect(.lparen);
         const condition = try self.expression();
         try self.expect(.rparen);
-        const body = try self.parseSingleOrBlock();
+        const body = try self.parse_single_or_block();
 
         const stmt = try self.arena.create(ast.WhileStmt);
         stmt.* = .{ .condition = condition, .body = body, .loc = loc };
         return .{ .while_stmt = stmt };
     }
 
-    fn parseDoWhileStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_do_while_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'do'
         try self.expect(.lbrace);
-        const body = try self.parseBlock();
+        const body = try self.parse_block();
         try self.expect(.rbrace);
         try self.expect(.while_kw);
         try self.expect(.lparen);
         const condition = try self.expression();
         try self.expect(.rparen);
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         const stmt = try self.arena.create(ast.DoWhileStmt);
         stmt.* = .{ .body = body, .condition = condition, .loc = loc };
         return .{ .do_while = stmt };
     }
 
-    fn parseReturnStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_return_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'return'
         var value: ?*ast.Expr = null;
         if (!self.check(.semicolon) and !self.check(.rbrace)) {
             value = try self.expression();
         }
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         const stmt = try self.arena.create(ast.ReturnStmt);
         stmt.* = .{ .value = value, .loc = loc };
         return .{ .return_stmt = stmt };
     }
 
-    fn parseSwitchStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_switch_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'switch'
 
         // Apex: 'switch on expr { when ... }'
@@ -685,12 +685,12 @@ const Parser = struct {
         try self.expect(.lbrace);
 
         var clauses: std.ArrayListUnmanaged(ast.WhenClause) = .empty;
-        while (!self.atEnd() and !self.check(.rbrace)) {
-            if (self.matchKind(.when_kw)) {
+        while (!self.at_end() and !self.check(.rbrace)) {
+            if (self.match_kind(.when_kw)) {
                 if (self.check(.else_kw)) {
                     self.pos += 1;
                     try self.expect(.lbrace);
-                    const body = try self.parseBlock();
+                    const body = try self.parse_block();
                     try self.expect(.rbrace);
                     try clauses.append(self.arena, .{ .pattern = .else_clause, .body = body });
                 } else {
@@ -699,15 +699,15 @@ const Parser = struct {
                     var values: std.ArrayListUnmanaged(ast.Expr) = .empty;
                     try values.append(self.arena, (try self.expression()).*);
                     // Type-binding pattern: when Ident Ident { — skip the variable name
-                    if (self.check(.identifier) and self.peekKind(1) == .lbrace) {
+                    if (self.check(.identifier) and self.peek_kind(1) == .lbrace) {
                         self.pos += 1; // skip variable name
                     } else {
-                        while (self.matchKind(.comma)) {
+                        while (self.match_kind(.comma)) {
                             try values.append(self.arena, (try self.expression()).*);
                         }
                     }
                     try self.expect(.lbrace);
-                    const body = try self.parseBlock();
+                    const body = try self.parse_block();
                     try self.expect(.rbrace);
                     try clauses.append(self.arena, .{
                         .pattern = .{ .values = try values.toOwnedSlice(self.arena) },
@@ -725,21 +725,21 @@ const Parser = struct {
         return .{ .switch_stmt = stmt };
     }
 
-    fn parseTryStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_try_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'try'
         try self.expect(.lbrace);
-        const body = try self.parseBlock();
+        const body = try self.parse_block();
         try self.expect(.rbrace);
 
         var catches: std.ArrayListUnmanaged(ast.CatchClause) = .empty;
-        while (self.matchKind(.catch_kw)) {
+        while (self.match_kind(.catch_kw)) {
             try self.expect(.lparen);
-            const exception_type = try self.parseTypeRef();
-            const name = try self.expectIdentifier();
+            const exception_type = try self.parse_type_ref();
+            const name = try self.expect_identifier();
             try self.expect(.rparen);
             try self.expect(.lbrace);
-            const catch_body = try self.parseBlock();
+            const catch_body = try self.parse_block();
             try self.expect(.rbrace);
             try catches.append(self.arena, .{
                 .exception_type = exception_type,
@@ -749,9 +749,9 @@ const Parser = struct {
         }
 
         var finally_body: ?[]ast.Stmt = null;
-        if (self.matchKind(.finally_kw)) {
+        if (self.match_kind(.finally_kw)) {
             try self.expect(.lbrace);
-            finally_body = try self.parseBlock();
+            finally_body = try self.parse_block();
             try self.expect(.rbrace);
         }
 
@@ -760,20 +760,20 @@ const Parser = struct {
         return .{ .try_stmt = stmt };
     }
 
-    fn parseThrowStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
+    fn parse_throw_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
         self.pos += 1; // skip 'throw'
         const expr = try self.expression();
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         const stmt = try self.arena.create(ast.ThrowStmt);
         stmt.* = .{ .expr = expr, .loc = loc };
         return .{ .throw_stmt = stmt };
     }
 
-    fn parseDmlStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
-        const op: ast.DmlOp = switch (self.currentKind()) {
+    fn parse_dml_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
+        const op: ast.DmlOp = switch (self.current_kind()) {
             .insert_kw => .insert,
             .update_kw => .update,
             .upsert_kw => .upsert,
@@ -795,44 +795,44 @@ const Parser = struct {
             }
         }
         const target = try self.expression();
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         const stmt = try self.arena.create(ast.DmlStmt);
         stmt.* = .{ .op = op, .target = target, .is_user_mode = is_user_mode, .loc = loc };
         return .{ .dml_stmt = stmt };
     }
 
-    fn parseBlockStmt(self: *Parser) !ast.Stmt {
+    fn parse_block_stmt(self: *Parser) !ast.Stmt {
         self.pos += 1; // skip {
-        const stmts = try self.parseBlock();
+        const stmts = try self.parse_block();
         try self.expect(.rbrace);
         return .{ .block = stmts };
     }
 
-    fn parseVarDeclStmt(self: *Parser) !ast.Stmt {
-        const loc = self.currentLoc();
-        const type_ref = try self.parseTypeRef();
-        const name = try self.expectIdentifier();
+    fn parse_var_decl_stmt(self: *Parser) !ast.Stmt {
+        const loc = self.current_loc();
+        const type_ref = try self.parse_type_ref();
+        const name = try self.expect_identifier();
 
         var initializer: ?*ast.Expr = null;
-        if (self.matchKind(.assign)) {
+        if (self.match_kind(.assign)) {
             initializer = try self.expression();
         }
-        _ = self.matchKind(.semicolon);
+        _ = self.match_kind(.semicolon);
 
         const decl = try self.arena.create(ast.VarDecl);
         decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = loc };
         return .{ .var_decl = decl };
     }
 
-    fn parseSingleOrBlock(self: *Parser) ![]ast.Stmt {
-        if (self.matchKind(.lbrace)) {
-            const stmts = try self.parseBlock();
+    fn parse_single_or_block(self: *Parser) ![]ast.Stmt {
+        if (self.match_kind(.lbrace)) {
+            const stmts = try self.parse_block();
             try self.expect(.rbrace);
             return stmts;
         }
         var stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
-        try stmts.append(self.arena, try self.parseStmt());
+        try stmts.append(self.arena, try self.parse_stmt());
         return stmts.toOwnedSlice(self.arena);
     }
 
@@ -841,13 +841,13 @@ const Parser = struct {
     // -----------------------------------------------------------------------
 
     fn expression(self: *Parser) anyerror!*ast.Expr {
-        return self.parseAssignment();
+        return self.parse_assignment();
     }
 
-    fn parseAssignment(self: *Parser) !*ast.Expr {
-        const expr = try self.parseNullCoalesce();
+    fn parse_assignment(self: *Parser) !*ast.Expr {
+        const expr = try self.parse_null_coalesce();
 
-        const op: ?ast.AssignOp = switch (self.currentKind()) {
+        const op: ?ast.AssignOp = switch (self.current_kind()) {
             .assign => .assign,
             .plus_assign => .plus_assign,
             .minus_assign => .minus_assign,
@@ -857,9 +857,9 @@ const Parser = struct {
             else => null,
         };
         if (op) |assign_op| {
-            const loc = self.currentLoc();
+            const loc = self.current_loc();
             self.pos += 1;
-            const value = try self.parseAssignment(); // right-associative
+            const value = try self.parse_assignment(); // right-associative
             const node = try self.arena.create(ast.Assignment);
             node.* = .{ .target = expr, .op = assign_op, .value = value, .loc = loc };
             const result = try self.arena.create(ast.Expr);
@@ -871,10 +871,10 @@ const Parser = struct {
     }
 
     /// Null-coalescing: a ?? b (right-associative, lower than ternary)
-    fn parseNullCoalesce(self: *Parser) !*ast.Expr {
-        var expr = try self.parseTernary();
-        while (self.matchKind(.question_question)) {
-            const right = try self.parseTernary();
+    fn parse_null_coalesce(self: *Parser) !*ast.Expr {
+        var expr = try self.parse_ternary();
+        while (self.match_kind(.question_question)) {
+            const right = try self.parse_ternary();
             // Represent as ternary: (expr != null) ? expr : right
             // Build the condition: expr != null
             const null_node = try self.arena.create(ast.Expr);
@@ -892,13 +892,13 @@ const Parser = struct {
         return expr;
     }
 
-    fn parseTernary(self: *Parser) !*ast.Expr {
-        const expr = try self.parseOr();
+    fn parse_ternary(self: *Parser) !*ast.Expr {
+        const expr = try self.parse_or();
 
-        if (self.matchKind(.question)) {
+        if (self.match_kind(.question)) {
             const then_expr = try self.expression();
             try self.expect(.colon);
-            const else_expr = try self.parseTernary();
+            const else_expr = try self.parse_ternary();
             const node = try self.arena.create(ast.TernaryExpr);
             node.* = .{ .condition = expr, .then_expr = then_expr, .else_expr = else_expr };
             const result = try self.arena.create(ast.Expr);
@@ -909,55 +909,55 @@ const Parser = struct {
         return expr;
     }
 
-    fn parseOr(self: *Parser) !*ast.Expr {
-        var left = try self.parseAnd();
-        while (self.matchKind(.or_op)) {
-            const right = try self.parseAnd();
-            left = try self.makeBinary(left, .or_op, right);
+    fn parse_or(self: *Parser) !*ast.Expr {
+        var left = try self.parse_and();
+        while (self.match_kind(.or_op)) {
+            const right = try self.parse_and();
+            left = try self.make_binary(left, .or_op, right);
         }
         return left;
     }
 
-    fn parseAnd(self: *Parser) !*ast.Expr {
-        var left = try self.parseBitwiseOr();
-        while (self.matchKind(.and_op)) {
-            const right = try self.parseBitwiseOr();
-            left = try self.makeBinary(left, .and_op, right);
+    fn parse_and(self: *Parser) !*ast.Expr {
+        var left = try self.parse_bitwise_or();
+        while (self.match_kind(.and_op)) {
+            const right = try self.parse_bitwise_or();
+            left = try self.make_binary(left, .and_op, right);
         }
         return left;
     }
 
-    fn parseBitwiseOr(self: *Parser) !*ast.Expr {
-        var left = try self.parseBitwiseXor();
-        while (self.matchKind(.pipe)) {
-            const right = try self.parseBitwiseXor();
-            left = try self.makeBinary(left, .bit_or, right);
+    fn parse_bitwise_or(self: *Parser) !*ast.Expr {
+        var left = try self.parse_bitwise_xor();
+        while (self.match_kind(.pipe)) {
+            const right = try self.parse_bitwise_xor();
+            left = try self.make_binary(left, .bit_or, right);
         }
         return left;
     }
 
-    fn parseBitwiseXor(self: *Parser) !*ast.Expr {
-        var left = try self.parseBitwiseAnd();
-        while (self.matchKind(.caret)) {
-            const right = try self.parseBitwiseAnd();
-            left = try self.makeBinary(left, .bit_xor, right);
+    fn parse_bitwise_xor(self: *Parser) !*ast.Expr {
+        var left = try self.parse_bitwise_and();
+        while (self.match_kind(.caret)) {
+            const right = try self.parse_bitwise_and();
+            left = try self.make_binary(left, .bit_xor, right);
         }
         return left;
     }
 
-    fn parseBitwiseAnd(self: *Parser) !*ast.Expr {
-        var left = try self.parseEquality();
-        while (self.matchKind(.ampersand)) {
-            const right = try self.parseEquality();
-            left = try self.makeBinary(left, .bit_and, right);
+    fn parse_bitwise_and(self: *Parser) !*ast.Expr {
+        var left = try self.parse_equality();
+        while (self.match_kind(.ampersand)) {
+            const right = try self.parse_equality();
+            left = try self.make_binary(left, .bit_and, right);
         }
         return left;
     }
 
-    fn parseEquality(self: *Parser) !*ast.Expr {
-        var left = try self.parseComparison();
+    fn parse_equality(self: *Parser) !*ast.Expr {
+        var left = try self.parse_comparison();
         while (true) {
-            const op: ?ast.BinaryOp = switch (self.currentKind()) {
+            const op: ?ast.BinaryOp = switch (self.current_kind()) {
                 .eq => .eq,
                 .neq => .neq,
                 .strict_eq => .strict_eq,
@@ -966,17 +966,17 @@ const Parser = struct {
             };
             if (op) |binary_op| {
                 self.pos += 1;
-                const right = try self.parseComparison();
-                left = try self.makeBinary(left, binary_op, right);
+                const right = try self.parse_comparison();
+                left = try self.make_binary(left, binary_op, right);
             } else break;
         }
         return left;
     }
 
-    fn parseComparison(self: *Parser) !*ast.Expr {
-        var left = try self.parseShift();
+    fn parse_comparison(self: *Parser) !*ast.Expr {
+        var left = try self.parse_shift();
         while (true) {
-            const op: ?ast.BinaryOp = switch (self.currentKind()) {
+            const op: ?ast.BinaryOp = switch (self.current_kind()) {
                 .lt => .lt,
                 .gt => .gt,
                 .lte => .lte,
@@ -985,14 +985,14 @@ const Parser = struct {
             };
             if (op) |binary_op| {
                 self.pos += 1;
-                const right = try self.parseShift();
-                left = try self.makeBinary(left, binary_op, right);
+                const right = try self.parse_shift();
+                left = try self.make_binary(left, binary_op, right);
             } else break;
         }
 
         // instanceof
-        if (self.matchKind(.instanceof_kw)) {
-            const type_name = try self.parseTypeRef();
+        if (self.match_kind(.instanceof_kw)) {
+            const type_name = try self.parse_type_ref();
             const node = try self.arena.create(ast.InstanceofExpr);
             node.* = .{ .operand = left, .type_name = type_name };
             const result = try self.arena.create(ast.Expr);
@@ -1004,28 +1004,28 @@ const Parser = struct {
     }
 
     /// Shift operators: << >> >>> — detected as consecutive < or > tokens
-    fn parseShift(self: *Parser) !*ast.Expr {
-        var left = try self.parseAddition();
+    fn parse_shift(self: *Parser) !*ast.Expr {
+        var left = try self.parse_addition();
         while (true) {
             // << : two consecutive lt tokens
-            if (self.check(.lt) and self.peekKind(1) == .lt) {
+            if (self.check(.lt) and self.peek_kind(1) == .lt) {
                 self.pos += 2;
-                const right = try self.parseAddition();
-                left = try self.makeBinary(left, .mul, right); // reuse mul for shift in AST
+                const right = try self.parse_addition();
+                left = try self.make_binary(left, .mul, right); // reuse mul for shift in AST
                 continue;
             }
             // >>> : three consecutive gt tokens
-            if (self.check(.gt) and self.peekKind(1) == .gt and self.peekKind(2) == .gt) {
+            if (self.check(.gt) and self.peek_kind(1) == .gt and self.peek_kind(2) == .gt) {
                 self.pos += 3;
-                const right = try self.parseAddition();
-                left = try self.makeBinary(left, .div, right); // reuse div for unsigned shift
+                const right = try self.parse_addition();
+                left = try self.make_binary(left, .div, right); // reuse div for unsigned shift
                 continue;
             }
             // >> : two consecutive gt tokens
-            if (self.check(.gt) and self.peekKind(1) == .gt) {
+            if (self.check(.gt) and self.peek_kind(1) == .gt) {
                 self.pos += 2;
-                const right = try self.parseAddition();
-                left = try self.makeBinary(left, .div, right); // reuse div for shift
+                const right = try self.parse_addition();
+                left = try self.make_binary(left, .div, right); // reuse div for shift
                 continue;
             }
             break;
@@ -1033,27 +1033,27 @@ const Parser = struct {
         return left;
     }
 
-    fn parseAddition(self: *Parser) !*ast.Expr {
-        var left = try self.parseMultiplication();
+    fn parse_addition(self: *Parser) !*ast.Expr {
+        var left = try self.parse_multiplication();
         while (true) {
-            const op: ?ast.BinaryOp = switch (self.currentKind()) {
+            const op: ?ast.BinaryOp = switch (self.current_kind()) {
                 .plus => .add,
                 .minus => .sub,
                 else => null,
             };
             if (op) |binary_op| {
                 self.pos += 1;
-                const right = try self.parseMultiplication();
-                left = try self.makeBinary(left, binary_op, right);
+                const right = try self.parse_multiplication();
+                left = try self.make_binary(left, binary_op, right);
             } else break;
         }
         return left;
     }
 
-    fn parseMultiplication(self: *Parser) !*ast.Expr {
-        var left = try self.parseUnary();
+    fn parse_multiplication(self: *Parser) !*ast.Expr {
+        var left = try self.parse_unary();
         while (true) {
-            const op: ?ast.BinaryOp = switch (self.currentKind()) {
+            const op: ?ast.BinaryOp = switch (self.current_kind()) {
                 .star => .mul,
                 .slash => .div,
                 .percent => .mod,
@@ -1061,16 +1061,16 @@ const Parser = struct {
             };
             if (op) |binary_op| {
                 self.pos += 1;
-                const right = try self.parseUnary();
-                left = try self.makeBinary(left, binary_op, right);
+                const right = try self.parse_unary();
+                left = try self.make_binary(left, binary_op, right);
             } else break;
         }
         return left;
     }
 
-    fn parseUnary(self: *Parser) !*ast.Expr {
-        if (self.matchKind(.minus)) {
-            const operand = try self.parseUnary();
+    fn parse_unary(self: *Parser) !*ast.Expr {
+        if (self.match_kind(.minus)) {
+            const operand = try self.parse_unary();
             const node = try self.arena.create(ast.UnaryExpr);
             node.* = .{ .op = .negate, .operand = operand };
             const result = try self.arena.create(ast.Expr);
@@ -1078,11 +1078,11 @@ const Parser = struct {
             return result;
         }
         // Unary plus: +expr — just parse the operand (no-op)
-        if (self.matchKind(.plus)) {
-            return self.parseUnary();
+        if (self.match_kind(.plus)) {
+            return self.parse_unary();
         }
-        if (self.matchKind(.not_op)) {
-            const operand = try self.parseUnary();
+        if (self.match_kind(.not_op)) {
+            const operand = try self.parse_unary();
             const node = try self.arena.create(ast.UnaryExpr);
             node.* = .{ .op = .not, .operand = operand };
             const result = try self.arena.create(ast.Expr);
@@ -1090,8 +1090,8 @@ const Parser = struct {
             return result;
         }
         // Prefix ++ and -- → rewrite as x += 1 / x -= 1
-        if (self.matchKind(.plus_plus)) {
-            const operand = try self.parsePostfix();
+        if (self.match_kind(.plus_plus)) {
+            const operand = try self.parse_postfix();
             const one = try self.arena.create(ast.Expr);
             one.* = .{ .integer_literal = 1 };
             const node = try self.arena.create(ast.Assignment);
@@ -1100,8 +1100,8 @@ const Parser = struct {
             result.* = .{ .assignment = node };
             return result;
         }
-        if (self.matchKind(.minus_minus)) {
-            const operand = try self.parsePostfix();
+        if (self.match_kind(.minus_minus)) {
+            const operand = try self.parse_postfix();
             const one = try self.arena.create(ast.Expr);
             one.* = .{ .integer_literal = 1 };
             const node = try self.arena.create(ast.Assignment);
@@ -1112,11 +1112,11 @@ const Parser = struct {
         }
 
         // Cast: (Type)expr — only if inside parens and looks like a type
-        if (self.check(.lparen) and self.looksLikeCast()) {
+        if (self.check(.lparen) and self.looks_like_cast()) {
             self.pos += 1; // skip (
-            const target_type = try self.parseTypeRef();
+            const target_type = try self.parse_type_ref();
             try self.expect(.rparen);
-            const operand = try self.parseUnary();
+            const operand = try self.parse_unary();
             const node = try self.arena.create(ast.CastExpr);
             node.* = .{ .target_type = target_type, .operand = operand };
             const result = try self.arena.create(ast.Expr);
@@ -1124,17 +1124,17 @@ const Parser = struct {
             return result;
         }
 
-        return self.parsePostfix();
+        return self.parse_postfix();
     }
 
-    fn parsePostfix(self: *Parser) !*ast.Expr {
-        var expr = try self.parsePrimary();
+    fn parse_postfix(self: *Parser) !*ast.Expr {
+        var expr = try self.parse_primary();
         var chain_is_null_safe = false;
 
         // super(args) / this(args) → constructor delegation
-        if ((expr.* == .super_expr or expr.* == .this_expr) and self.matchKind(.lparen)) {
+        if ((expr.* == .super_expr or expr.* == .this_expr) and self.match_kind(.lparen)) {
             const callee_name: []const u8 = if (expr.* == .super_expr) "super" else "this";
-            const args = try self.parseArgList();
+            const args = try self.parse_arg_list();
             try self.expect(.rparen);
             const node = try self.arena.create(ast.CallExpr);
             node.* = .{ .callee = callee_name, .args = args };
@@ -1144,16 +1144,16 @@ const Parser = struct {
         }
 
         while (true) {
-            const saw_question_dot = self.matchKind(.question_dot);
-            const saw_dot = if (!saw_question_dot) self.matchKind(.dot) else false;
+            const saw_question_dot = self.match_kind(.question_dot);
+            const saw_dot = if (!saw_question_dot) self.match_kind(.dot) else false;
             if (saw_dot or saw_question_dot) {
                 const is_null_safe = saw_question_dot or chain_is_null_safe;
                 if (saw_question_dot) chain_is_null_safe = true;
-                const field_name = try self.expectIdentifierOrKeyword();
+                const field_name = try self.expect_identifier_or_keyword();
 
                 // method call: obj.method(args)
-                if (self.matchKind(.lparen)) {
-                    const args = try self.parseArgList();
+                if (self.match_kind(.lparen)) {
+                    const args = try self.parse_arg_list();
                     try self.expect(.rparen);
                     const node = try self.arena.create(ast.MethodCallExpr);
                     node.* = .{ .object = expr, .method = field_name, .args = args, .null_safe = is_null_safe };
@@ -1169,7 +1169,7 @@ const Parser = struct {
                 }
                 continue;
             }
-            if (self.matchKind(.lbracket)) {
+            if (self.match_kind(.lbracket)) {
                 const index = try self.expression();
                 try self.expect(.rbracket);
                 const node = try self.arena.create(ast.IndexAccess);
@@ -1180,7 +1180,7 @@ const Parser = struct {
                 continue;
             }
             // Postfix ++ and -- → rewrite as x += 1 / x -= 1 (with is_postfix flag)
-            if (self.matchKind(.plus_plus)) {
+            if (self.match_kind(.plus_plus)) {
                 const one = try self.arena.create(ast.Expr);
                 one.* = .{ .integer_literal = 1 };
                 const node = try self.arena.create(ast.Assignment);
@@ -1190,7 +1190,7 @@ const Parser = struct {
                 expr = result;
                 continue;
             }
-            if (self.matchKind(.minus_minus)) {
+            if (self.match_kind(.minus_minus)) {
                 const one = try self.arena.create(ast.Expr);
                 one.* = .{ .integer_literal = 1 };
                 const node = try self.arena.create(ast.Assignment);
@@ -1206,8 +1206,8 @@ const Parser = struct {
         return expr;
     }
 
-    fn parsePrimary(self: *Parser) anyerror!*ast.Expr {
-        const kind = self.currentKind();
+    fn parse_primary(self: *Parser) anyerror!*ast.Expr {
+        const kind = self.current_kind();
 
         // Literals
         if (kind == .integer_literal) {
@@ -1307,7 +1307,7 @@ const Parser = struct {
         // SOQL literal
         if (kind == .soql_literal) {
             const raw = self.current().lexeme;
-            const loc = self.currentLoc();
+            const loc = self.current_loc();
             self.pos += 1;
             const node = try self.arena.create(ast.SoqlExpr);
             node.* = .{ .raw = raw, .loc = loc };
@@ -1318,7 +1318,7 @@ const Parser = struct {
 
         // new expression
         if (kind == .new_kw) {
-            return self.parseNewExpr();
+            return self.parse_new_expr();
         }
 
         // Grouped expression
@@ -1334,12 +1334,12 @@ const Parser = struct {
         // Identifier (or function call) — trigger_kw also acts as identifier in expression context
         if (kind == .identifier or kind == .trigger_kw) {
             const name = self.current().lexeme;
-            const loc = self.currentLoc();
+            const loc = self.current_loc();
             self.pos += 1;
 
             // Function call: name(args)
-            if (self.matchKind(.lparen)) {
-                const args = try self.parseArgList();
+            if (self.match_kind(.lparen)) {
+                const args = try self.parse_arg_list();
                 try self.expect(.rparen);
                 const node = try self.arena.create(ast.CallExpr);
                 node.* = .{ .callee = name, .args = args, .loc = loc };
@@ -1349,12 +1349,12 @@ const Parser = struct {
             }
 
             // Handle Type<T>.class → type literal (common in JSON.deserialize calls)
-            if (self.check(.lt) and self.looksLikeTypeDotClass()) {
+            if (self.check(.lt) and self.looks_like_type_dot_class()) {
                 // Build full type name including generics: e.g. "List<Contact>"
                 var full_name_buf: std.ArrayListUnmanaged(u8) = .empty;
                 try full_name_buf.appendSlice(self.arena, name);
                 var depth: u32 = 0;
-                while (!self.atEnd()) {
+                while (!self.at_end()) {
                     const lex = self.current().lexeme;
                     if (self.check(.lt)) {
                         depth += 1;
@@ -1372,9 +1372,9 @@ const Parser = struct {
                     self.pos += 1;
                 }
                 // Skip .class
-                if (self.matchKind(.dot)) {
-                    if (!self.matchKind(.class_kw)) {
-                        _ = self.matchKind(.identifier);
+                if (self.match_kind(.dot)) {
+                    if (!self.match_kind(.class_kw)) {
+                        _ = self.match_kind(.identifier);
                     }
                 }
                 const full_type_name = try full_name_buf.toOwnedSlice(self.arena);
@@ -1387,11 +1387,11 @@ const Parser = struct {
             }
 
             // Handle Type[].class → array type literal
-            if (self.check(.lbracket) and self.peekKind(1) == .rbracket and self.peekKind(2) == .dot) {
+            if (self.check(.lbracket) and self.peek_kind(1) == .rbracket and self.peek_kind(2) == .dot) {
                 self.pos += 2; // skip []
-                if (self.matchKind(.dot)) {
-                    if (!self.matchKind(.class_kw)) {
-                        _ = self.matchKind(.identifier);
+                if (self.match_kind(.dot)) {
+                    if (!self.match_kind(.class_kw)) {
+                        _ = self.match_kind(.identifier);
                     }
                 }
                 const arr_name = try std.fmt.allocPrint(self.arena, "{s}[]", .{name});
@@ -1414,13 +1414,13 @@ const Parser = struct {
         return result;
     }
 
-    fn parseNewExpr(self: *Parser) !*ast.Expr {
+    fn parse_new_expr(self: *Parser) !*ast.Expr {
         self.pos += 1; // skip 'new'
-        const loc = self.currentLoc();
-        const type_name = try self.parseTypeRef();
+        const loc = self.current_loc();
+        const type_name = try self.parse_type_ref();
 
         // Array size: new Type[size] — e.g. new String[0], new Account[n]
-        if (self.matchKind(.lbracket)) {
+        if (self.match_kind(.lbracket)) {
             const size_expr = try self.expression();
             try self.expect(.rbracket);
             var arr_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
@@ -1434,19 +1434,19 @@ const Parser = struct {
 
         var args: []ast.Expr = &.{};
         var is_brace_initializer = false;
-        if (self.matchKind(.lparen)) {
-            args = try self.parseArgList();
+        if (self.match_kind(.lparen)) {
+            args = try self.parse_arg_list();
             try self.expect(.rparen);
         }
 
         // Brace initializer: new List<T>{ item1, item2 } or new Map<K,V>{ key => value, ... }
-        if (self.matchKind(.lbrace)) {
+        if (self.match_kind(.lbrace)) {
             is_brace_initializer = true;
             var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
             if (!self.check(.rbrace)) {
                 const first_expr = try self.expression();
                 // Check if this is a map initializer with =>
-                if (self.matchKind(.arrow)) {
+                if (self.match_kind(.arrow)) {
                     // Map literal: key => value pairs
                     const first_val = try self.expression();
                     // Store as assignment: key = value
@@ -1455,10 +1455,10 @@ const Parser = struct {
                     const pair = try self.arena.create(ast.Expr);
                     pair.* = .{ .assignment = asgn };
                     try brace_args.append(self.arena, pair.*);
-                    while (self.matchKind(.comma)) {
+                    while (self.match_kind(.comma)) {
                         if (self.check(.rbrace)) break;
                         const k = try self.expression();
-                        _ = self.matchKind(.arrow);
+                        _ = self.match_kind(.arrow);
                         const v = try self.expression();
                         const a2 = try self.arena.create(ast.Assignment);
                         a2.* = .{ .target = k, .op = .assign, .value = v };
@@ -1468,7 +1468,7 @@ const Parser = struct {
                     }
                 } else {
                     try brace_args.append(self.arena, first_expr.*);
-                    while (self.matchKind(.comma)) {
+                    while (self.match_kind(.comma)) {
                         if (self.check(.rbrace)) break;
                         try brace_args.append(self.arena, (try self.expression()).*);
                     }
@@ -1485,12 +1485,12 @@ const Parser = struct {
         return result;
     }
 
-    fn parseArgList(self: *Parser) ![]ast.Expr {
+    fn parse_arg_list(self: *Parser) ![]ast.Expr {
         var args: std.ArrayListUnmanaged(ast.Expr) = .empty;
         if (self.check(.rparen)) return args.toOwnedSlice(self.arena);
 
         try args.append(self.arena, (try self.expression()).*);
-        while (self.matchKind(.comma)) {
+        while (self.match_kind(.comma)) {
             try args.append(self.arena, (try self.expression()).*);
         }
         return args.toOwnedSlice(self.arena);
@@ -1500,16 +1500,16 @@ const Parser = struct {
     // 型参照
     // -----------------------------------------------------------------------
 
-    fn parseTypeRef(self: *Parser) !TypeRef {
+    fn parse_type_ref(self: *Parser) !TypeRef {
         if (self.check(.void_kw)) {
             self.pos += 1;
             return .{ .name = "void" };
         }
-        const name = try self.expectIdentifier();
+        const name = try self.expect_identifier();
 
         // Handle dotted names: System.Type, Messaging.inboundEmail.BinaryAttachment
         var full_name = name;
-        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+        while (self.check(.dot) and self.peek_kind(1) == .identifier) {
             self.pos += 1; // skip dot
             const next_part = self.current().lexeme;
             self.pos += 1;
@@ -1517,11 +1517,11 @@ const Parser = struct {
         }
 
         // Generic params: <T, U>
-        if (self.matchKind(.lt)) {
+        if (self.match_kind(.lt)) {
             var params: std.ArrayListUnmanaged(TypeRef) = .empty;
-            try params.append(self.arena, try self.parseTypeRef());
-            while (self.matchKind(.comma)) {
-                try params.append(self.arena, try self.parseTypeRef());
+            try params.append(self.arena, try self.parse_type_ref());
+            while (self.match_kind(.comma)) {
+                try params.append(self.arena, try self.parse_type_ref());
             }
             // skip '>' — might need to handle >> for nested generics
             if (self.check(.gt)) {
@@ -1535,7 +1535,7 @@ const Parser = struct {
         }
 
         // Array notation: Type[] (only if followed immediately by ])
-        if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
+        if (self.check(.lbracket) and self.peek_kind(1) == .rbracket) {
             self.pos += 2; // skip [ ]
             const params = try self.arena.alloc(TypeRef, 1);
             params[0] = .{ .name = full_name };
@@ -1550,7 +1550,7 @@ const Parser = struct {
     // -----------------------------------------------------------------------
 
     /// Variable declaration looks like: Type name (= ...) ;
-    fn looksLikeVarDecl(self: *Parser) bool {
+    fn looks_like_var_decl(self: *Parser) bool {
         // Save position
         const saved = self.pos;
         defer self.pos = saved;
@@ -1560,14 +1560,14 @@ const Parser = struct {
         self.pos += 1;
 
         // skip dotted name (multi-level: A.B.C)
-        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+        while (self.check(.dot) and self.peek_kind(1) == .identifier) {
             self.pos += 2;
         }
 
         // skip generic params
         if (self.check(.lt)) {
             var depth: u32 = 0;
-            while (!self.atEnd()) {
+            while (!self.at_end()) {
                 if (self.check(.lt)) depth += 1;
                 if (self.check(.gt)) {
                     depth -= 1;
@@ -1581,7 +1581,7 @@ const Parser = struct {
         }
 
         // skip []
-        if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
+        if (self.check(.lbracket) and self.peek_kind(1) == .rbracket) {
             self.pos += 2;
         }
 
@@ -1589,14 +1589,14 @@ const Parser = struct {
         return self.check(.identifier);
     }
 
-    fn looksLikeForEach(self: *Parser) bool {
+    fn looks_like_for_each(self: *Parser) bool {
         // Scan forward in the parenthesized section to find ':'
         const saved = self.pos;
         defer self.pos = saved;
 
         var depth: u32 = 0;
-        while (!self.atEnd()) {
-            const k = self.currentKind();
+        while (!self.at_end()) {
+            const k = self.current_kind();
             if (k == .lparen) depth += 1;
             if (k == .rparen) {
                 if (depth == 0) return false;
@@ -1610,13 +1610,13 @@ const Parser = struct {
     }
 
     /// Check if we're looking at Ident<...>.class pattern (type literal expression)
-    fn looksLikeTypeDotClass(self: *Parser) bool {
+    fn looks_like_type_dot_class(self: *Parser) bool {
         const saved = self.pos;
         defer self.pos = saved;
 
         if (!self.check(.lt)) return false;
         var depth: u32 = 0;
-        while (!self.atEnd()) {
+        while (!self.at_end()) {
             if (self.check(.lt)) depth += 1;
             if (self.check(.gt)) {
                 depth -= 1;
@@ -1642,7 +1642,7 @@ const Parser = struct {
         return false;
     }
 
-    fn looksLikeCast(self: *Parser) bool {
+    fn looks_like_cast(self: *Parser) bool {
         // (Type)expr — check if after ( there's a type reference followed by )
         const saved = self.pos;
         defer self.pos = saved;
@@ -1654,14 +1654,14 @@ const Parser = struct {
         self.pos += 1;
 
         // skip dotted name (multi-level: A.B.C)
-        while (self.check(.dot) and self.peekKind(1) == .identifier) {
+        while (self.check(.dot) and self.peek_kind(1) == .identifier) {
             self.pos += 2;
         }
 
         // skip generic params: <T, U, ...>
         if (self.check(.lt)) {
             var depth: u32 = 0;
-            while (!self.atEnd()) {
+            while (!self.at_end()) {
                 if (self.check(.lt)) depth += 1;
                 if (self.check(.gt)) {
                     depth -= 1;
@@ -1675,14 +1675,14 @@ const Parser = struct {
         }
 
         // skip []
-        if (self.check(.lbracket) and self.peekKind(1) == .rbracket) {
+        if (self.check(.lbracket) and self.peek_kind(1) == .rbracket) {
             self.pos += 2;
         }
 
         if (!self.check(.rparen)) return false;
         // After ')' must come an expression-start token, not an operator / ';' / '{'
         // to distinguish (Type)expr cast from (expr) grouping
-        const after_rparen = self.peekKind(1);
+        const after_rparen = self.peek_kind(1);
         return after_rparen == .identifier or after_rparen == .integer_literal or
             after_rparen == .double_literal or after_rparen == .long_literal or
             after_rparen == .string_literal or after_rparen == .true_kw or
@@ -1698,7 +1698,7 @@ const Parser = struct {
     // ヘルパー
     // -----------------------------------------------------------------------
 
-    fn makeBinary(self: *Parser, left: *ast.Expr, op: ast.BinaryOp, right: *ast.Expr) !*ast.Expr {
+    fn make_binary(self: *Parser, left: *ast.Expr, op: ast.BinaryOp, right: *ast.Expr) !*ast.Expr {
         const node = try self.arena.create(ast.BinaryExpr);
         node.* = .{ .left = left, .op = op, .right = right };
         const result = try self.arena.create(ast.Expr);
@@ -1706,10 +1706,10 @@ const Parser = struct {
         return result;
     }
 
-    fn parseModifiers(self: *Parser) ast.Modifiers {
+    fn parse_modifiers(self: *Parser) ast.Modifiers {
         var mods = ast.Modifiers{};
         while (true) {
-            switch (self.currentKind()) {
+            switch (self.current_kind()) {
                 .public_kw => mods.is_public = true,
                 .private_kw => mods.is_private = true,
                 .protected_kw => mods.is_protected = true,
@@ -1753,36 +1753,36 @@ const Parser = struct {
             return;
         }
         // 診断を記録して続行
-        try self.addDiagnostic(self.currentLoc(), kind);
+        try self.add_diagnostic(self.current_loc(), kind);
     }
 
-    fn expectIdentifier(self: *Parser) ![]const u8 {
+    fn expect_identifier(self: *Parser) ![]const u8 {
         if (self.check(.identifier)) {
             const name = self.current().lexeme;
             self.pos += 1;
             return name;
         }
         // Fallback: use current token's lexeme
-        if (!self.atEnd()) {
-            try self.addDiagnostic(self.currentLoc(), .identifier);
+        if (!self.at_end()) {
+            try self.add_diagnostic(self.current_loc(), .identifier);
             const name = self.current().lexeme;
             self.pos += 1;
             return name;
         }
-        try self.addDiagnostic(self.currentLoc(), .identifier);
+        try self.add_diagnostic(self.current_loc(), .identifier);
         return "_unknown";
     }
 
     /// ドットの後に来る識別子を期待するが、Apex ではキーワードも
     /// フィールド名として使える（例: Trigger.new, Account.class）。
-    fn expectIdentifierOrKeyword(self: *Parser) ![]const u8 {
+    fn expect_identifier_or_keyword(self: *Parser) ![]const u8 {
         if (self.check(.identifier)) {
             const name = self.current().lexeme;
             self.pos += 1;
             return name;
         }
         // Apex ではキーワードもフィールド/メソッド名として出現しうる
-        const kind = self.currentKind();
+        const kind = self.current_kind();
         if (kind != .eof and kind != .semicolon and kind != .lbrace and
             kind != .rbrace and kind != .lparen and kind != .rparen and
             kind != .lbracket and kind != .rbracket and kind != .comma and
@@ -1796,12 +1796,12 @@ const Parser = struct {
             self.pos += 1;
             return name;
         }
-        // 本当に識別子が必要な場合は通常の expectIdentifier にフォールバック
-        return self.expectIdentifier();
+        // 本当に識別子が必要な場合は通常の expect_identifier にフォールバック
+        return self.expect_identifier();
     }
 
-    fn addDiagnostic(self: *Parser, loc: SourceLoc, expected: TokenKind) !void {
-        const got_name = if (!self.atEnd()) @tagName(self.current().kind) else "end of file";
+    fn add_diagnostic(self: *Parser, loc: SourceLoc, expected: TokenKind) !void {
+        const got_name = if (!self.at_end()) @tagName(self.current().kind) else "end of file";
         const msg = try std.fmt.allocPrint(self.arena, "expected {s}, got {s}", .{
             @tagName(expected),
             got_name,
@@ -1812,7 +1812,7 @@ const Parser = struct {
         });
     }
 
-    fn matchKind(self: *Parser, kind: TokenKind) bool {
+    fn match_kind(self: *Parser, kind: TokenKind) bool {
         if (self.check(kind)) {
             self.pos += 1;
             return true;
@@ -1821,10 +1821,10 @@ const Parser = struct {
     }
 
     fn check(self: *const Parser, kind: TokenKind) bool {
-        return self.currentKind() == kind;
+        return self.current_kind() == kind;
     }
 
-    fn currentKind(self: *const Parser) TokenKind {
+    fn current_kind(self: *const Parser) TokenKind {
         if (self.pos >= self.tokens.len) return .eof;
         return self.tokens[self.pos].kind;
     }
@@ -1833,18 +1833,18 @@ const Parser = struct {
         return self.tokens[self.pos];
     }
 
-    fn currentLoc(self: *const Parser) SourceLoc {
+    fn current_loc(self: *const Parser) SourceLoc {
         if (self.pos >= self.tokens.len) return .zero;
         return self.tokens[self.pos].loc;
     }
 
-    fn peekKind(self: *const Parser, offset: u32) TokenKind {
+    fn peek_kind(self: *const Parser, offset: u32) TokenKind {
         const idx = self.pos + offset;
         if (idx >= self.tokens.len) return .eof;
         return self.tokens[idx].kind;
     }
 
-    fn atEnd(self: *const Parser) bool {
+    fn at_end(self: *const Parser) bool {
         return self.pos >= self.tokens.len or self.tokens[self.pos].kind == .eof;
     }
 };
@@ -1864,7 +1864,7 @@ test "parse variable declaration with binary expression" {
 
     // Parse as a statement sequence (no class wrapper)
     var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
-    const stmt = try p.parseStmt();
+    const stmt = try p.parse_stmt();
 
     try std.testing.expect(stmt == .var_decl);
     try std.testing.expectEqualStrings("x", stmt.var_decl.name);
@@ -1881,7 +1881,7 @@ test "parse return statement with string literal" {
     defer arena.deinit();
 
     var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
-    const stmt = try p.parseStmt();
+    const stmt = try p.parse_stmt();
 
     try std.testing.expect(stmt == .return_stmt);
     try std.testing.expect(stmt.return_stmt.value != null);
@@ -1920,7 +1920,7 @@ test "parse if statement" {
     defer arena.deinit();
 
     var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
-    const stmt = try p.parseStmt();
+    const stmt = try p.parse_stmt();
     try std.testing.expect(stmt == .if_stmt);
     try std.testing.expect(stmt.if_stmt.condition.* == .binary);
     try std.testing.expectEqual(@as(usize, 1), stmt.if_stmt.then_body.len);
@@ -1934,7 +1934,7 @@ test "parse DML statement" {
     defer arena.deinit();
 
     var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
-    const stmt = try p.parseStmt();
+    const stmt = try p.parse_stmt();
     try std.testing.expect(stmt == .dml_stmt);
     try std.testing.expectEqual(ast.DmlOp.insert, stmt.dml_stmt.op);
 }
@@ -1946,7 +1946,7 @@ test "parse expression with method call chain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const expr = try parseExpr(tokens, arena.allocator());
+    const expr = try parse_expr(tokens, arena.allocator());
     try std.testing.expect(expr.* == .method_call);
     try std.testing.expectEqualStrings("c", expr.method_call.method);
 }
@@ -1965,7 +1965,7 @@ test "parse switch on statement" {
     defer arena.deinit();
 
     var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
-    const stmt = try p.parseStmt();
+    const stmt = try p.parse_stmt();
     try std.testing.expect(stmt == .switch_stmt);
     try std.testing.expectEqual(@as(usize, 2), stmt.switch_stmt.when_clauses.len);
 }
@@ -1988,7 +1988,7 @@ test "no diagnostics: Trigger.new field access" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
     try std.testing.expectEqual(@as(usize, 1), result.decls.len);
 }
@@ -2009,7 +2009,7 @@ test "no diagnostics: for-each over Trigger.new" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2027,7 +2027,7 @@ test "no diagnostics: Account.class type literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2058,7 +2058,7 @@ test "no diagnostics: switch on with type-binding when clause" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
     // switch 文に 4 つの when 句
     try std.testing.expectEqual(@as(usize, 1), result.decls.len);
@@ -2086,7 +2086,7 @@ test "no diagnostics: this() constructor delegation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2106,7 +2106,7 @@ test "no diagnostics: this() with multiple args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2124,7 +2124,7 @@ test "no diagnostics: final parameter modifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2142,7 +2142,7 @@ test "no diagnostics: webservice modifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2161,7 +2161,7 @@ test "no diagnostics: testMethod modifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2181,7 +2181,7 @@ test "testMethod modifier sets is_test_method in Modifiers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
     try std.testing.expectEqual(@as(usize, 1), result.decls.len);
 
@@ -2210,7 +2210,7 @@ test "no diagnostics: final local variable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2267,7 +2267,7 @@ test "no diagnostics: comprehensive real-world Apex" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2287,7 +2287,7 @@ test "no diagnostics: null-coalescing operator ??" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2306,7 +2306,7 @@ test "no diagnostics: multi-level dotted type name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2328,7 +2328,7 @@ test "no diagnostics: multi-level dotted type in catch" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2349,7 +2349,7 @@ test "no diagnostics: for-init multiple variable declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2369,7 +2369,7 @@ test "no diagnostics: bitwise AND operator" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2387,7 +2387,7 @@ test "no diagnostics: inherited sharing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2407,7 +2407,7 @@ test "no diagnostics: inherited sharing inner class" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2426,7 +2426,7 @@ test "no diagnostics: unary plus in method args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2444,7 +2444,7 @@ test "no diagnostics: dot-prefixed decimal literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2462,7 +2462,7 @@ test "no diagnostics: generic type .class in args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2487,7 +2487,7 @@ test "no diagnostics: switch on parenthesized expression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2507,7 +2507,7 @@ test "no diagnostics: new Type[0] array size" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2527,7 +2527,7 @@ test "no diagnostics: <> not-equal operator" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2543,7 +2543,7 @@ test "no diagnostics: comma-separated field declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2564,7 +2564,7 @@ test "no diagnostics: when and with as method names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2582,7 +2582,7 @@ test "no diagnostics: array type .class literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2605,7 +2605,7 @@ test "no diagnostics: SOQL with line comment containing quote" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2625,7 +2625,7 @@ test "no diagnostics: new Type[size] array initialization" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2645,7 +2645,7 @@ test "no diagnostics: .class in method arguments" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2664,7 +2664,7 @@ test "no diagnostics: Describe with SObjectType and List args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2685,7 +2685,7 @@ test "no diagnostics: bitwise shift and XOR operators" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2705,7 +2705,7 @@ test "no diagnostics: double literal with d suffix" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2735,7 +2735,7 @@ test "no diagnostics: multiline method call args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2777,7 +2777,7 @@ test "no diagnostics: extreme multiline formatting" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2798,7 +2798,7 @@ test "no diagnostics: Schema describe patterns" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2827,7 +2827,7 @@ test "no diagnostics: class literal in various positions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
 
@@ -2866,6 +2866,6 @@ test "no diagnostics: method call with class literal arg and newlines" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try parseWithDiagnostics(tokens, arena.allocator());
+    const result = try parse_with_diagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }

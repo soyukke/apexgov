@@ -18,7 +18,7 @@ pub const SourceLoc = struct {
 
     /// byte 列 col を UTF-16 code unit オフセットに変換する。
     /// LSP は UTF-16 ベースの character を要求するため。
-    pub fn utf16Col(self: SourceLoc, source: []const u8) u32 {
+    pub fn utf16_col(self: SourceLoc, source: []const u8) u32 {
         // 該当行の先頭を見つける
         var line_start: u32 = self.offset;
         while (line_start > 0 and source[line_start - 1] != '\n') {
@@ -56,7 +56,7 @@ pub const Span = struct {
     pub const zero: Span = .{};
 
     /// トークンから Span を作る。end は lexeme 末尾。
-    pub fn fromToken(tok: Token, source: []const u8) Span {
+    pub fn from_token(tok: Token, source: []const u8) Span {
         const end_offset = tok.loc.offset + @as(u32, @intCast(tok.lexeme.len));
         // end の line/col を計算
         var line = tok.loc.line;

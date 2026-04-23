@@ -52,27 +52,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            collectFieldDefaults(arena.allocator(), io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-            collectFieldSets(arena.allocator(), io, path, &eval.field_sets) catch {};
-            collectCustomSettingTypes(arena.allocator(), io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+            collect_field_defaults(arena.allocator(), io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collect_field_sets(arena.allocator(), io, path, &eval.field_sets) catch {};
+            collect_custom_setting_types(arena.allocator(), io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
         }
     }
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
     for (decls) |decl| {
         switch (decl) {
-            .class_decl => |cd| try eval.registerClassSource(cd.name, source),
-            .trigger_decl => |td| try eval.registerTriggerSource(td.name, source),
+            .class_decl => |cd| try eval.register_class_source(cd.name, source),
+            .trigger_decl => |td| try eval.register_trigger_source(td.name, source),
             else => {},
         }
     }
 
     const value = if (opts.entry_class.len > 0 and opts.entry_method.len > 0)
-        try eval.callMethod(opts.entry_class, opts.entry_method, opts.args)
+        try eval.call_method(opts.entry_class, opts.entry_method, opts.args)
     else
         Value.void_val;
 
     const stdout_copy = try gpa.dupe(u8, eval.stdout.items);
-    const value_copy = try copyValue(gpa, value);
+    const value_copy = try copy_value(gpa, value);
 
     arena.deinit();
     return .{ .value = value_copy, .stdout = stdout_copy, .allocator = gpa };
@@ -107,8 +107,8 @@ const SampleAppFixturePaths = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const alloc = arena.allocator();
-        if (!try fixtureTestsEnabled(alloc)) return error.SkipZigTest;
-        const fixture_path = try findSampleAppFixturePath(alloc, io);
+        if (!try fixture_tests_enabled(alloc)) return error.SkipZigTest;
+        const fixture_path = try find_sample_app_fixture_path(alloc, io);
         const paths = try alloc.alloc([]const u8, 1);
         paths[0] = fixture_path;
         return .{ .arena = arena, .paths = paths };
@@ -123,7 +123,7 @@ const SampleAppFixturePaths = struct {
     }
 };
 
-fn fixtureTestsEnabled(alloc: std.mem.Allocator) !bool {
+fn fixture_tests_enabled(alloc: std.mem.Allocator) !bool {
     // TODO(zig-0.16 migration): `std.process.getEnvVarOwned` was removed in
     // favour of `std.process.Environ.Map`; the test runner does not yet
     // thread an Environ through, so fixture-backed tests are skipped for
@@ -132,7 +132,7 @@ fn fixtureTestsEnabled(alloc: std.mem.Allocator) !bool {
     return false;
 }
 
-fn isSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io, base_path: []const u8) bool {
+fn is_sample_app_fixture_path(alloc: std.mem.Allocator, io: std.Io, base_path: []const u8) bool {
     const markers = [_][]const u8{
         "core/tests/logger-engine/classes/LogEntryEventBuilder_Tests.cls",
         "core/tests/logger-engine/classes/LoggerEngineDataSelector_Tests.cls",
@@ -148,7 +148,7 @@ fn isSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io, base_path: []con
     return false;
 }
 
-fn findSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
+fn find_sample_app_fixture_path(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
     const fixture_root = ".local-fixtures/apex/repos";
     var root_dir = try std.Io.Dir.cwd().openDir(io, fixture_root, .{ .iterate = true });
     defer root_dir.close(io);
@@ -157,7 +157,7 @@ fn findSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
     while (try root_iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         const repo_path = try std.fs.path.join(alloc, &.{ fixture_root, entry.name });
-        if (isSampleAppFixturePath(alloc, io, repo_path)) return repo_path;
+        if (is_sample_app_fixture_path(alloc, io, repo_path)) return repo_path;
 
         var repo_dir = std.Io.Dir.cwd().openDir(io, repo_path, .{ .iterate = true }) catch {
             alloc.free(repo_path);
@@ -169,7 +169,7 @@ fn findSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
         while (try repo_iter.next(io)) |child_entry| {
             if (child_entry.kind != .directory) continue;
             const child_path = try std.fs.path.join(alloc, &.{ repo_path, child_entry.name });
-            if (isSampleAppFixturePath(alloc, io, child_path)) {
+            if (is_sample_app_fixture_path(alloc, io, child_path)) {
                 alloc.free(repo_path);
                 return child_path;
             }
@@ -183,13 +183,13 @@ fn findSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
 }
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
-pub fn runTestSuite(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8, writer: anytype) !TestSuiteResult {
-    return runTestsFiltered(gpa, io, paths, null, null, writer);
+pub fn run_test_suite(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8, writer: anytype) !TestSuiteResult {
+    return run_tests_filtered(gpa, io, paths, null, null, writer);
 }
 
 /// 指定クラス（+ オプションでメソッド）のテストのみ実行する。
 /// method_name が null の場合はクラス内全テストメソッドを実行。
-pub fn runSingleTest(
+pub fn run_single_test(
     gpa: std.mem.Allocator,
     io: std.Io,
     paths: []const []const u8,
@@ -197,11 +197,11 @@ pub fn runSingleTest(
     method_name: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return runTestsFiltered(gpa, io, paths, class_name, method_name, writer);
+    return run_tests_filtered(gpa, io, paths, class_name, method_name, writer);
 }
 
 /// テスト実行の共通内部関数。filter_class / filter_method が null なら全テスト実行。
-fn runTestsFiltered(
+fn run_tests_filtered(
     gpa: std.mem.Allocator,
     io: std.Io,
     paths: []const []const u8,
@@ -218,7 +218,7 @@ fn runTestsFiltered(
     // 1. .cls ファイルを収集
     var files: std.ArrayListUnmanaged(SourceFile) = .empty;
     for (paths) |path| {
-        try collectClsFiles(parse_alloc, io, path, &files);
+        try collect_cls_files(parse_alloc, io, path, &files);
     }
     try writer.print("interpret: loaded {d} Apex source file(s)\n", .{files.items.len});
 
@@ -236,17 +236,17 @@ fn runTestsFiltered(
             parse_errors += 1;
             continue;
         };
-        eval.loadDecls(decls) catch {
+        eval.load_decls(decls) catch {
             parse_errors += 1;
             continue;
         };
         for (decls) |decl| {
             switch (decl) {
                 .class_decl => |cd| {
-                    eval.registerClassSource(cd.name, file.content) catch {};
+                    eval.register_class_source(cd.name, file.content) catch {};
                 },
                 .trigger_decl => |td| {
-                    eval.registerTriggerSource(td.name, file.content) catch {};
+                    eval.register_trigger_source(td.name, file.content) catch {};
                 },
                 else => {},
             }
@@ -260,23 +260,23 @@ fn runTestsFiltered(
     // from the provided directory is sufficient and avoids pulling sibling repo
     // metadata from shared fixture parents like `.local-fixtures/apex/repos`.
     for (paths) |path| {
-        collectFieldDefaults(parse_alloc, io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-        collectFieldSets(parse_alloc, io, path, &eval.field_sets) catch {};
-        collectCustomSettingTypes(parse_alloc, io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
-        if (shouldSearchMetadataParents(path)) {
+        collect_field_defaults(parse_alloc, io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+        collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
+        collect_custom_setting_types(parse_alloc, io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+        if (should_search_metadata_parents(path)) {
             var parent = std.fs.path.dirname(path);
             var depth: u8 = 0;
             while (parent != null and depth < 3) : (depth += 1) {
                 const p = parent.?;
-                collectFieldDefaults(parse_alloc, io, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-                collectFieldSets(parse_alloc, io, p, &eval.field_sets) catch {};
-                collectCustomSettingTypes(parse_alloc, io, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+                collect_field_defaults(parse_alloc, io, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+                collect_field_sets(parse_alloc, io, p, &eval.field_sets) catch {};
+                collect_custom_setting_types(parse_alloc, io, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
                 parent = std.fs.path.dirname(p);
             }
         }
     }
 
-    // Static initializer blocks are now evaluated lazily via ensureStaticInit()
+    // Static initializer blocks are now evaluated lazily via ensure_static_init()
     // on first class access, matching Salesforce behavior.
 
     // Pre-compute which classes need static field reinit and which have static init blocks
@@ -380,18 +380,18 @@ fn runTestsFiltered(
                         }
                     }
                     // Full lazy static initialization (Salesforce semantics):
-                    // Register null placeholders, then let ensureStaticInit hooks
+                    // Register null placeholders, then let ensure_static_init hooks
                     // initialize each class on first access.
                     for (classes_with_statics.items) |cd| {
-                        test_eval.registerStaticFieldPlaceholders(cd);
+                        test_eval.register_static_field_placeholders(cd);
                     }
                     // Run @TestSetup if exists
                     if (test_setup_method) |setup| {
-                        // Test class initializes lazily when callMethod fires
-                        _ = test_eval.callMethod(class_name, setup.name, &.{}) catch {};
+                        // Test class initializes lazily when call_method fires
+                        _ = test_eval.call_method(class_name, setup.name, &.{}) catch {};
                         // After @TestSetup, reset all static state for fresh test
                         for (classes_with_statics.items) |cd2| {
-                            test_eval.registerStaticFieldPlaceholders(cd2);
+                            test_eval.register_static_field_placeholders(cd2);
                         }
                         test_eval.static_inited.clearRetainingCapacity();
                     }
@@ -404,7 +404,7 @@ fn runTestsFiltered(
                     test_eval.limits_queueable = 0;
                     test_eval.limits_callouts = 0;
 
-                    const result = test_eval.callMethod(class_name, md.name, &.{});
+                    const result = test_eval.call_method(class_name, md.name, &.{});
                     if (result) |_| {
                         // Check assertion failures
                         if (test_eval.assertion_failure) |msg| {
@@ -495,7 +495,7 @@ fn is_test_method(md: *ast.MethodDecl) bool {
     return false;
 }
 
-fn collectClsFiles(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
+fn collect_cls_files(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
     // Try as single .cls/.trigger file first
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
         const content = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch return;
@@ -527,7 +527,7 @@ fn collectClsFiles(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files
     }
 }
 
-fn shouldSearchMetadataParents(path: []const u8) bool {
+fn should_search_metadata_parents(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) return true;
     return std.mem.endsWith(u8, path, "/classes") or
         std.mem.endsWith(u8, path, "\\classes") or
@@ -541,7 +541,7 @@ fn shouldSearchMetadataParents(path: []const u8) bool {
 
 /// field-meta.xml からデフォルト値と型情報を読み込む。
 /// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
-fn collectFieldDefaults(
+fn collect_field_defaults(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -573,7 +573,7 @@ fn collectFieldDefaults(
         const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(64 * 1024)) catch continue;
 
         var metadata = evaluator.FieldMetadata{};
-        if (extractXmlTagValue(content, "label")) |label| {
+        if (extract_xml_tag_value(content, "label")) |label| {
             metadata.label = alloc.dupe(u8, std.mem.trim(u8, label, " \t\n\r")) catch null;
         }
 
@@ -612,23 +612,23 @@ fn collectFieldDefaults(
                 metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
             }
         }
-        if (extractXmlTagValue(content, "formula")) |formula| {
-            metadata.formula = decodeXmlText(alloc, formula, false) catch null;
+        if (extract_xml_tag_value(content, "formula")) |formula| {
+            metadata.formula = decode_xml_text(alloc, formula, false) catch null;
         }
-        if (extractXmlTagValue(content, "formulaTreatBlanksAs")) |blank_mode| {
+        if (extract_xml_tag_value(content, "formulaTreatBlanksAs")) |blank_mode| {
             metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(std.mem.trim(u8, blank_mode, " \t\n\r"), "BlankAsZero");
         }
-        if (extractXmlTagValue(content, "summarizedField")) |summarized_field| {
+        if (extract_xml_tag_value(content, "summarizedField")) |summarized_field| {
             metadata.summarized_field = alloc.dupe(u8, std.mem.trim(u8, summarized_field, " \t\n\r")) catch null;
         }
-        if (extractXmlTagValue(content, "summaryForeignKey")) |summary_foreign_key| {
+        if (extract_xml_tag_value(content, "summaryForeignKey")) |summary_foreign_key| {
             metadata.summary_foreign_key = alloc.dupe(u8, std.mem.trim(u8, summary_foreign_key, " \t\n\r")) catch null;
         }
-        if (extractXmlTagValue(content, "summaryOperation")) |summary_operation| {
+        if (extract_xml_tag_value(content, "summaryOperation")) |summary_operation| {
             metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
         }
-        metadata.summary_filters = parseSummaryFilters(alloc, content) catch &.{};
-        metadata.picklist_values = parsePicklistValues(alloc, content) catch &.{};
+        metadata.summary_filters = parse_summary_filters(alloc, content) catch &.{};
+        metadata.picklist_values = parse_picklist_values(alloc, content) catch &.{};
 
         // Extract <type>...</type> for field type info
         if (std.mem.indexOf(u8, content, "<type>")) |ts| {
@@ -652,11 +652,11 @@ fn collectFieldDefaults(
                     if (std.mem.indexOfPos(u8, content, n_start, "</relationshipName>")) |ne| {
                         const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
                         const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
-                        putChildRelationship(alloc, child_relationships, parent_type, relationship_name, type_name, field_name) catch {};
+                        put_child_relationship(alloc, child_relationships, parent_type, relationship_name, type_name, field_name) catch {};
                         if (!std.mem.endsWith(u8, relationship_name, "__r")) {
                             const rel_with_suffix = std.fmt.allocPrint(alloc, "{s}__r", .{relationship_name}) catch "";
                             if (rel_with_suffix.len > 0) {
-                                putChildRelationship(alloc, child_relationships, parent_type, rel_with_suffix, type_name, field_name) catch {};
+                                put_child_relationship(alloc, child_relationships, parent_type, rel_with_suffix, type_name, field_name) catch {};
                             }
                         }
                     }
@@ -693,16 +693,16 @@ fn collectFieldDefaults(
             break;
         }
 
-        // Extract <defaultValue>...</defaultValue>
-        const dv_start_tag = "<defaultValue>";
-        const dv_end_tag = "</defaultValue>";
+        // Extract <default_value>...</default_value>
+        const dv_start_tag = "<default_value>";
+        const dv_end_tag = "</default_value>";
         const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse continue;
         const dv_value_start = dv_start + dv_start_tag.len;
         const dv_end = std.mem.indexOfPos(u8, content, dv_value_start, dv_end_tag) orelse continue;
         const raw_str = content[dv_value_start..dv_end];
 
         // Decode XML entities and strip Apex string quotes
-        const decoded = decodeXmlDefaultValue(alloc, raw_str) catch continue;
+        const decoded = decode_xml_default_value(alloc, raw_str) catch continue;
 
         // Convert to Value based on content
         const value: Value = if (std.ascii.eqlIgnoreCase(decoded, "true"))
@@ -725,7 +725,7 @@ fn collectFieldDefaults(
     }
 }
 
-fn extractXmlTagValue(content: []const u8, tag_name: []const u8) ?[]const u8 {
+fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 {
     const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
     defer std.heap.page_allocator.free(start_tag);
 
@@ -738,56 +738,56 @@ fn extractXmlTagValue(content: []const u8, tag_name: []const u8) ?[]const u8 {
     return content[value_start..end_idx];
 }
 
-fn parseSummaryFilters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
+fn parse_summary_filters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
     var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
     var search_start: usize = 0;
     while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
         const block_start = block_start_idx + "<summaryFilterItems>".len;
         const block_end = std.mem.indexOfPos(u8, content, block_start, "</summaryFilterItems>") orelse break;
         const block = content[block_start..block_end];
-        const field = extractXmlTagValue(block, "field") orelse {
+        const field = extract_xml_tag_value(block, "field") orelse {
             search_start = block_end + "</summaryFilterItems>".len;
             continue;
         };
-        const operation = extractXmlTagValue(block, "operation") orelse {
+        const operation = extract_xml_tag_value(block, "operation") orelse {
             search_start = block_end + "</summaryFilterItems>".len;
             continue;
         };
-        const value = extractXmlTagValue(block, "value") orelse {
+        const value = extract_xml_tag_value(block, "value") orelse {
             search_start = block_end + "</summaryFilterItems>".len;
             continue;
         };
         try filters.append(alloc, .{
-            .field_path = try decodeXmlText(alloc, std.mem.trim(u8, field, " \t\n\r"), false),
-            .operation = try decodeXmlText(alloc, std.mem.trim(u8, operation, " \t\n\r"), false),
-            .value = try decodeXmlText(alloc, std.mem.trim(u8, value, " \t\n\r"), false),
+            .field_path = try decode_xml_text(alloc, std.mem.trim(u8, field, " \t\n\r"), false),
+            .operation = try decode_xml_text(alloc, std.mem.trim(u8, operation, " \t\n\r"), false),
+            .value = try decode_xml_text(alloc, std.mem.trim(u8, value, " \t\n\r"), false),
         });
         search_start = block_end + "</summaryFilterItems>".len;
     }
     return try alloc.dupe(evaluator.SummaryFilter, filters.items);
 }
 
-fn parsePicklistValues(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.PicklistValueMetadata {
+fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.PicklistValueMetadata {
     var values = std.ArrayListUnmanaged(evaluator.PicklistValueMetadata).empty;
     var search_start: usize = 0;
     while (std.mem.indexOfPos(u8, content, search_start, "<value>")) |block_start_idx| {
         const block_start = block_start_idx + "<value>".len;
         const block_end = std.mem.indexOfPos(u8, content, block_start, "</value>") orelse break;
         const block = content[block_start..block_end];
-        const raw_label = extractXmlTagValue(block, "label") orelse {
+        const raw_label = extract_xml_tag_value(block, "label") orelse {
             search_start = block_end + "</value>".len;
             continue;
         };
-        const raw_value = extractXmlTagValue(block, "fullName") orelse raw_label;
+        const raw_value = extract_xml_tag_value(block, "fullName") orelse raw_label;
         const is_default = blk: {
-            if (extractXmlTagValue(block, "default")) |raw_default| {
+            if (extract_xml_tag_value(block, "default")) |raw_default| {
                 break :blk std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw_default, " \t\n\r"), "true");
             }
             break :blk false;
         };
         try values.append(alloc, .{
-            .label = try decodeXmlText(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
-            .value = try decodeXmlText(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
+            .label = try decode_xml_text(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
+            .value = try decode_xml_text(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
             .is_default = is_default,
         });
         search_start = block_end + "</value>".len;
@@ -795,7 +795,7 @@ fn parsePicklistValues(alloc: std.mem.Allocator, content: []const u8) ![]const e
     return try alloc.dupe(evaluator.PicklistValueMetadata, values.items);
 }
 
-fn putChildRelationship(
+fn put_child_relationship(
     alloc: std.mem.Allocator,
     child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
     parent_type: []const u8,
@@ -814,7 +814,7 @@ fn putChildRelationship(
 
 /// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名と種別を集める。
 /// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
-fn collectCustomSettingTypes(
+fn collect_custom_setting_types(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -878,7 +878,7 @@ fn collectCustomSettingTypes(
     }
 }
 
-fn splitNamespacedMetadataName(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+fn split_namespaced_metadata_name(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
     if (std.mem.indexOf(u8, name, "__")) |idx| {
         return .{
             .namespace = name[0..idx],
@@ -890,7 +890,7 @@ fn splitNamespacedMetadataName(name: []const u8) struct { namespace: []const u8,
 
 /// fieldSet-meta.xml を走査し field set metadata を読み込む。
 /// パス構造: .../objects/TypeName__c/fieldSets/FieldSetName.fieldSet-meta.xml
-fn collectFieldSets(
+fn collect_field_sets(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -966,7 +966,7 @@ fn collectFieldSets(
             search_start = block_end + "</displayedFields>".len;
         }
 
-        const names = splitNamespacedMetadataName(full_name);
+        const names = split_namespaced_metadata_name(full_name);
         const type_key = alloc.dupe(u8, type_name) catch continue;
         const field_set_key = alloc.dupe(u8, full_name) catch continue;
         const gop = field_sets.getOrPut(alloc, type_key) catch continue;
@@ -983,7 +983,7 @@ fn collectFieldSets(
 
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
 /// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
-fn decodeXmlText(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
+fn decode_xml_text(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
     // First pass: decode XML entities
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
@@ -1021,19 +1021,19 @@ fn decodeXmlText(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: 
     return alloc.dupe(u8, decoded);
 }
 
-fn decodeXmlDefaultValue(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
-    return decodeXmlText(alloc, raw, true);
+fn decode_xml_default_value(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return decode_xml_text(alloc, raw, true);
 }
 
 /// arena 上の Value を gpa にコピーする。
-fn copyValue(gpa: std.mem.Allocator, value: Value) !Value {
+fn copy_value(gpa: std.mem.Allocator, value: Value) !Value {
     return switch (value) {
         .string => |s| Value{ .string = try gpa.dupe(u8, s) },
         else => value,
     };
 }
 
-fn writeGenericRollupMetadataFixture(dir: anytype) !void {
+fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
     const tio = std.testing.io;
     try dir.createDirPath(tio, "objects/Parent__c/fields");
     try dir.createDirPath(tio, "objects/Child__c/fields");
@@ -1111,7 +1111,7 @@ fn writeGenericRollupMetadataFixture(dir: anytype) !void {
     });
 }
 
-fn writeGenericHierarchyCustomSettingFixture(dir: anytype) !void {
+fn write_generic_hierarchy_custom_setting_fixture(dir: anytype) !void {
     try dir.createDirPath(std.testing.io, "objects/AppSettings__c/fields");
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/AppSettings__c/AppSettings__c.object-meta.xml",
@@ -1137,15 +1137,15 @@ fn writeGenericHierarchyCustomSettingFixture(dir: anytype) !void {
     });
 }
 
-fn writeGenericHierarchyCustomSettingDefaultsFixture(dir: anytype) !void {
-    try writeGenericHierarchyCustomSettingFixture(dir);
+fn write_generic_hierarchy_custom_setting_defaults_fixture(dir: anytype) !void {
+    try write_generic_hierarchy_custom_setting_fixture(dir);
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/AppSettings__c/fields/Mode__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
         \\    <fullName>Mode__c</fullName>
-        \\    <defaultValue>&apos;default&apos;</defaultValue>
+        \\    <default_value>&apos;default&apos;</default_value>
         \\    <type>Text</type>
         \\    <length>255</length>
         \\</CustomField>
@@ -1436,7 +1436,7 @@ test "E2E: Matcher.matches requires a full-string regex match" {
     try std.testing.expectEqualStrings("true|false", result.value.string);
 }
 
-test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
+test "E2E: Matcher exposes start/end/group_count for static string inputs" {
     const source =
         \\public class MatcherSpanProbe {
         \\    private static final String BODY = 'xxaay';
@@ -1448,7 +1448,7 @@ test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
         \\            + ':'
         \\            + String.valueOf(matcher.end())
         \\            + ':'
-        \\            + String.valueOf(matcher.groupCount())
+        \\            + String.valueOf(matcher.group_count())
         \\            + ':'
         \\            + matcher.group(0)
         \\            + ':'
@@ -3129,7 +3129,7 @@ test "E2E: StaticResource IN clause returns multiple stubs" {
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
-test "E2E: static field set before enqueueJob is visible in execute" {
+test "E2E: static field set before enqueue_job is visible in execute" {
     const source =
         \\public class MyQueueable implements Queueable {
         \\    @testVisible private static Boolean throwError = false;
@@ -3143,7 +3143,7 @@ test "E2E: static field set before enqueueJob is visible in execute" {
         \\public class QTest {
         \\    public static String test() {
         \\        MyQueueable.throwError = true;
-        \\        System.enqueueJob(new MyQueueable());
+        \\        System.enqueue_job(new MyQueueable());
         \\        return String.valueOf(MyQueueable.circuitBreakerThrown);
         \\    }
         \\}
@@ -3517,7 +3517,7 @@ test "E2E: super method dispatch uses parent implementation" {
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
-test "E2E: enqueueJob executes instance queueable method" {
+test "E2E: enqueue_job executes instance queueable method" {
     const source =
         \\public class InstanceQueueable implements Queueable {
         \\    public static String lastMessage;
@@ -3531,7 +3531,7 @@ test "E2E: enqueueJob executes instance queueable method" {
         \\}
         \\public class InstanceQueueableTest {
         \\    public static String test() {
-        \\        System.enqueueJob(new InstanceQueueable('queued'));
+        \\        System.enqueue_job(new InstanceQueueable('queued'));
         \\        return InstanceQueueable.lastMessage;
         \\    }
         \\}
@@ -3553,7 +3553,7 @@ test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
         \\public class AsyncLimitQueueableTest {
         \\    public static String test() {
         \\        Integer beforeCalls = Limits.getAsyncCalls();
-        \\        System.enqueueJob(new AsyncLimitQueueable());
+        \\        System.enqueue_job(new AsyncLimitQueueable());
         \\        return String.valueOf(beforeCalls) + ':' + String.valueOf(Limits.getAsyncCalls());
         \\    }
         \\}
@@ -3588,7 +3588,7 @@ test "E2E: queueable finalizer sees unhandled exception result" {
         \\public class QueueableFinalizerTest {
         \\    public static String test() {
         \\        try {
-        \\            System.enqueueJob(new FailingQueueable());
+        \\            System.enqueue_job(new FailingQueueable());
         \\            return 'no-error';
         \\        } catch (System.Exception ex) {
         \\            return ProbeFinalizer.resultName + ':' + ProbeFinalizer.exceptionMessage + ':' + ex.getMessage();
@@ -4050,7 +4050,7 @@ test "E2E: virtual class with overloaded methods and auto property" {
     try std.testing.expectEqualStrings("200", result.value.string);
 }
 
-test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
+test "E2E: enqueue_job execute catches DmlException and sets circuit breaker" {
     const source =
         \\public class MyQ implements Queueable {
         \\    @testVisible private static Boolean throwError = false;
@@ -4074,7 +4074,7 @@ test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
         \\        Account a = new Account(Name = 'Test');
         \\        insert a;
         \\        MyQ.throwError = true;
-        \\        System.enqueueJob(new MyQ());
+        \\        System.enqueue_job(new MyQ());
         \\        return String.valueOf(MyQ.circuitBreakerThrown);
         \\    }
         \\}
@@ -4142,8 +4142,8 @@ test "areEqual with custom message includes expected and actual" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
-    _ = eval.callMethod("T", "test", &.{}) catch {};
+    try eval.load_decls(decls);
+    _ = eval.call_method("T", "test", &.{}) catch {};
 
     const msg = eval.assertion_failure orelse "";
     // カスタムメッセージと expected/actual の両方が含まれること
@@ -4168,8 +4168,8 @@ test "isTrue with custom message includes expected and actual" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
-    _ = eval.callMethod("T2", "test", &.{}) catch {};
+    try eval.load_decls(decls);
+    _ = eval.call_method("T2", "test", &.{}) catch {};
 
     const msg = eval.assertion_failure orelse "";
     try std.testing.expect(std.mem.indexOf(u8, msg, "should be true") != null);
@@ -4193,8 +4193,8 @@ test "areNotEqual with custom message includes values" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
-    _ = eval.callMethod("T3", "test", &.{}) catch {};
+    try eval.load_decls(decls);
+    _ = eval.call_method("T3", "test", &.{}) catch {};
 
     const msg = eval.assertion_failure orelse "";
     try std.testing.expect(std.mem.indexOf(u8, msg, "values differ") != null);
@@ -4612,7 +4612,7 @@ test "E2E: bitwise operators on integers return integer results" {
     // booleans. fflib_Uuid (and other reflection-heavy helpers) build bitmasks
     // via `(v & 0x0f) | 0x40` and were returning `false` because the AST used to
     // fold `&` into the same node as `&&`, which short-circuited based on
-    // `coerceToBool(integer)` returning false.
+    // `coerce_to_bool(integer)` returning false.
     const source =
         \\public class BitwiseIntProbe {
         \\    public static String test() {
@@ -4793,7 +4793,7 @@ test "E2E: bitwise operators on booleans return boolean results" {
 test "E2E: method call on property-backed identifier invokes the getter" {
     // `foo.size()` for a property-backed `foo` used to return null when the call
     // happened inside another getter, because the method-call fast path bailed
-    // out to `callMethod` before falling back to evalExpr. TriggerBase's
+    // out to `call_method` before falling back to eval_expr. TriggerBase's
     // `triggerSize` getter (and similar peer-property patterns) need the getter
     // to fire so `.size()` reaches the real list.
     const source =
@@ -5009,8 +5009,8 @@ test "E2E: relationship-style field names describe as REFERENCE" {
     try std.testing.expectEqualStrings("REFERENCE|CreatedBy|User", result.value.string);
 }
 
-test "E2E: Matcher.groupCount reflects the pattern and matches() populates currentMatch" {
-    // Java/Apex contract: `Matcher.groupCount()` reports the number of capture groups in
+test "E2E: Matcher.group_count reflects the pattern and matches() populates currentMatch" {
+    // Java/Apex contract: `Matcher.group_count()` reports the number of capture groups in
     // the *pattern* — not the number actually captured. After `matches()` succeeds, the
     // matcher should also expose `group(n)` for inspection (fflib_SObjectSelector tests
     // depend on this to validate generated SOQL).
@@ -5019,7 +5019,7 @@ test "E2E: Matcher.groupCount reflects the pattern and matches() populates curre
         \\    public static String test() {
         \\        Pattern p = Pattern.compile('SELECT (.*) FROM (.+)');
         \\        Matcher m = p.matcher('SELECT Id, Name FROM Account');
-        \\        if (m.groupCount() != 2) return 'bad-groupCount:' + String.valueOf(m.groupCount());
+        \\        if (m.group_count() != 2) return 'bad-group_count:' + String.valueOf(m.group_count());
         \\        if (!m.matches()) return 'no-match';
         \\        return m.group(1) + '|' + m.group(2);
         \\    }
@@ -5341,7 +5341,7 @@ test "E2E: rollup summary fields resolve in WHERE clauses and selected records" 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -5382,7 +5382,7 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -5857,7 +5857,7 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -5900,7 +5900,7 @@ test "E2E: hierarchy custom setting getInstance returns user-scoped inherited se
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -5932,7 +5932,7 @@ test "E2E: hierarchy custom setting accessors return detached records" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -5967,7 +5967,7 @@ test "E2E: hierarchy custom setting records are visible to later static initiali
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -6005,7 +6005,7 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericHierarchyCustomSettingDefaultsFixture(tmp_dir.dir);
+    try write_generic_hierarchy_custom_setting_defaults_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -6090,7 +6090,7 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "ScenarioHolder.cls",
         .data =
@@ -6125,7 +6125,7 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
 
     var _null_buf: [256]u8 = undefined;
     var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
-    const suite = try runTestSuite(alloc, std.testing.io, &.{tmp_path}, &_null_writer.writer);
+    const suite = try run_test_suite(alloc, std.testing.io, &.{tmp_path}, &_null_writer.writer);
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
     try std.testing.expectEqual(@as(u32, 0), suite.failed);
@@ -6167,7 +6167,7 @@ test "E2E: safe navigation short-circuits remaining method chain on null" {
         \\public class SafeNavNullChainTest {
         \\    public static String test() {
         \\        String raw = null;
-        \\        List<String> parts = raw?.replaceAll('x', 'y').split(',');
+        \\        List<String> parts = raw?.replace_all('x', 'y').split(',');
         \\        return parts == null ? 'null' : String.valueOf(parts.size());
         \\    }
         \\}
@@ -7266,7 +7266,7 @@ test "E2E: subquery custom child records preserve custom parent relationship fie
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -7300,7 +7300,7 @@ test "E2E: unsaved custom child relationships default to empty lists" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -7548,7 +7548,7 @@ test "E2E: Database.countQuery with null bind in method parameter" {
 }
 
 // TODO: Database.query/countQuery でメソッドのローカル変数へのバインド変数解決が
-// callMethod 経由の呼び出しで機能しない問題がある。env スコープチェーンの調査が必要。
+// call_method 経由の呼び出しで機能しない問題がある。env スコープチェーンの調査が必要。
 test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in nested call" {
     const source =
         \\public class Controller {
@@ -7619,14 +7619,14 @@ test "parser: class with inner class preserves parent methods" {
         else => return error.TestUnexpectedResult,
     }
 
-    // Verify that callMethod finds and executes the method correctly
+    // Verify that call_method finds and executes the method correctly
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
-    const val = try eval.callMethod("Outer", "myMethod", &.{});
+    try eval.load_decls(decls);
+    const val = try eval.call_method("Outer", "myMethod", &.{});
     try std.testing.expectEqualStrings("hello", val.string);
 }
 
-test "loadDecls: Controller class with inner class has getItems method" {
+test "load_decls: Controller class with inner class has getItems method" {
     var arena_alloc3 = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc3.deinit();
 
@@ -7647,7 +7647,7 @@ test "loadDecls: Controller class with inner class has getItems method" {
     const tokens3 = try lexer.tokenize(source3, alloc3);
     const decls3 = try parser.parse(tokens3, alloc3);
     var eval3 = try evaluator.Evaluator.init(alloc3, std.testing.io);
-    try eval3.loadDecls(decls3);
+    try eval3.load_decls(decls3);
 
     // Verify classes map contents
     // Classes should be: Controller, PagedResult, Controller.PagedResult
@@ -7666,15 +7666,15 @@ test "loadDecls: Controller class with inner class has getItems method" {
     }
     try std.testing.expect(found);
 
-    // Verify callMethod handles Database.countQuery correctly without inner class interaction
+    // Verify call_method handles Database.countQuery correctly without inner class interaction
     // First test: call without WHERE clause
-    try eval3.executeDml(.insert, Value{ .sobject = blk: {
+    try eval3.execute_dml(.insert, Value{ .sobject = blk: {
         const sob = try alloc3.create(types.SObject);
         sob.* = .{ .type_name = "Account" };
         try sob.fields.put(alloc3, "Name", Value{ .string = "Test" });
         break :blk sob;
     } });
-    const val3 = try eval3.callMethod("Controller", "getItems", &.{Value.null_val});
+    const val3 = try eval3.call_method("Controller", "getItems", &.{Value.null_val});
     // getItems returns String.valueOf(count) which is a string
     // But if Database.countQuery fails, it may return integer 0 directly
     if (val3 == .string) {
@@ -7818,8 +7818,8 @@ test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
-    _ = eval.callMethod("CalculatorTest", "testMultiplyWrong", &.{}) catch {};
+    try eval.load_decls(decls);
+    _ = eval.call_method("CalculatorTest", "testMultiplyWrong", &.{}) catch {};
 
     // assertEquals(10, 6) should fail
     const msg = eval.assertion_failure orelse "";
@@ -7856,13 +7856,13 @@ test "Contact Name is synthesized from FirstName + LastName" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("ContactNameTest", "testContactName", &.{});
+    _ = try eval.call_method("ContactNameTest", "testContactName", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
-    eval.resetForTest();
-    _ = try eval.callMethod("ContactNameTest", "testContactNameLastOnly", &.{});
+    eval.reset_for_test();
+    _ = try eval.call_method("ContactNameTest", "testContactNameLastOnly", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7895,17 +7895,17 @@ test "Double/Decimal instance fields default to null" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("DoubleDefaultTest", "testDecimalNull", &.{});
+    _ = try eval.call_method("DoubleDefaultTest", "testDecimalNull", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
-    eval.resetForTest();
-    _ = try eval.callMethod("DoubleDefaultTest", "testDoubleNull", &.{});
+    eval.reset_for_test();
+    _ = try eval.call_method("DoubleDefaultTest", "testDoubleNull", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
-test "resetForTest re-runs static initializers for later test methods" {
+test "reset_for_test re-runs static initializers for later test methods" {
     const source =
         \\@IsTest
         \\public class StaticInitResetTest {
@@ -7941,17 +7941,17 @@ test "resetForTest re-runs static initializers for later test methods" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("StaticInitResetTest", "firstMethod", &.{});
+    _ = try eval.call_method("StaticInitResetTest", "firstMethod", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
-    eval.resetForTest();
-    _ = try eval.callMethod("StaticInitResetTest", "secondMethod", &.{});
+    eval.reset_for_test();
+    _ = try eval.call_method("StaticInitResetTest", "secondMethod", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
-test "runTestSuite keeps repo-root metadata loading scoped to the requested repo" {
+test "run_test_suite keeps repo-root metadata loading scoped to the requested repo" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -8012,7 +8012,7 @@ test "runTestSuite keeps repo-root metadata loading scoped to the requested repo
 
     var _null_buf: [256]u8 = undefined;
     var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
-    const suite = try runTestSuite(alloc, std.testing.io, &.{repo_a_path}, &_null_writer.writer);
+    const suite = try run_test_suite(alloc, std.testing.io, &.{repo_a_path}, &_null_writer.writer);
     try std.testing.expectEqual(@as(usize, 1), suite.total);
     try std.testing.expectEqual(@as(usize, 1), suite.passed);
 }
@@ -8044,9 +8044,9 @@ test "JSON.deserialize maps fields to user-defined class" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("JsonDeserTest", "testDeserialize", &.{});
+    _ = try eval.call_method("JsonDeserTest", "testDeserialize", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8075,9 +8075,9 @@ test "JSON.createParser + readValueAs deserializes into typed class" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("JsonParserTest", "testReadValueAs", &.{});
+    _ = try eval.call_method("JsonParserTest", "testReadValueAs", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8102,9 +8102,9 @@ test "PageReference.getUrl returns stored URL" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("PageRefTest", "testGetUrl", &.{});
+    _ = try eval.call_method("PageRefTest", "testGetUrl", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8152,9 +8152,9 @@ test "SOQL LIKE with bind variable matches correctly" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("LikeBindTest", "testLikeBind", &.{});
+    _ = try eval.call_method("LikeBindTest", "testLikeBind", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8177,9 +8177,9 @@ test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("SchemaTest", "testSchemaAccess", &.{});
+    _ = try eval.call_method("SchemaTest", "testSchemaAccess", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8203,9 +8203,9 @@ test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("CryptoTest", "testRoundTrip", &.{});
+    _ = try eval.call_method("CryptoTest", "testRoundTrip", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8235,9 +8235,9 @@ test "AuraHandledException is caught in try-catch" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("AuraTest", "testCatch", &.{});
+    _ = try eval.call_method("AuraTest", "testCatch", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8262,9 +8262,9 @@ test "Type.forName returns null for non-existent class" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    _ = try eval.callMethod("TypeForNameTest", "testForName", &.{});
+    _ = try eval.call_method("TypeForNameTest", "testForName", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8320,11 +8320,11 @@ test "E2E: constructor-built DmlException stack trace keeps only immediate calle
     );
 }
 
-test "E2E: replaceAll can collapse ignored constructed stack trace frames to empty" {
+test "E2E: replace_all can collapse ignored constructed stack trace frames to empty" {
     const source =
         \\public class StackTraceCleanupProbe {
         \\    public static String test() {
-        \\        return new DmlException().getStackTraceString().replaceAll('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
+        \\        return new DmlException().getStackTraceString().replace_all('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
         \\    }
         \\}
     ;
@@ -8381,12 +8381,12 @@ test "Trigger recursion does not StackOverflow" {
     const decls3 = try parser.parse(tokens3, alloc);
 
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls1);
-    try eval.loadDecls(decls2);
-    try eval.loadDecls(decls3);
+    try eval.load_decls(decls1);
+    try eval.load_decls(decls2);
+    try eval.load_decls(decls3);
 
     // StackOverflow should not happen anymore — propagate any error.
-    _ = try eval.callMethod("TriggerRecursionTest", "testNoStackOverflow", &.{});
+    _ = try eval.call_method("TriggerRecursionTest", "testNoStackOverflow", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8409,10 +8409,10 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
-    try eval.loadDecls(decls);
+    try eval.load_decls(decls);
 
-    eval.resetForTest();
-    _ = try eval.callMethod("UserQueryTest", "testQuery", &.{});
+    eval.reset_for_test();
+    _ = try eval.call_method("UserQueryTest", "testQuery", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -9031,7 +9031,7 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
@@ -9197,7 +9197,7 @@ test "E2E: field set queries materialize formula fields built from rollup counts
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Parent__c/fieldSets/Notification_Defaults.fieldSet-meta.xml",
@@ -10192,7 +10192,7 @@ test "E2E: System.currentPageReference reuses ApexPages current page parameters"
     try std.testing.expectEqualStrings("/home", result.value.string);
 }
 
-test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {
+test "reset_for_test should not leak: arena memory must not grow linearly with test iterations" {
     // テストごとに新しい evaluator を作り、テストアリーナを reset(.retain_capacity) する。
     // テストアリーナの容量が線形に増加しないことを検証する。
     const source =
@@ -10218,7 +10218,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
     const tokens = try lexer.tokenize(source, parse_alloc);
     const decls = try parser.parse(tokens, parse_alloc);
     var base_eval = try evaluator.Evaluator.init(parse_alloc, std.testing.io);
-    try base_eval.loadDecls(decls);
+    try base_eval.load_decls(decls);
 
     // テスト実行用アリーナ
     var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -10229,7 +10229,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
         _ = test_arena.reset(.retain_capacity);
         var test_eval = try evaluator.Evaluator.init(test_arena.allocator(), std.testing.io);
         test_eval.classes = base_eval.classes;
-        _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
+        _ = test_eval.call_method("LeakTest", "test1", &.{}) catch {};
     }
     const baseline = test_arena.queryCapacity();
 
@@ -10238,7 +10238,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
         _ = test_arena.reset(.retain_capacity);
         var test_eval = try evaluator.Evaluator.init(test_arena.allocator(), std.testing.io);
         test_eval.classes = base_eval.classes;
-        _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
+        _ = test_eval.call_method("LeakTest", "test1", &.{}) catch {};
     }
 
     const after = test_arena.queryCapacity();
@@ -10554,7 +10554,7 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -10636,18 +10636,18 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
     const source =
         \\public class CleanupGateway {
         \\    public class Database {
-        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
-        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            List<Database.DeleteResult> results = this.delete_records(rows);
         \\            if (rows.isEmpty() == false) {
         \\                System.Database.emptyRecycleBin(rows);
         \\            }
@@ -10700,7 +10700,7 @@ test "E2E: wrapper database instance can delete queried rows" {
     const source =
         \\public class CleanupGateway {
         \\    public class Database {
-        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\    }
@@ -10712,7 +10712,7 @@ test "E2E: wrapper database instance can delete queried rows" {
         \\    public static String test() {
         \\        insert new Account(Name = 'Acme');
         \\        List<SObject> rows = new List<SObject>([SELECT Id FROM Account]);
-        \\        CleanupGateway.getDatabase().deleteRecords(rows);
+        \\        CleanupGateway.getDatabase().delete_records(rows);
         \\        return String.valueOf([SELECT Id FROM Account].size());
         \\    }
         \\}
@@ -10730,11 +10730,11 @@ test "E2E: wrapper database instance can hard-delete queried rows" {
     const source =
         \\public class CleanupGateway {
         \\    public class Database {
-        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
-        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            List<Database.DeleteResult> results = this.delete_records(rows);
         \\            if (rows.isEmpty() == false) {
         \\                System.Database.emptyRecycleBin(rows);
         \\            }
@@ -10767,11 +10767,11 @@ test "E2E: executeBatch can hard-delete rows through a wrapper database class" {
     const source =
         \\public class CleanupGateway {
         \\    public class Database {
-        \\        public List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\        public List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
-        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            List<Database.DeleteResult> results = this.delete_records(rows);
         \\            if (rows.isEmpty() == false) {
         \\                System.Database.emptyRecycleBin(rows);
         \\            }
@@ -10813,7 +10813,7 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -10959,7 +10959,7 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -10978,11 +10978,11 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public virtual List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\        public virtual List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
-        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            List<Database.DeleteResult> results = this.delete_records(rows);
         \\            if (rows.isEmpty() == false) {
         \\                System.Database.emptyRecycleBin(rows);
         \\            }
@@ -11070,11 +11070,11 @@ test "E2E: singleton database getter can hard-delete queried rows outside batch"
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.DeleteResult> deleteRecords(List<SObject> rows) {
+        \\        public virtual List<Database.DeleteResult> delete_records(List<SObject> rows) {
         \\            return System.Database.delete(rows);
         \\        }
         \\        public virtual List<Database.DeleteResult> hardDeleteRecords(List<SObject> rows) {
-        \\            List<Database.DeleteResult> results = this.deleteRecords(rows);
+        \\            List<Database.DeleteResult> results = this.delete_records(rows);
         \\            if (rows.isEmpty() == false) {
         \\                System.Database.emptyRecycleBin(rows);
         \\            }
@@ -11105,7 +11105,7 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeGenericRollupMetadataFixture(tmp_dir.dir);
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
 
@@ -12173,7 +12173,7 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\            return databaseInstance;
         \\        }
         \\        public virtual class Database {
-        \\            public virtual List<Database.UndeleteResult> undeleteRecords(List<SObject> records, Boolean allOrNone) {
+        \\            public virtual List<Database.UndeleteResult> undelete_records(List<SObject> records, Boolean allOrNone) {
         \\                return System.Database.undelete(records, allOrNone);
         \\            }
         \\        }
@@ -12186,7 +12186,7 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\        insert rows;
         \\        delete rows.get(0);
         \\        rows = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
-        \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undeleteRecords(rows, false);
+        \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undelete_records(rows, false);
         \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
         \\        return String.valueOf(results.size()) + '|' +
         \\            String.valueOf(results.get(0).isSuccess()) + '|' +
@@ -12260,7 +12260,7 @@ test "E2E: fixture flow definition view selector test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12280,7 +12280,7 @@ test "E2E: fixture cached organization selector test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12327,7 +12327,7 @@ test "E2E: fixture field mapping integration test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12347,7 +12347,7 @@ test "E2E: fixture transaction limits builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12367,7 +12367,7 @@ test "E2E: fixture auth session builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12387,7 +12387,7 @@ test "E2E: fixture organization builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12407,7 +12407,7 @@ test "E2E: fixture user builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12545,7 +12545,7 @@ test "E2E: fixture duplicate scenario guard test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12565,7 +12565,7 @@ test "E2E: fixture tag creation test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12585,7 +12585,7 @@ test "E2E: fixture tag reuse test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12605,7 +12605,7 @@ test "E2E: fixture event-uuid upsert test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12938,7 +12938,7 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records, Schema.SObjectField externalIdField) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
@@ -12947,7 +12947,7 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         \\    public static String test() {
         \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
         \\        List<SObject> copied = new List<SObject>(rows);
-        \\        DataGateway.getDatabase().upsertRecords(copied, Schema.Thing__c.UniqueId__c);
+        \\        DataGateway.getDatabase().upsert_records(copied, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
         \\    }
         \\}
@@ -12969,13 +12969,13 @@ test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records, Schema.SObjectField externalIdField) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
         \\    public static String test() {
         \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
-        \\        getDatabase().upsertRecords(rows, Schema.Thing__c.UniqueId__c);
+        \\        getDatabase().upsert_records(rows, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
         \\}
@@ -13082,7 +13082,7 @@ test "E2E: fixture anonymous-mode-disabled user fields test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13102,7 +13102,7 @@ test "E2E: fixture standard-object recordId test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13122,7 +13122,7 @@ test "E2E: fixture custom-object recordId test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13142,7 +13142,7 @@ test "E2E: fixture null record overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13162,7 +13162,7 @@ test "E2E: fixture null list overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13182,7 +13182,7 @@ test "E2E: fixture null map overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13202,7 +13202,7 @@ test "E2E: fixture null iterable overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    const suite = try run_single_test(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13959,10 +13959,10 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
     //   SELECT ... FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard'
     // and then inserts a User without setting IsActive, later asserting
     //   SELECT ... FROM User WHERE Email = 'x' AND IsActive = TRUE
-    // Two bugs had to line up: (a) extractWhereFieldValue dropped bare
-    // TRUE / FALSE tokens on the floor, so applyQueriedSyntheticProfileFlags
+    // Two bugs had to line up: (a) extract_where_field_value dropped bare
+    // TRUE / FALSE tokens on the floor, so apply_queried_synthetic_profile_flags
     // never saw the permission and the Profile WHERE predicate never matched
-    // — we synthesized a Profile without the flag and matchesWhere filtered
+    // — we synthesized a Profile without the flag and matches_where filtered
     // it out. (b) User.IsActive was unset on a fresh insert, so the WHERE
     // IsActive=TRUE filter yielded no rows and the single-record assignment
     // threw "List has no rows for assignment to SObject".

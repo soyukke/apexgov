@@ -140,7 +140,7 @@ pub const DocumentStore = struct {
         const alloc = arena.allocator();
 
         const tokens = try apex_parser.tokenize(doc.text, alloc);
-        const result = try apex_parser.parseWithDiagnostics(tokens, alloc);
+        const result = try apex_parser.parse_with_diagnostics(tokens, alloc);
 
         doc.parse_result = .{
             .decls = result.decls,

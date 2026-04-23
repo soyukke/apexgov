@@ -35,7 +35,7 @@ pub fn encode(tokens: []const Token, source: []const u8, allocator: std.mem.Allo
         const token_type = classify_token(tok) orelse continue;
 
         const line = if (tok.loc.line > 0) tok.loc.line - 1 else 0;
-        const char = tok.loc.utf16Col(source);
+        const char = tok.loc.utf16_col(source);
         const length: u32 = @intCast(tok.lexeme.len);
 
         const delta_line = line - prev_line;

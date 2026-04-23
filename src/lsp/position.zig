@@ -24,7 +24,7 @@ pub fn identifier_at_offset(tokens: []const parser_types.Token, offset: u32) ?[]
 /// symbols.zig, workspace_symbol.zig, server.zig 等の共通ヘルパー。
 pub fn loc_to_range(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
     const line = if (loc.line > 0) loc.line - 1 else 0;
-    const char = loc.utf16Col(source);
+    const char = loc.utf16_col(source);
     return .{
         .start = .{ .line = line, .character = char },
         .end = .{ .line = line, .character = char },

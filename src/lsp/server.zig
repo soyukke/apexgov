@@ -755,7 +755,7 @@ pub const Server = struct {
         var test_allocating = std.Io.Writer.Allocating.init(self.allocator);
         defer test_allocating.deinit();
 
-        const suite = interpret.runSingleTest(
+        const suite = interpret.run_single_test(
             self.allocator,
             self.io,
             test_paths,
