@@ -763,21 +763,31 @@ pub const Server = struct {
             method_name,
             &test_allocating.writer,
         ) catch {
-            const err_params = types.ShowMessageParams{
-                .type = .@"error",
-                .message = "Test execution failed",
-            };
-            try self.transport.send_notification(
-                self.allocator,
-                "window/showMessage",
-                err_params,
-            );
+            try self.notify_test_execution_failed();
             return;
         };
 
+        try self.notify_test_result(class_name, method_name, suite, test_allocating.written());
+    }
+
+    fn notify_test_execution_failed(self: *Server) !void {
+        const err_params = types.ShowMessageParams{
+            .type = .@"error",
+            .message = "Test execution failed",
+        };
+        try self.transport.send_notification(self.allocator, "window/showMessage", err_params);
+    }
+
+    fn notify_test_result(
+        self: *Server,
+        class_name: []const u8,
+        method_name: ?[]const u8,
+        suite: anytype,
+        output: []const u8,
+    ) !void {
         // 失敗時は buf から [FAIL] 行を抽出して詳細メッセージを構築
         const failure_detail = if (suite.passed < suite.total)
-            extract_test_failure_detail(test_allocating.written())
+            extract_test_failure_detail(output)
         else
             "";
 

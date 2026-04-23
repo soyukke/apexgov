@@ -487,6 +487,7 @@ fn run_tests_filtered(
 ) !TestSuiteResult {
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
+
     const parse_alloc = parse_arena.allocator();
 
     // 1. .cls ファイルを収集
@@ -705,6 +706,7 @@ fn collect_field_defaults(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
 
@@ -1166,6 +1168,7 @@ fn collect_field_sets(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
 
