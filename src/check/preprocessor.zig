@@ -71,57 +71,26 @@ pub fn collect_do_while_start_conditions_from_stripped(
     defer do_stack.deinit(allocator);
 
     var pending_do_start: ?DoLoopStart = null;
-
     var brace_depth: i32 = 0;
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, stripped_content, '\n');
     while (lines.next()) |raw| {
         line_no += 1;
-        const code_line = raw;
-        const trimmed = std.mem.trim(u8, code_line, " \t\r");
-
+        const trimmed = std.mem.trim(u8, raw, " \t\r");
         if (trimmed.len > 0) {
-            if (is_do_loop_start(trimmed)) {
-                if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
-                    try do_stack.append(allocator, .{
-                        .start_line = line_no,
-                        .end_depth = brace_depth + 1,
-                    });
-                    pending_do_start = null;
-                } else {
-                    pending_do_start = .{
-                        .start_line = line_no,
-                        .end_depth = brace_depth,
-                    };
-                }
-            } else if (pending_do_start) |pending| {
-                if (trimmed[0] == '{' and pending.end_depth == brace_depth) {
-                    try do_stack.append(allocator, .{
-                        .start_line = pending.start_line,
-                        .end_depth = brace_depth + 1,
-                    });
-                }
-                pending_do_start = null;
-            }
-
-            if (try parse_do_while_tail_condition(allocator, trimmed)) |condition| {
-                errdefer allocator.free(condition);
-                if (do_stack.items.len > 0 and
-                    do_stack.items[do_stack.items.len - 1].end_depth == brace_depth)
-                {
-                    const do_start = do_stack.pop().?;
-                    try out.put(do_start.start_line, condition);
-                } else {
-                    allocator.free(condition);
-                }
-            }
+            try process_do_while_non_empty_line(
+                allocator,
+                trimmed,
+                line_no,
+                brace_depth,
+                &do_stack,
+                &pending_do_start,
+                &out,
+            );
         }
-
-        brace_depth = update_brace_depth(brace_depth, code_line);
+        brace_depth = update_brace_depth(brace_depth, raw);
         if (pending_do_start) |pending| {
-            if (brace_depth < pending.end_depth) {
-                pending_do_start = null;
-            }
+            if (brace_depth < pending.end_depth) pending_do_start = null;
         }
         while (do_stack.items.len > 0 and
             do_stack.items[do_stack.items.len - 1].end_depth > brace_depth)
@@ -129,8 +98,52 @@ pub fn collect_do_while_start_conditions_from_stripped(
             _ = do_stack.pop();
         }
     }
-
     return out;
+}
+
+fn process_do_while_non_empty_line(
+    allocator: std.mem.Allocator,
+    trimmed: []const u8,
+    line_no: usize,
+    brace_depth: i32,
+    do_stack: *std.ArrayList(DoLoopStart),
+    pending_do_start: *?DoLoopStart,
+    out: *std.AutoHashMap(usize, []const u8),
+) !void {
+    if (is_do_loop_start(trimmed)) {
+        if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+            try do_stack.append(allocator, .{
+                .start_line = line_no,
+                .end_depth = brace_depth + 1,
+            });
+            pending_do_start.* = null;
+        } else {
+            pending_do_start.* = .{
+                .start_line = line_no,
+                .end_depth = brace_depth,
+            };
+        }
+    } else if (pending_do_start.*) |pending| {
+        if (trimmed[0] == '{' and pending.end_depth == brace_depth) {
+            try do_stack.append(allocator, .{
+                .start_line = pending.start_line,
+                .end_depth = brace_depth + 1,
+            });
+        }
+        pending_do_start.* = null;
+    }
+
+    if (try parse_do_while_tail_condition(allocator, trimmed)) |condition| {
+        errdefer allocator.free(condition);
+        if (do_stack.items.len > 0 and
+            do_stack.items[do_stack.items.len - 1].end_depth == brace_depth)
+        {
+            const do_start = do_stack.pop().?;
+            try out.put(do_start.start_line, condition);
+        } else {
+            allocator.free(condition);
+        }
+    }
 }
 
 pub fn is_do_loop_start(line: []const u8) bool {
