@@ -9905,7 +9905,8 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
         \\ Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        String json_str = JSON.serialize(fields);
-        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(json_str, SObject.class);
+        \\        Schema.ApexClass castedRecord =
+        \\            (Schema.ApexClass) JSON.deserialize(json_str, SObject.class);
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ castedRecord };
         \\        List<SObject> genericRecords = typedRecords;
         \\        return String.valueOf(castedRecord.getSObjectType()) + ':' +
@@ -9951,7 +9952,12 @@ test "E2E: JSON deserialize unwraps relationship records and normalizes standard
     const source =
         \\public class JsonRelationshipRoundTripTest {
         \\    public static String test() {
-        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","NumberOfEmployees":"7","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA","DoNotCall":"true"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA","DoNotCall":"false"}]}}]';
+        \\        String json = '[{"attributes":{"type":"Account"},' +
+        \\            '"Id":"001000000000001AAA","Name":"Acme","NumberOfEmployees":"7",' +
+        \\            '"Contacts":{"totalSize":"2","done":"true","records":[' +
+        \\            '{"attributes":{"type":"Contact"},"Id":"003000000000001AAA","DoNotCall":"true"},' +
+        \\            '{"attributes":{"type":"Contact"},"Id":"003000000000002AAA","DoNotCall":"false"}' +
+        \\            ']}}]';
         \\        SObject accountRecord = ((List<SObject>) JSON.deserialize(json, List<SObject>.class))[0];
         \\        List<SObject> contacts = accountRecord.getSObjects('Contacts');
         \\        return String.valueOf(accountRecord.get('NumberOfEmployees')) + ':' +
@@ -9974,11 +9980,20 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     const source =
         \\public class JsonTypedRelationshipRoundTripTest {
         \\    public static String test() {
-        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA"}]}}]';
+        \\        String json = '[{"attributes":{"type":"Account"},' +
+        \\            '"Id":"001000000000001AAA","Name":"Acme",' +
+        \\            '"Contacts":{"totalSize":"2","done":"true","records":[' +
+        \\            '{"attributes":{"type":"Contact"},"Id":"003000000000001AAA"},' +
+        \\            '{"attributes":{"type":"Contact"},"Id":"003000000000002AAA"}]}}]';
         \\        Account accountRecord = ((List<Account>) JSON.deserialize(json, List<Account>.class))[0];
         \\        return String.valueOf(accountRecord.Contacts == null) + ':' +
-        \\            String.valueOf(accountRecord.Contacts == null ? null : accountRecord.Contacts.size()) + ':' +
-        \\            String.valueOf(accountRecord.Contacts == null || accountRecord.Contacts.size() == 0 ? null : accountRecord.Contacts[0].Id);
+        \\            String.valueOf(
+        \\                accountRecord.Contacts == null ? null : accountRecord.Contacts.size()
+        \\            ) + ':' +
+        \\            String.valueOf(
+        \\                accountRecord.Contacts == null || accountRecord.Contacts.size() == 0
+        \\                    ? null : accountRecord.Contacts[0].Id
+        \\            );
         \\    }
         \\}
     ;
@@ -10001,7 +10016,8 @@ test "E2E: DataWeave object conversion returns typed records" {
         \\public class DataWeaveObjectConversionTest {
         \\    public static String test() {
         \\        String csvInput = 'first_name,last_name,email\\nAbel,Maclead,a.m@demo.org';
-        \\        String jsonInput = '[{ "first_name": "Abel", "last_name": "Maclead", "email": "a.m@demo.org" }]';
+        \\        String jsonInput =
+        \\            '[{ "first_name": "Abel", "last_name": "Maclead", "email": "a.m@demo.org" }]';
         \\        List<Contact> csvContacts = (List<Contact>) new DataWeaveScriptResource.csvToContacts()
         \\            .execute(new Map<String, Object>{ 'records' => csvInput })
         \\            .getValue();
@@ -10068,7 +10084,8 @@ test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
     const source =
         \\public class JsonReadonlyDatetimeProbe {
         \\    public static String test() {
-        \\        String json = '{"attributes":{"type":"Account"},"LastReferencedDate":"2020-01-07T23:30:00.000Z"}';
+        \\        String json =
+        \\            '{"attributes":{"type":"Account"},"LastReferencedDate":"2020-01-07T23:30:00.000Z"}';
         \\        Account accountRecord = (Account) JSON.deserialize(json, Account.class);
         \\        Datetime expected = Datetime.newInstanceGmt(2020, 1, 7, 23, 30, 0);
         \\        return String.valueOf(expected == accountRecord.LastReferencedDate) + ':' +
@@ -10102,7 +10119,10 @@ test "E2E: JSON serialize preserves Id on generic newSObject records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("001000000000001AAA:{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}", result.value.string);
+    const expected_account_json =
+        "001000000000001AAA:{\"attributes\":{\"type\":\"Account\"}," ++
+        "\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}";
+    try std.testing.expectEqualStrings(expected_account_json, result.value.string);
 }
 
 test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
@@ -10445,7 +10465,9 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
         \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
         \\        );
         \\        Thing__c record = new Thing__c(Timestamp__c = Datetime.newInstance(2026, 3, 1, 0, 0, 0));
-        \\        return String.valueOf(((Datetime) ((SObject) apexClassRecord).get(Schema.ApexClass.LastModifiedDate)) > record.Timestamp__c);
+        \\        SObject raw_rec = (SObject) apexClassRecord;
+        \\        Datetime last_mod = (Datetime) raw_rec.get(Schema.ApexClass.LastModifiedDate);
+        \\        return String.valueOf(last_mod > record.Timestamp__c);
         \\    }
         \\}
     ;
@@ -11101,7 +11123,7 @@ test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
     try std.testing.expectEqualStrings("true:false:1:true", result.value.string);
 }
 
-test "E2E: String.valueOf respects override toString and List<Type>.toString formats element names" {
+test "E2E: String.valueOf honors override toString and List<Type>.toString shows element names" {
     const source =
         \\public class ValuePrinter {
         \\    public override String toString() {
@@ -11274,7 +11296,8 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\        if (phase == 'Children') {
         \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
         \\        }
-        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE RetentionDate__c <= :System.today()]);
+        \\        return Database.getQueryLocator(
+        \\            [SELECT Id FROM Parent__c WHERE RetentionDate__c <= :System.today()]);
         \\    }
         \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
         \\        CleanupGateway.getDatabase().hardDeleteRecords(scope);
@@ -11485,13 +11508,15 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\    public static String test() {
         \\        insert new Account(Name = 'Acme');
         \\        String batchClassName = AsyncJobProbeBatch.class.getName();
-        \\        String namespacePrefix = batchClassName.contains('.') ? batchClassName.substringBefore('.') : null;
-        \\        String apexClassName = batchClassName.contains('.') ? batchClassName.substringAfter('.') : batchClassName;
+        \\        Boolean has_ns = batchClassName.contains('.');
+        \\        String namespacePrefix = has_ns ? batchClassName.substringBefore('.') : null;
+        \\        String apexClassName = has_ns ? batchClassName.substringAfter('.') : batchClassName;
         \\        String jobId = Database.executeBatch(new AsyncJobProbeBatch());
         \\        List<AsyncApexJob> jobs = [
         \\            SELECT Id, JobType, Status, CreatedBy.Name
         \\            FROM AsyncApexJob
-        \\            WHERE Id = :jobId AND ApexClass.NamespacePrefix = :namespacePrefix AND ApexClass.Name = :apexClassName
+        \\            WHERE Id = :jobId AND ApexClass.NamespacePrefix = :namespacePrefix
+        \\            AND ApexClass.Name = :apexClassName
         \\        ];
         \\        AsyncApexJob job = jobs.get(0);
         \\        return String.valueOf(jobs.size()) + ':' + job.JobType + ':' + job.Status + ':' +
@@ -11513,7 +11538,8 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
         \\trigger BatchFailureTrigger on BatchApexErrorEvent (after insert) {
         \\    List<Account> insertedAccounts = new List<Account>();
         \\    for (BatchApexErrorEvent evt : Trigger.new) {
-        \\        insertedAccounts.add(new Account(Name = evt.Phase + ':' + evt.ExceptionType + ':' + evt.Message));
+        \\        String evt_name = evt.Phase + ':' + evt.ExceptionType + ':' + evt.Message;
+        \\        insertedAccounts.add(new Account(Name = evt_name));
         \\    }
         \\    insert insertedAccounts;
         \\}
@@ -11564,12 +11590,14 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "EXECUTE:System.IllegalArgumentException:EXECUTE|FINISH:System.IllegalArgumentException:FINISH|START:System.IllegalArgumentException:START",
+        "EXECUTE:System.IllegalArgumentException:EXECUTE|" ++
+            "FINISH:System.IllegalArgumentException:FINISH|" ++
+            "START:System.IllegalArgumentException:START",
         result.value.string,
     );
 }
 
-test "E2E: chained batch with singleton database getter hard-deletes parent records after child cleanup" {
+test "E2E: chained batch with singleton DB getter hard-deletes parents after child cleanup" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -11625,7 +11653,8 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\        Integer childCount = [
         \\            SELECT COUNT()
         \\            FROM Child__c
-        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\            AND Parent__r.RetentionDate__c != NULL
         \\        ];
         \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
         \\    }
@@ -11636,14 +11665,16 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Child__c
-        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND Parent__r.RetentionDate__c != NULL
         \\                ]);
         \\            }
         \\            when Parent__c parentRecord {
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Parent__c
-        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND RetentionDate__c != NULL) OR TotalChildren__c = 0
         \\                ]);
         \\            }
         \\        }
@@ -11751,7 +11782,8 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\        Integer childCount = [
         \\            SELECT COUNT()
         \\            FROM Child__c
-        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\            AND Parent__r.RetentionDate__c != NULL
         \\        ];
         \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
         \\    }
@@ -11762,14 +11794,16 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Child__c
-        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND Parent__r.RetentionDate__c != NULL
         \\                ]);
         \\            }
         \\            when Parent__c parentRecord {
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Parent__c
-        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND RetentionDate__c != NULL) OR TotalChildren__c = 0
         \\                ]);
         \\            }
         \\        }
@@ -12023,7 +12057,9 @@ test "E2E: schema-qualified SObjectType ignores local shadowing after nested sta
         \\
         \\    public static String test() {
         \\        User user = createUser();
-        \\        Integer len = Schema.User.SObjectType.getDescribe().fields.getMap().get('Id').getDescribe().getLength();
+        \\        Schema.DescribeFieldResult id_desc =
+        \\            Schema.User.SObjectType.getDescribe().fields.getMap().get('Id').getDescribe();
+        \\        Integer len = id_desc.getLength();
         \\        return user == null ? 'null' : String.valueOf(len > 0);
         \\    }
         \\}
@@ -12503,7 +12539,9 @@ test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
     const source =
         \\public class StandardObjectListOverloadTest {
         \\    public String pick(Id recordId) { return 'Id'; }
-        \\    public String pick(List<SObject> rows) { return rows == null ? 'List:null' : 'List:' + String.valueOf(rows.size()); }
+        \\    public String pick(List<SObject> rows) {
+        \\        return rows == null ? 'List:null' : 'List:' + String.valueOf(rows.size());
+        \\    }
         \\    public static String test() {
         \\        StandardObjectListOverloadTest helper = new StandardObjectListOverloadTest();
         \\        List<AccountBrand> rows = new List<AccountBrand>{
@@ -12602,7 +12640,9 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
         \\        Map<Schema.SObjectField,
         \\ Object> resolvedFieldToValue = new Map<Schema.SObjectField, Object>();
         \\        for (String fieldName : valuesByFieldName.keySet()) {
-        \\            Schema.SObjectField field = Schema.Account.SObjectType.getDescribe().fields.getMap().get(fieldName);
+        \\            Map<String, Schema.SObjectField> acct_fields =
+        \\                Schema.Account.SObjectType.getDescribe().fields.getMap();
+        \\            Schema.SObjectField field = acct_fields.get(fieldName);
         \\            resolvedFieldToValue.put(field, valuesByFieldName.get(fieldName));
         \\        }
         \\        Account accountRecord = new Account();
@@ -12626,7 +12666,8 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
     const source =
         \\public class DescribeDerivedFieldKeyTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> describeFields = Schema.Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> describeFields =
+        \\            Schema.Account.SObjectType.getDescribe().fields.getMap();
         \\        Map<Schema.SObjectField, String> valuesByField = new Map<Schema.SObjectField,
         \\ String>();
         \\        valuesByField.put(describeFields.get('Name'), 'name');
@@ -12656,7 +12697,8 @@ test "E2E: UserRecordAccess delete query returns only deletable records" {
         \\        List<UserRecordAccess> accessRows = [
         \\            SELECT RecordId
         \\            FROM UserRecordAccess
-        \\            WHERE UserId = :System.UserInfo.getUserId() AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
+        \\            WHERE UserId = :System.UserInfo.getUserId()
+        \\            AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
         \\        ];
         \\        return String.valueOf(accessRows.size()) + ':' +
         \\ String.valueOf(accessRows.get(0).RecordId == account.Id);
@@ -12761,7 +12803,9 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
         \\public class JsonDmlErrorAccessTest {
         \\    public static String test() {
         \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
-        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name","Industry"]}]}',
+        \\            '{"success":false,"errors":[{"message":"Could not save...",' +
+        \\            '"statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION",' +
+        \\            '"fields":["Name","Industry"]}]}',
         \\            Database.SaveResult.class
         \\        );
         \\        Database.Error errorRow = result.getErrors().get(0);
