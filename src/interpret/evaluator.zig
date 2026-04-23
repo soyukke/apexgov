@@ -15975,7 +15975,9 @@ pub const Evaluator = struct {
         if (sobj.is_stripped) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "SObjectException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "SObject row was retrieved via SOQL without querying the requested field: " });
+            const stripped_field_msg =
+                "SObject row was retrieved via SOQL without querying the requested field: ";
+            try exc.fields.put(self.arena, "message", Value{ .string = stripped_field_msg });
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
@@ -16918,34 +16920,28 @@ pub const Evaluator = struct {
                 std.ascii.eqlIgnoreCase(tn, "sObject") or
                 std.ascii.eqlIgnoreCase(tn, val.sobject.type_name);
         }
-        if (val == .object) {
-            const cn = val.object.class_name;
-            if (cn.len > 0 and cn.len < 256) {
-                if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date") or std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
-                if (std.ascii.eqlIgnoreCase(cn, "Datetime")) return std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
-                if (std.ascii.eqlIgnoreCase(cn, "Time")) return std.ascii.eqlIgnoreCase(tn, "Time");
-                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectField") or
-                    std.ascii.eqlIgnoreCase(cn, "SObjectField"))
-                {
-                    return std.ascii.eqlIgnoreCase(
-                        tn,
-                        "Schema.SObjectField",
-                    ) or std.ascii.eqlIgnoreCase(tn, "SObjectField");
-                }
-                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectType")) {
-                    return std.ascii.eqlIgnoreCase(
-                        tn,
-                        "Schema.SObjectType",
-                    ) or std.ascii.eqlIgnoreCase(tn, "SObjectType");
-                }
-                if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet")) {
-                    return std.ascii.eqlIgnoreCase(
-                        tn,
-                        "Schema.FieldSet",
-                    ) or std.ascii.eqlIgnoreCase(tn, "FieldSet");
-                }
-            }
+        if (val == .object) return instanceof_object_matches_primitive(val.object.class_name, tn);
+        return false;
+    }
+
+    fn instanceof_object_matches_primitive(cn: []const u8, tn: []const u8) bool {
+        if (cn.len == 0 or cn.len >= 256) return false;
+        const ci = std.ascii;
+        if (ci.eqlIgnoreCase(cn, "Date")) {
+            return ci.eqlIgnoreCase(tn, "Date") or
+                ci.eqlIgnoreCase(tn, "DateTime") or ci.eqlIgnoreCase(tn, "Datetime");
         }
+        if (ci.eqlIgnoreCase(cn, "Datetime"))
+            return ci.eqlIgnoreCase(tn, "DateTime") or ci.eqlIgnoreCase(tn, "Datetime");
+        if (ci.eqlIgnoreCase(cn, "Time")) return ci.eqlIgnoreCase(tn, "Time");
+        if (ci.eqlIgnoreCase(cn, "Schema.SObjectField") or ci.eqlIgnoreCase(cn, "SObjectField"))
+            return ci.eqlIgnoreCase(tn, "Schema.SObjectField") or
+                ci.eqlIgnoreCase(tn, "SObjectField");
+        if (ci.eqlIgnoreCase(cn, "Schema.SObjectType"))
+            return ci.eqlIgnoreCase(tn, "Schema.SObjectType") or
+                ci.eqlIgnoreCase(tn, "SObjectType");
+        if (ci.eqlIgnoreCase(cn, "Schema.FieldSet"))
+            return ci.eqlIgnoreCase(tn, "Schema.FieldSet") or ci.eqlIgnoreCase(tn, "FieldSet");
         return false;
     }
 
@@ -17240,6 +17236,38 @@ pub const Evaluator = struct {
         try out.appendSlice(self.arena, ds);
     }
 
+    fn normalize_date_month(m: *i32, y: *i32) void {
+        while (m.* < 1) {
+            m.* += 12;
+            y.* -= 1;
+        }
+        while (m.* > 12) {
+            m.* -= 12;
+            y.* += 1;
+        }
+    }
+
+    fn normalize_date_day(d: *i32, m: *i32, y: *i32) void {
+        // 簡易実装: 各月の日数でオーバーフロー/アンダーフローを処理
+        const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        while (d.* > days_in_month[@intCast(m.* - 1)]) {
+            d.* -= days_in_month[@intCast(m.* - 1)];
+            m.* += 1;
+            if (m.* > 12) {
+                m.* = 1;
+                y.* += 1;
+            }
+        }
+        while (d.* < 1) {
+            m.* -= 1;
+            if (m.* < 1) {
+                m.* = 12;
+                y.* -= 1;
+            }
+            d.* += days_in_month[@intCast(m.* - 1)];
+        }
+    }
+
     /// addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
     fn date_time_add(
         self: *Evaluator,
@@ -17262,45 +17290,26 @@ pub const Evaluator = struct {
             y += delta;
         } else if (std.ascii.eqlIgnoreCase(method, "addMonths")) {
             m += delta;
-            while (m < 1) {
-                m += 12;
-                y -= 1;
-            }
-            while (m > 12) {
-                m -= 12;
-                y += 1;
-            }
+            normalize_date_month(&m, &y);
         } else if (std.ascii.eqlIgnoreCase(method, "addDays")) {
             d += delta;
-            // 簡易実装: 各月の日数でオーバーフロー/アンダーフローを処理
-            const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-            while (d > days_in_month[@intCast(m - 1)]) {
-                d -= days_in_month[@intCast(m - 1)];
-                m += 1;
-                if (m > 12) {
-                    m = 1;
-                    y += 1;
-                }
-            }
-            while (d < 1) {
-                m -= 1;
-                if (m < 1) {
-                    m = 12;
-                    y -= 1;
-                }
-                d += days_in_month[@intCast(m - 1)];
-            }
+            normalize_date_day(&d, &m, &y);
         }
 
         if (dt.has_time) {
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(y)),
-                @as(u32, @intCast(m)),
-                @as(u32, @intCast(d)),
-                dt.h,
-                dt.mi,
-                dt.sec,
-            }) };
+            const iso = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{
+                    @as(u32, @intCast(y)),
+                    @as(u32, @intCast(m)),
+                    @as(u32, @intCast(d)),
+                    dt.h,
+                    dt.mi,
+                    dt.sec,
+                },
+            );
+            return Value{ .string = iso };
         }
         return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
             @as(u32, @intCast(y)),
@@ -21580,7 +21589,10 @@ pub const Evaluator = struct {
     fn call_compare_to(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) !i32 {
         if (self.find_class(a.class_name)) |cd| {
             const result = try self.call_instance_method(cd, a, "compareTo", &.{b_val});
-            if (result == .integer) return @intCast(if (result.integer > 0) @as(i32, 1) else if (result.integer < 0) @as(i32, -1) else @as(i32, 0));
+            if (result == .integer) {
+                const sign: i32 = if (result.integer > 0) 1 else if (result.integer < 0) -1 else 0;
+                return sign;
+            }
         }
         return 0;
     }
@@ -21598,9 +21610,12 @@ pub const Evaluator = struct {
             // Find field_name in source (case-insensitive)
             const found = std.ascii.indexOfIgnoreCasePos(source, pos, field_name) orelse break;
             // Ensure it's a whole-word match (not part of a larger identifier)
-            const is_word_start = found == 0 or (!std.ascii.isAlphanumeric(source[found - 1]) and source[found - 1] != '_');
+            const is_word_start = found == 0 or
+                (!std.ascii.isAlphanumeric(source[found - 1]) and source[found - 1] != '_');
             const after_end = found + field_name.len;
-            const is_word_end = after_end >= source.len or (!std.ascii.isAlphanumeric(source[after_end]) and source[after_end] != '_');
+            const is_word_end = after_end >= source.len or
+                (!std.ascii.isAlphanumeric(source[after_end]) and
+                    source[after_end] != '_');
             if (!is_word_start or !is_word_end) {
                 pos = found + 1;
                 continue;
@@ -21614,7 +21629,10 @@ pub const Evaluator = struct {
                     // Find the start of the type name
                     const type_end = trimmed_before.len - 2;
                     var type_start = type_end;
-                    while (type_start > 0 and (std.ascii.isAlphanumeric(trimmed_before[type_start - 1]) or trimmed_before[type_start - 1] == '_')) {
+                    while (type_start > 0 and
+                        (std.ascii.isAlphanumeric(trimmed_before[type_start - 1]) or
+                            trimmed_before[type_start - 1] == '_'))
+                    {
                         type_start -= 1;
                     }
                     if (type_start < type_end) {
@@ -22312,7 +22330,11 @@ fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
 fn is_system_enum_type_name(pt: []const u8) bool {
     const simple = if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| pt[di + 1 ..] else pt;
     if (simple.len == 0) return false;
-    const names = [_][]const u8{ "TriggerOperation", "LoggingLevel", "AccessType", "AccessLevel", "Quiddity", "DisplayType", "SoapType" };
+    const names = [_][]const u8{
+        "TriggerOperation", "LoggingLevel", "AccessType",
+        "AccessLevel",      "Quiddity",     "DisplayType",
+        "SoapType",
+    };
     for (names) |n| {
         if (std.ascii.eqlIgnoreCase(n, simple)) return true;
     }
@@ -22519,8 +22541,16 @@ fn eval_binary(
         .neq => return .{ .boolean = !eval.values_equal(left, right) },
         .strict_eq => return .{ .boolean = eval.strict_values_equal(left, right) },
         .strict_neq => return .{ .boolean = !eval.strict_values_equal(left, right) },
-        .and_op => return .{ .boolean = (utils.coerce_to_bool(left) catch false) and (utils.coerce_to_bool(right) catch false) },
-        .or_op => return .{ .boolean = (utils.coerce_to_bool(left) catch false) or (utils.coerce_to_bool(right) catch false) },
+        .and_op => {
+            const l_ok = utils.coerce_to_bool(left) catch false;
+            const r_ok = utils.coerce_to_bool(right) catch false;
+            return .{ .boolean = l_ok and r_ok };
+        },
+        .or_op => {
+            const l_ok = utils.coerce_to_bool(left) catch false;
+            const r_ok = utils.coerce_to_bool(right) catch false;
+            return .{ .boolean = l_ok or r_ok };
+        },
         .bit_and, .bit_or, .bit_xor => {
             // Apex accepts `&`/`|`/`^` on both Boolean and integer operands. Preserve
             // the operand type: two Booleans produce a Boolean, mixed integer/long
@@ -22649,8 +22679,14 @@ fn eval_binary(
                 "Datetime",
             )))
         {
-            const lv = if (left.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
-            const rv = if (right.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
+            const lv: []const u8 = if (left.object.fields.get("value")) |v|
+                (if (v == .string) v.string else "")
+            else
+                "";
+            const rv: []const u8 = if (right.object.fields.get("value")) |v|
+                (if (v == .string) v.string else "")
+            else
+                "";
             const cmp = std.mem.order(u8, lv, rv);
             return switch (op) {
                 .lt => .{ .boolean = cmp == .lt },
@@ -22931,8 +22967,12 @@ fn find_logical_op(clause: []const u8, keyword: []const u8) ?usize {
         if (depth == 0 and i + keyword.len <= clause.len) {
             if (std.ascii.eqlIgnoreCase(clause[i .. i + keyword.len], keyword)) {
                 // Check word boundaries
-                const before_ok = (i == 0 or clause[i - 1] == ' ' or clause[i - 1] == '\n' or clause[i - 1] == ')');
-                const after_ok = (i + keyword.len >= clause.len or clause[i + keyword.len] == ' ' or clause[i + keyword.len] == '\n' or clause[i + keyword.len] == '(');
+                const before_ok = (i == 0 or clause[i - 1] == ' ' or
+                    clause[i - 1] == '\n' or clause[i - 1] == ')');
+                const after_ok = (i + keyword.len >= clause.len or
+                    clause[i + keyword.len] == ' ' or
+                    clause[i + keyword.len] == '\n' or
+                    clause[i + keyword.len] == '(');
                 if (before_ok and after_ok) return i;
             }
         }
@@ -22987,7 +23027,9 @@ fn extract_order_by_field(soql: []const u8) ?OrderByInfo {
             (soql[i + 8] == ' ' or soql[i + 8] == '\n' or soql[i + 8] == '\t'))
         {
             var start = i + 9;
-            while (start < soql.len and (soql[start] == ' ' or soql[start] == '\t' or soql[start] == '\n' or soql[start] == '\r')) start += 1;
+            while (start < soql.len and
+                (soql[start] == ' ' or soql[start] == '\t' or
+                    soql[start] == '\n' or soql[start] == '\r')) start += 1;
             var end = start;
             while (end < soql.len and
                 soql[end] != ' ' and soql[end] != '\n' and
@@ -22997,7 +23039,9 @@ fn extract_order_by_field(soql: []const u8) ?OrderByInfo {
                 const field = soql[start..end];
                 // Check for DESC/ASC after the field
                 var pos = end;
-                while (pos < soql.len and (soql[pos] == ' ' or soql[pos] == '\t' or soql[pos] == '\n' or soql[pos] == '\r')) pos += 1;
+                while (pos < soql.len and
+                    (soql[pos] == ' ' or soql[pos] == '\t' or
+                        soql[pos] == '\n' or soql[pos] == '\r')) pos += 1;
                 var descending = false;
                 if (pos + 4 <= soql.len and std.ascii.eqlIgnoreCase(soql[pos .. pos + 4], "DESC")) {
                     descending = true;
@@ -23072,7 +23116,9 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
             if (inner_query.len > 6 and std.ascii.eqlIgnoreCase(inner_query[0..6], "SELECT")) {
                 if (std.ascii.indexOfIgnoreCase(inner_query, "FROM")) |from_pos| {
                     var start = from_pos + 4;
-                    while (start < inner_query.len and (inner_query[start] == ' ' or inner_query[start] == '\t' or inner_query[start] == '\n')) start += 1;
+                    while (start < inner_query.len and
+                        (inner_query[start] == ' ' or inner_query[start] == '\t' or
+                            inner_query[start] == '\n')) start += 1;
                     var end = start;
                     while (end < inner_query.len and
                         inner_query[end] != ' ' and inner_query[end] != ')' and
