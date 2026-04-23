@@ -9480,30 +9480,11 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment") or
                 std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupEndSegment"))
             {
-                const markup_type = utils.sobject_get(&segment.object.fields, "markupType") orelse Value.null_val;
-                const tag_name = connect_api_markup_tag(markup_type) orelse continue;
-                if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment")) {
-                    try buf.appendSlice(self.arena, "<");
-                    try buf.appendSlice(self.arena, tag_name);
-                    try buf.appendSlice(self.arena, ">");
-                } else {
-                    try buf.appendSlice(self.arena, "</");
-                    try buf.appendSlice(self.arena, tag_name);
-                    try buf.appendSlice(self.arena, ">");
-                }
+                try append_connect_api_markup_tag(self.arena, &buf, segment.object, class_name);
                 continue;
             }
             if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.InlineImageSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "thumbnails")) |thumbs| {
-                    if (thumbs == .object) {
-                        if (utils.sobject_get(&thumbs.object.fields, "fileId")) |file_id| {
-                            if (file_id == .string) {
-                                try buf.appendSlice(self.arena, "image: ");
-                                try buf.appendSlice(self.arena, file_id.string);
-                            }
-                        }
-                    }
-                }
+                try append_connect_api_inline_image(self.arena, &buf, segment.object);
                 continue;
             }
             if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.EntityLinkSegment")) {
@@ -9513,6 +9494,42 @@ pub const Evaluator = struct {
             }
         }
         return buf.items;
+    }
+
+    /// `connect_api_render_body_text` の MarkupBegin/End 分岐。
+    /// `<tag>` / `</tag>` を buffer に追記する。
+    fn append_connect_api_markup_tag(
+        arena: std.mem.Allocator,
+        buf: *std.ArrayListUnmanaged(u8),
+        obj: *types.ObjectInstance,
+        class_name: []const u8,
+    ) !void {
+        const markup_type = utils.sobject_get(&obj.fields, "markupType") orelse Value.null_val;
+        const tag_name = connect_api_markup_tag(markup_type) orelse return;
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment")) {
+            try buf.appendSlice(arena, "<");
+            try buf.appendSlice(arena, tag_name);
+            try buf.appendSlice(arena, ">");
+        } else {
+            try buf.appendSlice(arena, "</");
+            try buf.appendSlice(arena, tag_name);
+            try buf.appendSlice(arena, ">");
+        }
+    }
+
+    /// `connect_api_render_body_text` の InlineImage 分岐。
+    /// `thumbnails.fileId` が文字列なら `"image: <id>"` を buffer に追記。
+    fn append_connect_api_inline_image(
+        arena: std.mem.Allocator,
+        buf: *std.ArrayListUnmanaged(u8),
+        obj: *types.ObjectInstance,
+    ) !void {
+        const thumbs = utils.sobject_get(&obj.fields, "thumbnails") orelse return;
+        if (thumbs != .object) return;
+        const file_id = utils.sobject_get(&thumbs.object.fields, "fileId") orelse return;
+        if (file_id != .string) return;
+        try buf.appendSlice(arena, "image: ");
+        try buf.appendSlice(arena, file_id.string);
     }
 
     fn connect_api_extract_message_segments(self: *Evaluator, value: Value, depth: u8) ?Value {
@@ -14748,47 +14765,54 @@ pub const Evaluator = struct {
                 }
                 break :blk result;
             },
-            .object => |obj| blk: {
-                if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
-                {
-                    const name_value = obj.fields.get("name") orelse obj.fields.get("fieldName") orelse Value.null_val;
-                    if (name_value == .string) break :blk self.string_hash_code(name_value.string);
-                }
-
-                if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
-                {
-                    if (obj.fields.get("value")) |raw_value| {
-                        if (raw_value == .string) break :blk self.string_hash_code(raw_value.string);
-                    }
-                }
-
-                if (self.find_class(obj.class_name)) |class_decl| {
-                    if (self.find_method_in_hierarchy_typed(null, class_decl, "hashCode", &.{}) != null or
-                        self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null)
-                    {
-                        const result = self.call_instance_method(class_decl, obj, "hashCode", &.{}) catch Value{ .integer = 0 };
-                        switch (result) {
-                            .integer => |i| break :blk i,
-                            .double => |d| break :blk @intFromFloat(d),
-                            else => {},
-                        }
-                    }
-                }
-
-                if (obj.fields.get("__hashCode__")) |existing| {
-                    if (existing == .integer) break :blk existing.integer;
-                }
-                const generated = @as(i64, @intCast(@intFromPtr(obj) & 0x7fffffff));
-                try obj.fields.put(self.arena, "__hashCode__", Value{ .integer = generated });
-                break :blk generated;
-            },
+            .object => |obj| try self.object_hash_code(obj),
             .void_val => 0,
         };
+    }
+
+    /// `value_hash_code` の `.object` 分岐を抽出。
+    /// 1) Type / Schema.SObjectType / SObjectField は `name` / `fieldName` の文字列ハッシュ、
+    /// 2) Date / Datetime / Blob は `value` 文字列ハッシュ、
+    /// 3) ユーザ定義 `hashCode()` があれば呼び出し、
+    /// 4) いずれでもなければ pointer 下位ビットを `__hashCode__` にキャッシュして返す。
+    fn object_hash_code(self: *Evaluator, obj: *types.ObjectInstance) !i64 {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+        {
+            const name_value = obj.fields.get("name") orelse obj.fields.get("fieldName") orelse Value.null_val;
+            if (name_value == .string) return self.string_hash_code(name_value.string);
+        }
+
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+        {
+            if (obj.fields.get("value")) |raw_value| {
+                if (raw_value == .string) return self.string_hash_code(raw_value.string);
+            }
+        }
+
+        if (self.find_class(obj.class_name)) |class_decl| {
+            if (self.find_method_in_hierarchy_typed(null, class_decl, "hashCode", &.{}) != null or
+                self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null)
+            {
+                const result = self.call_instance_method(class_decl, obj, "hashCode", &.{}) catch Value{ .integer = 0 };
+                switch (result) {
+                    .integer => |i| return i,
+                    .double => |d| return @intFromFloat(d),
+                    else => {},
+                }
+            }
+        }
+
+        if (obj.fields.get("__hashCode__")) |existing| {
+            if (existing == .integer) return existing.integer;
+        }
+        const generated = @as(i64, @intCast(@intFromPtr(obj) & 0x7fffffff));
+        try obj.fields.put(self.arena, "__hashCode__", Value{ .integer = generated });
+        return generated;
     }
 
     fn call_instance_method(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
