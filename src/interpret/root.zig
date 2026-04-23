@@ -487,7 +487,6 @@ fn run_tests_filtered(
 ) !TestSuiteResult {
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
-
     const parse_alloc = parse_arena.allocator();
 
     // 1. .cls ファイルを収集
@@ -517,6 +516,37 @@ fn run_tests_filtered(
 
     // 5. @isTest メソッドを発見・実行
     var suite = TestSuiteResult{};
+    try execute_filtered_test_methods(
+        parse_alloc,
+        &test_arena,
+        io,
+        &eval,
+        static_lists,
+        filter_class,
+        filter_method,
+        &suite,
+        writer,
+    );
+
+    suite.failed += suite.errors;
+    try writer.print(
+        "\n--- Results: {d} total, {d} passed, {d} failed ---\n",
+        .{ suite.total, suite.passed, suite.total - suite.passed },
+    );
+    return suite;
+}
+
+fn execute_filtered_test_methods(
+    parse_alloc: std.mem.Allocator,
+    test_arena: *std.heap.ArenaAllocator,
+    io: std.Io,
+    eval: *evaluator.Evaluator,
+    static_lists: StaticClassLists,
+    filter_class: ?[]const u8,
+    filter_method: ?[]const u8,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
     var class_iter = eval.classes.iterator();
     while (class_iter.next()) |entry| {
         const class_name = entry.key_ptr.*;
@@ -525,7 +555,6 @@ fn run_tests_filtered(
             if (!std.ascii.eqlIgnoreCase(class_name, fc)) continue;
         }
         const setup_method = find_test_setup_method(class_decl);
-
         for (class_decl.members) |member| {
             if (member != .method_decl) continue;
             const md = member.method_decl;
@@ -535,23 +564,16 @@ fn run_tests_filtered(
             }
             try run_one_test_method(.{
                 .parse_alloc = parse_alloc,
-                .test_arena = &test_arena,
+                .test_arena = test_arena,
                 .io = io,
-                .eval = &eval,
+                .eval = eval,
                 .class_name = class_name,
                 .statics = static_lists.classes_with_statics.items,
                 .setup_method = setup_method,
-                .suite = &suite,
+                .suite = suite,
             }, md, writer);
         }
     }
-
-    suite.failed += suite.errors;
-    try writer.print(
-        "\n--- Results: {d} total, {d} passed, {d} failed ---\n",
-        .{ suite.total, suite.passed, suite.total - suite.passed },
-    );
-    return suite;
 }
 
 fn is_test_class(cd: *ast.ClassDecl) bool {
