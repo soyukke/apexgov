@@ -19674,7 +19674,18 @@ pub const Evaluator = struct {
         instance: *types.ObjectInstance,
         args: []const Value,
     ) anyerror!void {
-        // Collect candidates with matching param count
+        const chosen = self.pick_constructor(class_decl, args) orelse return;
+        try self.execute_chosen_constructor(class_decl, instance, chosen, args);
+    }
+
+    /// Collect constructors with matching param count, then pick the best by
+    /// type scoring. Falls back to `best_any` (first same-arity or no-arg ctor
+    /// we've seen) when no candidates match.
+    fn pick_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        args: []const Value,
+    ) ?*ast.ConstructorDecl {
         var candidates: [8]*ast.ConstructorDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.ConstructorDecl = null;
@@ -19687,147 +19698,142 @@ pub const Evaluator = struct {
                             count += 1;
                         }
                     }
-                    if (best_any == null and (cd.params.len == args.len or args.len == 0))
+                    if (best_any == null and (cd.params.len == args.len or args.len == 0)) {
                         best_any = cd;
+                    }
                 },
                 else => {},
             }
         }
-        // Pick best candidate using type scoring
+        if (count == 0) return best_any;
+        if (count == 1) return candidates[0];
         const arg_type_hints = self.cast_type_hints;
-        const chosen: ?*ast.ConstructorDecl =
-            if (count == 0) best_any else if (count == 1) candidates[0] else blk: {
-                var best: ?*ast.ConstructorDecl = null;
-                var best_score: i32 = -1;
-                for (candidates[0..count]) |cd| {
-                    var score: i32 = 0;
-                    for (cd.params, 0..) |param, i| {
-                        if (i >= args.len) break;
-                        const pt = param.type_ref.name;
-                        const arg = args[i];
-                        const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                        if (arg_hint) |hint| {
-                            const hint_score = self.overload_score_for_type_hint(
-                                hint,
-                                self.render_type_ref(param.type_ref),
-                            );
-                            if (hint_score > 0) score += hint_score;
-                        }
-                        if (arg == .string and (std.ascii.eqlIgnoreCase(
-                            pt,
-                            "String",
-                        ) or std.ascii.eqlIgnoreCase(pt, "Id"))) {
-                            score += 2;
-                        } else if (arg == .integer and (std.ascii.eqlIgnoreCase(
-                            pt,
-                            "Integer",
-                        ) or std.ascii.eqlIgnoreCase(pt, "int"))) {
-                            score += 2;
-                        } else if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) {
-                            score += 2;
-                        } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
-                            score += 2;
-                        } else if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) {
-                            score += 2;
-                        } else if (arg == .object) {
-                            // Check if the object's class_name matches the param type
-                            if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) {
-                                score += 3;
-                            } else if (self.is_subclass_of(arg.object.class_name, pt)) {
-                                score += 2;
-                            } else {
-                                score += 0;
-                            }
-                        } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
-                            score += 2;
-                        } else if (arg == .sobject) {
-                            const arg_type = arg.sobject.type_name;
-                            if (std.ascii.eqlIgnoreCase(arg_type, pt)) {
-                                score += 4;
-                            } else if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(arg_type, pt[di + 1 ..])) {
-                                    score += 4;
-                                } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or
-                                    std.ascii.eqlIgnoreCase(pt, "sObject") or
-                                    std.ascii.eqlIgnoreCase(pt, "Sobject"))
-                                {
-                                    score += 2;
-                                }
-                            } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or
-                                std.ascii.eqlIgnoreCase(pt, "sObject") or
-                                std.ascii.eqlIgnoreCase(pt, "Sobject"))
-                            {
-                                score += 2;
-                            } else {
-                                score += 0;
-                            }
-                        } else if (arg == .null_val) {
-                            // Null prefers primitive types (String/Id/Integer/etc) over Exception,
-                            // since `null` is most commonly assigned to strings/IDs in Apex code.
-                            if (std.ascii.eqlIgnoreCase(pt, "String") or
-                                std.ascii.eqlIgnoreCase(pt, "Id"))
-                            {
-                                score += 2;
-                            } else if (std.mem.endsWith(u8, pt, "Exception")) {
-                                score += 0;
-                            } else {
-                                score += 1;
-                            }
-                        }
-                    }
-                    if (best == null or score > best_score) {
-                        best = cd;
-                        best_score = score;
-                    }
-                }
-                break :blk best;
-            };
-        if (chosen) |cd| {
-            const ctor_env = try self.global_env.child();
-            try ctor_env.define("this", Value{ .object = instance });
-            for (instance.fields.keys(), instance.fields.values()) |k, v| {
-                ctor_env.set(k, v) catch {
-                    try ctor_env.define(k, v);
-                };
+        var best: ?*ast.ConstructorDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |cd| {
+            const score = self.score_constructor_candidate(cd, args, arg_type_hints);
+            if (best == null or score > best_score) {
+                best = cd;
+                best_score = score;
             }
-            for (cd.params, 0..) |param, pi| {
-                const pval = if (pi < args.len) args[pi] else Value.null_val;
-                const declared_type = self.render_type_ref(param.type_ref);
-                try ctor_env.define_typed(
-                    param.name,
-                    self.annotate_declared_collection_type(pval, declared_type),
-                    declared_type,
-                );
-            }
-            // Push call frame for constructor (use current_call_line from new-expression site)
-            const ctor_line = if (self.current_call_line > 0) self.current_call_line else if (cd.loc.line > 0) cd.loc.line else 1;
-            self.current_call_line = 0;
-            // Prefer the FQ class name for stack traces: if the instance's class_name
-            // is an FQ form ("Outer.Inner") and its suffix matches class_decl.name, use it.
-            const frame_class_name: []const u8 = blk: {
-                if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], class_decl.name)) {
-                        break :blk instance.class_name;
-                    }
-                }
-                break :blk class_decl.name;
-            };
-            try self.call_stack.append(
-                self.arena,
-                .{ .class_name = frame_class_name, .method_name = "<init>", .line = ctor_line },
-            );
-            defer _ = self.call_stack.pop();
-            // Track which class's constructor is running (for correct super() dispatch)
-            const saved_ctor_class = self.current_constructor_class;
-            self.current_constructor_class = class_decl.name;
-            defer self.current_constructor_class = saved_ctor_class;
-            // Set current_class so unqualified method/field references resolve to this class
-            const saved_class = self.current_class;
-            self.current_class = class_decl.name;
-            defer self.current_class = saved_class;
-
-            _ = try self.exec_block(cd.body, ctor_env);
         }
+        return best;
+    }
+
+    fn score_constructor_candidate(
+        self: *Evaluator,
+        cd: *ast.ConstructorDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+    ) i32 {
+        var score: i32 = 0;
+        for (cd.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len)
+                arg_type_hints.?[i]
+            else
+                null;
+            if (arg_hint) |hint| {
+                const hint_score = self.overload_score_for_type_hint(
+                    hint,
+                    self.render_type_ref(param.type_ref),
+                );
+                if (hint_score > 0) score += hint_score;
+            }
+            score += self.score_constructor_arg(args[i], param.type_ref.name);
+        }
+        return score;
+    }
+
+    fn score_constructor_arg(self: *Evaluator, arg: Value, pt: []const u8) i32 {
+        if (arg == .string and
+            (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) return 2;
+        if (arg == .integer and
+            (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) return 2;
+        if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
+        if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
+        if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) return 2;
+        if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) return 2;
+        if (arg == .object) {
+            if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) return 3;
+            if (self.is_subclass_of(arg.object.class_name, pt)) return 2;
+            return 0;
+        }
+        if (arg == .sobject) {
+            return score_constructor_sobject_arg(arg.sobject.type_name, pt);
+        }
+        if (arg == .null_val) {
+            // Null prefers primitive types (String/Id) over Exception — `null` is
+            // most commonly passed for string/Id params in Apex code.
+            if (std.ascii.eqlIgnoreCase(pt, "String") or
+                std.ascii.eqlIgnoreCase(pt, "Id")) return 2;
+            if (std.mem.endsWith(u8, pt, "Exception")) return 0;
+            return 1;
+        }
+        return 0;
+    }
+
+    fn score_constructor_sobject_arg(arg_type: []const u8, pt: []const u8) i32 {
+        if (std.ascii.eqlIgnoreCase(arg_type, pt)) return 4;
+        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(arg_type, pt[di + 1 ..])) return 4;
+        }
+        if (std.ascii.eqlIgnoreCase(pt, "SObject") or
+            std.ascii.eqlIgnoreCase(pt, "sObject") or
+            std.ascii.eqlIgnoreCase(pt, "Sobject")) return 2;
+        return 0;
+    }
+
+    fn execute_chosen_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        cd: *ast.ConstructorDecl,
+        args: []const Value,
+    ) !void {
+        const ctor_env = try self.global_env.child();
+        try ctor_env.define("this", Value{ .object = instance });
+        for (instance.fields.keys(), instance.fields.values()) |k, v| {
+            ctor_env.set(k, v) catch {
+                try ctor_env.define(k, v);
+            };
+        }
+        for (cd.params, 0..) |param, pi| {
+            const pval = if (pi < args.len) args[pi] else Value.null_val;
+            const declared_type = self.render_type_ref(param.type_ref);
+            try ctor_env.define_typed(
+                param.name,
+                self.annotate_declared_collection_type(pval, declared_type),
+                declared_type,
+            );
+        }
+        const ctor_line = if (self.current_call_line > 0)
+            self.current_call_line
+        else if (cd.loc.line > 0) cd.loc.line else 1;
+        self.current_call_line = 0;
+        const frame_class_name: []const u8 = blk: {
+            if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], class_decl.name)) {
+                    break :blk instance.class_name;
+                }
+            }
+            break :blk class_decl.name;
+        };
+        try self.call_stack.append(
+            self.arena,
+            .{ .class_name = frame_class_name, .method_name = "<init>", .line = ctor_line },
+        );
+        defer _ = self.call_stack.pop();
+
+        const saved_ctor_class = self.current_constructor_class;
+        self.current_constructor_class = class_decl.name;
+        defer self.current_constructor_class = saved_ctor_class;
+
+        const saved_class = self.current_class;
+        self.current_class = class_decl.name;
+        defer self.current_class = saved_class;
+
+        _ = try self.exec_block(cd.body, ctor_env);
     }
 
     fn is_instance_field(_: *Evaluator, class_decl: *ast.ClassDecl, name: []const u8) bool {
