@@ -5524,271 +5524,294 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "CustomPermission")) {
-            const developer_name = self.extract_where_field_value(
-                soql,
-                "DeveloperName",
-                current_env,
-            ) orelse name_val;
-
-            if (self.store.get(from_type)) |records| {
-                for (records.items) |record| {
-                    if (record != .sobject) continue;
-                    if (utils.sobject_get(
-                        &record.sobject.fields,
-                        "DeveloperName",
-                    )) |stored_dev_name| {
-                        if (stored_dev_name == .string and
-                            std.ascii.eqlIgnoreCase(stored_dev_name.string, developer_name))
-                        {
-                            return record;
-                        }
-                    }
-                }
-            }
-
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "CustomPermission" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "Name", Value{ .string = developer_name });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = developer_name });
-            try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
-            const gop = try self.store.getOrPut(self.arena, "CustomPermission");
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            return Value{ .sobject = sob };
+            return try self.generate_custom_permission_stub(from_type, soql, current_env, name_val);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "PermissionSetGroup")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "PermissionSetGroup" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
-            try sob.fields.put(self.arena, "MasterLabel", Value{ .string = name_val });
-            try sob.fields.put(self.arena, "Status", Value{ .string = "Updated" });
-            return Value{ .sobject = sob };
+            return try self.generate_permission_set_group_stub(name_val);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-            const use_query_specific_profile = !self.has_where_field_like_comparison(soql, "Name");
-            const profile_record = if (use_query_specific_profile)
-                try self.create_profile_for_query(soql, current_env)
-            else
-                try self.create_current_profile_record();
-            if (!self.matches_where(profile_record, soql, current_env)) return null;
-            if (profile_record == .sobject) {
-                // Store in the store so isRestrictedUser can look it up later
-                const gop = try self.store.getOrPut(self.arena, "Profile");
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                try gop.value_ptr.append(self.arena, profile_record);
-            }
-            return profile_record;
+            return try self.generate_profile_stub(soql, current_env);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "ContentVersion")) {
-            // Only generate a stub when no WHERE clause filters by specific fields.
-            // When a WHERE clause is present (e.g., WHERE Title='...'), the query
-            // should return empty if no matching records exist in the store, allowing
-            // QueryException to be raised for single-record assignments.
-            if (extract_where_clause(soql) != null) return null;
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "ContentVersion" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "Title", Value{ .string = "MockContent" });
-            try sob.fields.put(
-                self.arena,
-                "ContentDocumentId",
-                Value{ .string = try self.alloc_id() },
-            );
-            try sob.fields.put(self.arena, "VersionData", Value{ .string = "mock-data" });
-            try sob.fields.put(self.arena, "PathOnClient", Value{ .string = "mock.txt" });
-            try sob.fields.put(
-                self.arena,
-                "FirstPublishLocationId",
-                Value{ .string = try self.alloc_id() },
-            );
-            return Value{ .sobject = sob };
+            return try self.generate_content_version_stub(soql);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "CronTrigger")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "CronTrigger" };
-            // Check if WHERE references a bind var for Id
-            const where_clause = extract_where_clause(soql) orelse "";
-            var cron_id: ?[]const u8 = null;
-            if (std.mem.indexOf(u8, where_clause, ":")) |bind_pos| {
-                const rest = std.mem.trim(u8, where_clause[bind_pos + 1 ..], " \t\n\r");
-                var end_pos: usize = 0;
-                while (end_pos < rest.len and
-                    (std.ascii.isAlphanumeric(rest[end_pos]) or rest[end_pos] == '_')) end_pos += 1;
-                if (end_pos > 0) {
-                    const bind_name = rest[0..end_pos];
-                    if (current_env.get(bind_name)) |bv| {
-                        if (bv == .string) cron_id = bv.string;
-                    }
+            return try self.generate_cron_trigger_stub(soql, current_env);
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "Organization")) {
+            return try self.generate_organization_stub();
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "AppMenuItem")) {
+            return try self.generate_app_menu_item_stub();
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "PlatformCachePartition")) {
+            return try self.generate_platform_cache_partition_stub();
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "DuplicateRule")) {
+            return try self.generate_duplicate_rule_stub(name_val);
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "StaticResource")) {
+            return try self.generate_static_resource_stub(name_val);
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "Metadata_Driven_Trigger__mdt")) return null;
+        if (std.ascii.eqlIgnoreCase(from_type, "Bucketed_Picklist__mdt")) {
+            return try self.generate_bucketed_picklist_stub();
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "Picklist_Bucket__mdt")) {
+            return try self.generate_picklist_bucket_stub();
+        }
+        return null;
+    }
+
+    fn generate_custom_permission_stub(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        name_val: []const u8,
+    ) !Value {
+        const developer_name = self.extract_where_field_value(
+            soql,
+            "DeveloperName",
+            current_env,
+        ) orelse name_val;
+        if (self.store.get(from_type)) |records| {
+            for (records.items) |record| {
+                if (record != .sobject) continue;
+                const stored = utils.sobject_get(
+                    &record.sobject.fields,
+                    "DeveloperName",
+                ) orelse continue;
+                if (stored == .string and
+                    std.ascii.eqlIgnoreCase(stored.string, developer_name)) return record;
+            }
+        }
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "CustomPermission" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "Name", Value{ .string = developer_name });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = developer_name });
+        try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
+        const gop = try self.store.getOrPut(self.arena, "CustomPermission");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+        return Value{ .sobject = sob };
+    }
+
+    fn generate_permission_set_group_stub(
+        self: *Evaluator,
+        name_val: []const u8,
+    ) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "PermissionSetGroup" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
+        try sob.fields.put(self.arena, "MasterLabel", Value{ .string = name_val });
+        try sob.fields.put(self.arena, "Status", Value{ .string = "Updated" });
+        return Value{ .sobject = sob };
+    }
+
+    fn generate_profile_stub(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        const use_query_specific_profile = !self.has_where_field_like_comparison(soql, "Name");
+        const profile_record = if (use_query_specific_profile)
+            try self.create_profile_for_query(soql, current_env)
+        else
+            try self.create_current_profile_record();
+        if (!self.matches_where(profile_record, soql, current_env)) return null;
+        if (profile_record == .sobject) {
+            // Persist so isRestrictedUser() can look it up in later calls.
+            const gop = try self.store.getOrPut(self.arena, "Profile");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, profile_record);
+        }
+        return profile_record;
+    }
+
+    /// Only stub ContentVersion when no WHERE clause filters by field; a
+    /// WHERE-bound query must return empty if the record doesn't exist so the
+    /// caller can raise QueryException on single-record assignments.
+    fn generate_content_version_stub(self: *Evaluator, soql: []const u8) !?Value {
+        if (extract_where_clause(soql) != null) return null;
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "ContentVersion" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "Title", Value{ .string = "MockContent" });
+        try sob.fields.put(
+            self.arena,
+            "ContentDocumentId",
+            Value{ .string = try self.alloc_id() },
+        );
+        try sob.fields.put(self.arena, "VersionData", Value{ .string = "mock-data" });
+        try sob.fields.put(self.arena, "PathOnClient", Value{ .string = "mock.txt" });
+        try sob.fields.put(
+            self.arena,
+            "FirstPublishLocationId",
+            Value{ .string = try self.alloc_id() },
+        );
+        return Value{ .sobject = sob };
+    }
+
+    fn generate_cron_trigger_stub(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+    ) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "CronTrigger" };
+        const where_clause = extract_where_clause(soql) orelse "";
+        var cron_id: ?[]const u8 = null;
+        if (std.mem.indexOf(u8, where_clause, ":")) |bind_pos| {
+            const rest = std.mem.trim(u8, where_clause[bind_pos + 1 ..], " \t\n\r");
+            var end_pos: usize = 0;
+            while (end_pos < rest.len and
+                (std.ascii.isAlphanumeric(rest[end_pos]) or
+                    rest[end_pos] == '_')) : (end_pos += 1)
+            {}
+            if (end_pos > 0) {
+                const bind_name = rest[0..end_pos];
+                if (current_env.get(bind_name)) |bv| {
+                    if (bv == .string) cron_id = bv.string;
                 }
             }
-            sob.id = cron_id orelse try self.alloc_id();
-            try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
-            // Look up stored cron expression from System.schedule
-            const cron_expr = if (cron_id) |cid| self.scheduled_jobs.get(cid) orelse "0 0 0 28 5 ? 2099" else "0 0 0 28 5 ? 2099";
-            try sob.fields.put(self.arena, "CronExpression", Value{ .string = cron_expr });
-            try sob.fields.put(self.arena, "TimesTriggered", Value{ .integer = 0 });
-            try sob.fields.put(
-                self.arena,
-                "NextFireTime",
-                Value{ .string = "2099-05-28 00:00:00" },
-            );
-            return Value{ .sobject = sob };
         }
+        sob.id = cron_id orelse try self.alloc_id();
+        try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
+        const cron_expr = if (cron_id) |cid|
+            self.scheduled_jobs.get(cid) orelse "0 0 0 28 5 ? 2099"
+        else
+            "0 0 0 28 5 ? 2099";
+        try sob.fields.put(self.arena, "CronExpression", Value{ .string = cron_expr });
+        try sob.fields.put(self.arena, "TimesTriggered", Value{ .integer = 0 });
+        try sob.fields.put(self.arena, "NextFireTime", Value{ .string = "2099-05-28 00:00:00" });
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "Organization")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "Organization" };
-            const created_by = try self.create_current_user_record();
-            const created_by_id = if (created_by == .sobject and created_by.sobject.id != null)
-                created_by.sobject.id.?
-            else
-                self.current_user_id;
-            // Use a fixed ID for Organization (singleton object)
-            const id = "00D000000000001";
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "CreatedById", Value{ .string = created_by_id });
-            try sob.fields.put(self.arena, "CreatedBy", created_by);
-            try sob.fields.put(
-                self.arena,
-                "CreatedDate",
-                Value{ .string = "2024-01-01T00:00:00Z" },
-            );
-            try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = true });
-            try sob.fields.put(
-                self.arena,
-                "OrganizationType",
-                Value{ .string = "Developer Edition" },
-            );
-            try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
-            try sob.fields.put(self.arena, "Name", Value{ .string = "Mock Org" });
-            try sob.fields.put(self.arena, "InstanceName", Value{ .string = "NA1" });
-            try sob.fields.put(self.arena, "IsMultiCurrencyEnabled", Value{ .boolean = false });
-            try sob.fields.put(self.arena, "IsReadOnly", Value{ .boolean = false });
-            try sob.fields.put(self.arena, "FiscalYearStartMonth", Value{ .integer = 1 });
-            try sob.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
-            try sob.fields.put(
-                self.arena,
-                "TimeZoneSidKey",
-                Value{ .string = "America/Los_Angeles" },
-            );
-            try sob.fields.put(self.arena, "TrialExpirationDate", Value.null_val);
-            // Store so subsequent queries return the same record
-            const gop = try self.store.getOrPut(self.arena, "Organization");
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            if (gop.value_ptr.items.len == 0) {
-                try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            }
-            return Value{ .sobject = sob };
+    fn generate_organization_stub(self: *Evaluator) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "Organization" };
+        const created_by = try self.create_current_user_record();
+        const created_by_id = if (created_by == .sobject and created_by.sobject.id != null)
+            created_by.sobject.id.?
+        else
+            self.current_user_id;
+        const id = "00D000000000001"; // Singleton Id.
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "CreatedById", Value{ .string = created_by_id });
+        try sob.fields.put(self.arena, "CreatedBy", created_by);
+        try sob.fields.put(self.arena, "CreatedDate", Value{ .string = "2024-01-01T00:00:00Z" });
+        try sob.fields.put(self.arena, "IsSandbox", Value{ .boolean = true });
+        try sob.fields.put(self.arena, "OrganizationType", Value{ .string = "Developer Edition" });
+        try sob.fields.put(self.arena, "NamespacePrefix", Value.null_val);
+        try sob.fields.put(self.arena, "Name", Value{ .string = "Mock Org" });
+        try sob.fields.put(self.arena, "InstanceName", Value{ .string = "NA1" });
+        try sob.fields.put(self.arena, "IsMultiCurrencyEnabled", Value{ .boolean = false });
+        try sob.fields.put(self.arena, "IsReadOnly", Value{ .boolean = false });
+        try sob.fields.put(self.arena, "FiscalYearStartMonth", Value{ .integer = 1 });
+        try sob.fields.put(self.arena, "LanguageLocaleKey", Value{ .string = "en_US" });
+        try sob.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+        try sob.fields.put(self.arena, "TrialExpirationDate", Value.null_val);
+        const gop = try self.store.getOrPut(self.arena, "Organization");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        if (gop.value_ptr.items.len == 0) {
+            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
         }
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "AppMenuItem")) {
-            const gop = try self.store.getOrPut(self.arena, "AppMenuItem");
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            if (gop.value_ptr.items.len == 0) {
-                const menu = try self.arena.create(types.SObject);
-                menu.* = .{ .type_name = "AppMenuItem" };
-                const id = try self.alloc_id();
-                const app_id = try std.fmt.allocPrint(self.arena, "02u{d:0>15}", .{self.next_id});
-                self.next_id += 1;
-                menu.id = id;
-                try menu.fields.put(self.arena, "Id", Value{ .string = id });
-                try menu.fields.put(self.arena, "ApplicationId", Value{ .string = app_id });
-                try menu.fields.put(self.arena, "Name", Value{ .string = "Apex_Recipes" });
-                try gop.value_ptr.append(self.arena, Value{ .sobject = menu });
-            }
-            return gop.value_ptr.items[0];
-        }
-
-        if (std.ascii.eqlIgnoreCase(from_type, "PlatformCachePartition")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "PlatformCachePartition" };
+    fn generate_app_menu_item_stub(self: *Evaluator) !Value {
+        const gop = try self.store.getOrPut(self.arena, "AppMenuItem");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        if (gop.value_ptr.items.len == 0) {
+            const menu = try self.arena.create(types.SObject);
+            menu.* = .{ .type_name = "AppMenuItem" };
             const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "default" });
-            try sob.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
-            return Value{ .sobject = sob };
+            const app_id = try std.fmt.allocPrint(self.arena, "02u{d:0>15}", .{self.next_id});
+            self.next_id += 1;
+            menu.id = id;
+            try menu.fields.put(self.arena, "Id", Value{ .string = id });
+            try menu.fields.put(self.arena, "ApplicationId", Value{ .string = app_id });
+            try menu.fields.put(self.arena, "Name", Value{ .string = "Apex_Recipes" });
+            try gop.value_ptr.append(self.arena, Value{ .sobject = menu });
         }
+        return gop.value_ptr.items[0];
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "DuplicateRule")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "DuplicateRule" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
-            try sob.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
-            try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
-            return Value{ .sobject = sob };
-        }
+    fn generate_platform_cache_partition_stub(self: *Evaluator) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "PlatformCachePartition" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "default" });
+        try sob.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "StaticResource")) {
-            // This returns a single record; for IN clause with multiple names,
-            // the caller should handle generating multiple stubs.
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "StaticResource" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
-            // Try to load actual static resource from source_paths
-            const body = self.load_static_resource_body(
-                name_val,
-            ) orelse "mock static resource body";
-            try sob.fields.put(self.arena, "Body", Value{ .string = body });
-            return Value{ .sobject = sob };
-        }
+    fn generate_duplicate_rule_stub(self: *Evaluator, name_val: []const u8) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "DuplicateRule" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = name_val });
+        try sob.fields.put(self.arena, "SobjectType", Value{ .string = "Account" });
+        try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "Metadata_Driven_Trigger__mdt")) {
-            // Trigger metadata: return empty list (no stub)
-            return null;
-        }
+    /// StaticResource stub: returns a single record (IN clause with multiple
+    /// names is the caller's responsibility to expand).
+    fn generate_static_resource_stub(self: *Evaluator, name_val: []const u8) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "StaticResource" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
+        const body = self.load_static_resource_body(name_val) orelse "mock static resource body";
+        try sob.fields.put(self.arena, "Body", Value{ .string = body });
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "Bucketed_Picklist__mdt")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "Bucketed_Picklist__mdt" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attendance" });
-            try sob.fields.put(self.arena, "Field__c", Value{ .string = "AttendanceStatus__c" });
-            try sob.fields.put(self.arena, "Object__c", Value{ .string = "Contact" });
-            // Field__r relationship
-            const field_ref = try self.arena.create(types.SObject);
-            field_ref.* = .{ .type_name = "FieldDefinition" };
-            try field_ref.fields.put(
-                self.arena,
-                "QualifiedAPIName",
-                Value{ .string = "AttendanceStatus__c" },
-            );
-            try sob.fields.put(self.arena, "Field__r", Value{ .sobject = field_ref });
-            return Value{ .sobject = sob };
-        }
+    fn generate_bucketed_picklist_stub(self: *Evaluator) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "Bucketed_Picklist__mdt" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attendance" });
+        try sob.fields.put(self.arena, "Field__c", Value{ .string = "AttendanceStatus__c" });
+        try sob.fields.put(self.arena, "Object__c", Value{ .string = "Contact" });
+        const field_ref = try self.arena.create(types.SObject);
+        field_ref.* = .{ .type_name = "FieldDefinition" };
+        try field_ref.fields.put(
+            self.arena,
+            "QualifiedAPIName",
+            Value{ .string = "AttendanceStatus__c" },
+        );
+        try sob.fields.put(self.arena, "Field__r", Value{ .sobject = field_ref });
+        return Value{ .sobject = sob };
+    }
 
-        if (std.ascii.eqlIgnoreCase(from_type, "Picklist_Bucket__mdt")) {
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "Picklist_Bucket__mdt" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attended" });
-            return Value{ .sobject = sob };
-        }
-
-        return null;
+    fn generate_picklist_bucket_stub(self: *Evaluator) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "Picklist_Bucket__mdt" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Attended" });
+        return Value{ .sobject = sob };
     }
 
     fn scan_bind_expression_end(source: []const u8, start: usize) usize {
