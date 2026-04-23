@@ -19852,87 +19852,92 @@ pub const Evaluator = struct {
         phase: []const u8,
         exception_value: Value,
     ) !void {
-        if (!(self.class_implements_interface(
-            batch_obj.class_name,
-            "Database.RaisesPlatformEvents",
-        ) or
-            self.class_implements_interface(batch_obj.class_name, "RaisesPlatformEvents")))
-        {
-            return;
-        }
+        if (!self.class_raises_platform_events(batch_obj.class_name)) return;
 
         const evt = try self.arena.create(types.SObject);
         evt.* = .{ .type_name = "BatchApexErrorEvent" };
         try evt.fields.put(self.arena, "AsyncApexJobId", Value{ .string = job_id });
         try evt.fields.put(self.arena, "Phase", Value{ .string = phase });
 
-        var message_value: Value = Value.null_val;
-        var exception_type: []const u8 = "System.Exception";
-        var stack_trace: []const u8 = "stacktrace";
+        const parts = try self.extract_batch_exception_parts(exception_value);
+        try evt.fields.put(self.arena, "ExceptionType", Value{ .string = parts.exception_type });
+        try evt.fields.put(self.arena, "Message", parts.message);
+        try evt.fields.put(self.arena, "StackTrace", Value{ .string = parts.stack_trace });
+        _ = self.call_method("EventBus", "publish", &.{Value{ .sobject = evt }}) catch {};
+    }
+
+    fn class_raises_platform_events(self: *Evaluator, class_name: []const u8) bool {
+        return self.class_implements_interface(class_name, "Database.RaisesPlatformEvents") or
+            self.class_implements_interface(class_name, "RaisesPlatformEvents");
+    }
+
+    const BatchExceptionParts = struct {
+        message: Value,
+        exception_type: []const u8,
+        stack_trace: []const u8,
+    };
+
+    fn extract_batch_exception_parts(
+        self: *Evaluator,
+        exception_value: Value,
+    ) !BatchExceptionParts {
+        var result = BatchExceptionParts{
+            .message = Value.null_val,
+            .exception_type = "System.Exception",
+            .stack_trace = "stacktrace",
+        };
         switch (exception_value) {
             .object => |obj| {
-                message_value = obj.fields.get("message") orelse Value.null_val;
-                exception_type = obj.class_name;
-                if (std.mem.indexOfScalar(u8, exception_type, '.') == null) {
-                    const builtin_exception_types = [_][]const u8{
-                        "Exception",
-                        "DMLException",
-                        "DmlException",
-                        "NullPointerException",
-                        "TypeException",
-                        "QueryException",
-                        "JSONException",
-                        "ListException",
-                        "MathException",
-                        "SecurityException",
-                        "NoAccessException",
-                        "InvalidParameterValueException",
-                        "CalloutException",
-                        "StringException",
-                        "NoSuchElementException",
-                        "NoDataFoundException",
-                        "SearchException",
-                        "SObjectException",
-                        "HandledException",
-                        "IllegalArgumentException",
-                        "LimitException",
-                        "AsyncException",
-                        "SerializationException",
-                        "FlowException",
-                        "FinalException",
-                        "UnsupportedOperationException",
-                        "EventBusException",
-                    };
-                    inline for (builtin_exception_types) |builtin_exception_type| {
-                        if (std.ascii.eqlIgnoreCase(exception_type, builtin_exception_type)) {
-                            exception_type = try std.fmt.allocPrint(
-                                self.arena,
-                                "System.{s}",
-                                .{builtin_exception_type},
-                            );
-                            break;
-                        }
+                result.message = obj.fields.get("message") orelse Value.null_val;
+                result.exception_type = try self.namespace_builtin_exception(obj.class_name);
+                if (obj.fields.get("stackTraceString")) |stack_val| {
+                    if (stack_val == .string and stack_val.string.len > 0) {
+                        result.stack_trace = stack_val.string;
                     }
                 }
-                if (obj.fields.get("stackTraceString")) |stack_val| {
-                    if (stack_val == .string and stack_val.string.len > 0)
-                        stack_trace = stack_val.string;
-                }
             },
-            .string => |s| {
-                message_value = Value{ .string = s };
-            },
-            else => {
-                message_value = Value{ .string = try utils.coerce_to_string(
-                    exception_value,
-                    self.arena,
-                ) };
-            },
+            .string => |s| result.message = Value{ .string = s },
+            else => result.message = Value{ .string = try utils.coerce_to_string(
+                exception_value,
+                self.arena,
+            ) },
         }
-        try evt.fields.put(self.arena, "ExceptionType", Value{ .string = exception_type });
-        try evt.fields.put(self.arena, "Message", message_value);
-        try evt.fields.put(self.arena, "StackTrace", Value{ .string = stack_trace });
-        _ = self.call_method("EventBus", "publish", &.{Value{ .sobject = evt }}) catch {};
+        return result;
+    }
+
+    /// When `class_name` is a bare built-in exception name, prepend the
+    /// `System.` namespace to match what Apex emits on BatchApexErrorEvent.
+    fn namespace_builtin_exception(
+        self: *Evaluator,
+        class_name: []const u8,
+    ) ![]const u8 {
+        if (std.mem.indexOfScalar(u8, class_name, '.') != null) return class_name;
+        const builtin_exception_types = [_][]const u8{
+            "Exception",              "DMLException",
+            "DmlException",           "NullPointerException",
+            "TypeException",          "QueryException",
+            "JSONException",          "ListException",
+            "MathException",          "SecurityException",
+            "NoAccessException",      "InvalidParameterValueException",
+            "CalloutException",       "StringException",
+            "NoSuchElementException", "NoDataFoundException",
+            "SearchException",        "SObjectException",
+            "HandledException",       "IllegalArgumentException",
+            "LimitException",         "AsyncException",
+            "SerializationException", "FlowException",
+            "FinalException",         "UnsupportedOperationException",
+            "EventBusException",
+        };
+        inline for (builtin_exception_types) |builtin_exception_type| {
+            if (std.ascii.eqlIgnoreCase(class_name, builtin_exception_type)) {
+                return try std.fmt.allocPrint(
+                    self.arena,
+                    "System.{s}",
+                    .{builtin_exception_type},
+                );
+            }
+        }
+        return class_name;
     }
 
     fn invoke_attached_finalizer(
