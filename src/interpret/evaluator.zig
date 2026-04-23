@@ -21373,165 +21373,155 @@ fn is_system_enum_type_name(pt: []const u8) bool {
 
 /// メソッドオーバーロード解決用: 引数の Value とパラメータ型名のスコア計算。
 fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
-    if (arg == .string) {
-        if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Id"))
-            return if (Evaluator.is_salesforce_id_string(arg.string)) 3 else 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        // Date/DateTime-like strings should match Date/DateTime params
-        if (std.ascii.eqlIgnoreCase(pt, "Date") and
-            Evaluator.is_date_only_format_string(arg.string))
-        {
-            return 2;
-        }
-        if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and
-            Evaluator.is_date_time_format_string(arg.string))
-        {
-            return 2;
-        }
-        return 0;
+    return switch (arg) {
+        .string => |s| score_string_arg(s, pt),
+        .integer => score_integer_arg(pt),
+        .long => score_long_arg(pt),
+        .double => score_double_arg(pt),
+        .boolean => score_boolean_arg(pt),
+        .list => score_list_arg(arg.list, pt),
+        .map => score_map_arg(pt),
+        .set => score_set_arg(pt),
+        .sobject => score_sobject_arg(arg.sobject.type_name, pt),
+        .object => score_object_arg(arg.object.class_name, pt),
+        else => 0,
+    };
+}
+
+fn score_string_arg(s: []const u8, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Id")) {
+        return if (Evaluator.is_salesforce_id_string(s)) 3 else 2;
     }
-    if (arg == .integer) {
-        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Long") or
-            std.ascii.eqlIgnoreCase(pt, "Decimal") or
-            std.ascii.eqlIgnoreCase(pt, "Double"))
-        {
-            return 1;
-        }
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    // Date/DateTime-like strings should match Date/DateTime params.
+    if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.is_date_only_format_string(s)) return 2;
+    if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and
+        Evaluator.is_date_time_format_string(s))
+    {
+        return 2;
     }
-    if (arg == .long) {
-        if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double"))
-            return 1;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
+    return 0;
+}
+
+fn score_integer_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Long") or
+        std.ascii.eqlIgnoreCase(pt, "Decimal") or
+        std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn score_long_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn score_double_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Integer") or
+        std.ascii.eqlIgnoreCase(pt, "int") or
+        std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn score_boolean_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn score_list_arg(list: *types.ListValue, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
+    if (!(std.mem.startsWith(u8, pt, "List<") or std.mem.startsWith(u8, pt, "list<"))) return 0;
+    const lt = std.mem.indexOf(u8, pt, "<") orelse return 0;
+    const gt = std.mem.lastIndexOf(u8, pt, ">") orelse return 0;
+    const elem_type = pt[lt + 1 .. gt];
+
+    // `SObject` is a generic parent type; any SObject matches `List<SObject>`.
+    if (std.ascii.eqlIgnoreCase(elem_type, "SObject") or
+        std.ascii.eqlIgnoreCase(elem_type, "sObject") or
+        std.ascii.eqlIgnoreCase(elem_type, "Sobject"))
+    {
+        if (list.items.items.len > 0 and list.items.items[0] == .sobject) return 3;
+        return 2;
     }
-    if (arg == .double) {
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double"))
-            return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Integer") or
-            std.ascii.eqlIgnoreCase(pt, "int") or
-            std.ascii.eqlIgnoreCase(pt, "Long"))
-        {
-            return 1;
-        }
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
-    }
-    if (arg == .boolean) {
-        if (std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
-    }
-    if (arg == .list) {
-        if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
-        // Check List element type against generic parameter: List<Database.SaveResult> etc.
-        if (std.mem.startsWith(u8, pt, "List<") or std.mem.startsWith(u8, pt, "list<")) {
-            // Extract element type from param: "List<Database.SaveResult>" → "Database.SaveResult"
-            if (std.mem.indexOf(u8, pt, "<")) |lt| {
-                if (std.mem.lastIndexOf(u8, pt, ">")) |gt| {
-                    const elem_type = pt[lt + 1 .. gt];
-                    // Check first element of the list
-                    // SObject is a generic parent type — any SObject matches List<SObject>
-                    if (std.ascii.eqlIgnoreCase(elem_type, "SObject") or
-                        std.ascii.eqlIgnoreCase(elem_type, "sObject") or
-                        std.ascii.eqlIgnoreCase(elem_type, "Sobject"))
-                    {
-                        if (arg.list.items.items.len > 0) {
-                            if (arg.list.items.items[0] == .sobject) return 3;
-                        }
-                        return 2; // Empty list matches List<SObject>
-                    }
-                    if (arg.list.items.items.len > 0) {
-                        const first = arg.list.items.items[0];
-                        if (first == .sobject) {
-                            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type))
-                                return 3;
-                            // Simple name match
-                            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(
-                                    first.sobject.type_name,
-                                    elem_type[di + 1 ..],
-                                )) return 3;
-                            }
-                        }
-                        if (first == .object) {
-                            if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type))
-                                return 3;
-                        }
-                    }
-                    return 1; // It's a List but element type doesn't match
-                }
+    if (list.items.items.len > 0) {
+        const first = list.items.items[0];
+        if (first == .sobject) {
+            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
+            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(
+                    first.sobject.type_name,
+                    elem_type[di + 1 ..],
+                )) return 3;
             }
         }
-        return 0;
+        if (first == .object and std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) {
+            return 3;
+        }
     }
-    if (arg == .map) {
-        if (std.ascii.eqlIgnoreCase(pt, "Map")) return 2;
-        if (std.ascii.startsWithIgnoreCase(pt, "Map<")) return 2;
+    return 1;
+}
+
+fn score_map_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Map")) return 2;
+    if (std.ascii.startsWithIgnoreCase(pt, "Map<")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn score_set_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
+    if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable")) {
+        return 1;
+    }
+    return 0;
+}
+
+fn score_sobject_arg(tn: []const u8, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(tn, pt)) return 3;
+    if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(tn, pt[di + 1 ..])) return 3;
+    }
+    if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
+    }
+    if (std.ascii.eqlIgnoreCase(pt, "SObject") or
+        std.ascii.eqlIgnoreCase(pt, "Sobject") or
+        std.ascii.eqlIgnoreCase(pt, "sObject")) return 2;
+    return 0;
+}
+
+fn score_object_arg(cn: []const u8, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
+    // Dotted `Outer.Inner` class_name vs simple `Inner` param (and vice versa) —
+    // the interpreter stores built-in objects with simple names while user code
+    // typically spells the qualified form.
+    if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
+    }
+    if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(pt[di + 1 ..], cn)) return 3;
+    }
+    if (std.ascii.eqlIgnoreCase(cn, "Date")) {
+        if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
-    if (arg == .set) {
-        if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
-        if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable"))
-            return 1;
-        return 0;
-    }
-    if (arg == .sobject) {
-        const tn = arg.sobject.type_name;
-        // Exact type match (e.g., Database.SaveResult matches param Database.SaveResult)
-        if (std.ascii.eqlIgnoreCase(tn, pt)) return 3;
-        // Simple name match (e.g., "SaveResult" matches param "Database.SaveResult")
-        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(tn, pt[di + 1 ..])) return 3;
-        }
-        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
-        }
-        // Generic SObject match
-        if (std.ascii.eqlIgnoreCase(pt, "SObject") or
-            std.ascii.eqlIgnoreCase(pt, "Sobject") or
-            std.ascii.eqlIgnoreCase(pt, "sObject"))
-        {
-            return 2;
-        }
-        return 0;
-    }
-    if (arg == .object) {
-        const cn = arg.object.class_name;
-        // Exact class name match (case-insensitive)
-        if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
-        // Match when the class_name is dotted ("Outer.Inner") and pt uses the simple form.
-        if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
-        }
-        // Match when the param type is dotted ("System.Type") and the class_name uses
-        // the simple form ("Type") — happens whenever the interpreter stores built-in
-        // objects with their Apex simple names while user code spells the qualified form.
-        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(pt[di + 1 ..], cn)) return 3;
-        }
-        // Date/DateTime objects should score well for their specific types
-        if (std.ascii.eqlIgnoreCase(cn, "Date")) {
-            if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
-            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-            return 0;
-        }
-        if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
-            if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime"))
-                return 2;
-            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-            return 0;
-        }
+    if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
+        if (std.ascii.eqlIgnoreCase(pt, "DateTime") or
+            std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
     return 0;
 }
 
