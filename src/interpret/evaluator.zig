@@ -15277,6 +15277,7 @@ pub const Evaluator = struct {
     ) !void {
         var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
         defer chain.deinit(self.arena);
+
         var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc|
             self.find_class(sc.name)
         else
