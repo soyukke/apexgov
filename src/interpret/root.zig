@@ -7619,17 +7619,11 @@ test "Contact Name is synthesized from FirstName + LastName" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("ContactNameTest", "testContactName", &.{}) catch |e| {
-        std.debug.print("testContactName error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("ContactNameTest", "testContactName", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
     eval.resetForTest();
-    _ = eval.callMethod("ContactNameTest", "testContactNameLastOnly", &.{}) catch |e| {
-        std.debug.print("testContactNameLastOnly error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("ContactNameTest", "testContactNameLastOnly", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7663,17 +7657,11 @@ test "Double/Decimal instance fields default to null" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("DoubleDefaultTest", "testDecimalNull", &.{}) catch |e| {
-        std.debug.print("testDecimalNull error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("DoubleDefaultTest", "testDecimalNull", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
     eval.resetForTest();
-    _ = eval.callMethod("DoubleDefaultTest", "testDoubleNull", &.{}) catch |e| {
-        std.debug.print("testDoubleNull error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("DoubleDefaultTest", "testDoubleNull", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7714,17 +7702,11 @@ test "resetForTest re-runs static initializers for later test methods" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("StaticInitResetTest", "firstMethod", &.{}) catch |e| {
-        std.debug.print("firstMethod error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("StaticInitResetTest", "firstMethod", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 
     eval.resetForTest();
-    _ = eval.callMethod("StaticInitResetTest", "secondMethod", &.{}) catch |e| {
-        std.debug.print("secondMethod error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("StaticInitResetTest", "secondMethod", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7822,10 +7804,7 @@ test "JSON.deserialize maps fields to user-defined class" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("JsonDeserTest", "testDeserialize", &.{}) catch |e| {
-        std.debug.print("testDeserialize error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("JsonDeserTest", "testDeserialize", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7855,20 +7834,7 @@ test "JSON.createParser + readValueAs deserializes into typed class" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("JsonParserTest", "testReadValueAs", &.{}) catch |e| {
-        std.debug.print("testReadValueAs error: {}\n", .{e});
-        if (eval.pending_exception) |pe| {
-            if (pe == .object) {
-                if (pe.object.fields.get("message")) |msg| {
-                    if (msg == .string) std.debug.print("exception: {s}\n", .{msg.string});
-                }
-            }
-        }
-        return error.TestUnexpectedResult;
-    };
-    if (eval.assertion_failure) |af| {
-        std.debug.print("assertion failure: {s}\n", .{af});
-    }
+    _ = try eval.callMethod("JsonParserTest", "testReadValueAs", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7894,10 +7860,7 @@ test "PageReference.getUrl returns stored URL" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("PageRefTest", "testGetUrl", &.{}) catch |e| {
-        std.debug.print("testGetUrl error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("PageRefTest", "testGetUrl", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7945,10 +7908,7 @@ test "SOQL LIKE with bind variable matches correctly" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("LikeBindTest", "testLikeBind", &.{}) catch |e| {
-        std.debug.print("testLikeBind error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("LikeBindTest", "testLikeBind", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -7972,10 +7932,7 @@ test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("SchemaTest", "testSchemaAccess", &.{}) catch |e| {
-        std.debug.print("Schema.sObjectType test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("SchemaTest", "testSchemaAccess", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8000,10 +7957,7 @@ test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("CryptoTest", "testRoundTrip", &.{}) catch |e| {
-        std.debug.print("Crypto round-trip test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("CryptoTest", "testRoundTrip", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8034,10 +7988,7 @@ test "AuraHandledException is caught in try-catch" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("AuraTest", "testCatch", &.{}) catch |e| {
-        std.debug.print("AuraHandledException test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("AuraTest", "testCatch", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8063,10 +8014,7 @@ test "Type.forName returns null for non-existent class" {
     var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
-    _ = eval.callMethod("TypeForNameTest", "testForName", &.{}) catch |e| {
-        std.debug.print("Type.forName test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("TypeForNameTest", "testForName", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8183,15 +8131,8 @@ test "Trigger recursion does not StackOverflow" {
     try eval.loadDecls(decls2);
     try eval.loadDecls(decls3);
 
-    _ = eval.callMethod("TriggerRecursionTest", "testNoStackOverflow", &.{}) catch |e| {
-        // StackOverflow should not happen anymore
-        if (e == error.StackOverflow) {
-            std.debug.print("Trigger recursion caused StackOverflow!\n", .{});
-            return error.TestUnexpectedResult;
-        }
-        std.debug.print("Trigger recursion test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    // StackOverflow should not happen anymore — propagate any error.
+    _ = try eval.callMethod("TriggerRecursionTest", "testNoStackOverflow", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -8216,10 +8157,7 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
     try eval.loadDecls(decls);
 
     eval.resetForTest();
-    _ = eval.callMethod("UserQueryTest", "testQuery", &.{}) catch |e| {
-        std.debug.print("User query test error: {}\n", .{e});
-        return error.TestUnexpectedResult;
-    };
+    _ = try eval.callMethod("UserQueryTest", "testQuery", &.{});
     try std.testing.expect(eval.assertion_failure == null);
 }
 
@@ -9987,10 +9925,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
     const after = test_arena.queryCapacity();
 
     // retain_capacity により容量は安定するはず（2倍以上増えたらリーク）
-    if (after > baseline * 2) {
-        std.debug.print("\n[LEAK] test arena capacity: baseline={d} bytes, after 50 iterations={d} bytes (x{d})\n", .{ baseline, after, after / baseline });
-        return error.TestUnexpectedResult;
-    }
+    try std.testing.expect(after <= baseline * 2);
 }
 
 test "E2E: empty list DML does not increment getDmlStatements" {
@@ -11963,9 +11898,6 @@ test "E2E: fixture cached organization selector test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12010,9 +11942,6 @@ test "E2E: fixture field mapping integration test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12032,9 +11961,6 @@ test "E2E: fixture transaction limits builder test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12054,9 +11980,6 @@ test "E2E: fixture auth session builder test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12076,9 +11999,6 @@ test "E2E: fixture organization builder test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12098,9 +12018,6 @@ test "E2E: fixture user builder test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12233,9 +12150,6 @@ test "E2E: fixture duplicate scenario guard test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12255,9 +12169,6 @@ test "E2E: fixture tag creation test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12277,9 +12188,6 @@ test "E2E: fixture tag reuse test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12299,9 +12207,6 @@ test "E2E: fixture event-uuid upsert test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12635,9 +12540,6 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         .entry_method = "test",
     });
     defer result.deinit();
-    if (!std.mem.startsWith(u8, result.value.string, "a")) {
-        std.debug.print("DataGatewayUpsertProbe => {s}\n", .{result.value.string});
-    }
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12684,9 +12586,6 @@ test "E2E: List<SObject> copy preserves SObject identity for DML" {
         .entry_method = "test",
     });
     defer result.deinit();
-    if (!std.mem.startsWith(u8, result.value.string, "001")) {
-        std.debug.print("ListIdentityProbe => {s}\n", .{result.value.string});
-    }
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "001"));
 }
 
@@ -12705,9 +12604,6 @@ test "E2E: Database.upsert list writes Id back to original row" {
         .entry_method = "test",
     });
     defer result.deinit();
-    if (!std.mem.startsWith(u8, result.value.string, "a")) {
-        std.debug.print("DatabaseUpsertListIdentityProbe => {s}\n", .{result.value.string});
-    }
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12730,9 +12626,6 @@ test "E2E: wrapper method preserves list element identity for Database.upsert" {
         .entry_method = "test",
     });
     defer result.deinit();
-    if (!std.mem.startsWith(u8, result.value.string, "a")) {
-        std.debug.print("WrapperIdentityProbe => {s}\n", .{result.value.string});
-    }
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12756,9 +12649,6 @@ test "E2E: inner class named Database can call System.Database.upsert" {
         .entry_method = "test",
     });
     defer result.deinit();
-    if (!std.mem.startsWith(u8, result.value.string, "a")) {
-        std.debug.print("InnerDatabaseProbe => {s}\n", .{result.value.string});
-    }
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12777,9 +12667,6 @@ test "E2E: fixture anonymous-mode-disabled user fields test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12799,9 +12686,6 @@ test "E2E: fixture standard-object recordId test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12821,9 +12705,6 @@ test "E2E: fixture custom-object recordId test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12843,9 +12724,6 @@ test "E2E: fixture null record overload test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12865,9 +12743,6 @@ test "E2E: fixture null list overload test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12887,9 +12762,6 @@ test "E2E: fixture null map overload test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }
@@ -12909,9 +12781,6 @@ test "E2E: fixture null iterable overload test passes" {
         &out.writer,
     );
 
-    if (suite.passed != 1) {
-        std.debug.print("{s}", .{out.written()});
-    }
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
 }

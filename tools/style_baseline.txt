@@ -57,8 +57,7 @@ src/interpret/evaluator.zig	defer_no_blank_line	48
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/regex.zig	defer_no_blank_line	20
-src/interpret/root.zig	line_too_long	293
-src/interpret/root.zig	debug_print	42
+src/interpret/root.zig	line_too_long	292
 src/interpret/root.zig	function_too_long	4
 src/interpret/root.zig	defer_no_blank_line	461
 src/interpret/utils.zig	line_too_long	15
