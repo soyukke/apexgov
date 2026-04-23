@@ -3856,135 +3856,133 @@ pub const Evaluator = struct {
     }
 
     fn update_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
-        // Validate only fields explicitly present (Salesforce doesn't re-validate all required
-        // fields on update)
+        // Salesforce doesn't re-validate all required fields on update — only
+        // the fields explicitly present on the record.
         if (try self.validate_required_fields(obj, true)) |err_msg| {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_dml_exception(err_msg);
         }
-        // If no Id, throw DmlException
-        if (obj.id == null) {
-            // Also check if Id is in fields
-            const id_field = utils.sobject_get(&obj.fields, "Id");
-            if (id_field == null or id_field.? == .null_val) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(
-                    self.arena,
-                    "message",
-                    Value{ .string = "MISSING_ARGUMENT: Id not specified in an update call:" },
-                );
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            // Set id from field
-            if (id_field.? == .string) obj.id = id_field.?.string;
+        try self.ensure_update_id(obj);
+        const record_id = obj.id orelse return; // cannot happen post ensure
+        try self.check_guest_user_owner(obj);
+        const stored = self.find_stored_record(obj, record_id) orelse {
+            return self.throw_dml_exception(
+                "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id",
+            );
+        };
+        if (self.find_unique_field_conflict(obj, true)) |field_name| {
+            return self.throw_duplicate_value(field_name);
         }
-        // Validate that the record exists in the store (if it has an Id)
-        if (obj.id) |record_id| {
-            if (utils.sobject_get(&obj.fields, "OwnerId")) |owner_val| {
-                if (owner_val == .string and self.is_guest_user_id(owner_val.string)) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "DmlException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "FIELD_INTEGRITY_EXCEPTION, field integrity exception (Guest users cannot be record owners.)" });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
+        try self.stamp_update_audit_fields(obj);
+        merge_sobject_fields(self.arena, stored, obj);
+    }
+
+    fn throw_dml_exception(self: *Evaluator, message: []const u8) anyerror!void {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = message });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    /// Ensure the record has a non-null `id`, pulling it from the `Id` field
+    /// when necessary. Throws DmlException when no Id can be resolved.
+    fn ensure_update_id(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        if (obj.id != null) return;
+        const id_field = utils.sobject_get(&obj.fields, "Id");
+        if (id_field == null or id_field.? == .null_val) {
+            return self.throw_dml_exception(
+                "MISSING_ARGUMENT: Id not specified in an update call:",
+            );
+        }
+        if (id_field.? == .string) obj.id = id_field.?.string;
+    }
+
+    /// Reject updates that reassign ownership to a guest user.
+    fn check_guest_user_owner(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        const owner_val = utils.sobject_get(&obj.fields, "OwnerId") orelse return;
+        if (owner_val != .string) return;
+        if (!self.is_guest_user_id(owner_val.string)) return;
+        return self.throw_dml_exception(
+            "FIELD_INTEGRITY_EXCEPTION, field integrity exception " ++
+                "(Guest users cannot be record owners.)",
+        );
+    }
+
+    /// Look up the stored pointer for `obj`'s Id, trying the type-keyed store
+    /// first and falling back to a case-insensitive type-name scan via the
+    /// record's `Id` field value.
+    fn find_stored_record(
+        self: *Evaluator,
+        obj: *types.SObject,
+        record_id: []const u8,
+    ) ?*types.SObject {
+        if (self.store.getPtr(obj.type_name)) |records| {
+            for (records.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.mem.eql(u8, rec.sobject.id.?, record_id))
+                {
+                    return rec.sobject;
                 }
             }
-            var found_rec: ?*types.SObject = null;
-            if (self.store.getPtr(obj.type_name)) |records| {
-                for (records.items) |rec| {
-                    if (rec == .sobject and rec.sobject.id != null and
-                        std.mem.eql(u8, rec.sobject.id.?, record_id))
-                    {
-                        found_rec = rec.sobject;
-                        break;
-                    }
+        }
+        const id_val = utils.sobject_get(&obj.fields, "Id") orelse return null;
+        if (id_val != .string) return null;
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj.type_name)) continue;
+            for (entry.value_ptr.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.mem.eql(u8, rec.sobject.id.?, id_val.string))
+                {
+                    return rec.sobject;
                 }
             }
-            if (found_rec == null) {
-                // Also check via Id field
-                if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-                    if (id_val == .string) {
-                        var store_iter = self.store.iterator();
-                        while (store_iter.next()) |entry| {
-                            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj.type_name)) {
-                                for (entry.value_ptr.items) |rec| {
-                                    if (rec == .sobject and rec.sobject.id != null and
-                                        std.mem.eql(u8, rec.sobject.id.?, id_val.string))
-                                    {
-                                        found_rec = rec.sobject;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        }
+        return null;
+    }
+
+    /// Stamp LastModifiedDate/ById and seed a minimal LastModifiedBy record
+    /// when the caller did not provide one.
+    fn stamp_update_audit_fields(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        const now_str = builtins.current_date_time_string(self.arena) catch
+            "2026-01-01T00:00:00Z";
+        obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
+        obj.fields.put(
+            self.arena,
+            "LastModifiedById",
+            Value{ .string = "005000000000001" },
+        ) catch {};
+        if (utils.sobject_get(&obj.fields, "LastModifiedBy") != null) return;
+        const modified_by = try self.arena.create(types.SObject);
+        modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
+        try modified_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+        try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        try modified_by.fields.put(
+            self.arena,
+            "Username",
+            Value{ .string = "testuser@example.com" },
+        );
+        try obj.fields.put(self.arena, "LastModifiedBy", Value{ .sobject = modified_by });
+    }
+
+    /// Copy every field from `src` into `dst`. If the two pointers coincide
+    /// (uncopied SOQL result), snapshot keys/values first to avoid iterator
+    /// invalidation when put() triggers a grow.
+    fn merge_sobject_fields(
+        arena: std.mem.Allocator,
+        dst: *types.SObject,
+        src: *types.SObject,
+    ) void {
+        if (dst == src) {
+            const keys = arena.dupe([]const u8, src.fields.keys()) catch return;
+            const vals = arena.dupe(Value, src.fields.values()) catch return;
+            for (keys, vals) |k, v| {
+                dst.fields.put(arena, k, v) catch {};
             }
-            if (found_rec == null) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(
-                    self.arena,
-                    "message",
-                    Value{ .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id" },
-                );
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            if (self.find_unique_field_conflict(obj, true)) |field_name| {
-                return self.throw_duplicate_value(field_name);
-            }
-            // Update the store snapshot with current field values.
-            // If stored == obj (same pointer, e.g. from an uncopied SOQL result),
-            // we must snapshot keys/values first to avoid iterator invalidation
-            // when put() triggers a grow.
-            if (found_rec) |stored| {
-                const now_str = builtins.current_date_time_string(
-                    self.arena,
-                ) catch "2026-01-01T00:00:00Z";
-                obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
-                obj.fields.put(
-                    self.arena,
-                    "LastModifiedById",
-                    Value{ .string = "005000000000001" },
-                ) catch {};
-                if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
-                    const modified_by = try self.arena.create(types.SObject);
-                    modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
-                    try modified_by.fields.put(
-                        self.arena,
-                        "Id",
-                        Value{ .string = "005000000000001" },
-                    );
-                    try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-                    try modified_by.fields.put(
-                        self.arena,
-                        "Username",
-                        Value{ .string = "testuser@example.com" },
-                    );
-                    try obj.fields.put(
-                        self.arena,
-                        "LastModifiedBy",
-                        Value{ .sobject = modified_by },
-                    );
-                }
-                if (stored == obj) {
-                    const keys = self.arena.dupe([]const u8, obj.fields.keys()) catch return;
-                    const vals = self.arena.dupe(Value, obj.fields.values()) catch return;
-                    for (keys, vals) |k, v| {
-                        stored.fields.put(self.arena, k, v) catch {};
-                    }
-                } else {
-                    for (obj.fields.keys(), obj.fields.values()) |k, v| {
-                        stored.fields.put(self.arena, k, v) catch {};
-                    }
-                }
-            }
+            return;
+        }
+        for (src.fields.keys(), src.fields.values()) |k, v| {
+            dst.fields.put(arena, k, v) catch {};
         }
     }
 
