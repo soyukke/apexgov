@@ -4577,95 +4577,102 @@ fn dispatch_double_instance(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
+    const ci = std.ascii;
     // setScale(scale) / setScale(scale, RoundingMode) — 小数点以下桁数を丸める (Decimal)
-    if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
-        if (args.len > 0) {
-            const scale: i64 = switch (args[0]) {
-                .integer => |i| i,
-                .long => |i| i,
-                .double => |dv| @intFromFloat(dv),
-                else => 0,
-            };
-            const mode: []const u8 = if (args.len > 1) switch (args[1]) {
-                .string => |s| s,
-                else => "HALF_UP",
-            } else "HALF_UP";
-            if (scale >= 0 and scale <= 18) {
-                const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
-                const scaled = d * factor;
-                const adjusted: f64 = if (std.ascii.eqlIgnoreCase(mode, "DOWN"))
-                    @trunc(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "UP"))
-                    (if (scaled >= 0) @ceil(scaled) else @floor(scaled))
-                else if (std.ascii.eqlIgnoreCase(mode, "FLOOR"))
-                    @floor(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "CEILING"))
-                    @ceil(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "HALF_DOWN")) blk: {
-                    const f = @floor(scaled);
-                    const frac = scaled - f;
-                    break :blk if (frac > 0.5) @ceil(scaled) else f;
-                } else if (std.ascii.eqlIgnoreCase(mode, "HALF_EVEN")) blk: {
-                    const rounded = @round(scaled);
-                    // Ties go to even
-                    const f = @floor(scaled);
-                    const frac = scaled - f;
-                    if (frac == 0.5 or frac == -0.5) {
-                        if (@mod(rounded, 2.0) != 0)
-                            break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
-                    }
-                    break :blk rounded;
-                } else @round(scaled);
-                return Value{ .double = adjusted / factor };
-            }
-        }
-        return Value{ .double = d };
-    }
+    if (ci.eqlIgnoreCase(method_name, "setScale")) return double_set_scale(d, args);
     // doubleValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
+    if (ci.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
     // intValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "intValue"))
-        return Value{ .integer = @intFromFloat(d) };
+    if (ci.eqlIgnoreCase(method_name, "intValue")) return Value{ .integer = @intFromFloat(d) };
     // longValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .long = @intFromFloat(d) };
+    if (ci.eqlIgnoreCase(method_name, "longValue")) return Value{ .long = @intFromFloat(d) };
     // round()
-    if (std.ascii.eqlIgnoreCase(method_name, "round"))
+    if (ci.eqlIgnoreCase(method_name, "round"))
         return Value{ .integer = @intFromFloat(@round(d)) };
     // abs()
-    if (std.ascii.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
+    if (ci.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
     // pow(exponent) — Decimal raised to the given integer exponent
-    if (std.ascii.eqlIgnoreCase(method_name, "pow") and args.len > 0) {
-        const exp: f64 = switch (args[0]) {
-            .integer => |i| @floatFromInt(i),
-            .long => |i| @floatFromInt(i),
-            .double => |dv| dv,
-            else => 0,
-        };
-        const result = std.math.pow(f64, d, exp);
-        if (@floor(result) == result and
-            !std.math.isNan(result) and
-            !std.math.isInf(result) and
-            @abs(result) < 9_007_199_254_740_992.0)
-        {
-            return Value{ .integer = @intFromFloat(result) };
-        }
-        return Value{ .double = result };
-    }
+    if (ci.eqlIgnoreCase(method_name, "pow") and args.len > 0) return double_pow(d, args);
     // format()
-    if (std.ascii.eqlIgnoreCase(method_name, "format")) {
+    if (ci.eqlIgnoreCase(method_name, "format"))
         return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d}", .{d}) };
-    }
     // stripTrailingZeros() — 値自体は変わらない（文字列変換時に効く）
-    if (std.ascii.eqlIgnoreCase(method_name, "stripTrailingZeros")) return Value{ .double = d };
+    if (ci.eqlIgnoreCase(method_name, "stripTrailingZeros")) return Value{ .double = d };
     // scale() — 小数点以下の桁数を返す
-    if (std.ascii.eqlIgnoreCase(method_name, "scale")) {
-        const s = try std.fmt.allocPrint(ctx.arena, "{d}", .{d});
-        if (std.mem.indexOf(u8, s, ".")) |dot| {
-            return Value{ .integer = @intCast(s.len - dot - 1) };
-        }
-        return Value{ .integer = 0 };
-    }
+    if (ci.eqlIgnoreCase(method_name, "scale")) return try double_scale(ctx, d);
     return null;
+}
+
+fn double_set_scale(d: f64, args: []const Value) Value {
+    if (args.len == 0) return Value{ .double = d };
+    const scale: i64 = switch (args[0]) {
+        .integer => |i| i,
+        .long => |i| i,
+        .double => |dv| @intFromFloat(dv),
+        else => 0,
+    };
+    const mode: []const u8 = if (args.len > 1) switch (args[1]) {
+        .string => |s| s,
+        else => "HALF_UP",
+    } else "HALF_UP";
+    if (scale < 0 or scale > 18) return Value{ .double = d };
+    const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
+    const scaled = d * factor;
+    const adjusted = double_apply_rounding_mode(scaled, mode);
+    return Value{ .double = adjusted / factor };
+}
+
+fn double_apply_rounding_mode(scaled: f64, mode: []const u8) f64 {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(mode, "DOWN")) return @trunc(scaled);
+    if (ci.eqlIgnoreCase(mode, "UP"))
+        return if (scaled >= 0) @ceil(scaled) else @floor(scaled);
+    if (ci.eqlIgnoreCase(mode, "FLOOR")) return @floor(scaled);
+    if (ci.eqlIgnoreCase(mode, "CEILING")) return @ceil(scaled);
+    if (ci.eqlIgnoreCase(mode, "HALF_DOWN")) {
+        const f = @floor(scaled);
+        const frac = scaled - f;
+        return if (frac > 0.5) @ceil(scaled) else f;
+    }
+    if (ci.eqlIgnoreCase(mode, "HALF_EVEN")) {
+        const rounded = @round(scaled);
+        // Ties go to even
+        const f = @floor(scaled);
+        const frac = scaled - f;
+        if (frac == 0.5 or frac == -0.5) {
+            if (@mod(rounded, 2.0) != 0) {
+                return rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
+            }
+        }
+        return rounded;
+    }
+    return @round(scaled);
+}
+
+fn double_pow(d: f64, args: []const Value) Value {
+    const exp: f64 = switch (args[0]) {
+        .integer => |i| @floatFromInt(i),
+        .long => |i| @floatFromInt(i),
+        .double => |dv| dv,
+        else => 0,
+    };
+    const result = std.math.pow(f64, d, exp);
+    if (@floor(result) == result and
+        !std.math.isNan(result) and
+        !std.math.isInf(result) and
+        @abs(result) < 9_007_199_254_740_992.0)
+    {
+        return Value{ .integer = @intFromFloat(result) };
+    }
+    return Value{ .double = result };
+}
+
+fn double_scale(ctx: *BuiltinContext, d: f64) !Value {
+    const s = try std.fmt.allocPrint(ctx.arena, "{d}", .{d});
+    if (std.mem.indexOf(u8, s, ".")) |dot| {
+        return Value{ .integer = @intCast(s.len - dot - 1) };
+    }
+    return Value{ .integer = 0 };
 }
 
 /// List メソッドは evaluator.eval_list_method (完全版) で処理されるため、ここでは null を返す。
