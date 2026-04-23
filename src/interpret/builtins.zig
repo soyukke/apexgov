@@ -4412,96 +4412,102 @@ pub fn normalize_s_object_field_assignment(
     value: Value,
 ) !Value {
     if (value == .null_val) return value;
-
     const display_type = get_s_object_field_display_type(ctx, sob, field_name);
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(display_type, "DATETIME"))
+        return normalize_field_datetime(ctx, value);
+    if (ci.eqlIgnoreCase(display_type, "DATE"))
+        return normalize_field_date(ctx, value);
+    if (ci.eqlIgnoreCase(display_type, "BOOLEAN"))
+        return normalize_field_boolean(ctx, value);
+    if (ci.eqlIgnoreCase(display_type, "INTEGER") or ci.eqlIgnoreCase(display_type, "LONG"))
+        return normalize_field_integer(ctx, value);
+    if (ci.eqlIgnoreCase(display_type, "DOUBLE") or
+        ci.eqlIgnoreCase(display_type, "CURRENCY") or
+        ci.eqlIgnoreCase(display_type, "PERCENT"))
+        return normalize_field_double(ctx, value);
+    if (ci.eqlIgnoreCase(display_type, "ID") or ci.eqlIgnoreCase(display_type, "REFERENCE"))
+        return normalize_field_id(ctx, value);
+    return value;
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "DATETIME")) {
-        if (extract_date_string(value)) |date_str| {
-            if (is_valid_date_string(date_str)) return Value{ .string = date_str };
-        }
-        _ = try ctx.throw_exception("System.SObjectException", "Invalid Datetime value");
-        return error.ApexException;
+fn normalize_field_datetime(ctx: *BuiltinContext, value: Value) !Value {
+    if (extract_date_string(value)) |date_str| {
+        if (is_valid_date_string(date_str)) return Value{ .string = date_str };
     }
+    _ = try ctx.throw_exception("System.SObjectException", "Invalid Datetime value");
+    return error.ApexException;
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "DATE")) {
-        if (extract_date_string(value)) |date_str| {
-            if (is_valid_date_string(date_str)) return Value{ .string = date_str[0..10] };
-        }
-        _ = try ctx.throw_exception("System.SObjectException", "Invalid Date value");
-        return error.ApexException;
+fn normalize_field_date(ctx: *BuiltinContext, value: Value) !Value {
+    if (extract_date_string(value)) |date_str| {
+        if (is_valid_date_string(date_str)) return Value{ .string = date_str[0..10] };
     }
+    _ = try ctx.throw_exception("System.SObjectException", "Invalid Date value");
+    return error.ApexException;
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "BOOLEAN")) {
-        return switch (value) {
-            .boolean => value,
-            .string => |s| blk: {
-                if (std.ascii.eqlIgnoreCase(s, "true")) break :blk Value{ .boolean = true };
-                if (std.ascii.eqlIgnoreCase(s, "false")) break :blk Value{ .boolean = false };
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
-                return error.ApexException;
-            },
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
-                return error.ApexException;
-            },
-        };
-    }
+fn normalize_field_boolean(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .boolean => value,
+        .string => |s| blk: {
+            if (std.ascii.eqlIgnoreCase(s, "true")) break :blk Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(s, "false")) break :blk Value{ .boolean = false };
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
+            return error.ApexException;
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
+            return error.ApexException;
+        },
+    };
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or
-        std.ascii.eqlIgnoreCase(display_type, "LONG"))
-    {
-        return switch (value) {
-            .integer => value,
-            .double => |d| Value{ .integer = @intFromFloat(d) },
-            .string => |s| blk: {
-                const parsed = std.fmt.parseInt(i64, s, 10) catch {
-                    _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
-                    return error.ApexException;
-                };
-                break :blk Value{ .integer = parsed };
-            },
-            else => {
+fn normalize_field_integer(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .integer => value,
+        .double => |d| Value{ .integer = @intFromFloat(d) },
+        .string => |s| blk: {
+            const parsed = std.fmt.parseInt(i64, s, 10) catch {
                 _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
                 return error.ApexException;
-            },
-        };
-    }
+            };
+            break :blk Value{ .integer = parsed };
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
+            return error.ApexException;
+        },
+    };
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "DOUBLE") or
-        std.ascii.eqlIgnoreCase(display_type, "CURRENCY") or
-        std.ascii.eqlIgnoreCase(display_type, "PERCENT"))
-    {
-        return switch (value) {
-            .integer => |i| Value{ .double = @floatFromInt(i) },
-            .double => value,
-            .string => |s| blk: {
-                const parsed = std.fmt.parseFloat(f64, s) catch {
-                    _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
-                    return error.ApexException;
-                };
-                break :blk Value{ .double = parsed };
-            },
-            else => {
+fn normalize_field_double(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .integer => |i| Value{ .double = @floatFromInt(i) },
+        .double => value,
+        .string => |s| blk: {
+            const parsed = std.fmt.parseFloat(f64, s) catch {
                 _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
                 return error.ApexException;
-            },
-        };
-    }
+            };
+            break :blk Value{ .double = parsed };
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
+            return error.ApexException;
+        },
+    };
+}
 
-    if (std.ascii.eqlIgnoreCase(display_type, "ID") or
-        std.ascii.eqlIgnoreCase(display_type, "REFERENCE"))
-    {
-        return switch (value) {
-            .string => value,
-            .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Id value");
-                return error.ApexException;
-            },
-        };
-    }
-
-    return value;
+fn normalize_field_id(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .string => value,
+        .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Id value");
+            return error.ApexException;
+        },
+    };
 }
 
 fn dispatch_database(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
