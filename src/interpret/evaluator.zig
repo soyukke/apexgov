@@ -767,7 +767,7 @@ pub const Evaluator = struct {
         if (self.query_matches_current_user(soql, current_env)) {
             return self.create_current_user_record();
         }
-        const user = try self.arena.create(types.SObject);
+
         const alias = self.extract_where_field_value(soql, "Alias", current_env) orelse "tuser";
         const username = self.extract_where_field_value(
             soql,
@@ -777,6 +777,20 @@ pub const Evaluator = struct {
             "autoproc@example.com"
         else
             "testuser@example.com";
+        const user = try self.build_synthetic_user_record(username, alias);
+        const is_automated_process = std.ascii.startsWithIgnoreCase(username, "autoproc@") or
+            std.ascii.startsWithIgnoreCase(alias, "autoproc");
+        try self.attach_synthetic_profile_to_user(user, soql, current_env, is_automated_process);
+        try self.finalize_synthetic_user_name(user, is_automated_process);
+        return Value{ .sobject = user };
+    }
+
+    fn build_synthetic_user_record(
+        self: *Evaluator,
+        username: []const u8,
+        alias: []const u8,
+    ) !*types.SObject {
+        const user = try self.arena.create(types.SObject);
         const user_id = try std.fmt.allocPrint(self.arena, "005{d:0>15}", .{self.next_id});
         self.next_id += 1;
         user.* = .{ .type_name = "User", .id = user_id };
@@ -785,11 +799,16 @@ pub const Evaluator = struct {
         try user.fields.put(self.arena, "Email", Value{ .string = username });
         try user.fields.put(self.arena, "Alias", Value{ .string = alias });
         try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
+        return user;
+    }
 
-        const is_automated_process = std.ascii.startsWithIgnoreCase(
-            username,
-            "autoproc@",
-        ) or std.ascii.startsWithIgnoreCase(alias, "autoproc");
+    fn attach_synthetic_profile_to_user(
+        self: *Evaluator,
+        user: *types.SObject,
+        soql: []const u8,
+        current_env: *Env,
+        is_automated_process: bool,
+    ) !void {
         const has_null_profile = self.has_where_field_null_literal(soql, "Profile.Name");
         const profile_name_opt =
             if (self.has_exact_where_field_comparison(soql, "Profile.Name") and !has_null_profile)
@@ -803,46 +822,52 @@ pub const Evaluator = struct {
                 self.extract_where_field_value(soql, "UserType", current_env)
             else
                 null;
-
-        const should_materialize_profile = (!is_automated_process and !has_null_profile) or profile_name_opt != null or explicit_user_type != null;
-        if (should_materialize_profile) {
-            const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
-                (if (std.ascii.eqlIgnoreCase(
-                    user_type,
-                    "Guest",
-                )) "Logger Test LWR Site Guest Profile" else "Standard User")
-            else
-                "Standard User";
-            const profile = if (self.find_profile_by_name(profile_name)) |existing|
-                existing
-            else blk: {
-                const created = try self.arena.create(types.SObject);
-                const profile_id = try std.fmt.allocPrint(
-                    self.arena,
-                    "00e{d:0>15}",
-                    .{self.next_id},
-                );
-                self.next_id += 1;
-                created.* = .{ .type_name = "Profile", .id = profile_id };
-                try created.fields.put(self.arena, "Id", Value{ .string = profile_id });
-                try self.populate_synthetic_profile(created, profile_name);
-                const gop = try self.store.getOrPut(self.arena, "Profile");
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                try gop.value_ptr.append(self.arena, Value{ .sobject = created });
-                break :blk created;
-            };
-            if (explicit_user_type) |user_type| {
-                try profile.fields.put(self.arena, "UserType", Value{ .string = user_type });
-            }
-            try user.fields.put(self.arena, "ProfileId", Value{ .string = profile.id.? });
-            try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
-            if (utils.sobject_get(&profile.fields, "UserType")) |profile_user_type| {
-                try user.fields.put(self.arena, "UserType", profile_user_type);
-            }
-        } else {
+        const should_materialize = (!is_automated_process and !has_null_profile) or
+            profile_name_opt != null or explicit_user_type != null;
+        if (!should_materialize) {
             try user.fields.put(self.arena, "UserType", Value{ .string = "AutomatedProcess" });
+            return;
         }
+        const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
+            (if (std.ascii.eqlIgnoreCase(user_type, "Guest"))
+                "Logger Test LWR Site Guest Profile"
+            else
+                "Standard User")
+        else
+            "Standard User";
+        const profile = try self.resolve_or_create_profile(profile_name);
+        if (explicit_user_type) |user_type| {
+            try profile.fields.put(self.arena, "UserType", Value{ .string = user_type });
+        }
+        try user.fields.put(self.arena, "ProfileId", Value{ .string = profile.id.? });
+        try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
+        if (utils.sobject_get(&profile.fields, "UserType")) |profile_user_type| {
+            try user.fields.put(self.arena, "UserType", profile_user_type);
+        }
+    }
 
+    fn resolve_or_create_profile(
+        self: *Evaluator,
+        profile_name: []const u8,
+    ) !*types.SObject {
+        if (self.find_profile_by_name(profile_name)) |existing| return existing;
+        const created = try self.arena.create(types.SObject);
+        const profile_id = try std.fmt.allocPrint(self.arena, "00e{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        created.* = .{ .type_name = "Profile", .id = profile_id };
+        try created.fields.put(self.arena, "Id", Value{ .string = profile_id });
+        try self.populate_synthetic_profile(created, profile_name);
+        const gop = try self.store.getOrPut(self.arena, "Profile");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = created });
+        return created;
+    }
+
+    fn finalize_synthetic_user_name(
+        self: *Evaluator,
+        user: *types.SObject,
+        is_automated_process: bool,
+    ) !void {
         try user.fields.put(self.arena, "FirstName", Value{ .string = "Test" });
         try user.fields.put(
             self.arena,
@@ -854,7 +879,6 @@ pub const Evaluator = struct {
             "Name",
             Value{ .string = if (is_automated_process) "Automated Process" else "Test User" },
         );
-        return Value{ .sobject = user };
     }
 
     fn append_record_ids_from_value(
