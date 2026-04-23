@@ -14625,8 +14625,141 @@ pub const Evaluator = struct {
     // new 式
     // -----------------------------------------------------------------------
 
+    /// Type literal: `List<T>.class`, `Map<K,V>.class`, `Type[].class` — when
+    /// the `new` expression has no args and the name carries generics/`[]`,
+    /// produce a `Type` proxy instead of an instance.
+    fn try_new_type_literal(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+    ) !?Value {
+        if (!((std.mem.indexOf(u8, type_name, "<") != null or
+            std.mem.endsWith(u8, type_name, "[]")) and ne.args.len == 0)) return null;
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = type_obj };
+    }
+
+    fn new_list_expr(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        if (ne.type_name.params.len > 0) {
+            const rendered = strip_type_namespace(self.render_type_ref(ne.type_name.params[0]));
+            list.element_type = rendered;
+            // Real Apex returns null from `getSObjectType()` on a list the
+            // user built with `new List<SObject>()` and populated by hand,
+            // even when every element is the same concrete SObject type.
+            // Lists that inherit `element_type = "SObject"` later (via
+            // parameter annotation, etc.) keep `explicitly_generic = false`.
+            const rendered_base = type_base_name(rendered);
+            if (std.ascii.eqlIgnoreCase(rendered_base, "SObject") or
+                std.ascii.eqlIgnoreCase(rendered_base, "Object")) list.explicitly_generic = true;
+        }
+        if (ne.args.len == 1 and !ne.is_brace_initializer) {
+            var arg_copy = ne.args[0];
+            const arg_val = try self.eval_expr(&arg_copy, current_env);
+            if (arg_val == .set) {
+                for (arg_val.set.entries.values()) |item| try list.items.append(self.arena, item);
+                return Value{ .list = list };
+            }
+            if (arg_val == .list) {
+                for (arg_val.list.items.items) |item| try list.items.append(self.arena, item);
+                return Value{ .list = list };
+            }
+            try list.items.append(self.arena, arg_val);
+            return Value{ .list = list };
+        }
+        for (ne.args) |*arg| {
+            try list.items.append(self.arena, try self.eval_expr(arg, current_env));
+        }
+        return Value{ .list = list };
+    }
+
+    fn new_map_expr(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (ne.args) |*arg| {
+            if (arg.* != .assignment) continue;
+            const asgn = arg.assignment;
+            const key_val = try self.eval_expr(asgn.target, current_env);
+            const val_val = try self.eval_expr(asgn.value, current_env);
+            const key_str = if (key_val == .null_val)
+                ""
+            else
+                try utils.coerce_to_string(key_val, self.arena);
+            try map.entries.put(self.arena, key_str, val_val);
+            try map.key_values.put(self.arena, key_str, key_val);
+        }
+        // Single non-assignment arg: List<SObject> → Map<Id, SObject>.
+        if (ne.args.len == 1 and ne.args[0] != .assignment) {
+            var arg_copy = ne.args[0];
+            const arg_val = try self.eval_expr(&arg_copy, current_env);
+            if (arg_val == .list) {
+                for (arg_val.list.items.items) |item| {
+                    if (item == .sobject and item.sobject.id != null) {
+                        try map.entries.put(self.arena, item.sobject.id.?, item);
+                        try map.key_values.put(
+                            self.arena,
+                            item.sobject.id.?,
+                            Value{ .string = item.sobject.id.? },
+                        );
+                    }
+                }
+            }
+        }
+        return Value{ .map = map };
+    }
+
+    fn new_dataweave_script_expr(
+        self: *Evaluator,
+        type_name: []const u8,
+    ) !Value {
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = "DataWeave.Script" };
+        const dot_pos = std.mem.lastIndexOfScalar(u8, type_name, '.');
+        const script_name = if (dot_pos) |dp| type_name[dp + 1 ..] else type_name;
+        try instance.fields.put(self.arena, "scriptName", Value{ .string = script_name });
+        return Value{ .object = instance };
+    }
+
+    fn new_set_expr(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !Value {
+        const set = try self.arena.create(types.SetValue);
+        set.* = .{};
+        for (ne.args) |*arg| {
+            const v = try self.eval_expr(arg, current_env);
+            if (v == .list) {
+                for (v.list.items.items) |item| {
+                    const key = try self.set_entry_key(item);
+                    try set.entries.put(self.arena, key, item);
+                }
+                continue;
+            }
+            if (v == .set) {
+                for (v.set.entries.keys(), v.set.entries.values()) |k, item| {
+                    try set.entries.put(self.arena, k, item);
+                }
+                continue;
+            }
+            const key = try self.set_entry_key(v);
+            try set.entries.put(self.arena, key, v);
+        }
+        return Value{ .set = set };
+    }
+
     fn eval_new_expr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
-        // Strip "System." and "Schema." prefixes for type resolution
         const raw_type_name = ne.type_name.name;
         const is_platform_qualified = std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
             std.ascii.startsWithIgnoreCase(raw_type_name, "Schema.");
@@ -14637,137 +14770,18 @@ pub const Evaluator = struct {
         else
             raw_type_name;
 
-        // Type literal: List<T>.class, Map<K,V>.class, Type[].class → return Type object
-        if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(
-            u8,
-            type_name,
-            "[]",
-        )) and ne.args.len == 0) {
-            const type_obj = try self.arena.create(types.ObjectInstance);
-            type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-            return Value{ .object = type_obj };
-        }
-
-        // new List<T>() / new List<T>{...}
+        if (try self.try_new_type_literal(ne, type_name)) |v| return v;
         if (std.ascii.eqlIgnoreCase(type_name, "List")) {
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            if (ne.type_name.params.len > 0) {
-                const rendered = strip_type_namespace(self.render_type_ref(ne.type_name.params[0]));
-                list.element_type = rendered;
-                // Mark truly-generic explicit constructions. Real Apex returns
-                // null from `getSObjectType()` on a list that the user built
-                // with `new List<SObject>()` and populated by hand, even when
-                // every element is the same concrete SObjectType. Lists that
-                // inherit `element_type = "SObject"` later (via parameter
-                // annotation, etc.) keep `explicitly_generic = false`.
-                const rendered_base = type_base_name(rendered);
-                if (std.ascii.eqlIgnoreCase(rendered_base, "SObject") or
-                    std.ascii.eqlIgnoreCase(rendered_base, "Object"))
-                {
-                    list.explicitly_generic = true;
-                }
-            }
-            // Single arg that is a Set → convert to list
-            if (ne.args.len == 1 and !ne.is_brace_initializer) {
-                var arg_copy = ne.args[0];
-                const arg_val = try self.eval_expr(&arg_copy, current_env);
-                if (arg_val == .set) {
-                    for (arg_val.set.entries.values()) |item| {
-                        try list.items.append(self.arena, item);
-                    }
-                    return Value{ .list = list };
-                }
-                if (arg_val == .list) {
-                    // Copy list
-                    for (arg_val.list.items.items) |item| {
-                        try list.items.append(self.arena, item);
-                    }
-                    return Value{ .list = list };
-                }
-                // Single non-collection arg → add to list
-                try list.items.append(self.arena, arg_val);
-                return Value{ .list = list };
-            }
-            for (ne.args) |*arg| {
-                try list.items.append(self.arena, try self.eval_expr(arg, current_env));
-            }
-            return Value{ .list = list };
+            return try self.new_list_expr(ne, current_env);
         }
-
-        // new Map<K,V>()
         if (std.ascii.eqlIgnoreCase(type_name, "Map")) {
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            for (ne.args) |*arg| {
-                if (arg.* == .assignment) {
-                    // Map literal: key => value
-                    const asgn = arg.assignment;
-                    const key_val = try self.eval_expr(asgn.target, current_env);
-                    const val_val = try self.eval_expr(asgn.value, current_env);
-                    const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(
-                        key_val,
-                        self.arena,
-                    );
-                    try map.entries.put(self.arena, key_str, val_val);
-                    try map.key_values.put(self.arena, key_str, key_val);
-                }
-            }
-            // If single non-assignment arg is a list, construct map from SObject list
-            if (ne.args.len == 1 and ne.args[0] != .assignment) {
-                var arg_copy = ne.args[0];
-                const arg_val = try self.eval_expr(&arg_copy, current_env);
-                if (arg_val == .list) {
-                    for (arg_val.list.items.items) |item| {
-                        if (item == .sobject and item.sobject.id != null) {
-                            try map.entries.put(self.arena, item.sobject.id.?, item);
-                            try map.key_values.put(
-                                self.arena,
-                                item.sobject.id.?,
-                                Value{ .string = item.sobject.id.? },
-                            );
-                        }
-                    }
-                }
-            }
-            return Value{ .map = map };
+            return try self.new_map_expr(ne, current_env);
         }
-
-        // DataWeaveScriptResource.* → create DataWeave.Script stub
         if (std.ascii.startsWithIgnoreCase(type_name, "DataWeaveScriptResource")) {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = "DataWeave.Script" };
-            // Extract script name from the type (e.g., "DataWeaveScriptResource.helloWorld" →
-            // "helloWorld")
-            const dot_pos = std.mem.lastIndexOfScalar(u8, type_name, '.');
-            const script_name = if (dot_pos) |dp| type_name[dp + 1 ..] else type_name;
-            try instance.fields.put(self.arena, "scriptName", Value{ .string = script_name });
-            return Value{ .object = instance };
+            return try self.new_dataweave_script_expr(type_name);
         }
-
-        // new Set<T>() or new Set<T>(collection)
         if (std.ascii.eqlIgnoreCase(type_name, "Set")) {
-            const set = try self.arena.create(types.SetValue);
-            set.* = .{};
-            for (ne.args) |*arg| {
-                const v = try self.eval_expr(arg, current_env);
-                // If argument is a list or set, add each element individually
-                if (v == .list) {
-                    for (v.list.items.items) |item| {
-                        const key = try self.set_entry_key(item);
-                        try set.entries.put(self.arena, key, item);
-                    }
-                } else if (v == .set) {
-                    for (v.set.entries.keys(), v.set.entries.values()) |k, item| {
-                        try set.entries.put(self.arena, k, item);
-                    }
-                } else {
-                    const key = try self.set_entry_key(v);
-                    try set.entries.put(self.arena, key, v);
-                }
-            }
-            return Value{ .set = set };
+            return try self.new_set_expr(ne, current_env);
         }
 
         const builtin_exception_types = [_][]const u8{
