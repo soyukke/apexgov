@@ -222,228 +222,327 @@ fn match_at(
 ) ?usize {
     if (depth > 200) return null;
     const pp = pat_pos;
-    var ip = input_pos;
+    const ip = input_pos;
+    if (pp >= pat.len) return ip;
+    // ^ アンカー — 入力の先頭にのみマッチ
+    if (pat[pp] == '^') {
+        if (ip != 0) return null;
+        return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
+    }
+    // $ アンカー — 入力の末尾にのみマッチ
+    if (pat[pp] == '$') {
+        if (ip != input.len) return null;
+        return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
+    }
+    // グループ (キャプチャ、非キャプチャ、lookahead)
+    if (pat[pp] == '(') {
+        return match_at_group(pat, pp, input, ip, groups, depth, group_base);
+    }
+    // Backreference: \1..\9 — match the same text as captured by group N
+    if (pat[pp] == '\\' and pp + 1 < pat.len and pat[pp + 1] >= '1' and pat[pp + 1] <= '9') {
+        return match_at_backreference(pat, pp, input, ip, groups, depth, group_base);
+    }
+    // 単一アトム＋量詞
+    return match_at_single_atom(pat, pp, input, ip, groups, depth, group_base);
+}
 
-    while (pp < pat.len) {
-        // ^ アンカー — 入力の先頭にのみマッチ
-        if (pat[pp] == '^') {
-            if (ip != 0) return null;
-            return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
-        }
-        // $ アンカー — 入力の末尾にのみマッチ
-        if (pat[pp] == '$') {
-            if (ip != input.len) return null;
-            return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
-        }
-        // グループ (キャプチャ、非キャプチャ、lookahead)
-        if (pat[pp] == '(') {
-            const group_end = find_group_end(pat, pp) orelse return null;
-            const inner = pat[pp + 1 .. group_end];
-            const after = pat[group_end + 1 ..];
+fn match_at_group(
+    pat: []const u8,
+    pp: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    const group_end = find_group_end(pat, pp) orelse return null;
+    const inner = pat[pp + 1 .. group_end];
+    const after = pat[group_end + 1 ..];
 
-            // Lookahead: (?=...) positive, (?!...) negative — zero-width assertion
-            if (inner.len >= 2 and inner[0] == '?' and (inner[1] == '=' or inner[1] == '!')) {
-                const is_positive = inner[1] == '=';
-                const la_pat = inner[2..];
-                const la_alts = split_alternatives(la_pat);
-                var la_matched = false;
-                for (la_alts) |alt| {
-                    if (alt) |a| {
-                        if (match_at(a, 0, input, ip, groups, depth + 1, group_base) != null) {
-                            la_matched = true;
-                            break;
-                        }
-                    } else break;
-                }
-                if (is_positive != la_matched) return null;
-                // Zero-width: don't consume input, continue with rest
-                const rest_start = group_end + 1;
-                if (rest_start >= pat.len) return ip;
-                return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
+    // Lookahead: (?=...) positive, (?!...) negative — zero-width assertion
+    if (inner.len >= 2 and inner[0] == '?' and (inner[1] == '=' or inner[1] == '!')) {
+        return match_at_lookahead(pat, inner, group_end, input, ip, groups, depth, group_base);
+    }
+    // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
+    if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and
+        (inner[2] == '=' or inner[2] == '!'))
+    {
+        return match_at_lookbehind(pat, inner, group_end, input, ip, groups, depth, group_base);
+    }
+    // Non-capturing group: (?:...)
+    const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
+    const group_inner = if (is_non_capturing) inner[2..] else inner;
+    const quant = parse_quantifier(after);
+    const grp_idx = match_at_group_index(pat, pp, group_base, is_non_capturing);
+    // When recursing into an alternative inside this group, pass `grp_idx`
+    // (or `group_base` for non-capturing groups) so inner `(`s number correctly.
+    const inner_base: u8 = if (is_non_capturing) group_base else grp_idx;
+    const alternatives = split_alternatives(group_inner);
+    const rest_start = group_end + 1 + quant.len;
+    if (quant.min == 1 and quant.max == 1) {
+        return match_at_group_single(
+            pat,
+            alternatives,
+            rest_start,
+            input,
+            ip,
+            groups,
+            grp_idx,
+            depth,
+            group_base,
+            inner_base,
+        );
+    }
+    return match_quantified_group(
+        pat,
+        pp,
+        group_end,
+        rest_start,
+        quant,
+        input,
+        ip,
+        groups,
+        grp_idx,
+        depth,
+        group_base,
+        inner_base,
+    );
+}
+
+fn match_at_lookahead(
+    pat: []const u8,
+    inner: []const u8,
+    group_end: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    const is_positive = inner[1] == '=';
+    const la_pat = inner[2..];
+    const la_alts = split_alternatives(la_pat);
+    var la_matched = false;
+    for (la_alts) |alt| {
+        if (alt) |a| {
+            if (match_at(a, 0, input, ip, groups, depth + 1, group_base) != null) {
+                la_matched = true;
+                break;
             }
+        } else break;
+    }
+    if (is_positive != la_matched) return null;
+    // Zero-width: don't consume input, continue with rest
+    const rest_start = group_end + 1;
+    if (rest_start >= pat.len) return ip;
+    return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
+}
 
-            // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
-            // Bounded by the pattern's maximum possible match length (kept small for perf;
-            // matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
-            if (inner.len >= 3 and
-                inner[0] == '?' and
-                inner[1] == '<' and
-                (inner[2] == '=' or inner[2] == '!'))
+/// Bounded by the pattern's maximum possible match length (kept small for perf;
+/// matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
+fn match_at_lookbehind(
+    pat: []const u8,
+    inner: []const u8,
+    group_end: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    const is_positive = inner[2] == '=';
+    const lb_pat = inner[3..];
+    const max_lb = lookbehind_max_len(lb_pat);
+    var lb_matched = false;
+    var L: usize = 0;
+    const limit = @min(ip, max_lb);
+    while (L <= limit) : (L += 1) {
+        if (match_at(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1, group_base)) |end_pos| {
+            if (end_pos == L) {
+                lb_matched = true;
+                break;
+            }
+        }
+    }
+    if (is_positive != lb_matched) return null;
+    const rest_start = group_end + 1;
+    if (rest_start >= pat.len) return ip;
+    return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
+}
+
+fn match_at_group_index(
+    pat: []const u8,
+    pp: usize,
+    group_base: u8,
+    is_non_capturing: bool,
+) u8 {
+    if (is_non_capturing) return 0;
+    var idx: u8 = group_base + 1;
+    var gi: usize = 0;
+    while (gi < pp) : (gi += 1) {
+        if (pat[gi] == '\\') {
+            gi += 1;
+            continue;
+        }
+        if (pat[gi] == '(') {
+            // Skip non-capturing groups (?...) and lookahead/lookbehind for index counting
+            if (gi + 2 < pat.len and pat[gi + 1] == '?' and
+                (pat[gi + 2] == '=' or pat[gi + 2] == '!' or
+                    pat[gi + 2] == ':' or pat[gi + 2] == '<'))
             {
-                const is_positive = inner[2] == '=';
-                const lb_pat = inner[3..];
-                const max_lb = lookbehind_max_len(lb_pat);
-                var lb_matched = false;
-                var L: usize = 0;
-                const limit = @min(ip, max_lb);
-                while (L <= limit) : (L += 1) {
-                    if (match_at(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1, group_base)) |end_pos| {
-                        if (end_pos == L) {
-                            lb_matched = true;
-                            break;
-                        }
-                    }
-                }
-                if (is_positive != lb_matched) return null;
-                const rest_start = group_end + 1;
-                if (rest_start >= pat.len) return ip;
-                return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
+                continue;
             }
+            idx += 1;
+        }
+    }
+    return if (idx > max_groups - 1) max_groups - 1 else idx;
+}
 
-            // Non-capturing group: (?:...)
-            const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
-            const group_inner = if (is_non_capturing) inner[2..] else inner;
-
-            const quant = parse_quantifier(after);
-            const grp_idx: u8 = if (is_non_capturing) 0 else blk: {
-                var idx: u8 = group_base + 1;
-                var gi: usize = 0;
-                while (gi < pp) : (gi += 1) {
-                    if (pat[gi] == '\\') {
-                        gi += 1;
-                        continue;
-                    }
-                    if (pat[gi] == '(') {
-                        // Skip non-capturing groups (?...) and lookahead/lookbehind for index
-                        // counting
-                        if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':' or pat[gi + 2] == '<')) continue;
-                        idx += 1;
-                    }
-                }
-                break :blk if (idx > max_groups - 1) max_groups - 1 else idx;
-            };
-            // When recursing into an alternative inside this group, pass `grp_idx`
-            // (or `group_base` for non-capturing groups) so inner `(`s number correctly.
-            const inner_base: u8 = if (is_non_capturing) group_base else grp_idx;
-            const alternatives = split_alternatives(group_inner);
-            const rest_start = group_end + 1 + quant.len;
-
-            if (quant.min == 1 and quant.max == 1) {
-                for (alternatives) |alt| {
-                    if (alt) |a| {
-                        if (match_at(a, 0, input, ip, groups, depth + 1, inner_base)) |initial_alt_end| {
-                            // The inner match may have greedily consumed characters that the
-                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
-                            // fails, try shorter inner matches down to the minimum valid length.
-                            // Fast path: when the alternative is a single greedy atom (`.*`,
-                            // `\w+`, `[abc]*`, etc.), any shorter length is valid by
-                            // construction, so we skip re-verifying via `match_at` and just
-                            // iterate one char at a time — O(n) instead of O(n²).
-                            const greedy = greedy_atom_bounds(a);
-                            var alt_end: usize = initial_alt_end;
-                            while (true) {
-                                if (grp_idx > 0)
-                                    groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
-                                if (rest_start >= pat.len) return alt_end;
-                                if (match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
-                                    return final_end;
-                                }
-                                if (grp_idx > 0) groups.*[grp_idx] = null;
-                                if (alt_end <= ip) break;
-                                if (greedy) |g| {
-                                    // Fast path: decrement until we'd violate the atom's lower
-                                    // bound (`ip + min_reps`); no `match_at` needed.
-                                    const min_end = ip + g.min;
-                                    if (alt_end <= min_end) break;
-                                    alt_end -= 1;
-                                } else {
-                                    // General path: verify shrunken input still matches.
-                                    var next_end: usize = alt_end - 1;
-                                    const sub_input = input[0..next_end];
-                                    const sub_match = match_at(
-                                        a,
-                                        0,
-                                        sub_input,
-                                        ip,
-                                        groups,
-                                        depth + 1,
-                                        inner_base,
-                                    );
-                                    if (sub_match) |e| {
-                                        next_end = e;
-                                    } else {
-                                        break;
-                                    }
-                                    if (next_end == alt_end) {
-                                        if (next_end == 0) break;
-                                        next_end -= 1;
-                                    }
-                                    alt_end = next_end;
-                                }
-                            }
-                        }
-                    } else break;
-                }
-                return null;
+fn match_at_group_single(
+    pat: []const u8,
+    alternatives: [8]?[]const u8,
+    rest_start: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    grp_idx: u8,
+    depth: u32,
+    group_base: u8,
+    inner_base: u8,
+) ?usize {
+    for (alternatives) |alt| {
+        const a = alt orelse break;
+        const initial_alt_end =
+            match_at(a, 0, input, ip, groups, depth + 1, inner_base) orelse continue;
+        // The inner match may have greedily consumed characters that the
+        // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
+        // fails, try shorter inner matches down to the minimum valid length.
+        // Fast path: when the alternative is a single greedy atom (`.*`, `\w+`,
+        // `[abc]*`, etc.), any shorter length is valid by construction, so we
+        // skip re-verifying via `match_at` and just iterate one char at a time
+        // — O(n) instead of O(n²).
+        const greedy = greedy_atom_bounds(a);
+        var alt_end: usize = initial_alt_end;
+        while (true) {
+            if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+            if (rest_start >= pat.len) return alt_end;
+            if (match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
+                return final_end;
             }
-            return match_quantified_group(
-                pat,
-                pp,
-                group_end,
-                rest_start,
-                quant,
-                input,
-                ip,
-                groups,
-                grp_idx,
-                depth,
-                group_base,
-                inner_base,
-            );
-        }
-
-        // Backreference: \1..\9 — match the same text as captured by group N
-        if (pat[pp] == '\\' and pp + 1 < pat.len and pat[pp + 1] >= '1' and pat[pp + 1] <= '9') {
-            const ref_idx: u8 = pat[pp + 1] - '0';
-            const ref_span = groups.*[ref_idx] orelse return null;
-            const ref_text = input[ref_span.start..ref_span.end];
-            if (ip + ref_text.len > input.len) return null;
-            if (!std.mem.eql(u8, input[ip .. ip + ref_text.len], ref_text)) return null;
-            const rest_start = pp + 2;
-            const new_ip = ip + ref_text.len;
-            if (rest_start >= pat.len) return new_ip;
-            return match_at(pat, rest_start, input, new_ip, groups, depth + 1, group_base);
-        }
-
-        // 単一アトム＋量詞
-        const atom_len = atom_length(pat, pp);
-        if (atom_len == 0) return null;
-        const after_atom = pat[pp + atom_len ..];
-        const quant = parse_quantifier(after_atom);
-        const rest_start = pp + atom_len + quant.len;
-
-        // Quantified atom match
-        var count: usize = 0;
-        var positions: [1001]usize = undefined;
-        positions[0] = ip;
-        while (count < quant.max and ip <= input.len) {
-            if (!atom_matches(pat, pp, input, ip)) break;
-            ip += 1;
-            count += 1;
-            if (count < positions.len) positions[count] = ip;
-        }
-        if (quant.greedy) {
-            var try_count = count;
-            while (true) {
-                if (try_count >= quant.min) {
-                    const try_ip = positions[@min(try_count, positions.len - 1)];
-                    if (rest_start >= pat.len) return try_ip;
-                    if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
-                }
-                if (try_count == 0) break;
-                try_count -= 1;
+            if (grp_idx > 0) groups.*[grp_idx] = null;
+            if (alt_end <= ip) break;
+            if (greedy) |g| {
+                // Fast path: decrement until we'd violate the atom's lower
+                // bound (`ip + min_reps`); no `match_at` needed.
+                const min_end = ip + g.min;
+                if (alt_end <= min_end) break;
+                alt_end -= 1;
+            } else {
+                alt_end = match_at_group_single_shrink(
+                    a,
+                    alt_end,
+                    input,
+                    ip,
+                    groups,
+                    depth,
+                    inner_base,
+                ) orelse break;
             }
-        } else {
-            var try_count = quant.min;
-            while (try_count <= count) : (try_count += 1) {
+        }
+    }
+    return null;
+}
+
+/// General path: verify that a shrunken input still matches the alternative.
+/// Returns the new alt_end to retry, or null when no further shrinking is valid.
+fn match_at_group_single_shrink(
+    a: []const u8,
+    alt_end: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    inner_base: u8,
+) ?usize {
+    var next_end: usize = alt_end - 1;
+    const sub_input = input[0..next_end];
+    if (match_at(a, 0, sub_input, ip, groups, depth + 1, inner_base)) |e| {
+        next_end = e;
+    } else return null;
+    if (next_end == alt_end) {
+        if (next_end == 0) return null;
+        next_end -= 1;
+    }
+    return next_end;
+}
+
+fn match_at_backreference(
+    pat: []const u8,
+    pp: usize,
+    input: []const u8,
+    ip: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    const ref_idx: u8 = pat[pp + 1] - '0';
+    const ref_span = groups.*[ref_idx] orelse return null;
+    const ref_text = input[ref_span.start..ref_span.end];
+    if (ip + ref_text.len > input.len) return null;
+    if (!std.mem.eql(u8, input[ip .. ip + ref_text.len], ref_text)) return null;
+    const rest_start = pp + 2;
+    const new_ip = ip + ref_text.len;
+    if (rest_start >= pat.len) return new_ip;
+    return match_at(pat, rest_start, input, new_ip, groups, depth + 1, group_base);
+}
+
+fn match_at_single_atom(
+    pat: []const u8,
+    pp: usize,
+    input: []const u8,
+    input_pos: usize,
+    groups: *[max_groups]?Span,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    const atom_len = atom_length(pat, pp);
+    if (atom_len == 0) return null;
+    const after_atom = pat[pp + atom_len ..];
+    const quant = parse_quantifier(after_atom);
+    const rest_start = pp + atom_len + quant.len;
+
+    var ip = input_pos;
+    var count: usize = 0;
+    var positions: [1001]usize = undefined;
+    positions[0] = ip;
+    while (count < quant.max and ip <= input.len) {
+        if (!atom_matches(pat, pp, input, ip)) break;
+        ip += 1;
+        count += 1;
+        if (count < positions.len) positions[count] = ip;
+    }
+    if (quant.greedy) {
+        var try_count = count;
+        while (true) {
+            if (try_count >= quant.min) {
                 const try_ip = positions[@min(try_count, positions.len - 1)];
                 if (rest_start >= pat.len) return try_ip;
-                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
+                    return end;
             }
+            if (try_count == 0) break;
+            try_count -= 1;
         }
-        return null;
+    } else {
+        var try_count = quant.min;
+        while (try_count <= count) : (try_count += 1) {
+            const try_ip = positions[@min(try_count, positions.len - 1)];
+            if (rest_start >= pat.len) return try_ip;
+            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
+                return end;
+        }
     }
-    return ip;
+    return null;
 }
 
 // ---------------------------------------------------------------------------
