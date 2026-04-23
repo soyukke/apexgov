@@ -83,7 +83,10 @@ pub const Server = struct {
         };
 
         const id = extractId(obj);
+        return try self.dispatch_method(method, id, obj);
+    }
 
+    fn dispatch_method(self: *Server, method: []const u8, id: types.RequestId, obj: JsonObjectMap) !bool {
         if (std.mem.eql(u8, method, "initialize")) {
             try self.handleInitialize(id, obj);
         } else if (std.mem.eql(u8, method, "initialized")) {
@@ -666,57 +669,13 @@ pub const Server = struct {
         };
 
         // 失敗時は buf から [FAIL] 行を抽出して詳細メッセージを構築
-        var failure_detail: []const u8 = "";
-        if (suite.passed < suite.total) {
-            // buf から [FAIL] 行を探す
-            var lines = std.mem.splitScalar(u8, test_allocating.written(), '\n');
-            while (lines.next()) |line| {
-                if (std.mem.startsWith(u8, line, "[FAIL] ")) {
-                    // "[FAIL] Class#method: message" → "message" 部分を抽出
-                    if (std.mem.indexOf(u8, line[7..], ": ")) |colon_pos| {
-                        failure_detail = line[7 + colon_pos + 2 ..];
-                    } else {
-                        failure_detail = line[7..];
-                    }
-                    break;
-                }
-                if (std.mem.startsWith(u8, line, "[ERROR] ")) {
-                    if (std.mem.indexOf(u8, line[8..], ": ")) |colon_pos| {
-                        failure_detail = line[8 + colon_pos + 2 ..];
-                    } else {
-                        failure_detail = line[8..];
-                    }
-                    break;
-                }
-            }
-        }
+        const failure_detail = if (suite.passed < suite.total)
+            extract_test_failure_detail(test_allocating.written())
+        else
+            "";
 
         // 結果メッセージを構築
-        const msg = if (method_name) |mn| blk: {
-            if (suite.passed < suite.total and failure_detail.len > 0) {
-                break :blk try std.fmt.allocPrint(self.allocator, "{s}#{s}: FAIL ({d}/{d} passed)\n{s}", .{
-                    class_name, mn, suite.passed, suite.total, failure_detail,
-                });
-            }
-            break :blk try std.fmt.allocPrint(self.allocator, "{s}#{s}: {s} ({d}/{d} passed)", .{
-                class_name,
-                mn,
-                if (suite.passed == suite.total) "PASS" else "FAIL",
-                suite.passed,
-                suite.total,
-            });
-        } else blk: {
-            if (suite.passed < suite.total and failure_detail.len > 0) {
-                break :blk try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed\n{s}", .{
-                    class_name, suite.passed, suite.total, failure_detail,
-                });
-            }
-            break :blk try std.fmt.allocPrint(self.allocator, "{s}: {d}/{d} passed", .{
-                class_name,
-                suite.passed,
-                suite.total,
-            });
-        };
+        const msg = try format_test_result_message(self.allocator, class_name, method_name, suite.passed, suite.total, failure_detail);
         defer self.allocator.free(msg);
 
         try self.transport.sendNotification(self.allocator, "window/showMessage", types.ShowMessageParams{
@@ -725,6 +684,51 @@ pub const Server = struct {
         });
     }
 };
+
+fn extract_test_failure_detail(output: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "[FAIL] ")) {
+            if (std.mem.indexOf(u8, line[7..], ": ")) |colon_pos| {
+                return line[7 + colon_pos + 2 ..];
+            }
+            return line[7..];
+        }
+        if (std.mem.startsWith(u8, line, "[ERROR] ")) {
+            if (std.mem.indexOf(u8, line[8..], ": ")) |colon_pos| {
+                return line[8 + colon_pos + 2 ..];
+            }
+            return line[8..];
+        }
+    }
+    return "";
+}
+
+fn format_test_result_message(
+    gpa: std.mem.Allocator,
+    class_name: []const u8,
+    method_name: ?[]const u8,
+    passed: u32,
+    total: u32,
+    failure_detail: []const u8,
+) ![]u8 {
+    if (method_name) |mn| {
+        if (passed < total and failure_detail.len > 0) {
+            return std.fmt.allocPrint(gpa, "{s}#{s}: FAIL ({d}/{d} passed)\n{s}", .{ class_name, mn, passed, total, failure_detail });
+        }
+        return std.fmt.allocPrint(gpa, "{s}#{s}: {s} ({d}/{d} passed)", .{
+            class_name,
+            mn,
+            if (passed == total) "PASS" else "FAIL",
+            passed,
+            total,
+        });
+    }
+    if (passed < total and failure_detail.len > 0) {
+        return std.fmt.allocPrint(gpa, "{s}: {d}/{d} passed\n{s}", .{ class_name, passed, total, failure_detail });
+    }
+    return std.fmt.allocPrint(gpa, "{s}: {d}/{d} passed", .{ class_name, passed, total });
+}
 
 // ---------------------------------------------------------------------------
 // JSON ヘルパー

@@ -21,21 +21,42 @@ pub fn collectSymbols(decls: []const ast.Decl, source: []const u8, allocator: st
     return result.toOwnedSlice(allocator);
 }
 
+fn collect_class_decl(cd: anytype, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) anyerror!void {
+    var children: std.ArrayList(DocumentSymbol) = .empty;
+    for (cd.members) |member| {
+        try collectDecl(member, source, allocator, &children);
+    }
+    try out.append(allocator, .{
+        .name = cd.name,
+        .kind = .class,
+        .range = position_mod.locToRange(cd.loc, source),
+        .selectionRange = position_mod.locToRange(cd.loc, source),
+        .children = try children.toOwnedSlice(allocator),
+    });
+}
+
+fn collect_enum_decl(ed: anytype, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) !void {
+    var children: std.ArrayList(DocumentSymbol) = .empty;
+    for (ed.values) |v| {
+        try children.append(allocator, .{
+            .name = v,
+            .kind = .enum_member,
+            .range = .{},
+            .selectionRange = .{},
+        });
+    }
+    try out.append(allocator, .{
+        .name = ed.name,
+        .kind = .@"enum",
+        .range = position_mod.locToRange(ed.loc, source),
+        .selectionRange = position_mod.locToRange(ed.loc, source),
+        .children = try children.toOwnedSlice(allocator),
+    });
+}
+
 fn collectDecl(decl: ast.Decl, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) !void {
     switch (decl) {
-        .class_decl => |cd| {
-            var children: std.ArrayList(DocumentSymbol) = .empty;
-            for (cd.members) |member| {
-                try collectDecl(member, source, allocator, &children);
-            }
-            try out.append(allocator, .{
-                .name = cd.name,
-                .kind = .class,
-                .range = position_mod.locToRange(cd.loc, source),
-                .selectionRange = position_mod.locToRange(cd.loc, source),
-                .children = try children.toOwnedSlice(allocator),
-            });
-        },
+        .class_decl => |cd| try collect_class_decl(cd, source, allocator, out),
         .interface_decl => |id| {
             try out.append(allocator, .{
                 .name = id.name,
@@ -44,24 +65,7 @@ fn collectDecl(decl: ast.Decl, source: []const u8, allocator: std.mem.Allocator,
                 .selectionRange = position_mod.locToRange(id.loc, source),
             });
         },
-        .enum_decl => |ed| {
-            var children: std.ArrayList(DocumentSymbol) = .empty;
-            for (ed.values) |v| {
-                try children.append(allocator, .{
-                    .name = v,
-                    .kind = .enum_member,
-                    .range = .{},
-                    .selectionRange = .{},
-                });
-            }
-            try out.append(allocator, .{
-                .name = ed.name,
-                .kind = .@"enum",
-                .range = position_mod.locToRange(ed.loc, source),
-                .selectionRange = position_mod.locToRange(ed.loc, source),
-                .children = try children.toOwnedSlice(allocator),
-            });
-        },
+        .enum_decl => |ed| try collect_enum_decl(ed, source, allocator, out),
         .method_decl => |md| {
             try out.append(allocator, .{
                 .name = md.name,

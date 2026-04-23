@@ -304,6 +304,35 @@ const Binder = struct {
     // Stmt 走査
     // -----------------------------------------------------------------------
 
+    fn bind_for_stmt(self: *Binder, fs: anytype) anyerror!void {
+        _ = try self.pushScope();
+        if (fs.init) |init_stmt| {
+            switch (init_stmt.*) {
+                .block => |init_stmts| {
+                    for (init_stmts) |init_item| try self.bindStmt(init_item);
+                },
+                else => try self.bindStmt(init_stmt.*),
+            }
+        }
+        if (fs.condition) |cond| try self.bindExpr(cond.*);
+        if (fs.update) |upd| try self.bindExpr(upd.*);
+        for (fs.body) |s| try self.bindStmt(s);
+        self.popScope();
+    }
+
+    fn bind_try_stmt(self: *Binder, ts: anytype) anyerror!void {
+        for (ts.body) |s| try self.bindStmt(s);
+        for (ts.catches) |cc| {
+            _ = try self.pushScope();
+            _ = try self.addSymbol(cc.name, .catch_variable, typeRefToString(cc.exception_type), SourceLoc.zero, null);
+            for (cc.body) |s| try self.bindStmt(s);
+            self.popScope();
+        }
+        if (ts.finally_body) |fb| {
+            for (fb) |s| try self.bindStmt(s);
+        }
+    }
+
     fn bindStmt(self: *Binder, stmt: ast.Stmt) !void {
         switch (stmt) {
             .var_decl => |vd| {
@@ -324,21 +353,7 @@ const Binder = struct {
                     for (eb) |s| try self.bindStmt(s);
                 }
             },
-            .for_stmt => |fs| {
-                _ = try self.pushScope();
-                if (fs.init) |init_stmt| {
-                    switch (init_stmt.*) {
-                        .block => |init_stmts| {
-                            for (init_stmts) |init_item| try self.bindStmt(init_item);
-                        },
-                        else => try self.bindStmt(init_stmt.*),
-                    }
-                }
-                if (fs.condition) |cond| try self.bindExpr(cond.*);
-                if (fs.update) |upd| try self.bindExpr(upd.*);
-                for (fs.body) |s| try self.bindStmt(s);
-                self.popScope();
-            },
+            .for_stmt => |fs| try self.bind_for_stmt(fs),
             .for_each_stmt => |fes| {
                 _ = try self.pushScope();
                 _ = try self.addSymbol(fes.elem_name, .for_each_variable, typeRefToString(fes.elem_type), fes.loc, null);
@@ -366,18 +381,7 @@ const Binder = struct {
                     for (wc.body) |s| try self.bindStmt(s);
                 }
             },
-            .try_stmt => |ts| {
-                for (ts.body) |s| try self.bindStmt(s);
-                for (ts.catches) |cc| {
-                    _ = try self.pushScope();
-                    _ = try self.addSymbol(cc.name, .catch_variable, typeRefToString(cc.exception_type), SourceLoc.zero, null);
-                    for (cc.body) |s| try self.bindStmt(s);
-                    self.popScope();
-                }
-                if (ts.finally_body) |fb| {
-                    for (fb) |s| try self.bindStmt(s);
-                }
-            },
+            .try_stmt => |ts| try self.bind_try_stmt(ts),
             .expr_stmt => |expr| {
                 try self.bindExpr(expr.*);
             },

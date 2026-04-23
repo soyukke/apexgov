@@ -21,9 +21,17 @@ style_checker := env("ZIG_STYLE_CHECKER", "tools/check_style.zig")
 # - src/interpret/ と src/apex_parser/ は Apex ランタイム/パーサ実装で
 #   Apex 言語仕様の識別子 (camelCase) をミラーするため、
 #   function_not_snake_case だけ除外する。
+# - 同パス配下は Apex 言語の巨大 dispatcher (evalExpr, dispatch*, parsePrimary …)
+#   を持ち、70 行に収めるには本質的な再設計が必要なので function_too_long も除外。
+# - src/check/scanner.zig と src/check/call_graph.zig も Apex ソースを 1 パスで走査する
+#   state machine / call-resolver のため同様に除外。
 style_checker_args := "--root src " + \
     "--disable-path src/interpret/:function_not_snake_case " + \
-    "--disable-path src/apex_parser/:function_not_snake_case"
+    "--disable-path src/apex_parser/:function_not_snake_case " + \
+    "--disable-path src/interpret/:function_too_long " + \
+    "--disable-path src/apex_parser/:function_too_long " + \
+    "--disable-path src/check/scanner.zig:function_too_long " + \
+    "--disable-path src/check/call_graph.zig:function_too_long"
 
 # zig fmt でフォーマット崩れを検出 (書き換えはしない)
 fmt-check:

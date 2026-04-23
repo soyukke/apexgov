@@ -98,6 +98,61 @@ pub fn estimateCpuTotalMs(base_cost_ms: u64, n: u64, per_iter_ms: u64) ?u64 {
     return std.math.add(u64, base_cost_ms, mul) catch return null;
 }
 
+const GovernorMeta = struct {
+    rule_id: []const u8,
+    title: []const u8,
+    op_label: []const u8,
+    category: []const u8,
+    limit: u64,
+};
+
+fn meta_for(kind: GovernorKind) GovernorMeta {
+    return switch (kind) {
+        .soql => .{ .rule_id = "AG002", .title = "SOQL executed inside loop", .op_label = "SOQL", .category = "governor", .limit = soql_limit },
+        .dml => .{ .rule_id = "AG003", .title = "DML executed inside loop", .op_label = "DML", .category = "governor", .limit = dml_limit },
+        .sosl => .{ .rule_id = "AG008", .title = "SOSL executed inside loop", .op_label = "SOSL", .category = "governor", .limit = sosl_limit },
+        .callout => .{ .rule_id = "AG010", .title = "Callout executed inside loop", .op_label = "Callout", .category = "integration", .limit = callout_limit },
+        .messaging => .{ .rule_id = "AG011", .title = "Messaging.sendEmail executed inside loop", .op_label = "Messaging send", .category = "messaging", .limit = messaging_send_limit },
+    };
+}
+
+fn format_governor_message(
+    buffer: []u8,
+    meta: GovernorMeta,
+    loop_upper_bound: ?u64,
+    per_iter: u64,
+    severity: *model.Severity,
+) ![]u8 {
+    if (loop_upper_bound) |upper| {
+        const estimated_total = satMul(upper, per_iter);
+        if (estimated_total > meta.limit) {
+            severity.* = .err;
+            return try std.fmt.bufPrint(
+                buffer,
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration) and exceed the transaction limit ({d}).",
+                .{ upper, meta.op_label, estimated_total, per_iter, meta.limit },
+            );
+        }
+        if (per_iter > 1) {
+            return try std.fmt.bufPrint(
+                buffer,
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration), below transaction limit ({d}) for now but fragile under growth.",
+                .{ upper, meta.op_label, estimated_total, per_iter, meta.limit },
+            );
+        }
+        return try std.fmt.bufPrint(
+            buffer,
+            "Loop upper bound <= {d}. {s} in loop is below the transaction limit ({d}) now, but remains fragile under future growth.",
+            .{ upper, meta.op_label, meta.limit },
+        );
+    }
+    return try std.fmt.bufPrint(
+        buffer,
+        "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe (estimated {d} per iteration). Add explicit cap checks (for example if (n > {d}) return).",
+        .{ meta.op_label, per_iter, meta.limit },
+    );
+}
+
 pub fn appendGovernorFinding(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
@@ -107,84 +162,22 @@ pub fn appendGovernorFinding(
     loop_upper_bound: ?u64,
     operations_per_iteration: u64,
 ) !void {
-    const rule_id = switch (kind) {
-        .soql => "AG002",
-        .dml => "AG003",
-        .sosl => "AG008",
-        .callout => "AG010",
-        .messaging => "AG011",
-    };
-    const title = switch (kind) {
-        .soql => "SOQL executed inside loop",
-        .dml => "DML executed inside loop",
-        .sosl => "SOSL executed inside loop",
-        .callout => "Callout executed inside loop",
-        .messaging => "Messaging.sendEmail executed inside loop",
-    };
-    const limit = switch (kind) {
-        .soql => soql_limit,
-        .dml => dml_limit,
-        .sosl => sosl_limit,
-        .callout => callout_limit,
-        .messaging => messaging_send_limit,
-    };
-    const op_label = switch (kind) {
-        .soql => "SOQL",
-        .dml => "DML",
-        .sosl => "SOSL",
-        .callout => "Callout",
-        .messaging => "Messaging send",
-    };
-    const category = switch (kind) {
-        .callout => "integration",
-        .messaging => "messaging",
-        else => "governor",
-    };
-
+    const meta = meta_for(kind);
     const per_iter = if (operations_per_iteration == 0) @as(u64, 1) else operations_per_iteration;
     var message_buffer: [520]u8 = undefined;
     var severity: model.Severity = .warning;
-
-    const message = if (loop_upper_bound) |upper| blk: {
-        const estimated_total = satMul(upper, per_iter);
-        if (estimated_total > limit) {
-            severity = .err;
-            break :blk try std.fmt.bufPrint(
-                &message_buffer,
-                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration) and exceed the transaction limit ({d}).",
-                .{ upper, op_label, estimated_total, per_iter, limit },
-            );
-        }
-        if (per_iter > 1) {
-            break :blk try std.fmt.bufPrint(
-                &message_buffer,
-                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration), below transaction limit ({d}) for now but fragile under growth.",
-                .{ upper, op_label, estimated_total, per_iter, limit },
-            );
-        }
-        break :blk try std.fmt.bufPrint(
-            &message_buffer,
-            "Loop upper bound <= {d}. {s} in loop is below the transaction limit ({d}) now, but remains fragile under future growth.",
-            .{ upper, op_label, limit },
-        );
-    } else blk: {
-        break :blk try std.fmt.bufPrint(
-            &message_buffer,
-            "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe (estimated {d} per iteration). Add explicit cap checks (for example if (n > {d}) return).",
-            .{ op_label, per_iter, limit },
-        );
-    };
+    const message = try format_governor_message(&message_buffer, meta, loop_upper_bound, per_iter, &severity);
 
     try appendFinding(
         gpa,
         findings,
         path,
         line_no,
-        rule_id,
-        title,
+        meta.rule_id,
+        meta.title,
         message,
         severity,
-        category,
+        meta.category,
     );
 }
 

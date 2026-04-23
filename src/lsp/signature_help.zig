@@ -4,37 +4,39 @@ const std = @import("std");
 const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
 
-pub fn getSignatureHelp(
-    result: *const binder_mod.BindResult,
-    source: []const u8,
-    offset: u32,
-    allocator: std.mem.Allocator,
-) !?lsp_types.SignatureHelp {
-    // offset から逆方向に '(' を探す
+const OpenParen = struct {
+    method_end: u32,
+    comma_count: u32,
+};
+
+fn find_enclosing_open_paren(source: []const u8, offset: u32) ?OpenParen {
     var paren_depth: i32 = 0;
     var comma_count: u32 = 0;
     var i: u32 = offset;
-    var found_open: bool = false;
-    var method_end: u32 = 0;
-
     while (i > 0) {
         i -= 1;
         const ch = source[i];
         if (ch == ')') {
             paren_depth += 1;
         } else if (ch == '(') {
-            if (paren_depth == 0) {
-                found_open = true;
-                method_end = i;
-                break;
-            }
+            if (paren_depth == 0) return .{ .method_end = i, .comma_count = comma_count };
             paren_depth -= 1;
         } else if (ch == ',' and paren_depth == 0) {
             comma_count += 1;
         }
     }
+    return null;
+}
 
-    if (!found_open) return null;
+pub fn getSignatureHelp(
+    result: *const binder_mod.BindResult,
+    source: []const u8,
+    offset: u32,
+    allocator: std.mem.Allocator,
+) !?lsp_types.SignatureHelp {
+    const open = find_enclosing_open_paren(source, offset) orelse return null;
+    const method_end = open.method_end;
+    const comma_count = open.comma_count;
 
     // '(' の直前のシンボルを探す
     var name_end = method_end;
