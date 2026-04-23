@@ -327,6 +327,189 @@ fn check_method_scope_end(
 // メイン解析エントリポイント
 // ---------------------------------------------------------------------------
 
+/// scan_content の実行状態を束ねる構造体。
+const ScanState = struct {
+    gpa: std.mem.Allocator,
+    arena_allocator: std.mem.Allocator,
+    path: []const u8,
+    cfg: config.Config,
+    method_summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const types.MethodNameIndex,
+    type_relations: *const TypeRelations,
+    findings: *std.ArrayList(model.Finding),
+
+    bounds: std.StringHashMap(Bound),
+    type_env: std.StringHashMap([]const u8),
+    do_while_conditions: std.AutoHashMap(usize, []const u8),
+    current_method: ?MethodScope = null,
+
+    loop_scopes: std.ArrayList(LoopScope) = .empty,
+    owner_scopes: std.ArrayList(OwnerScope) = .empty,
+    pending_loop_scope: ?PendingLoopScopeStart = null,
+
+    brace_depth: i32 = 0,
+    skip_test_findings: bool = false,
+};
+
+/// 方法開始の検出と type_env の初期化。
+fn begin_method_if_present(state: *ScanState, trimmed: []const u8) !bool {
+    if (state.current_method != null or state.owner_scopes.items.len == 0) return false;
+    const owner = state.owner_scopes.items[state.owner_scopes.items.len - 1].name;
+    const decl = parse_method_start(trimmed) orelse return false;
+
+    const summary = try ensure_method_summary(
+        state.arena_allocator,
+        state.method_summaries,
+        owner,
+        decl.name,
+        decl.params_raw,
+    );
+    state.type_env = std.StringHashMap([]const u8).init(state.arena_allocator);
+    try register_method_param_types(state.arena_allocator, &state.type_env, decl.params_raw);
+    state.current_method = .{
+        .owner = owner,
+        .name = summary.name,
+        .param_count = summary.param_count,
+        .param_signature = summary.param_signature,
+        .end_depth = state.brace_depth + 1,
+        .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
+    };
+    return true;
+}
+
+/// 行開始時のスコープ処理: owner / method 進入と type_env 更新。
+fn enter_line_scope(state: *ScanState, trimmed: []const u8) !void {
+    if (trimmed.len == 0) return;
+    try maybe_enter_owner_scope(state.gpa, &state.owner_scopes, state.brace_depth, trimmed);
+    const started_method = try begin_method_if_present(state, trimmed);
+    if (!started_method and state.current_method != null) {
+        try apply_local_type_updates(state.arena_allocator, &state.type_env, trimmed);
+    }
+}
+
+/// 行末の brace_depth 更新とクロージャ。空行・通常行で共通。
+fn finalize_line(state: *ScanState, code_line: []const u8) void {
+    state.brace_depth = update_brace_depth(state.brace_depth, code_line);
+    pop_closed_scopes(&state.loop_scopes, state.brace_depth);
+    pop_closed_owners(&state.owner_scopes, state.brace_depth);
+    if (state.pending_loop_scope) |pending| {
+        if (state.brace_depth < pending.expected_depth) state.pending_loop_scope = null;
+    }
+    check_method_scope_end(&state.current_method, state.brace_depth, &state.type_env, state.arena_allocator);
+}
+
+fn register_pending_loop_if_entering_block(state: *ScanState, trimmed: []const u8) !void {
+    const pending = state.pending_loop_scope orelse return;
+    if (trimmed[0] == '{' and state.brace_depth == pending.expected_depth) {
+        try state.loop_scopes.append(state.gpa, .{
+            .end_depth = state.brace_depth + 1,
+            .max_iterations = pending.max_iterations,
+        });
+    }
+    state.pending_loop_scope = null;
+}
+
+fn emit_ag001_if_nested(state: *ScanState, line_no: usize, loop_started: bool, loop_level: usize) !void {
+    if (state.skip_test_findings or !loop_started or loop_level == 0) return;
+    try append_finding(
+        state.gpa,
+        state.findings,
+        state.path,
+        line_no,
+        "AG001",
+        "Nested loop can burn CPU quickly",
+        "Nested loops often amplify CPU usage and governor risk.",
+        .warning,
+        "cpu",
+    );
+}
+
+fn emit_ag002_to_ag011(
+    state: *ScanState,
+    trimmed: []const u8,
+    line_no: usize,
+    current_owner: ?[]const u8,
+    loop_info: ?types.LoopInfo,
+    loop_level: usize,
+) !void {
+    const loop_started = loop_info != null;
+    const in_loop = loop_started or loop_level > 0;
+    if (state.skip_test_findings or !in_loop) return;
+
+    const loop_upper_bound = effective_loop_upper_bound(state.loop_scopes.items, loop_info);
+    const call_metrics = infer_called_method_metrics(
+        trimmed,
+        current_owner,
+        &state.type_env,
+        state.name_index,
+        state.type_relations,
+    );
+    var direct = run_detectors(trimmed, &state.type_env);
+
+    // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では
+    // iterable の SOQL はループ本体内の SOQL ではない（1回だけ発行される）。
+    // ただしネスト（loop_level > 0）の場合は外側ループ内の SOQL なので除外しない。
+    if (loop_started and direct.soql > 0 and loop_level == 0 and is_soql_for_loop(trimmed)) {
+        direct.soql = 0;
+    }
+
+    try emit_rule_findings(
+        state.gpa,
+        state.findings,
+        state.path,
+        line_no,
+        direct,
+        call_metrics,
+        loop_upper_bound,
+        state.cfg.cpu_model,
+    );
+}
+
+fn register_new_loop_scope(state: *ScanState, trimmed: []const u8, loop_info: ?types.LoopInfo) !void {
+    const info = loop_info orelse return;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+        try state.loop_scopes.append(state.gpa, .{
+            .end_depth = state.brace_depth + 1,
+            .max_iterations = info.max_iterations,
+        });
+    } else if (is_do_loop_start(trimmed)) {
+        state.pending_loop_scope = .{
+            .expected_depth = state.brace_depth,
+            .max_iterations = info.max_iterations,
+        };
+    }
+}
+
+fn process_line(state: *ScanState, code_line: []const u8, line_no: usize) !void {
+    pop_closed_scopes(&state.loop_scopes, state.brace_depth);
+    pop_closed_owners(&state.owner_scopes, state.brace_depth);
+
+    const trimmed = std.mem.trim(u8, code_line, " \t\r");
+    try enter_line_scope(state, trimmed);
+
+    const current_owner = if (state.owner_scopes.items.len == 0)
+        null
+    else
+        state.owner_scopes.items[state.owner_scopes.items.len - 1].name;
+
+    if (trimmed.len == 0) {
+        finalize_line(state, code_line);
+        return;
+    }
+
+    try register_pending_loop_if_entering_block(state, trimmed);
+    try apply_bound_updates(state.arena_allocator, &state.bounds, trimmed);
+
+    const loop_info = infer_loop_info_at_line(trimmed, &state.bounds, &state.do_while_conditions, line_no);
+    const loop_level = state.loop_scopes.items.len;
+
+    try emit_ag001_if_nested(state, line_no, loop_info != null, loop_level);
+    try emit_ag002_to_ag011(state, trimmed, line_no, current_owner, loop_info, loop_level);
+    try register_new_loop_scope(state, trimmed, loop_info);
+
+    finalize_line(state, code_line);
+}
+
 pub fn scan_content(
     gpa: std.mem.Allocator,
     path: []const u8,
@@ -341,151 +524,27 @@ pub fn scan_content(
     defer arena.deinit();
 
     const arena_allocator = arena.allocator();
+    var state = ScanState{
+        .gpa = gpa,
+        .arena_allocator = arena_allocator,
+        .path = path,
+        .cfg = cfg,
+        .method_summaries = method_summaries,
+        .name_index = name_index,
+        .type_relations = type_relations,
+        .findings = findings,
+        .bounds = std.StringHashMap(Bound).init(arena_allocator),
+        .type_env = std.StringHashMap([]const u8).init(arena_allocator),
+        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content),
+        .skip_test_findings = !cfg.include_tests and is_test_class(stripped_content),
+    };
+    defer state.loop_scopes.deinit(gpa);
+    defer state.owner_scopes.deinit(gpa);
 
-    var bounds = std.StringHashMap(Bound).init(arena_allocator);
-    var type_env = std.StringHashMap([]const u8).init(arena_allocator);
-    var current_method: ?MethodScope = null;
-    var do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content);
-
-    // @isTest クラスの findings をスキップ（method_summaries 登録は維持）
-    const skip_test_findings = !cfg.include_tests and is_test_class(stripped_content);
-
-    var loop_scopes: std.ArrayList(LoopScope) = .empty;
-    defer loop_scopes.deinit(gpa);
-
-    var pending_loop_scope: ?PendingLoopScopeStart = null;
-    var owner_scopes: std.ArrayList(OwnerScope) = .empty;
-    defer owner_scopes.deinit(gpa);
-
-    var brace_depth: i32 = 0;
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, stripped_content, '\n');
-
     while (lines.next()) |raw| {
         line_no += 1;
-
-        pop_closed_scopes(&loop_scopes, brace_depth);
-        pop_closed_owners(&owner_scopes, brace_depth);
-
-        const code_line = raw;
-        const trimmed = std.mem.trim(u8, code_line, " \t\r");
-        var started_method = false;
-        if (trimmed.len > 0) {
-            try maybe_enter_owner_scope(gpa, &owner_scopes, brace_depth, trimmed);
-            if (current_method == null and owner_scopes.items.len > 0) {
-                const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
-                if (parse_method_start(trimmed)) |decl| {
-                    const summary = try ensure_method_summary(
-                        arena_allocator,
-                        method_summaries,
-                        owner,
-                        decl.name,
-                        decl.params_raw,
-                    );
-                    type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                    try register_method_param_types(arena_allocator, &type_env, decl.params_raw);
-                    current_method = .{
-                        .owner = owner,
-                        .name = summary.name,
-                        .param_count = summary.param_count,
-                        .param_signature = summary.param_signature,
-                        .end_depth = brace_depth + 1,
-                        .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
-                    };
-                    started_method = true;
-                }
-            }
-            if (!started_method and current_method != null) {
-                try apply_local_type_updates(arena_allocator, &type_env, trimmed);
-            }
-        }
-        const current_owner = if (owner_scopes.items.len == 0)
-            null
-        else
-            owner_scopes.items[owner_scopes.items.len - 1].name;
-        if (trimmed.len == 0) {
-            brace_depth = update_brace_depth(brace_depth, code_line);
-            pop_closed_scopes(&loop_scopes, brace_depth);
-            pop_closed_owners(&owner_scopes, brace_depth);
-            if (pending_loop_scope) |pending| {
-                if (brace_depth < pending.expected_depth) pending_loop_scope = null;
-            }
-            check_method_scope_end(&current_method, brace_depth, &type_env, arena_allocator);
-            continue;
-        }
-
-        if (pending_loop_scope) |pending| {
-            if (trimmed[0] == '{' and brace_depth == pending.expected_depth) {
-                try loop_scopes.append(gpa, .{
-                    .end_depth = brace_depth + 1,
-                    .max_iterations = pending.max_iterations,
-                });
-            }
-            pending_loop_scope = null;
-        }
-
-        try apply_bound_updates(arena_allocator, &bounds, trimmed);
-
-        const loop_info = infer_loop_info_at_line(trimmed, &bounds, &do_while_conditions, line_no);
-        const loop_started = loop_info != null;
-        const loop_level = loop_scopes.items.len;
-        const in_loop = loop_started or loop_level > 0;
-
-        // AG001: ネストされたループ検出（他ルールとパターンが異なるため個別処理）
-        if (!skip_test_findings and loop_started and loop_level > 0) {
-            try append_finding(
-                gpa,
-                findings,
-                path,
-                line_no,
-                "AG001",
-                "Nested loop can burn CPU quickly",
-                "Nested loops often amplify CPU usage and governor risk.",
-                .warning,
-                "cpu",
-            );
-        }
-
-        // AG002–AG011: テーブル駆動ルール検出
-        if (!skip_test_findings and in_loop) {
-            const loop_upper_bound = effective_loop_upper_bound(loop_scopes.items, loop_info);
-            const call_metrics = infer_called_method_metrics(
-                trimmed,
-                current_owner,
-                &type_env,
-                name_index,
-                type_relations,
-            );
-            var direct = run_detectors(trimmed, &type_env);
-
-            // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では
-            // iterable の SOQL はループ本体内の SOQL ではない（1回だけ発行される）。
-            // ただしネスト（loop_level > 0）の場合は外側ループ内の SOQL なので除外しない。
-            if (loop_started and direct.soql > 0 and loop_level == 0 and is_soql_for_loop(trimmed)) {
-                direct.soql = 0;
-            }
-
-            try emit_rule_findings(gpa, findings, path, line_no, direct, call_metrics, loop_upper_bound, cfg.cpu_model);
-        }
-
-        if (loop_started and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
-            try loop_scopes.append(gpa, .{
-                .end_depth = brace_depth + 1,
-                .max_iterations = loop_info.?.max_iterations,
-            });
-        } else if (loop_started and is_do_loop_start(trimmed)) {
-            pending_loop_scope = .{
-                .expected_depth = brace_depth,
-                .max_iterations = loop_info.?.max_iterations,
-            };
-        }
-
-        brace_depth = update_brace_depth(brace_depth, code_line);
-        pop_closed_scopes(&loop_scopes, brace_depth);
-        pop_closed_owners(&owner_scopes, brace_depth);
-        if (pending_loop_scope) |pending| {
-            if (brace_depth < pending.expected_depth) pending_loop_scope = null;
-        }
-        check_method_scope_end(&current_method, brace_depth, &type_env, arena_allocator);
+        try process_line(&state, raw, line_no);
     }
 }

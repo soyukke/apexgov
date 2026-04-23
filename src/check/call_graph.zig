@@ -175,6 +175,147 @@ fn collect_method_names(
     }
 }
 
+/// collect_method_direct_metrics_and_calls の実行状態。
+const MetricsScanState = struct {
+    arena_allocator: std.mem.Allocator,
+    summaries: *std.StringHashMap(MethodSummary),
+    name_index: *const MethodNameIndex,
+    type_relations: *const TypeRelations,
+    owner_scopes: std.ArrayList(OwnerScope) = .empty,
+    method_loop_scopes: std.ArrayList(LoopScope) = .empty,
+    pending_method_loop_scope: ?PendingLoopScopeStart = null,
+    method_bounds: std.StringHashMap(Bound),
+    type_env: std.StringHashMap([]const u8),
+    do_while_conditions: std.AutoHashMap(usize, []const u8),
+    brace_depth: i32 = 0,
+    current_method: ?MethodScope = null,
+};
+
+fn begin_metrics_method(state: *MetricsScanState, trimmed: []const u8) !bool {
+    if (state.current_method != null or state.owner_scopes.items.len == 0) return false;
+    const owner = state.owner_scopes.items[state.owner_scopes.items.len - 1].name;
+    const decl = parse_method_start(trimmed) orelse return false;
+
+    const summary = try ensure_method_summary(
+        state.arena_allocator,
+        state.summaries,
+        owner,
+        decl.name,
+        decl.params_raw,
+    );
+    state.method_loop_scopes.clearRetainingCapacity();
+    state.method_bounds = std.StringHashMap(Bound).init(state.arena_allocator);
+    state.type_env = std.StringHashMap([]const u8).init(state.arena_allocator);
+    try register_method_param_types(state.arena_allocator, &state.type_env, decl.params_raw);
+    state.current_method = .{
+        .owner = owner,
+        .name = summary.name,
+        .param_count = summary.param_count,
+        .param_signature = summary.param_signature,
+        .end_depth = state.brace_depth + 1,
+        .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
+    };
+    state.pending_method_loop_scope = null;
+    return true;
+}
+
+fn register_method_loop_scope_on_brace(state: *MetricsScanState, trimmed: []const u8) !void {
+    const pending = state.pending_method_loop_scope orelse return;
+    if (trimmed[0] == '{' and state.brace_depth == pending.expected_depth) {
+        try state.method_loop_scopes.append(state.arena_allocator, .{
+            .end_depth = state.brace_depth + 1,
+            .max_iterations = pending.max_iterations,
+        });
+    }
+    state.pending_method_loop_scope = null;
+}
+
+fn register_new_method_loop_scope(
+    state: *MetricsScanState,
+    trimmed: []const u8,
+    loop_info: ?types.LoopInfo,
+) !void {
+    const info = loop_info orelse return;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+        try state.method_loop_scopes.append(state.arena_allocator, .{
+            .end_depth = state.brace_depth + 1,
+            .max_iterations = info.max_iterations,
+        });
+    } else if (is_do_loop_start(trimmed)) {
+        state.pending_method_loop_scope = .{
+            .expected_depth = state.brace_depth,
+            .max_iterations = info.max_iterations,
+        };
+    }
+}
+
+fn record_method_line(state: *MetricsScanState, scope: MethodScope, trimmed: []const u8, line_no: usize) !void {
+    pop_closed_scopes(&state.method_loop_scopes, state.brace_depth);
+    try register_method_loop_scope_on_brace(state, trimmed);
+    try apply_bound_updates(state.arena_allocator, &state.method_bounds, trimmed);
+    try apply_local_type_updates(state.arena_allocator, &state.type_env, trimmed);
+
+    const local_loop_info = infer_loop_info_at_line(
+        trimmed,
+        &state.method_bounds,
+        &state.do_while_conditions,
+        line_no,
+    );
+    const local_loop_multiplier = effective_loop_upper_bound(
+        state.method_loop_scopes.items,
+        local_loop_info,
+    ) orelse 1;
+
+    const summary = find_method_summary_by_owner_name_signature(
+        state.summaries,
+        scope.owner,
+        scope.name,
+        scope.param_signature,
+    ) orelse unreachable;
+    apply_direct_line_metrics(&summary.direct, trimmed, local_loop_multiplier, &state.type_env);
+    try record_called_methods(
+        state.arena_allocator,
+        &summary.calls,
+        state.name_index,
+        scope.owner,
+        scope.name,
+        trimmed,
+        &state.type_env,
+        state.type_relations,
+        local_loop_multiplier,
+    );
+
+    try register_new_method_loop_scope(state, trimmed, local_loop_info);
+}
+
+fn process_metrics_line(state: *MetricsScanState, code_line: []const u8, line_no: usize) !void {
+    const trimmed = std.mem.trim(u8, code_line, " \t\r");
+    pop_closed_owners(&state.owner_scopes, state.brace_depth);
+
+    if (trimmed.len > 0) {
+        try maybe_enter_owner_scope(state.arena_allocator, &state.owner_scopes, state.brace_depth, trimmed);
+        const started_method = try begin_metrics_method(state, trimmed);
+        if (!started_method) {
+            if (state.current_method) |scope| try record_method_line(state, scope, trimmed, line_no);
+        }
+    }
+
+    state.brace_depth = update_brace_depth(state.brace_depth, code_line);
+    if (state.pending_method_loop_scope) |pending| {
+        if (state.brace_depth < pending.expected_depth) state.pending_method_loop_scope = null;
+    }
+    if (state.current_method) |*scope| {
+        pop_closed_scopes(&state.method_loop_scopes, state.brace_depth);
+        if (!scope.entered_body and state.brace_depth >= scope.end_depth) scope.entered_body = true;
+        if (scope.entered_body and state.brace_depth < scope.end_depth) {
+            state.current_method = null;
+            state.type_env = std.StringHashMap([]const u8).init(state.arena_allocator);
+            state.pending_method_loop_scope = null;
+        }
+    }
+    pop_closed_owners(&state.owner_scopes, state.brace_depth);
+}
+
 fn collect_method_direct_metrics_and_calls(
     arena_allocator: std.mem.Allocator,
     stripped_content: []const u8,
@@ -182,138 +323,23 @@ fn collect_method_direct_metrics_and_calls(
     name_index: *const MethodNameIndex,
     type_relations: *const TypeRelations,
 ) !void {
-    var owner_scopes: std.ArrayList(OwnerScope) = .empty;
-    defer owner_scopes.deinit(arena_allocator);
+    var state = MetricsScanState{
+        .arena_allocator = arena_allocator,
+        .summaries = summaries,
+        .name_index = name_index,
+        .type_relations = type_relations,
+        .method_bounds = std.StringHashMap(Bound).init(arena_allocator),
+        .type_env = std.StringHashMap([]const u8).init(arena_allocator),
+        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content),
+    };
+    defer state.owner_scopes.deinit(arena_allocator);
+    defer state.method_loop_scopes.deinit(arena_allocator);
 
-    var method_loop_scopes: std.ArrayList(LoopScope) = .empty;
-    defer method_loop_scopes.deinit(arena_allocator);
-
-    var pending_method_loop_scope: ?PendingLoopScopeStart = null;
-
-    var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
-    var type_env = std.StringHashMap([]const u8).init(arena_allocator);
-    var do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content);
-
-    var brace_depth: i32 = 0;
-    var current_method: ?MethodScope = null;
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, stripped_content, '\n');
-
     while (lines.next()) |raw| {
         line_no += 1;
-        const code_line = raw;
-        const trimmed = std.mem.trim(u8, code_line, " \t\r");
-        pop_closed_owners(&owner_scopes, brace_depth);
-
-        var started_method = false;
-        if (trimmed.len > 0) {
-            try maybe_enter_owner_scope(arena_allocator, &owner_scopes, brace_depth, trimmed);
-            const owner = if (owner_scopes.items.len == 0)
-                null
-            else
-                owner_scopes.items[owner_scopes.items.len - 1].name;
-
-            if (current_method == null and owner != null) {
-                if (parse_method_start(trimmed)) |decl| {
-                    const summary = try ensure_method_summary(
-                        arena_allocator,
-                        summaries,
-                        owner.?,
-                        decl.name,
-                        decl.params_raw,
-                    );
-                    method_loop_scopes.clearRetainingCapacity();
-                    method_bounds = std.StringHashMap(Bound).init(arena_allocator);
-                    type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                    try register_method_param_types(arena_allocator, &type_env, decl.params_raw);
-                    current_method = .{
-                        .owner = owner.?,
-                        .name = summary.name,
-                        .param_count = summary.param_count,
-                        .param_signature = summary.param_signature,
-                        .end_depth = brace_depth + 1,
-                        .entered_body = std.mem.indexOfScalar(u8, trimmed, '{') != null,
-                    };
-                    pending_method_loop_scope = null;
-                    started_method = true;
-                }
-            }
-
-            if (!started_method) {
-                if (current_method) |scope| {
-                    pop_closed_scopes(&method_loop_scopes, brace_depth);
-                    if (pending_method_loop_scope) |pending| {
-                        if (trimmed[0] == '{' and brace_depth == pending.expected_depth) {
-                            try method_loop_scopes.append(arena_allocator, .{
-                                .end_depth = brace_depth + 1,
-                                .max_iterations = pending.max_iterations,
-                            });
-                        }
-                        pending_method_loop_scope = null;
-                    }
-                    try apply_bound_updates(arena_allocator, &method_bounds, trimmed);
-                    try apply_local_type_updates(arena_allocator, &type_env, trimmed);
-                    const local_loop_info = infer_loop_info_at_line(
-                        trimmed,
-                        &method_bounds,
-                        &do_while_conditions,
-                        line_no,
-                    );
-                    const local_loop_multiplier = effective_loop_upper_bound(
-                        method_loop_scopes.items,
-                        local_loop_info,
-                    ) orelse 1;
-
-                    const summary = find_method_summary_by_owner_name_signature(
-                        summaries,
-                        scope.owner,
-                        scope.name,
-                        scope.param_signature,
-                    ) orelse unreachable;
-                    apply_direct_line_metrics(&summary.direct, trimmed, local_loop_multiplier, &type_env);
-                    try record_called_methods(
-                        arena_allocator,
-                        &summary.calls,
-                        name_index,
-                        scope.owner,
-                        scope.name,
-                        trimmed,
-                        &type_env,
-                        type_relations,
-                        local_loop_multiplier,
-                    );
-
-                    if (local_loop_info != null and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
-                        try method_loop_scopes.append(arena_allocator, .{
-                            .end_depth = brace_depth + 1,
-                            .max_iterations = local_loop_info.?.max_iterations,
-                        });
-                    } else if (local_loop_info != null and is_do_loop_start(trimmed)) {
-                        pending_method_loop_scope = .{
-                            .expected_depth = brace_depth,
-                            .max_iterations = local_loop_info.?.max_iterations,
-                        };
-                    }
-                }
-            }
-        }
-
-        brace_depth = update_brace_depth(brace_depth, code_line);
-        if (pending_method_loop_scope) |pending| {
-            if (brace_depth < pending.expected_depth) pending_method_loop_scope = null;
-        }
-        if (current_method) |*scope| {
-            pop_closed_scopes(&method_loop_scopes, brace_depth);
-            if (!scope.entered_body and brace_depth >= scope.end_depth) {
-                scope.entered_body = true;
-            }
-            if (scope.entered_body and brace_depth < scope.end_depth) {
-                current_method = null;
-                type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                pending_method_loop_scope = null;
-            }
-        }
-        pop_closed_owners(&owner_scopes, brace_depth);
+        try process_metrics_line(&state, raw, line_no);
     }
 }
 
@@ -681,6 +707,30 @@ fn contains_qualified_method_call(
     return false;
 }
 
+/// `receiver.method(...)` の receiver 部分が method_idx の直前にあれば返す。
+fn extract_dotted_receiver(line: []const u8, method_idx: usize) ?[]const u8 {
+    var dot_idx = method_idx;
+    while (dot_idx > 0 and (line[dot_idx - 1] == ' ' or line[dot_idx - 1] == '\t')) : (dot_idx -= 1) {}
+    if (dot_idx == 0 or line[dot_idx - 1] != '.') return null;
+
+    var receiver_end = dot_idx - 1;
+    while (receiver_end > 0 and
+        (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1)
+    {}
+    var receiver_start = receiver_end;
+    while (receiver_start > 0 and is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1) {}
+    if (receiver_start == receiver_end) return null;
+    return line[receiver_start..receiver_end];
+}
+
+/// 対応する open paren の位置を返す。method_end の後の空白をスキップ。
+fn find_call_open_paren(line: []const u8, method_end: usize) ?usize {
+    var open_idx = method_end;
+    while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
+    if (open_idx >= line.len or line[open_idx] != '(') return null;
+    return open_idx;
+}
+
 fn contains_typed_receiver_method_call(
     line: []const u8,
     callee_owner: []const u8,
@@ -694,52 +744,19 @@ fn contains_typed_receiver_method_call(
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, line, start, method_name)) |method_idx| {
+        start = method_idx + method_name.len;
+
         const method_before_ok = method_idx == 0 or !is_ident_char(line[method_idx - 1]);
-        if (!method_before_ok) {
-            start = method_idx + method_name.len;
-            continue;
-        }
+        if (!method_before_ok) continue;
 
-        var dot_idx = method_idx;
-        while (dot_idx > 0 and (line[dot_idx - 1] == ' ' or line[dot_idx - 1] == '\t')) : (dot_idx -= 1) {}
-        if (dot_idx == 0 or line[dot_idx - 1] != '.') {
-            start = method_idx + method_name.len;
-            continue;
-        }
+        const receiver = extract_dotted_receiver(line, method_idx) orelse continue;
+        const bound_type = type_env.get(receiver) orelse continue;
+        if (!bound_type_matches_owner(bound_type, callee_owner, type_relations)) continue;
 
-        var receiver_end = dot_idx - 1;
-        while (receiver_end > 0 and
-            (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1)
-        {}
-        var receiver_start = receiver_end;
-        while (receiver_start > 0 and is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1) {}
-        if (receiver_start == receiver_end) {
-            start = method_idx + method_name.len;
-            continue;
-        }
-        const receiver = line[receiver_start..receiver_end];
-
-        const bound_type = type_env.get(receiver) orelse {
-            start = method_idx + method_name.len;
-            continue;
-        };
-        if (!bound_type_matches_owner(bound_type, callee_owner, type_relations)) {
-            start = method_idx + method_name.len;
-            continue;
-        }
-
-        var open_idx = method_idx + method_name.len;
-        while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
-        if (open_idx >= line.len or line[open_idx] != '(') {
-            start = method_idx + method_name.len;
-            continue;
-        }
-
-        const arg_count = count_call_arguments(line, open_idx) orelse {
-            start = method_idx + method_name.len;
-            continue;
-        };
-        if (arg_count == expected_param_count and arguments_match_param_signature(
+        const open_idx = find_call_open_paren(line, start) orelse continue;
+        const arg_count = count_call_arguments(line, open_idx) orelse continue;
+        if (arg_count != expected_param_count) continue;
+        if (arguments_match_param_signature(
             line,
             open_idx,
             expected_param_signature,
@@ -748,8 +765,6 @@ fn contains_typed_receiver_method_call(
         )) {
             return true;
         }
-
-        start = method_idx + method_name.len;
     }
 
     return false;
@@ -818,91 +833,88 @@ fn type_satisfies_constraint_depth(
     return false;
 }
 
+/// 引数内 depth/文字列状態を管理する小さな step マシン。
+/// call_argument_span / count_call_arguments / arguments_match_param_signature
+/// で共通化。
+const ArgDepth = struct {
+    paren: i32 = 0,
+    angle: i32 = 0,
+    bracket: i32 = 0,
+    brace: i32 = 0,
+    in_single: bool = false,
+    in_double: bool = false,
+
+    fn is_at_top(self: ArgDepth) bool {
+        return self.paren == 0 and self.angle == 0 and self.bracket == 0 and self.brace == 0;
+    }
+
+    /// 位置 i の文字を state に反映。string 内なら true。
+    /// `top_level_sep` は「top-level で区切り文字として扱うか」を返すために
+    /// depth 遷移後の状態で判定する必要があるため、`observe` は depth を更新だけ行い、
+    /// 呼び出し側が is_at_top で判定する。
+    fn observe(self: *ArgDepth, line: []const u8, i: usize) bool {
+        const c = line[i];
+        if (self.in_single) {
+            if (c == '\'' and line[i - 1] != '\\') self.in_single = false;
+            return true;
+        }
+        if (self.in_double) {
+            if (c == '"' and line[i - 1] != '\\') self.in_double = false;
+            return true;
+        }
+        switch (c) {
+            '\'' => self.in_single = true,
+            '"' => self.in_double = true,
+            '(' => self.paren += 1,
+            ')' => if (self.paren > 0) {
+                self.paren -= 1;
+            },
+            '<' => self.angle += 1,
+            '>' => if (self.angle > 0) {
+                self.angle -= 1;
+            },
+            '[' => self.bracket += 1,
+            ']' => if (self.bracket > 0) {
+                self.bracket -= 1;
+            },
+            '{' => self.brace += 1,
+            '}' => if (self.brace > 0) {
+                self.brace -= 1;
+            },
+            else => {},
+        }
+        return false;
+    }
+};
+
 fn count_call_arguments(line: []const u8, open_paren_idx: usize) ?u16 {
     if (open_paren_idx >= line.len or line[open_paren_idx] != '(') return null;
 
     var count: u16 = 0;
     var has_token = false;
-    var paren_depth: i32 = 0;
-    var angle_depth: i32 = 0;
-    var bracket_depth: i32 = 0;
-    var brace_depth: i32 = 0;
-    var in_single = false;
-    var in_double = false;
-    var i = open_paren_idx + 1;
+    var depth = ArgDepth{};
 
+    var i = open_paren_idx + 1;
     while (i < line.len) : (i += 1) {
         const c = line[i];
+        const was_top = depth.is_at_top();
+        const in_str = depth.observe(line, i);
+        if (in_str) continue;
 
-        if (in_single) {
-            if (c == '\'' and line[i - 1] != '\\') in_single = false;
+        if (was_top and c == ')') {
+            if (has_token) count = sat_add_u16(count, 1);
+            return count;
+        }
+        if (was_top and c == ',') {
+            if (has_token) {
+                count = sat_add_u16(count, 1);
+                has_token = false;
+            }
             continue;
         }
-        if (in_double) {
-            if (c == '"' and line[i - 1] != '\\') in_double = false;
-            continue;
-        }
 
-        switch (c) {
-            '\'' => {
-                in_single = true;
-                has_token = true;
-            },
-            '"' => {
-                in_double = true;
-                has_token = true;
-            },
-            '(' => {
-                paren_depth += 1;
-                has_token = true;
-            },
-            ')' => {
-                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-                    if (has_token) count = sat_add_u16(count, 1);
-                    return count;
-                }
-                if (paren_depth > 0) paren_depth -= 1;
-            },
-            '<' => {
-                angle_depth += 1;
-                has_token = true;
-            },
-            '>' => {
-                if (angle_depth > 0) angle_depth -= 1;
-                has_token = true;
-            },
-            '[' => {
-                bracket_depth += 1;
-                has_token = true;
-            },
-            ']' => {
-                if (bracket_depth > 0) bracket_depth -= 1;
-                has_token = true;
-            },
-            '{' => {
-                brace_depth += 1;
-                has_token = true;
-            },
-            '}' => {
-                if (brace_depth > 0) brace_depth -= 1;
-                has_token = true;
-            },
-            ',' => {
-                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-                    if (has_token) {
-                        count = sat_add_u16(count, 1);
-                        has_token = false;
-                    }
-                } else {
-                    has_token = true;
-                }
-            },
-            else => {
-                if (!std.ascii.isWhitespace(c)) {
-                    has_token = true;
-                }
-            },
-        }
+        // トークン有無の判定（空白以外は全部トークン扱い）。
+        if (!std.ascii.isWhitespace(c)) has_token = true;
     }
 
     return null;
@@ -919,75 +931,31 @@ fn arguments_match_param_signature(
 
     var expected_iter = std.mem.splitScalar(u8, expected_signature, '|');
     var arg_start = open_paren_idx + 1;
-    var paren_depth: i32 = 0;
-    var angle_depth: i32 = 0;
-    var bracket_depth: i32 = 0;
-    var brace_depth: i32 = 0;
-    var in_single = false;
-    var in_double = false;
+    var depth = ArgDepth{};
 
     var i = open_paren_idx + 1;
     while (i < line.len) : (i += 1) {
         const c = line[i];
-        if (in_single) {
-            if (c == '\'' and line[i - 1] != '\\') in_single = false;
-            continue;
-        }
-        if (in_double) {
-            if (c == '"' and line[i - 1] != '\\') in_double = false;
-            continue;
-        }
+        const was_top = depth.is_at_top();
+        const in_str = depth.observe(line, i);
+        if (in_str) continue;
+        if (!was_top) continue;
 
-        switch (c) {
-            '\'' => {
-                in_single = true;
-            },
-            '"' => {
-                in_double = true;
-            },
-            '(' => {
-                paren_depth += 1;
-            },
-            ')' => {
-                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-                    const segment = std.mem.trim(u8, line[arg_start..i], " \t");
-                    if (segment.len == 0) {
-                        return expected_signature.len == 0 or
-                            (expected_iter.next() == null and expected_signature.len == 0);
-                    }
-                    const expected = expected_iter.next() orelse return false;
-                    if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
-                    return expected_iter.next() == null;
-                }
-                if (paren_depth > 0) paren_depth -= 1;
-            },
-            '<' => {
-                angle_depth += 1;
-            },
-            '>' => {
-                if (angle_depth > 0) angle_depth -= 1;
-            },
-            '[' => {
-                bracket_depth += 1;
-            },
-            ']' => {
-                if (bracket_depth > 0) bracket_depth -= 1;
-            },
-            '{' => {
-                brace_depth += 1;
-            },
-            '}' => {
-                if (brace_depth > 0) brace_depth -= 1;
-            },
-            ',' => {
-                if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-                    const segment = std.mem.trim(u8, line[arg_start..i], " \t");
-                    const expected = expected_iter.next() orelse return false;
-                    if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
-                    arg_start = i + 1;
-                }
-            },
-            else => {},
+        if (c == ')') {
+            const segment = std.mem.trim(u8, line[arg_start..i], " \t");
+            if (segment.len == 0) {
+                return expected_signature.len == 0 or
+                    (expected_iter.next() == null and expected_signature.len == 0);
+            }
+            const expected = expected_iter.next() orelse return false;
+            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
+            return expected_iter.next() == null;
+        }
+        if (c == ',') {
+            const segment = std.mem.trim(u8, line[arg_start..i], " \t");
+            const expected = expected_iter.next() orelse return false;
+            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
+            arg_start = i + 1;
         }
     }
 
