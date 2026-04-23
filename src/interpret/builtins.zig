@@ -3951,105 +3951,88 @@ fn add_known_describe_fields(
     fields_kv: *types.MapValue,
     object_type: []const u8,
 ) !void {
-    if (std.ascii.eqlIgnoreCase(object_type, "Account")) {
-        for ([_][]const u8{
-            "ParentId",           "AccountNumber",     "Phone",
-            "Fax",                "Website",           "Industry",
-            "Type",               "BillingStreet",     "BillingCity",
-            "BillingState",       "BillingPostalCode", "BillingCountry",
-            "ShippingStreet",     "ShippingCity",      "ShippingState",
-            "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
-            "Description",        "Rating",            "AnnualRevenue",
-            "Site",               "Sic",               "TickerSymbol",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
-        for ([_][]const u8{
-            "AccountId",         "FirstName",      "LastName",     "Email",
-            "Phone",             "MobilePhone",    "HomePhone",    "OtherPhone",
-            "Fax",               "Title",          "Department",   "Birthdate",
-            "MailingCity",       "MailingCountry", "MailingState", "MailingStreet",
-            "MailingPostalCode", "LeadSource",     "Description",  "OwnerId",
-            "ReportsToId",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Lead")) {
-        for ([_][]const u8{ "FirstName", "LastName", "Company", "Email" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Task")) {
-        for ([_][]const u8{ "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity")) {
-        for ([_][]const u8{
-            "AccountId",        "StageName",            "CloseDate",  "Amount",
-            "Probability",      "Type",                 "LeadSource", "Description",
-            "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
-            "ForecastCategory", "ForecastCategoryName", "NextStep",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "User")) {
-        for ([_][]const u8{
-            "Username",       "Email",             "FirstName",    "LastName",
-            "ProfileId",      "Alias",             "UserType",     "IsActive",
-            "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
-            "LastLoginDate",  "ManagerId",         "CompanyName",  "Department",
-            "Phone",          "MobilePhone",       "Title",        "UserRoleId",
-            "Division",       "Street",            "City",         "State",
-            "PostalCode",     "Country",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Profile")) {
-        for ([_][]const u8{ "DeveloperName", "UserType", "UserLicenseId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) {
-        for ([_][]const u8{ "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Case")) {
-        for ([_][]const u8{
-            "AccountId",  "ContactId",     "OwnerId",      "ParentId",
-            "Status",     "Priority",      "Origin",       "Reason",
-            "Subject",    "Description",   "Type",         "IsClosed",
-            "ClosedDate", "SuppliedEmail", "SuppliedName", "SuppliedPhone",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "CaseComment")) {
-        for ([_][]const u8{ "ParentId", "CommentBody", "IsPublished" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "AccountBrand")) {
-        for ([_][]const u8{ "CompanyName", "Email", "Phone" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
+    const entries = known_describe_field_table();
+    for (entries) |entry| {
+        if (std.ascii.eqlIgnoreCase(object_type, entry.object_type)) {
+            for (entry.fields) |field_name| {
+                try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
+            }
+            return;
         }
     }
+}
+
+const KnownDescribeFieldEntry = struct {
+    object_type: []const u8,
+    fields: []const []const u8,
+};
+
+fn known_describe_field_table() []const KnownDescribeFieldEntry {
+    const account_fields = [_][]const u8{
+        "ParentId",           "AccountNumber",     "Phone",
+        "Fax",                "Website",           "Industry",
+        "Type",               "BillingStreet",     "BillingCity",
+        "BillingState",       "BillingPostalCode", "BillingCountry",
+        "ShippingStreet",     "ShippingCity",      "ShippingState",
+        "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
+        "Description",        "Rating",            "AnnualRevenue",
+        "Site",               "Sic",               "TickerSymbol",
+    };
+    const contact_fields = [_][]const u8{
+        "AccountId",         "FirstName",      "LastName",     "Email",
+        "Phone",             "MobilePhone",    "HomePhone",    "OtherPhone",
+        "Fax",               "Title",          "Department",   "Birthdate",
+        "MailingCity",       "MailingCountry", "MailingState", "MailingStreet",
+        "MailingPostalCode", "LeadSource",     "Description",  "OwnerId",
+        "ReportsToId",
+    };
+    const lead_fields = [_][]const u8{ "FirstName", "LastName", "Company", "Email" };
+    const task_fields = [_][]const u8{
+        "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId",
+    };
+    const opportunity_fields = [_][]const u8{
+        "AccountId",        "StageName",            "CloseDate",  "Amount",
+        "Probability",      "Type",                 "LeadSource", "Description",
+        "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
+        "ForecastCategory", "ForecastCategoryName", "NextStep",
+    };
+    const user_fields = [_][]const u8{
+        "Username",       "Email",             "FirstName",    "LastName",
+        "ProfileId",      "Alias",             "UserType",     "IsActive",
+        "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
+        "LastLoginDate",  "ManagerId",         "CompanyName",  "Department",
+        "Phone",          "MobilePhone",       "Title",        "UserRoleId",
+        "Division",       "Street",            "City",         "State",
+        "PostalCode",     "Country",
+    };
+    const profile_fields = [_][]const u8{ "DeveloperName", "UserType", "UserLicenseId" };
+    const email_message_fields = [_][]const u8{
+        "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId",
+    };
+    const case_fields = [_][]const u8{
+        "AccountId",  "ContactId",     "OwnerId",      "ParentId",
+        "Status",     "Priority",      "Origin",       "Reason",
+        "Subject",    "Description",   "Type",         "IsClosed",
+        "ClosedDate", "SuppliedEmail", "SuppliedName", "SuppliedPhone",
+    };
+    const case_comment_fields = [_][]const u8{ "ParentId", "CommentBody", "IsPublished" };
+    const account_brand_fields = [_][]const u8{ "CompanyName", "Email", "Phone" };
+    const table = struct {
+        const entries = [_]KnownDescribeFieldEntry{
+            .{ .object_type = "Account", .fields = &account_fields },
+            .{ .object_type = "Contact", .fields = &contact_fields },
+            .{ .object_type = "Lead", .fields = &lead_fields },
+            .{ .object_type = "Task", .fields = &task_fields },
+            .{ .object_type = "Opportunity", .fields = &opportunity_fields },
+            .{ .object_type = "User", .fields = &user_fields },
+            .{ .object_type = "Profile", .fields = &profile_fields },
+            .{ .object_type = "EmailMessage", .fields = &email_message_fields },
+            .{ .object_type = "Case", .fields = &case_fields },
+            .{ .object_type = "CaseComment", .fields = &case_comment_fields },
+            .{ .object_type = "AccountBrand", .fields = &account_brand_fields },
+        };
+    };
+    return &table.entries;
 }
 
 fn add_describe_fields_from_record(
