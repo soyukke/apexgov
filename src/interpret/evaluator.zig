@@ -21702,7 +21702,8 @@ test "inner class accesses outer class static property getter" {
 test "inner class accesses outer class static field via method call" {
     const source =
         \\public class Outer {
-        \\    private static Map<String, String> CACHE = new Map<String, String>{ 'key1' => 'val1' };
+        \\    private static Map<String, String> CACHE = new Map<String,
+        \\ String>{ 'key1' => 'val1' };
         \\    public static String run() {
         \\        Inner i = new Inner();
         \\        return i.getFromCache();

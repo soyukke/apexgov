@@ -1712,7 +1712,8 @@ test "E2E: fields map tokens compare equal to standard child relationship fields
     const source =
         \\public class ChildRelationshipFieldMapProbe {
         \\    public static Boolean run() {
-        \\        Map<String, Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField fromMap = fields.get('AccountId');
         \\        for (Object relObj : Account.SObjectType.getDescribe().getChildRelationships()) {
         \\            Schema.ChildRelationship rel = (Schema.ChildRelationship) relObj;
@@ -1737,7 +1738,8 @@ test "E2E: Contact describe fields expose LastName token at runtime" {
     const source =
         \\public class ContactDescribeFieldsProbe {
         \\    public static String run() {
-        \\        Map<String, Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Contact.SObjectType.getDescribe().fields.getMap();
         \\        String fieldName = String.valueOf(Contact.LastName);
         \\        Schema.SObjectField lastNameField = fields.get(fieldName);
         \\        Schema.DescribeFieldResult describe = lastNameField.getDescribe();
@@ -5297,8 +5299,10 @@ test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.g
     const source =
         \\public class FieldMapParityProbe {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> viaSchemaShortcut = Schema.SObjectType.Account.fields.getMap();
-        \\        Map<String, Schema.SObjectField> viaDescribe = Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> viaSchemaShortcut = Schema.SObjectType.Account.fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> viaDescribe = Account.SObjectType.getDescribe().fields.getMap();
         \\        if (viaSchemaShortcut.size() != viaDescribe.size()) {
         \\            return 'mismatch:' + String.valueOf(viaSchemaShortcut.size()) + '-vs-' + String.valueOf(viaDescribe.size());
         \\        }
@@ -6477,7 +6481,8 @@ test "E2E: logical AND short-circuits null receiver checks" {
 test "E2E: Type.forName inner handler retains SObjectType map keys after execute" {
     const source =
         \\public abstract class HandlerBase {
-        \\    private static Map<Schema.SObjectType, List<HandlerBase>> executed = new Map<Schema.SObjectType, List<HandlerBase>>();
+        \\    private static Map<Schema.SObjectType,
+        \\ List<HandlerBase>> executed = new Map<Schema.SObjectType, List<HandlerBase>>();
         \\    public abstract Schema.SObjectType getSObjectType();
         \\    public void execute() {
         \\        if (executed.containsKey(this.getSObjectType()) == false) {
@@ -6521,7 +6526,8 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
 test "E2E: Type.forName event handler retains platform event SObjectType map keys after execute" {
     const source =
         \\public abstract class EventHandlerBase {
-        \\    private static Map<Schema.SObjectType, List<EventHandlerBase>> executed = new Map<Schema.SObjectType, List<EventHandlerBase>>();
+        \\    private static Map<Schema.SObjectType,
+        \\ List<EventHandlerBase>> executed = new Map<Schema.SObjectType, List<EventHandlerBase>>();
         \\    public abstract Schema.SObjectType getSObjectType();
         \\    public void execute() {
         \\        if (executed.containsKey(this.getSObjectType()) == false) {
@@ -6944,7 +6950,8 @@ test "E2E: postfix increment updates static field through bare identifier" {
 test "E2E: Type.forName null-safe fluent execute preserves constructor-initialized fields" {
     const source =
         \\public abstract class TriggerableHost {
-        \\    private static Map<Schema.SObjectType, Integer> counts = new Map<Schema.SObjectType, Integer>();
+        \\    private static Map<Schema.SObjectType, Integer> counts = new Map<Schema.SObjectType,
+        \\ Integer>();
         \\    public abstract Schema.SObjectType getSObjectType();
         \\    public virtual TriggerableHost overrideContext(String value) {
         \\        return this;
@@ -7029,7 +7036,8 @@ test "E2E: parent constructors can read overridden type getters before child ini
 test "E2E: static method returned map supports chained get size and index access" {
     const source =
         \\public class StaticMapChainHost {
-        \\    private static Map<Schema.SObjectType, List<String>> valuesByType = new Map<Schema.SObjectType, List<String>>();
+        \\    private static Map<Schema.SObjectType,
+        \\ List<String>> valuesByType = new Map<Schema.SObjectType, List<String>>();
         \\    static {
         \\        valuesByType.put(Schema.Account.SObjectType, new List<String>{ 'a', 'b' });
         \\    }
@@ -7059,7 +7067,8 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
         \\public class SObjectTypeKeySetLoopTest {
         \\    public static String test() {
         \\        User currentUser = [SELECT Id, Username FROM User WHERE Id = :System.UserInfo.getUserId()];
-        \\        Map<Schema.SObjectType, List<Id>> idsByType = new Map<Schema.SObjectType, List<Id>>();
+        \\        Map<Schema.SObjectType, List<Id>> idsByType = new Map<Schema.SObjectType,
+        \\ List<Id>>();
         \\        idsByType.put(currentUser.Id.getSObjectType(), new List<Id>{ currentUser.Id });
         \\        for (Schema.SObjectType sobjectType : idsByType.keySet()) {
         \\            List<Id> recordIds = idsByType.get(sobjectType);
@@ -7141,7 +7150,9 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         \\    }
         \\}
         \\public class ChainedHandlerStore {
-        \\    private static Map<Schema.SObjectType, List<ChainedHandlerBase>> executed = new Map<Schema.SObjectType, List<ChainedHandlerBase>>();
+        \\    private static Map<Schema.SObjectType,
+        \\ List<ChainedHandlerBase>> executed = new Map<Schema.SObjectType,
+        \\ List<ChainedHandlerBase>>();
         \\    static {
         \\        executed.put(
         \\            Schema.LogEntryEvent__e.SObjectType,
@@ -8874,7 +8885,8 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
     const source =
         \\public class UserDescribeFieldsTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> fields = Schema.User.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Schema.User.SObjectType.getDescribe().fields.getMap();
         \\        return String.valueOf(fields.containsKey('Username')) + ':' + fields.get('Username').getDescribe().getName();
         \\    }
         \\}
@@ -8967,7 +8979,8 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     const source =
         \\public class FieldSetMetadataTest {
         \\    public static String test() {
-        \\        Map<String, Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
+        \\        Map<String,
+        \\ Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
         \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
         \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
         \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
@@ -8999,7 +9012,8 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
     const source =
         \\public class SObjectTypeRecordTypeInfoTest {
         \\    public static String test() {
-        \\        Map<Id, Schema.RecordTypeInfo> byId = Schema.SObjectType.Account.getRecordTypeInfosById();
+        \\        Map<Id,
+        \\ Schema.RecordTypeInfo> byId = Schema.SObjectType.Account.getRecordTypeInfosById();
         \\        List<Schema.RecordTypeInfo> infos = Schema.SObjectType.Account.getRecordTypeInfos();
         \\        return String.valueOf(byId != null) + ':' +
         \\            String.valueOf(infos.size()) + ':' +
@@ -9020,8 +9034,11 @@ test "E2E: cached DescribeSObjectResult record type info survives selective map 
     const alloc = std.testing.allocator;
     const source =
         \\public class CachedDescribeRecordTypeInfoProbe {
-        \\    private static Map<String, Schema.DescribeSObjectResult> cached = new Map<String, Schema.DescribeSObjectResult>();
-        \\    private static Map<String, List<Schema.RecordTypeInfo>> nonMasterInfos = new Map<String, List<Schema.RecordTypeInfo>>();
+        \\    private static Map<String, Schema.DescribeSObjectResult> cached = new Map<String,
+        \\ Schema.DescribeSObjectResult>();
+        \\    private static Map<String,
+        \\ List<Schema.RecordTypeInfo>> nonMasterInfos = new Map<String,
+        \\ List<Schema.RecordTypeInfo>>();
         \\
         \\    private static void fill(String objectName) {
         \\        if (!cached.containsKey(objectName)) {
@@ -9567,7 +9584,8 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
         \\    public static String test() {
         \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
         \\        String serialized = JSON.serialize(originalRecord);
-        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(serialized);
+        \\        Map<String,
+        \\ Object> fields = (Map<String, Object>) JSON.deserializeUntyped(serialized);
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        SObject roundTripped = (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
         \\        return String.valueOf(roundTripped.get('Name')) + ':' +
@@ -9809,7 +9827,8 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         \\    }
         \\
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> fields = Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Account.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
         \\
@@ -9868,7 +9887,8 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
         \\        };
         \\        insert groups;
-        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
         \\
@@ -9978,7 +9998,8 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\        public Boolean matches(Object arg) {
         \\            if (arg != null && arg instanceof List<SObject>) {
         \\                SObject[] sobjsArg = (SObject[]) arg;
-        \\                List<Map<Schema.SObjectField, Object>> toMatches = new List<Map<Schema.SObjectField, Object>>();
+        \\                List<Map<Schema.SObjectField,
+        \\ Object>> toMatches = new List<Map<Schema.SObjectField, Object>>();
         \\                for (Map<Schema.SObjectField, Object> matchElem : toMatch) {
         \\                    toMatches.add(matchElem);
         \\                }
@@ -10017,7 +10038,8 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
         \\        };
         \\        insert groups;
-        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String,
+        \\ Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
         \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
@@ -10111,7 +10133,8 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
     const source =
         \\public class ApexMetadataDateComparisonTest {
         \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(record));
+        \\        Map<String,
+        \\ Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(record));
         \\        fields.put(field.toString(), value);
         \\        return (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
         \\    }
@@ -12224,7 +12247,8 @@ test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching ove
         \\        return (String) fieldToValue.get(Schema.Account.Name);
         \\    }
         \\    public static Map<Schema.SObjectField, Object> makeFieldMap() {
-        \\        Map<Schema.SObjectField, Object> fieldToValue = new Map<Schema.SObjectField, Object>();
+        \\        Map<Schema.SObjectField, Object> fieldToValue = new Map<Schema.SObjectField,
+        \\ Object>();
         \\        fieldToValue.put(Schema.Account.Name, 'matched');
         \\        return fieldToValue;
         \\    }
@@ -12250,7 +12274,8 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
         \\        Map<String, Object> valuesByFieldName = new Map<String, Object>{
         \\            Schema.Account.Name.toString() => 'Acme'
         \\        };
-        \\        Map<Schema.SObjectField, Object> resolvedFieldToValue = new Map<Schema.SObjectField, Object>();
+        \\        Map<Schema.SObjectField,
+        \\ Object> resolvedFieldToValue = new Map<Schema.SObjectField, Object>();
         \\        for (String fieldName : valuesByFieldName.keySet()) {
         \\            Schema.SObjectField field = Schema.Account.SObjectType.getDescribe().fields.getMap().get(fieldName);
         \\            resolvedFieldToValue.put(field, valuesByFieldName.get(fieldName));
@@ -12277,7 +12302,8 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
         \\public class DescribeDerivedFieldKeyTest {
         \\    public static String test() {
         \\        Map<String, Schema.SObjectField> describeFields = Schema.Account.SObjectType.getDescribe().fields.getMap();
-        \\        Map<Schema.SObjectField, String> valuesByField = new Map<Schema.SObjectField, String>();
+        \\        Map<Schema.SObjectField, String> valuesByField = new Map<Schema.SObjectField,
+        \\ String>();
         \\        valuesByField.put(describeFields.get('Name'), 'name');
         \\        valuesByField.put(describeFields.get('OwnerId'), 'owner');
         \\        return valuesByField.size() + ':' + valuesByField.get(describeFields.get('Name')) + ':' + valuesByField.get(describeFields.get('OwnerId'));
@@ -13066,7 +13092,8 @@ test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mod
         \\        User u = new User(
         \\            Email='min@probe.test', Username='min@probe-x.test', LastName='min',
         \\            Alias='min', ProfileId=p.Id, LanguageLocaleKey='en_US',
-        \\            LocaleSidKey='en_US', TimeZoneSidKey='America/Chicago', EmailEncodingKey='UTF-8');
+        \\            LocaleSidKey='en_US', TimeZoneSidKey='America/Chicago',
+        \\ EmailEncodingKey='UTF-8');
         \\        insert u;
         \\        return u;
         \\    }
