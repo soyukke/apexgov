@@ -41,13 +41,13 @@ pub const Match = struct {
     }
 
     /// グループ n の部分文字列を取得。
-    pub fn group_slice(self: *const Match, n: usize, input: []const u8) ?[]const u8 {
+    pub fn groupSlice(self: *const Match, n: usize, input: []const u8) ?[]const u8 {
         if (self.group(n)) |span| return span.slice(input);
         return null;
     }
 
     /// キャプチャグループ数（group(0) を含む）。
-    pub fn group_count(self: *const Match) usize {
+    pub fn groupCount(self: *const Match) usize {
         var count: usize = 0;
         for (self.groups) |g| {
             if (g != null) count += 1 else break;
@@ -67,8 +67,8 @@ pub const max_groups = 16;
 ///
 /// `pattern` は Java/Apex 形式のエスケープ（`\\d` → `\d`）を含むことを想定。
 /// 結果は `Match` のスライスとして返される（arena に確保）。
-pub fn find_all(arena: std.mem.Allocator, pattern: []const u8, input: []const u8) ![]Match {
-    const pat = try preprocess_pattern(arena, pattern);
+pub fn findAll(arena: std.mem.Allocator, pattern: []const u8, input: []const u8) ![]Match {
+    const pat = try preprocessPattern(arena, pattern);
     var result: std.ArrayListUnmanaged(Match) = .empty;
 
     var search_start: usize = 0;
@@ -80,7 +80,7 @@ pub fn find_all(arena: std.mem.Allocator, pattern: []const u8, input: []const u8
         var pos = search_start;
         while (pos <= input.len) : (pos += 1) {
             var groups: [max_groups]?Span = .{null} ** max_groups;
-            if (match_at(pat, 0, input, pos, &groups, 0, 0)) |end_pos| {
+            if (matchAt(pat, 0, input, pos, &groups, 0, 0)) |end_pos| {
                 best_end = end_pos;
                 best_start = pos;
                 best_groups = groups;
@@ -104,9 +104,9 @@ pub fn find_all(arena: std.mem.Allocator, pattern: []const u8, input: []const u8
 
 /// 入力文字列の先頭からパターン全体がマッチするか判定。
 pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8) !bool {
-    const pat = try preprocess_pattern(arena, pattern);
+    const pat = try preprocessPattern(arena, pattern);
     var groups: [max_groups]?Span = .{null} ** max_groups;
-    if (match_at(pat, 0, input, 0, &groups, 0, 0)) |end| {
+    if (matchAt(pat, 0, input, 0, &groups, 0, 0)) |end| {
         return end == input.len;
     }
     return false;
@@ -114,13 +114,8 @@ pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
 
 /// パターンにマッチする全ての部分文字列を replacement で置換。
 /// replacement 内の `$1`..`$9` はキャプチャグループに展開される。
-pub fn replace_all(
-    arena: std.mem.Allocator,
-    pattern: []const u8,
-    input: []const u8,
-    replacement: []const u8,
-) ![]const u8 {
-    const all_matches = try find_all(arena, pattern, input);
+pub fn replaceAll(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, replacement: []const u8) ![]const u8 {
+    const all_matches = try findAll(arena, pattern, input);
     if (all_matches.len == 0) return input;
 
     var result: std.ArrayListUnmanaged(u8) = .empty;
@@ -133,14 +128,10 @@ pub fn replace_all(
         // Expand replacement (handle $1..$9 backreferences)
         var ri: usize = 0;
         while (ri < replacement.len) : (ri += 1) {
-            if (replacement[ri] == '$' and
-                ri + 1 < replacement.len and
-                replacement[ri + 1] >= '0' and
-                replacement[ri + 1] <= '9')
-            {
+            if (replacement[ri] == '$' and ri + 1 < replacement.len and replacement[ri + 1] >= '0' and replacement[ri + 1] <= '9') {
                 const gidx: usize = replacement[ri + 1] - '0';
                 ri += 1;
-                if (m.group_slice(gidx, input)) |gs| {
+                if (m.groupSlice(gidx, input)) |gs| {
                     try result.appendSlice(arena, gs);
                 }
             } else if (replacement[ri] == '\\' and ri + 1 < replacement.len) {
@@ -163,14 +154,14 @@ pub fn replace_all(
 // ---------------------------------------------------------------------------
 
 /// Java/Apex の二重エスケープ（`\\d` → `\d`）を解決。
-fn preprocess_pattern(arena: std.mem.Allocator, pattern: []const u8) ![]const u8 {
+fn preprocessPattern(arena: std.mem.Allocator, pattern: []const u8) ![]const u8 {
     var clean: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
     while (i < pattern.len) : (i += 1) {
         if (pattern[i] == '\\' and i + 1 < pattern.len) {
             const next = pattern[i + 1];
             if (next == '\\') {
-                if (i + 2 < pattern.len and is_regex_escape_char(pattern[i + 2])) {
+                if (i + 2 < pattern.len and isRegexEscapeChar(pattern[i + 2])) {
                     i += 1;
                     try clean.append(arena, '\\');
                     try clean.append(arena, pattern[i + 1]);
@@ -191,12 +182,9 @@ fn preprocess_pattern(arena: std.mem.Allocator, pattern: []const u8) ![]const u8
     return clean.items;
 }
 
-fn is_regex_escape_char(c: u8) bool {
+fn isRegexEscapeChar(c: u8) bool {
     return switch (c) {
-        's', 'd', 'w', 'S', 'D', 'W' => true,
-        '*', '.', '+', '?' => true,
-        '(', ')', '[', ']', '{', '}' => true,
-        '|', '^', '$' => true,
+        's', 'd', 'w', 'S', 'D', 'W', '*', '.', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$' => true,
         else => false,
     };
 }
@@ -211,7 +199,7 @@ fn is_regex_escape_char(c: u8) bool {
 /// applies to any `(` encountered while scanning `pat`. The top-level caller passes 0.
 /// Without this offset, recursing on a sub-pattern would restart counting at 1 and
 /// cause sibling/nested groups to collide on the same index.
-fn match_at(
+fn matchAt(
     pat: []const u8,
     pat_pos: usize,
     input: []const u8,
@@ -222,333 +210,208 @@ fn match_at(
 ) ?usize {
     if (depth > 200) return null;
     const pp = pat_pos;
-    const ip = input_pos;
-    if (pp >= pat.len) return ip;
-    // ^ アンカー — 入力の先頭にのみマッチ
-    if (pat[pp] == '^') {
-        if (ip != 0) return null;
-        return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
-    }
-    // $ アンカー — 入力の末尾にのみマッチ
-    if (pat[pp] == '$') {
-        if (ip != input.len) return null;
-        return match_at(pat, pp + 1, input, ip, groups, depth + 1, group_base);
-    }
-    // グループ (キャプチャ、非キャプチャ、lookahead)
-    if (pat[pp] == '(') {
-        return match_at_group(pat, pp, input, ip, groups, depth, group_base);
-    }
-    // Backreference: \1..\9 — match the same text as captured by group N
-    if (pat[pp] == '\\' and pp + 1 < pat.len and pat[pp + 1] >= '1' and pat[pp + 1] <= '9') {
-        return match_at_backreference(pat, pp, input, ip, groups, depth, group_base);
-    }
-    // 単一アトム＋量詞
-    return match_at_single_atom(pat, pp, input, ip, groups, depth, group_base);
-}
-
-fn match_at_group(
-    pat: []const u8,
-    pp: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    group_base: u8,
-) ?usize {
-    const group_end = find_group_end(pat, pp) orelse return null;
-    const inner = pat[pp + 1 .. group_end];
-    const after = pat[group_end + 1 ..];
-
-    // Lookahead: (?=...) positive, (?!...) negative — zero-width assertion
-    if (inner.len >= 2 and inner[0] == '?' and (inner[1] == '=' or inner[1] == '!')) {
-        return match_at_lookahead(pat, inner, group_end, input, ip, groups, depth, group_base);
-    }
-    // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
-    if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and
-        (inner[2] == '=' or inner[2] == '!'))
-    {
-        return match_at_lookbehind(pat, inner, group_end, input, ip, groups, depth, group_base);
-    }
-    // Non-capturing group: (?:...)
-    const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
-    const group_inner = if (is_non_capturing) inner[2..] else inner;
-    const quant = parse_quantifier(after);
-    const grp_idx = match_at_group_index(pat, pp, group_base, is_non_capturing);
-    // When recursing into an alternative inside this group, pass `grp_idx`
-    // (or `group_base` for non-capturing groups) so inner `(`s number correctly.
-    const inner_base: u8 = if (is_non_capturing) group_base else grp_idx;
-    const alternatives = split_alternatives(group_inner);
-    const rest_start = group_end + 1 + quant.len;
-    if (quant.min == 1 and quant.max == 1) {
-        return match_at_group_single(
-            pat,
-            alternatives,
-            rest_start,
-            input,
-            ip,
-            groups,
-            grp_idx,
-            depth,
-            group_base,
-            inner_base,
-        );
-    }
-    return match_quantified_group(
-        pat,
-        pp,
-        group_end,
-        rest_start,
-        quant,
-        input,
-        ip,
-        groups,
-        grp_idx,
-        depth,
-        group_base,
-        inner_base,
-    );
-}
-
-fn match_at_lookahead(
-    pat: []const u8,
-    inner: []const u8,
-    group_end: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    group_base: u8,
-) ?usize {
-    const is_positive = inner[1] == '=';
-    const la_pat = inner[2..];
-    const la_alts = split_alternatives(la_pat);
-    var la_matched = false;
-    for (la_alts) |alt| {
-        if (alt) |a| {
-            if (match_at(a, 0, input, ip, groups, depth + 1, group_base) != null) {
-                la_matched = true;
-                break;
-            }
-        } else break;
-    }
-    if (is_positive != la_matched) return null;
-    // Zero-width: don't consume input, continue with rest
-    const rest_start = group_end + 1;
-    if (rest_start >= pat.len) return ip;
-    return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
-}
-
-/// Bounded by the pattern's maximum possible match length (kept small for perf;
-/// matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
-fn match_at_lookbehind(
-    pat: []const u8,
-    inner: []const u8,
-    group_end: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    group_base: u8,
-) ?usize {
-    const is_positive = inner[2] == '=';
-    const lb_pat = inner[3..];
-    const max_lb = lookbehind_max_len(lb_pat);
-    var lb_matched = false;
-    var L: usize = 0;
-    const limit = @min(ip, max_lb);
-    while (L <= limit) : (L += 1) {
-        if (match_at(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1, group_base)) |end_pos| {
-            if (end_pos == L) {
-                lb_matched = true;
-                break;
-            }
-        }
-    }
-    if (is_positive != lb_matched) return null;
-    const rest_start = group_end + 1;
-    if (rest_start >= pat.len) return ip;
-    return match_at(pat, rest_start, input, ip, groups, depth + 1, group_base);
-}
-
-fn match_at_group_index(
-    pat: []const u8,
-    pp: usize,
-    group_base: u8,
-    is_non_capturing: bool,
-) u8 {
-    if (is_non_capturing) return 0;
-    var idx: u8 = group_base + 1;
-    var gi: usize = 0;
-    while (gi < pp) : (gi += 1) {
-        if (pat[gi] == '\\') {
-            gi += 1;
-            continue;
-        }
-        if (pat[gi] == '(') {
-            // Skip non-capturing groups (?...) and lookahead/lookbehind for index counting
-            if (gi + 2 < pat.len and pat[gi + 1] == '?' and
-                (pat[gi + 2] == '=' or pat[gi + 2] == '!' or
-                    pat[gi + 2] == ':' or pat[gi + 2] == '<'))
-            {
-                continue;
-            }
-            idx += 1;
-        }
-    }
-    return if (idx > max_groups - 1) max_groups - 1 else idx;
-}
-
-fn match_at_group_single(
-    pat: []const u8,
-    alternatives: [8]?[]const u8,
-    rest_start: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    grp_idx: u8,
-    depth: u32,
-    group_base: u8,
-    inner_base: u8,
-) ?usize {
-    for (alternatives) |alt| {
-        const a = alt orelse break;
-        const initial_alt_end =
-            match_at(a, 0, input, ip, groups, depth + 1, inner_base) orelse continue;
-        // The inner match may have greedily consumed characters that the
-        // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
-        // fails, try shorter inner matches down to the minimum valid length.
-        // Fast path: when the alternative is a single greedy atom (`.*`, `\w+`,
-        // `[abc]*`, etc.), any shorter length is valid by construction, so we
-        // skip re-verifying via `match_at` and just iterate one char at a time
-        // — O(n) instead of O(n²).
-        const greedy = greedy_atom_bounds(a);
-        var alt_end: usize = initial_alt_end;
-        while (true) {
-            if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
-            if (rest_start >= pat.len) return alt_end;
-            const rec = match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base);
-            if (rec) |final_end| return final_end;
-            if (grp_idx > 0) groups.*[grp_idx] = null;
-            if (alt_end <= ip) break;
-            if (greedy) |g| {
-                // Fast path: decrement until we'd violate the atom's lower
-                // bound (`ip + min_reps`); no `match_at` needed.
-                const min_end = ip + g.min;
-                if (alt_end <= min_end) break;
-                alt_end -= 1;
-            } else {
-                alt_end = match_at_group_single_shrink(
-                    a,
-                    alt_end,
-                    input,
-                    ip,
-                    groups,
-                    depth,
-                    inner_base,
-                ) orelse break;
-            }
-        }
-    }
-    return null;
-}
-
-/// General path: verify that a shrunken input still matches the alternative.
-/// Returns the new alt_end to retry, or null when no further shrinking is valid.
-fn match_at_group_single_shrink(
-    a: []const u8,
-    alt_end: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    inner_base: u8,
-) ?usize {
-    var next_end: usize = alt_end - 1;
-    const sub_input = input[0..next_end];
-    if (match_at(a, 0, sub_input, ip, groups, depth + 1, inner_base)) |e| {
-        next_end = e;
-    } else return null;
-    if (next_end == alt_end) {
-        if (next_end == 0) return null;
-        next_end -= 1;
-    }
-    return next_end;
-}
-
-fn match_at_backreference(
-    pat: []const u8,
-    pp: usize,
-    input: []const u8,
-    ip: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    group_base: u8,
-) ?usize {
-    const ref_idx: u8 = pat[pp + 1] - '0';
-    const ref_span = groups.*[ref_idx] orelse return null;
-    const ref_text = input[ref_span.start..ref_span.end];
-    if (ip + ref_text.len > input.len) return null;
-    if (!std.mem.eql(u8, input[ip .. ip + ref_text.len], ref_text)) return null;
-    const rest_start = pp + 2;
-    const new_ip = ip + ref_text.len;
-    if (rest_start >= pat.len) return new_ip;
-    return match_at(pat, rest_start, input, new_ip, groups, depth + 1, group_base);
-}
-
-fn match_at_single_atom(
-    pat: []const u8,
-    pp: usize,
-    input: []const u8,
-    input_pos: usize,
-    groups: *[max_groups]?Span,
-    depth: u32,
-    group_base: u8,
-) ?usize {
-    const atom_len = atom_length(pat, pp);
-    if (atom_len == 0) return null;
-    const after_atom = pat[pp + atom_len ..];
-    const quant = parse_quantifier(after_atom);
-    const rest_start = pp + atom_len + quant.len;
-
     var ip = input_pos;
-    var count: usize = 0;
-    var positions: [1001]usize = undefined;
-    positions[0] = ip;
-    while (count < quant.max and ip <= input.len) {
-        if (!atom_matches(pat, pp, input, ip)) break;
-        ip += 1;
-        count += 1;
-        if (count < positions.len) positions[count] = ip;
-    }
-    if (quant.greedy) {
-        var try_count = count;
-        while (true) {
-            if (try_count >= quant.min) {
+
+    while (pp < pat.len) {
+        // ^ アンカー — 入力の先頭にのみマッチ
+        if (pat[pp] == '^') {
+            if (ip != 0) return null;
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1, group_base);
+        }
+        // $ アンカー — 入力の末尾にのみマッチ
+        if (pat[pp] == '$') {
+            if (ip != input.len) return null;
+            return matchAt(pat, pp + 1, input, ip, groups, depth + 1, group_base);
+        }
+        // グループ (キャプチャ、非キャプチャ、lookahead)
+        if (pat[pp] == '(') {
+            const group_end = findGroupEnd(pat, pp) orelse return null;
+            const inner = pat[pp + 1 .. group_end];
+            const after = pat[group_end + 1 ..];
+
+            // Lookahead: (?=...) positive, (?!...) negative — zero-width assertion
+            if (inner.len >= 2 and inner[0] == '?' and (inner[1] == '=' or inner[1] == '!')) {
+                const is_positive = inner[1] == '=';
+                const la_pat = inner[2..];
+                const la_alts = splitAlternatives(la_pat);
+                var la_matched = false;
+                for (la_alts) |alt| {
+                    if (alt) |a| {
+                        if (matchAt(a, 0, input, ip, groups, depth + 1, group_base) != null) {
+                            la_matched = true;
+                            break;
+                        }
+                    } else break;
+                }
+                if (is_positive != la_matched) return null;
+                // Zero-width: don't consume input, continue with rest
+                const rest_start = group_end + 1;
+                if (rest_start >= pat.len) return ip;
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1, group_base);
+            }
+
+            // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
+            // Bounded by the pattern's maximum possible match length (kept small for perf;
+            // matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
+            if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and (inner[2] == '=' or inner[2] == '!')) {
+                const is_positive = inner[2] == '=';
+                const lb_pat = inner[3..];
+                const max_lb = lookbehindMaxLen(lb_pat);
+                var lb_matched = false;
+                var L: usize = 0;
+                const limit = @min(ip, max_lb);
+                while (L <= limit) : (L += 1) {
+                    if (matchAt(lb_pat, 0, input[ip - L .. ip], 0, groups, depth + 1, group_base)) |end_pos| {
+                        if (end_pos == L) {
+                            lb_matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (is_positive != lb_matched) return null;
+                const rest_start = group_end + 1;
+                if (rest_start >= pat.len) return ip;
+                return matchAt(pat, rest_start, input, ip, groups, depth + 1, group_base);
+            }
+
+            // Non-capturing group: (?:...)
+            const is_non_capturing = inner.len >= 2 and inner[0] == '?' and inner[1] == ':';
+            const group_inner = if (is_non_capturing) inner[2..] else inner;
+
+            const quant = parseQuantifier(after);
+            const grp_idx: u8 = if (is_non_capturing) 0 else blk: {
+                var idx: u8 = group_base + 1;
+                var gi: usize = 0;
+                while (gi < pp) : (gi += 1) {
+                    if (pat[gi] == '\\') {
+                        gi += 1;
+                        continue;
+                    }
+                    if (pat[gi] == '(') {
+                        // Skip non-capturing groups (?...) and lookahead/lookbehind for index counting
+                        if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':' or pat[gi + 2] == '<')) continue;
+                        idx += 1;
+                    }
+                }
+                break :blk if (idx > max_groups - 1) max_groups - 1 else idx;
+            };
+            // When recursing into an alternative inside this group, pass `grp_idx`
+            // (or `group_base` for non-capturing groups) so inner `(`s number correctly.
+            const inner_base: u8 = if (is_non_capturing) group_base else grp_idx;
+            const alternatives = splitAlternatives(group_inner);
+            const rest_start = group_end + 1 + quant.len;
+
+            if (quant.min == 1 and quant.max == 1) {
+                for (alternatives) |alt| {
+                    if (alt) |a| {
+                        if (matchAt(a, 0, input, ip, groups, depth + 1, inner_base)) |initial_alt_end| {
+                            // The inner match may have greedily consumed characters that the
+                            // rest of the pattern needs (e.g. `(.*)c` on `abc`). If the rest
+                            // fails, try shorter inner matches down to the minimum valid length.
+                            // Fast path: when the alternative is a single greedy atom (`.*`,
+                            // `\w+`, `[abc]*`, etc.), any shorter length is valid by
+                            // construction, so we skip re-verifying via `matchAt` and just
+                            // iterate one char at a time — O(n) instead of O(n²).
+                            const greedy = greedyAtomBounds(a);
+                            var alt_end: usize = initial_alt_end;
+                            while (true) {
+                                if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                                if (rest_start >= pat.len) return alt_end;
+                                if (matchAt(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
+                                    return final_end;
+                                }
+                                if (grp_idx > 0) groups.*[grp_idx] = null;
+                                if (alt_end <= ip) break;
+                                if (greedy) |g| {
+                                    // Fast path: decrement until we'd violate the atom's lower
+                                    // bound (`ip + min_reps`); no `matchAt` needed.
+                                    const min_end = ip + g.min;
+                                    if (alt_end <= min_end) break;
+                                    alt_end -= 1;
+                                } else {
+                                    // General path: verify shrunken input still matches.
+                                    var next_end: usize = alt_end - 1;
+                                    const sub_input = input[0..next_end];
+                                    const sub_match = matchAt(a, 0, sub_input, ip, groups, depth + 1, inner_base);
+                                    if (sub_match) |e| {
+                                        next_end = e;
+                                    } else {
+                                        break;
+                                    }
+                                    if (next_end == alt_end) {
+                                        if (next_end == 0) break;
+                                        next_end -= 1;
+                                    }
+                                    alt_end = next_end;
+                                }
+                            }
+                        }
+                    } else break;
+                }
+                return null;
+            }
+            return matchQuantifiedGroup(pat, pp, group_end, rest_start, quant, input, ip, groups, grp_idx, depth, group_base, inner_base);
+        }
+
+        // Backreference: \1..\9 — match the same text as captured by group N
+        if (pat[pp] == '\\' and pp + 1 < pat.len and pat[pp + 1] >= '1' and pat[pp + 1] <= '9') {
+            const ref_idx: u8 = pat[pp + 1] - '0';
+            const ref_span = groups.*[ref_idx] orelse return null;
+            const ref_text = input[ref_span.start..ref_span.end];
+            if (ip + ref_text.len > input.len) return null;
+            if (!std.mem.eql(u8, input[ip .. ip + ref_text.len], ref_text)) return null;
+            const rest_start = pp + 2;
+            const new_ip = ip + ref_text.len;
+            if (rest_start >= pat.len) return new_ip;
+            return matchAt(pat, rest_start, input, new_ip, groups, depth + 1, group_base);
+        }
+
+        // 単一アトム＋量詞
+        const atom_len = atomLength(pat, pp);
+        if (atom_len == 0) return null;
+        const after_atom = pat[pp + atom_len ..];
+        const quant = parseQuantifier(after_atom);
+        const rest_start = pp + atom_len + quant.len;
+
+        // Quantified atom match
+        var count: usize = 0;
+        var positions: [1001]usize = undefined;
+        positions[0] = ip;
+        while (count < quant.max and ip <= input.len) {
+            if (!atomMatches(pat, pp, input, ip)) break;
+            ip += 1;
+            count += 1;
+            if (count < positions.len) positions[count] = ip;
+        }
+        if (quant.greedy) {
+            var try_count = count;
+            while (true) {
+                if (try_count >= quant.min) {
+                    const try_ip = positions[@min(try_count, positions.len - 1)];
+                    if (rest_start >= pat.len) return try_ip;
+                    if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+                }
+                if (try_count == 0) break;
+                try_count -= 1;
+            }
+        } else {
+            var try_count = quant.min;
+            while (try_count <= count) : (try_count += 1) {
                 const try_ip = positions[@min(try_count, positions.len - 1)];
                 if (rest_start >= pat.len) return try_ip;
-                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
-                    return end;
+                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
             }
-            if (try_count == 0) break;
-            try_count -= 1;
         }
-    } else {
-        var try_count = quant.min;
-        while (try_count <= count) : (try_count += 1) {
-            const try_ip = positions[@min(try_count, positions.len - 1)];
-            if (rest_start >= pat.len) return try_ip;
-            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
-                return end;
-        }
+        return null;
     }
-    return null;
+    return ip;
 }
 
 // ---------------------------------------------------------------------------
 // アトムマッチング
 // ---------------------------------------------------------------------------
 
-fn atom_matches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
+fn atomMatches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
     if (ip >= input.len) return false;
     const c = input[ip];
     if (pat[pp] == '.') return c != '\n';
@@ -563,22 +426,22 @@ fn atom_matches(pat: []const u8, pp: usize, input: []const u8, ip: usize) bool {
             else => c == pat[pp + 1],
         };
     }
-    if (pat[pp] == '[') return char_class_matches(pat, pp, c);
+    if (pat[pp] == '[') return charClassMatches(pat, pp, c);
     return c == pat[pp];
 }
 
 /// Estimate the maximum number of characters a (fixed/bounded) lookbehind body can match.
 /// Counts atoms with quantifier upper bounds; unbounded `*`/`+` cap at HARD_CAP.
 /// Returns at most HARD_CAP to keep search cost predictable.
-fn lookbehind_max_len(pat: []const u8) usize {
+fn lookbehindMaxLen(pat: []const u8) usize {
     const HARD_CAP: usize = 64;
     var total: usize = 0;
     var i: usize = 0;
     while (i < pat.len and total <= HARD_CAP) {
         if (pat[i] == '(') {
-            const ge = find_group_end(pat, i) orelse return HARD_CAP;
-            const inner_max = lookbehind_max_len(pat[i + 1 .. ge]);
-            const q = parse_quantifier(pat[ge + 1 ..]);
+            const ge = findGroupEnd(pat, i) orelse return HARD_CAP;
+            const inner_max = lookbehindMaxLen(pat[i + 1 .. ge]);
+            const q = parseQuantifier(pat[ge + 1 ..]);
             const reps: usize = if (q.max >= 1000) HARD_CAP else q.max;
             total +|= inner_max *| reps;
             i = ge + 1 + q.len;
@@ -588,12 +451,12 @@ fn lookbehind_max_len(pat: []const u8) usize {
             i += 1;
             continue;
         }
-        const al = atom_length(pat, i);
+        const al = atomLength(pat, i);
         if (al == 0) {
             i += 1;
             continue;
         }
-        const q = parse_quantifier(pat[i + al ..]);
+        const q = parseQuantifier(pat[i + al ..]);
         const reps: usize = if (q.max >= 1000) HARD_CAP else q.max;
         total +|= reps;
         i += al + q.len;
@@ -601,10 +464,10 @@ fn lookbehind_max_len(pat: []const u8) usize {
     return @min(total, HARD_CAP);
 }
 
-fn atom_length(pat: []const u8, pp: usize) usize {
+fn atomLength(pat: []const u8, pp: usize) usize {
     if (pp >= pat.len) return 0;
     if (pat[pp] == '\\' and pp + 1 < pat.len) {
-        // Backreferences (\1..\9) are handled separately in match_at, not as atoms
+        // Backreferences (\1..\9) are handled separately in matchAt, not as atoms
         if (pat[pp + 1] >= '1' and pat[pp + 1] <= '9') return 0;
         return 2;
     }
@@ -618,7 +481,7 @@ fn atom_length(pat: []const u8, pp: usize) usize {
     return 1;
 }
 
-fn char_class_matches(pat: []const u8, pp: usize, c: u8) bool {
+fn charClassMatches(pat: []const u8, pp: usize, c: u8) bool {
     var i = pp + 1;
     var negate = false;
     if (i < pat.len and pat[i] == '^') {
@@ -650,13 +513,13 @@ fn char_class_matches(pat: []const u8, pp: usize, c: u8) bool {
 /// Inspect the body of a capturing group to decide whether any inner-match length
 /// between `min` and the greedy maximum is valid. True only when the body is a
 /// single atom followed by `*`, `+`, `?`, or `{n,m}` — the common `.*`, `\w+`,
-/// `[abc]*` shapes that drive the fast shrink path in `match_at`.
-fn greedy_atom_bounds(pat: []const u8) ?struct { min: usize } {
-    const al = atom_length(pat, 0);
+/// `[abc]*` shapes that drive the fast shrink path in `matchAt`.
+fn greedyAtomBounds(pat: []const u8) ?struct { min: usize } {
+    const al = atomLength(pat, 0);
     if (al == 0) return null;
     const quant_str = pat[al..];
     if (quant_str.len == 0) return null;
-    const q = parse_quantifier(quant_str);
+    const q = parseQuantifier(quant_str);
     // The atom + quantifier must be the entire body. Anything trailing invalidates
     // the assumption that every shorter length is a valid match.
     if (al + q.len != pat.len) return null;
@@ -677,7 +540,7 @@ const Quantifier = struct {
     greedy: bool = true,
 };
 
-fn parse_quantifier(after: []const u8) Quantifier {
+fn parseQuantifier(after: []const u8) Quantifier {
     if (after.len == 0) return .{ .min = 1, .max = 1, .len = 0 };
     if (after[0] == '*') return .{
         .min = 0,
@@ -733,7 +596,7 @@ fn parse_quantifier(after: []const u8) Quantifier {
 // グループヘルパー
 // ---------------------------------------------------------------------------
 
-fn find_group_end(pat: []const u8, start: usize) ?usize {
+fn findGroupEnd(pat: []const u8, start: usize) ?usize {
     var depth: u32 = 0;
     var i = start;
     while (i < pat.len) : (i += 1) {
@@ -750,7 +613,7 @@ fn find_group_end(pat: []const u8, start: usize) ?usize {
     return null;
 }
 
-fn split_alternatives(inner: []const u8) [8]?[]const u8 {
+fn splitAlternatives(inner: []const u8) [8]?[]const u8 {
     var result: [8]?[]const u8 = .{null} ** 8;
     var count: usize = 0;
     var start: usize = 0;
@@ -790,7 +653,7 @@ fn split_alternatives(inner: []const u8) [8]?[]const u8 {
     return result;
 }
 
-fn match_quantified_group(
+fn matchQuantifiedGroup(
     pat: []const u8,
     group_start: usize,
     group_end: usize,
@@ -810,7 +673,7 @@ fn match_quantified_group(
     var ip = start_ip;
     reps[0] = ip;
     while (rep_count < quant.max) {
-        if (match_at(inner, 0, input, ip, groups, depth + 1, inner_base)) |end| {
+        if (matchAt(inner, 0, input, ip, groups, depth + 1, inner_base)) |end| {
             if (end == ip) break;
             ip = end;
             rep_count += 1;
@@ -829,8 +692,7 @@ fn match_quantified_group(
                         null;
                 }
                 if (rest_start >= pat.len) return try_ip;
-                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
-                    return end;
+                if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
             }
             if (try_reps == 0) break;
             try_reps -= 1;
@@ -846,8 +708,7 @@ fn match_quantified_group(
                     null;
             }
             if (rest_start >= pat.len) return try_ip;
-            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
-                return end;
+            if (matchAt(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
         }
     }
     return null;
@@ -860,23 +721,21 @@ fn match_quantified_group(
 test "digit pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "\\d+", "abc 123 def 456");
+    const result = try findAll(arena.allocator(), "\\d+", "abc 123 def 456");
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("123", result[0].group_slice(0, "abc 123 def 456").?);
-    try std.testing.expectEqualStrings("456", result[1].group_slice(0, "abc 123 def 456").?);
+    try std.testing.expectEqualStrings("123", result[0].groupSlice(0, "abc 123 def 456").?);
+    try std.testing.expectEqualStrings("456", result[1].groupSlice(0, "abc 123 def 456").?);
 }
 
 test "capture groups" {
     const input = "user@host";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "(\\w+)@(\\w+)", input);
+    const result = try findAll(arena.allocator(), "(\\w+)@(\\w+)", input);
     try std.testing.expectEqual(@as(usize, 1), result.len);
-    try std.testing.expectEqualStrings("user@host", result[0].group_slice(0, input).?);
-    try std.testing.expectEqualStrings("user", result[0].group_slice(1, input).?);
-    try std.testing.expectEqualStrings("host", result[0].group_slice(2, input).?);
+    try std.testing.expectEqualStrings("user@host", result[0].groupSlice(0, input).?);
+    try std.testing.expectEqualStrings("user", result[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("host", result[0].groupSlice(2, input).?);
 }
 
 test "nested capture groups number correctly" {
@@ -885,15 +744,14 @@ test "nested capture groups number correctly" {
     // sub-pattern. Patterns like `((A) (B))` need group(1)=outer, group(2)=A, group(3)=B.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     const input = "foo bar";
-    const r = try find_all(a, "(([a-z]+) ([a-z]+))", input);
+    const r = try findAll(a, "(([a-z]+) ([a-z]+))", input);
     try std.testing.expectEqual(@as(usize, 1), r.len);
-    try std.testing.expectEqualStrings("foo bar", r[0].group_slice(0, input).?);
-    try std.testing.expectEqualStrings("foo bar", r[0].group_slice(1, input).?);
-    try std.testing.expectEqualStrings("foo", r[0].group_slice(2, input).?);
-    try std.testing.expectEqualStrings("bar", r[0].group_slice(3, input).?);
+    try std.testing.expectEqualStrings("foo bar", r[0].groupSlice(0, input).?);
+    try std.testing.expectEqualStrings("foo bar", r[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("foo", r[0].groupSlice(2, input).?);
+    try std.testing.expectEqualStrings("bar", r[0].groupSlice(3, input).?);
 }
 
 test "greedy capture group backtracks to let the tail match" {
@@ -903,15 +761,14 @@ test "greedy capture group backtracks to let the tail match" {
     // another chance.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     try std.testing.expect(try matches(a, "a(.*)c", "abc"));
     try std.testing.expect(try matches(a, "a(.*)c", "abbc"));
     try std.testing.expect(try matches(a, "a (.*) c", "a bb c"));
     const input = "SELECT Name FROM Account";
-    const r = try find_all(a, "SELECT (.*) FROM Account", input);
+    const r = try findAll(a, "SELECT (.*) FROM Account", input);
     try std.testing.expectEqual(@as(usize, 1), r.len);
-    try std.testing.expectEqualStrings("Name", r[0].group_slice(1, input).?);
+    try std.testing.expectEqualStrings("Name", r[0].groupSlice(1, input).?);
 }
 
 test "three-level nested captures preserve numbering" {
@@ -919,51 +776,46 @@ test "three-level nested captures preserve numbering" {
     // (operand) (op) (operand) inside an outer group.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     const input = "AAA ___ BBB";
-    const r = try find_all(a, "(([A-Z]+) (_+) ([A-Z]+))", input);
+    const r = try findAll(a, "(([A-Z]+) (_+) ([A-Z]+))", input);
     try std.testing.expectEqual(@as(usize, 1), r.len);
-    try std.testing.expectEqualStrings("AAA ___ BBB", r[0].group_slice(1, input).?);
-    try std.testing.expectEqualStrings("AAA", r[0].group_slice(2, input).?);
-    try std.testing.expectEqualStrings("___", r[0].group_slice(3, input).?);
-    try std.testing.expectEqualStrings("BBB", r[0].group_slice(4, input).?);
+    try std.testing.expectEqualStrings("AAA ___ BBB", r[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("AAA", r[0].groupSlice(2, input).?);
+    try std.testing.expectEqualStrings("___", r[0].groupSlice(3, input).?);
+    try std.testing.expectEqualStrings("BBB", r[0].groupSlice(4, input).?);
 }
 
 test "character class" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "[a-z]+", "Hello World");
+    const result = try findAll(arena.allocator(), "[a-z]+", "Hello World");
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("ello", result[0].group_slice(0, "Hello World").?);
-    try std.testing.expectEqualStrings("orld", result[1].group_slice(0, "Hello World").?);
+    try std.testing.expectEqualStrings("ello", result[0].groupSlice(0, "Hello World").?);
+    try std.testing.expectEqualStrings("orld", result[1].groupSlice(0, "Hello World").?);
 }
 
 test "quantifier {n}" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "\\d{3}", "12 345 6789");
+    const result = try findAll(arena.allocator(), "\\d{3}", "12 345 6789");
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("345", result[0].group_slice(0, "12 345 6789").?);
-    try std.testing.expectEqualStrings("678", result[1].group_slice(0, "12 345 6789").?);
+    try std.testing.expectEqualStrings("345", result[0].groupSlice(0, "12 345 6789").?);
+    try std.testing.expectEqualStrings("678", result[1].groupSlice(0, "12 345 6789").?);
 }
 
 test "alternation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "(cat|dog)", "I have a cat and a dog");
+    const result = try findAll(arena.allocator(), "(cat|dog)", "I have a cat and a dog");
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("cat", result[0].group_slice(1, "I have a cat and a dog").?);
-    try std.testing.expectEqualStrings("dog", result[1].group_slice(1, "I have a cat and a dog").?);
+    try std.testing.expectEqualStrings("cat", result[0].groupSlice(1, "I have a cat and a dog").?);
+    try std.testing.expectEqualStrings("dog", result[1].groupSlice(1, "I have a cat and a dog").?);
 }
 
 test "matches full string" {
     var arena_m = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_m.deinit();
-
     const a = arena_m.allocator();
     try std.testing.expect(try matches(a, "\\d+", "12345"));
     try std.testing.expect(!try matches(a, "\\d+", "abc"));
@@ -973,60 +825,44 @@ test "matches full string" {
 test "anchors ^ and $" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // ^ and $ anchored pattern: match full string of parenthesized alphanumeric_
     const pat = "^\\([0-9A-Za-z_ ]+\\)$";
-    const r1 = try find_all(a, pat, "(Some_Namespace)");
+    const r1 = try findAll(a, pat, "(Some_Namespace)");
     try std.testing.expectEqual(@as(usize, 1), r1.len);
-    const r2 = try find_all(a, pat, "(System Code)");
+    const r2 = try findAll(a, pat, "(System Code)");
     try std.testing.expectEqual(@as(usize, 1), r2.len);
-    const r3 = try find_all(a, pat, "Class.Foo.bar: line 1");
+    const r3 = try findAll(a, pat, "Class.Foo.bar: line 1");
     try std.testing.expectEqual(@as(usize, 0), r3.len);
-    const r4 = try find_all(a, pat, "()");
+    const r4 = try findAll(a, pat, "()");
     try std.testing.expectEqual(@as(usize, 0), r4.len);
 }
 
-test "replace_all with backreferences" {
+test "replaceAll with backreferences" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Simple replacement without backreferences
-    try std.testing.expectEqualStrings(
-        "hello planet",
-        try replace_all(a, "world", "hello world", "planet"),
-    );
+    try std.testing.expectEqualStrings("hello planet", try replaceAll(a, "world", "hello world", "planet"));
     // Backreference $1
-    try std.testing.expectEqualStrings(
-        "(abc) (def)",
-        try replace_all(a, "(\\w+)", "abc def", "($1)"),
-    );
+    try std.testing.expectEqualStrings("(abc) (def)", try replaceAll(a, "(\\w+)", "abc def", "($1)"));
     // SSN-like pattern: mask first two groups
-    try std.testing.expectEqualStrings(
-        "XXX-XX-1234",
-        try replace_all(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"),
-    );
+    try std.testing.expectEqualStrings("XXX-XX-1234", try replaceAll(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"));
     // No match → return original
-    try std.testing.expectEqualStrings("hello", try replace_all(a, "\\d+", "hello", "NUM"));
+    try std.testing.expectEqualStrings("hello", try replaceAll(a, "\\d+", "hello", "NUM"));
 }
 
-test "replace_all supports non-greedy quantifiers" {
+test "replaceAll supports non-greedy quantifiers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
-    try std.testing.expectEqualStrings(
-        "x<>b<>c",
-        try replace_all(a, "a.+?z", "xa123zba456zc", "<>"),
-    );
+    try std.testing.expectEqualStrings("x<>b<>c", try replaceAll(a, "a.+?z", "xa123zba456zc", "<>"));
     try std.testing.expectEqualStrings(
         "\nClass.CallableLogger_Tests.test: line 10, column 1",
-        try replace_all(
+        try replaceAll(
             a,
             "(Class\\.Logger)\\..+?column 1",
-            "Class.Logger.newEntry: line 2, column 1\n" ++
-                "Class.CallableLogger_Tests.test: line 10, column 1",
+            "Class.Logger.newEntry: line 2, column 1\nClass.CallableLogger_Tests.test: line 10, column 1",
             "",
         ),
     );
@@ -1036,114 +872,94 @@ test "javadoc @see pattern" {
     const input = " * @see RestClient\n * @see ApiModel\n";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
-    const result = try find_all(arena.allocator(), "\\*\\s+@see\\s+(.*)", input);
+    const result = try findAll(arena.allocator(), "\\*\\s+@see\\s+(.*)", input);
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("RestClient", result[0].group_slice(1, input).?);
-    try std.testing.expectEqualStrings("ApiModel", result[1].group_slice(1, input).?);
+    try std.testing.expectEqualStrings("RestClient", result[0].groupSlice(1, input).?);
+    try std.testing.expectEqualStrings("ApiModel", result[1].groupSlice(1, input).?);
 }
 
 test "positive lookahead (?=...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Match digits followed by a non-digit (without consuming the non-digit)
-    const r1 = try find_all(a, "\\d+(?=[^0-9]|$)", "123abc");
+    const r1 = try findAll(a, "\\d+(?=[^0-9]|$)", "123abc");
     try std.testing.expectEqual(@as(usize, 1), r1.len);
-    try std.testing.expectEqualStrings("123", r1[0].group_slice(0, "123abc").?);
+    try std.testing.expectEqualStrings("123", r1[0].groupSlice(0, "123abc").?);
 }
 
 test "negative lookahead (?!...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Match digits NOT followed by more digits
-    const r1 = try find_all(a, "\\d(?!\\d)", "1234a5b");
+    const r1 = try findAll(a, "\\d(?!\\d)", "1234a5b");
     try std.testing.expectEqual(@as(usize, 2), r1.len);
-    try std.testing.expectEqualStrings("4", r1[0].group_slice(0, "1234a5b").?);
-    try std.testing.expectEqualStrings("5", r1[1].group_slice(0, "1234a5b").?);
+    try std.testing.expectEqualStrings("4", r1[0].groupSlice(0, "1234a5b").?);
+    try std.testing.expectEqualStrings("5", r1[1].groupSlice(0, "1234a5b").?);
 }
 
 test "backreference \\1 in pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Match word repeated with same separator: "ab-cd-ef" where separators must be same
-    const r1 = try find_all(a, "(\\d{4})([- ]?)\\d{4}\\2(\\d{4})", "1234-5678-9012");
+    const r1 = try findAll(a, "(\\d{4})([- ]?)\\d{4}\\2(\\d{4})", "1234-5678-9012");
     try std.testing.expectEqual(@as(usize, 1), r1.len);
-    try std.testing.expectEqualStrings("-", r1[0].group_slice(2, "1234-5678-9012").?);
+    try std.testing.expectEqualStrings("-", r1[0].groupSlice(2, "1234-5678-9012").?);
     // Mixed separators should NOT match
-    const r2 = try find_all(a, "(\\d{4})([- ])\\d{4}\\2(\\d{4})", "1234-5678 9012");
+    const r2 = try findAll(a, "(\\d{4})([- ])\\d{4}\\2(\\d{4})", "1234-5678 9012");
     try std.testing.expectEqual(@as(usize, 0), r2.len);
 }
 
-test "SSN regex replace_all" {
+test "SSN regex replaceAll" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     const ssn_pat = "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)";
     // Basic SSN: 123-45-6789 → XXX-XX-6789
-    try std.testing.expectEqualStrings(
-        "XXX-XX-6789",
-        try replace_all(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"),
-    );
+    try std.testing.expectEqualStrings("XXX-XX-6789", try replaceAll(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"));
     // SSN in context
-    try std.testing.expectEqualStrings(
-        "xyz XXX-XX-6789.",
-        try replace_all(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"),
-    );
+    try std.testing.expectEqualStrings("xyz XXX-XX-6789.", try replaceAll(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"));
     // No dashes: 123456789 → XXX-XX-6789
-    try std.testing.expectEqualStrings(
-        "XXX-XX-6789",
-        try replace_all(a, ssn_pat, "123456789", "$1XXX-XX-$4"),
-    );
+    try std.testing.expectEqualStrings("XXX-XX-6789", try replaceAll(a, ssn_pat, "123456789", "$1XXX-XX-$4"));
     // False positive: alphanumeric before → should NOT match
-    try std.testing.expectEqualStrings(
-        "abc123456789",
-        try replace_all(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"),
-    );
+    try std.testing.expectEqualStrings("abc123456789", try replaceAll(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"));
 }
 
 test "negative lookbehind (?<!...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Match digits NOT preceded by another digit (similar to (?<!\d)\d+)
-    const r1 = try find_all(a, "(?<!\\d)\\d+", "abc123def");
+    const r1 = try findAll(a, "(?<!\\d)\\d+", "abc123def");
     try std.testing.expectEqual(@as(usize, 1), r1.len);
-    try std.testing.expectEqualStrings("123", r1[0].group_slice(0, "abc123def").?);
+    try std.testing.expectEqualStrings("123", r1[0].groupSlice(0, "abc123def").?);
 }
 
 test "positive lookbehind (?<=...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     // Match a word preceded by "Mr "
-    const r1 = try find_all(a, "(?<=Mr )\\w+", "Hello Mr Smith");
+    const r1 = try findAll(a, "(?<=Mr )\\w+", "Hello Mr Smith");
     try std.testing.expectEqual(@as(usize, 1), r1.len);
-    try std.testing.expectEqualStrings("Smith", r1[0].group_slice(0, "Hello Mr Smith").?);
+    try std.testing.expectEqualStrings("Smith", r1[0].groupSlice(0, "Hello Mr Smith").?);
 }
 
 test "NebulaLogger SSN pattern (?<!\\d)...(?!\\d)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     const a = arena.allocator();
     const ssn_pat = "(?<!\\d)(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?!\\d)";
     // Matches space-separated SSN
     try std.testing.expectEqualStrings(
         "Something my social is XXX-XX-9999 in case",
-        try replace_all(a, ssn_pat, "Something my social is 400 11 9999 in case", "XXX-XX-$3"),
+        try replaceAll(a, ssn_pat, "Something my social is 400 11 9999 in case", "XXX-XX-$3"),
     );
     // Not preceded by digit, not followed by digit → NO match (false positive avoided)
     try std.testing.expectEqualStrings(
         "abc1234567890def",
-        try replace_all(a, ssn_pat, "abc1234567890def", "XXX-XX-$3"),
+        try replaceAll(a, ssn_pat, "abc1234567890def", "XXX-XX-$3"),
     );
 }

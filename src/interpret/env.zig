@@ -26,12 +26,7 @@ pub const Env = struct {
         try self.bindings.put(self.arena, name, value);
     }
 
-    pub fn define_typed(
-        self: *Env,
-        name: []const u8,
-        value: Value,
-        declared_type: ?[]const u8,
-    ) !void {
+    pub fn defineTyped(self: *Env, name: []const u8, value: Value, declared_type: ?[]const u8) !void {
         try self.bindings.put(self.arena, name, value);
         if (declared_type) |type_name| {
             try self.declared_types.put(self.arena, name, type_name);
@@ -58,12 +53,12 @@ pub const Env = struct {
         return false;
     }
 
-    pub fn get_declared_type(self: *const Env, name: []const u8) ?[]const u8 {
+    pub fn getDeclaredType(self: *const Env, name: []const u8) ?[]const u8 {
         if (self.declared_types.get(name)) |t| return t;
         for (self.declared_types.keys(), self.declared_types.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, name)) return v;
         }
-        if (self.parent) |p| return p.get_declared_type(name);
+        if (self.parent) |p| return p.getDeclaredType(name);
         return null;
     }
 
@@ -145,14 +140,14 @@ test "set undefined variable returns error" {
     try std.testing.expectError(error.UndefinedVariable, env.set("nope", .{ .integer = 1 }));
 }
 
-test "define_typed stores declared type" {
+test "defineTyped stores declared type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     var env = Env.init(arena.allocator());
-    try env.define_typed("account", .null_val, "Account");
+    try env.defineTyped("account", .null_val, "Account");
 
-    try std.testing.expectEqualStrings("Account", env.get_declared_type("account").?);
+    try std.testing.expectEqualStrings("Account", env.getDeclaredType("account").?);
 }
 
 test "has returns true for null-valued bindings" {

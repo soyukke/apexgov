@@ -34,11 +34,11 @@ pub const Value = union(enum) {
     object: *ObjectInstance,
     void_val,
 
-    pub fn is_null(self: Value) bool {
+    pub fn isNull(self: Value) bool {
         return self == .null_val;
     }
 
-    pub fn is_truthy(self: Value) bool {
+    pub fn isTruthy(self: Value) bool {
         return switch (self) {
             .null_val => false,
             .boolean => |b| b,
@@ -117,20 +117,20 @@ pub const RuntimeError = struct {
 // テスト
 // ---------------------------------------------------------------------------
 
-test "Value.is_null" {
+test "Value.isNull" {
     const v: Value = .null_val;
-    try std.testing.expect(v.is_null());
+    try std.testing.expect(v.isNull());
     const i: Value = .{ .integer = 42 };
-    try std.testing.expect(!i.is_null());
+    try std.testing.expect(!i.isNull());
 }
 
-test "Value.is_truthy" {
+test "Value.isTruthy" {
     const null_val: Value = .null_val;
-    try std.testing.expect(!null_val.is_truthy());
-    try std.testing.expect((Value{ .boolean = true }).is_truthy());
-    try std.testing.expect(!(Value{ .boolean = false }).is_truthy());
-    try std.testing.expect((Value{ .integer = 1 }).is_truthy());
-    try std.testing.expect(!(Value{ .integer = 0 }).is_truthy());
-    try std.testing.expect((Value{ .string = "hi" }).is_truthy());
-    try std.testing.expect(!(Value{ .string = "" }).is_truthy());
+    try std.testing.expect(!null_val.isTruthy());
+    try std.testing.expect((Value{ .boolean = true }).isTruthy());
+    try std.testing.expect(!(Value{ .boolean = false }).isTruthy());
+    try std.testing.expect((Value{ .integer = 1 }).isTruthy());
+    try std.testing.expect(!(Value{ .integer = 0 }).isTruthy());
+    try std.testing.expect((Value{ .string = "hi" }).isTruthy());
+    try std.testing.expect(!(Value{ .string = "" }).isTruthy());
 }
