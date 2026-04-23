@@ -8747,6 +8747,220 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn instanceof_sobject(val: Value, type_name: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(type_name, "SObject") or
+            std.ascii.eqlIgnoreCase(type_name, "Sobject") or
+            std.ascii.eqlIgnoreCase(type_name, "sObject"))
+        {
+            return true;
+        }
+        return std.ascii.eqlIgnoreCase(val.sobject.type_name, type_name);
+    }
+
+    fn instanceof_object(self: *Evaluator, val: Value, type_name: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(val.object.class_name, type_name)) return true;
+        if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |dot_pos| {
+            if (std.ascii.eqlIgnoreCase(val.object.class_name, type_name[dot_pos + 1 ..])) return true;
+        }
+        if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
+            if (std.ascii.eqlIgnoreCase(val.object.class_name[dot_pos + 1 ..], type_name)) return true;
+        }
+        if (self.find_class(val.object.class_name)) |cd| {
+            var cur: ?*ast.ClassDecl = cd;
+            while (cur) |ccd| {
+                for (ccd.interfaces) |iface| {
+                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) return true;
+                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
+                        if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) return true;
+                    }
+                }
+                if (ccd.super_class) |sc| {
+                    if (std.ascii.eqlIgnoreCase(sc.name, type_name)) return true;
+                    cur = self.find_class(sc.name);
+                } else break;
+            }
+        }
+        if (std.mem.endsWith(u8, type_name, "Exception") and
+            std.mem.endsWith(u8, val.object.class_name, "Exception"))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    fn instanceof_list(self: *Evaluator, val: Value, tn: anytype) bool {
+        const tn_base = blk: {
+            if (std.mem.lastIndexOfScalar(u8, tn.name, '.')) |di| break :blk tn.name[di + 1 ..];
+            break :blk tn.name;
+        };
+        const is_list_match = std.ascii.eqlIgnoreCase(tn.name, "List");
+        const is_iter_match = std.ascii.eqlIgnoreCase(tn_base, "Iterable");
+        if (!is_list_match and !is_iter_match) return false;
+        if (tn.params.len == 0) return true;
+        const elem_type = tn.params[0].name;
+        if (std.ascii.eqlIgnoreCase(elem_type, "Object")) return true;
+        if (elem_type.len == 0 or elem_type.len > 128) return true;
+        for (val.list.items.items) |item| {
+            if (item == .null_val) continue;
+            if (instanceof_matches_primitive(item, elem_type)) return true;
+            if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) return true;
+            return false;
+        }
+        return true;
+    }
+
+    fn instanceof_set_or_map(val: Value, tn_name: []const u8) bool {
+        if (val == .map) return std.ascii.eqlIgnoreCase(tn_name, "Map");
+        const tn_base = if (std.mem.lastIndexOfScalar(u8, tn_name, '.')) |di|
+            tn_name[di + 1 ..]
+        else
+            tn_name;
+        return std.ascii.eqlIgnoreCase(tn_name, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable");
+    }
+
+    fn instanceof_string(val: Value, type_name: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(type_name, "String")) return true;
+        if (std.ascii.eqlIgnoreCase(type_name, "Id")) return is_salesforce_id_string(val.string);
+        return false;
+    }
+
+    fn eval_instanceof_expr(self: *Evaluator, ie: *ast.InstanceofExpr, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(ie.operand, current_env);
+        const type_name = ie.type_name.name;
+        if (instanceof_matches_primitive(val, type_name)) return Value{ .boolean = true };
+        return switch (val) {
+            .sobject => Value{ .boolean = instanceof_sobject(val, type_name) },
+            .object => Value{ .boolean = self.instanceof_object(val, type_name) },
+            .list => Value{ .boolean = self.instanceof_list(val, ie.type_name) },
+            .map, .set => Value{ .boolean = instanceof_set_or_map(val, type_name) },
+            .string => Value{ .boolean = instanceof_string(val, type_name) },
+            .integer, .long, .double => Value{ .boolean = instanceof_matches_primitive(val, type_name) },
+            .boolean => Value{ .boolean = std.ascii.eqlIgnoreCase(type_name, "Boolean") },
+            else => Value{ .boolean = false },
+        };
+    }
+
+    fn raise_type_exception(
+        self: *Evaluator,
+        src_name: []const u8,
+        target: []const u8,
+    ) !void {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "Invalid conversion from runtime type {s} to {s}",
+            .{ src_name, target },
+        );
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.TypeException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = exc };
+    }
+
+    fn iface_matches_target(iface_name: []const u8, target: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(iface_name, target)) return true;
+        if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(iface_name, target[di + 1 ..])) return true;
+        }
+        if (std.mem.lastIndexOfScalar(u8, iface_name, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(iface_name[di + 1 ..], target)) return true;
+        }
+        return false;
+    }
+
+    fn cast_compatible_upward(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+        const src_cd = self.find_class(src_name) orelse return false;
+        var cur: ?*ast.ClassDecl = src_cd;
+        while (cur) |cd| {
+            if (std.ascii.eqlIgnoreCase(cd.name, target)) return true;
+            for (cd.interfaces) |iface| {
+                if (iface_matches_target(iface.name, target)) return true;
+            }
+            if (cd.super_class) |sc| {
+                if (std.ascii.eqlIgnoreCase(sc.name, target)) return true;
+                cur = self.find_class(sc.name);
+            } else break;
+        }
+        return false;
+    }
+
+    fn cast_compatible_downward(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+        const tgt_cd = self.find_class(target) orelse return false;
+        var cur2: ?*ast.ClassDecl = tgt_cd;
+        while (cur2) |cd| {
+            if (std.ascii.eqlIgnoreCase(cd.name, src_name)) return true;
+            if (cd.super_class) |sc| {
+                if (std.ascii.eqlIgnoreCase(sc.name, src_name)) return true;
+                cur2 = self.find_class(sc.name);
+            } else break;
+        }
+        return false;
+    }
+
+    fn handle_date_like_cast(
+        self: *Evaluator,
+        val: Value,
+        src_name: []const u8,
+        target: []const u8,
+    ) !?Value {
+        if (!(std.ascii.eqlIgnoreCase(target, "DateTime") or
+            std.ascii.eqlIgnoreCase(target, "Date") or
+            std.ascii.eqlIgnoreCase(target, "Time")))
+        {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(src_name, "Date") and
+            std.ascii.eqlIgnoreCase(target, "DateTime"))
+        {
+            if (val.object.fields.get("value")) |v| {
+                if (v == .string) {
+                    const dt_str = try std.fmt.allocPrint(
+                        self.arena,
+                        "{s}T00:00:00Z",
+                        .{v.string},
+                    );
+                    return try builtins.make_datetime_value(self.arena, dt_str);
+                }
+            }
+            return val;
+        }
+        if (std.ascii.eqlIgnoreCase(src_name, target)) return null;
+        const normalized_target =
+            if (std.ascii.eqlIgnoreCase(target, "DateTime")) "Datetime" else if (std.ascii.eqlIgnoreCase(target, "Date")) "Date" else if (std.ascii.eqlIgnoreCase(target, "Time")) "Time" else target;
+        try self.raise_type_exception(src_name, normalized_target);
+        return error.ApexException;
+    }
+
+    fn check_class_cast(
+        self: *Evaluator,
+        src_name: []const u8,
+        target: []const u8,
+    ) !void {
+        if (std.ascii.eqlIgnoreCase(src_name, target)) return;
+        if (self.cast_compatible_upward(src_name, target)) return;
+        if (self.cast_compatible_downward(src_name, target)) return;
+        if (self.is_known_interface_name(target)) {
+            try self.raise_type_exception(src_name, target);
+            return error.ApexException;
+        }
+        if (self.find_class(target)) |tgt_cd| {
+            if (tgt_cd.modifiers.is_abstract and self.find_class(src_name) != null) {
+                try self.raise_type_exception(src_name, target);
+                return error.ApexException;
+            }
+        }
+    }
+
+    fn eval_cast_expr(self: *Evaluator, ce: *ast.CastExpr, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(ce.operand, current_env);
+        const target = ce.target_type.name;
+        if (val == .object) {
+            const src_name = val.object.class_name;
+            if (try self.handle_date_like_cast(val, src_name, target)) |v| return v;
+            try self.check_class_cast(src_name, target);
+        }
+        return val;
+    }
+
     fn eval_call_super(self: *Evaluator, current_env: *Env, args: []const Value) !void {
         const this_val = current_env.get("this") orelse return;
         if (this_val != .object) return;
@@ -9146,168 +9360,7 @@ pub const Evaluator = struct {
                 return val;
             },
 
-            .cast_expr => |ce| {
-                const val = try self.eval_expr(ce.operand, current_env);
-                const target = ce.target_type.name;
-                // Check for incompatible casts that should throw TypeException
-                if (val == .object) {
-                    const src_name = val.object.class_name;
-                    // If casting to a primitive type like DateTime, Integer, etc. from an object
-                    if (std.ascii.eqlIgnoreCase(target, "DateTime") or
-                        std.ascii.eqlIgnoreCase(target, "Date") or
-                        std.ascii.eqlIgnoreCase(target, "Time"))
-                    {
-                        // Allow Date → Datetime cast (Apex converts Date to Datetime at midnight)
-                        if (std.ascii.eqlIgnoreCase(src_name, "Date") and
-                            std.ascii.eqlIgnoreCase(target, "DateTime"))
-                        {
-                            // Convert Date "YYYY-MM-DD" to Datetime "YYYY-MM-DDT00:00:00Z"
-                            if (val.object.fields.get("value")) |v| {
-                                if (v == .string) {
-                                    const dt_str = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "{s}T00:00:00Z",
-                                        .{v.string},
-                                    );
-                                    return try builtins.make_datetime_value(self.arena, dt_str);
-                                }
-                            }
-                            return val;
-                        }
-                        // Only allow if the object is actually that type
-                        if (!std.ascii.eqlIgnoreCase(src_name, target)) {
-                            // Normalize type name to match Apex conventions (e.g., DateTime →
-                            // Datetime)
-                            const normalized_target = if (std.ascii.eqlIgnoreCase(target, "DateTime")) "Datetime" else if (std.ascii.eqlIgnoreCase(target, "Date")) "Date" else if (std.ascii.eqlIgnoreCase(target, "Time")) "Time" else target;
-                            const msg = try std.fmt.allocPrint(
-                                self.arena,
-                                "Invalid conversion from runtime type {s} to {s}",
-                                .{ src_name, normalized_target },
-                            );
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.TypeException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                    }
-                    // Casting to a class type → check hierarchy
-                    if (!std.ascii.eqlIgnoreCase(src_name, target)) {
-                        // Check if target is a parent class
-                        var is_compatible = false;
-                        if (self.find_class(src_name)) |src_cd| {
-                            var cur: ?*ast.ClassDecl = src_cd;
-                            while (cur) |cd| {
-                                if (std.ascii.eqlIgnoreCase(cd.name, target)) {
-                                    is_compatible = true;
-                                    break;
-                                }
-                                // Check interfaces at this level
-                                for (cd.interfaces) |iface| {
-                                    if (std.ascii.eqlIgnoreCase(iface.name, target)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    // Trailing-component match so that `TriggerAction.BeforeInsert`
-                                    // matches an `implements BeforeInsert` declaration inside
-                                    // the class that owns `TriggerAction`.
-                                    if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(
-                                            iface.name,
-                                            target[di + 1 ..],
-                                        )) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                    }
-                                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(
-                                            iface.name[di + 1 ..],
-                                            target,
-                                        )) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (is_compatible) break;
-                                if (cd.super_class) |sc| {
-                                    if (std.ascii.eqlIgnoreCase(sc.name, target)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    cur = self.find_class(sc.name);
-                                } else break;
-                            }
-                        }
-                        // Also check if target is a child class of src (downcast)
-                        if (!is_compatible) {
-                            if (self.find_class(target)) |tgt_cd| {
-                                var cur2: ?*ast.ClassDecl = tgt_cd;
-                                while (cur2) |cd| {
-                                    if (std.ascii.eqlIgnoreCase(cd.name, src_name)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    if (cd.super_class) |sc| {
-                                        if (std.ascii.eqlIgnoreCase(sc.name, src_name)) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                        cur2 = self.find_class(sc.name);
-                                    } else break;
-                                }
-                            }
-                        }
-                        // If the target names a loaded interface declaration but neither
-                        // the source nor any of its ancestors implement it, Apex raises
-                        // TypeException. We only throw when we're confident target is
-                        // an interface in user code — otherwise preserve the historical
-                        // lenient cast for unknown/generic target names.
-                        if (!is_compatible and self.is_known_interface_name(target)) {
-                            const msg = try std.fmt.allocPrint(
-                                self.arena,
-                                "Invalid conversion from runtime type {s} to {s}",
-                                .{ src_name, target },
-                            );
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.TypeException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        // Abstract-class target: Apex rejects a cast to an abstract class
-                        // when the runtime object doesn't extend it. Trigger this only
-                        // when both sides are known user classes so the lenient fallback
-                        // still covers unknown / generic names.
-                        if (!is_compatible) {
-                            if (self.find_class(target)) |tgt_cd| {
-                                if (tgt_cd.modifiers.is_abstract and
-                                    self.find_class(src_name) != null)
-                                {
-                                    const msg = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "Invalid conversion from runtime type {s} to {s}",
-                                        .{ src_name, target },
-                                    );
-                                    const exc = try self.arena.create(types.ObjectInstance);
-                                    exc.* = .{ .class_name = "System.TypeException" };
-                                    try exc.fields.put(
-                                        self.arena,
-                                        "message",
-                                        Value{ .string = msg },
-                                    );
-                                    self.pending_exception = Value{ .object = exc };
-                                    return error.ApexException;
-                                }
-                            }
-                        }
-                    }
-                } else if (val == .sobject) {
-                    // SObject casts are always allowed (Account → SObject, etc.)
-                }
-                return val;
-            },
+            .cast_expr => |ce| return self.eval_cast_expr(ce, current_env),
 
             .ternary => |te| {
                 const cond = try self.eval_expr(te.condition, current_env);
@@ -9318,141 +9371,7 @@ pub const Evaluator = struct {
                 }
             },
 
-            .instanceof => |ie| {
-                const val = try self.eval_expr(ie.operand, current_env);
-                if (instanceof_matches_primitive(val, ie.type_name.name)) {
-                    return Value{ .boolean = true };
-                }
-                if (val == .sobject) {
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "SObject") or
-                        std.ascii.eqlIgnoreCase(ie.type_name.name, "Sobject") or
-                        std.ascii.eqlIgnoreCase(ie.type_name.name, "sObject"))
-                    {
-                        return Value{ .boolean = true };
-                    }
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(
-                        val.sobject.type_name,
-                        ie.type_name.name,
-                    ) };
-                }
-                if (val == .object) {
-                    // Check class name and superclass/interface hierarchy
-                    if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name))
-                        return Value{ .boolean = true };
-                    // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name
-                    // is the simple name
-                    if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(
-                            val.object.class_name,
-                            ie.type_name.name[dot_pos + 1 ..],
-                        )) return Value{ .boolean = true };
-                    }
-                    // Also match when class_name is dotted ("OuterClass.Inner") and type_name is
-                    // the simple name
-                    if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(
-                            val.object.class_name[dot_pos + 1 ..],
-                            ie.type_name.name,
-                        )) return Value{ .boolean = true };
-                    }
-                    // Walk superclass hierarchy
-                    if (self.find_class(val.object.class_name)) |cd| {
-                        var cur: ?*ast.ClassDecl = cd;
-                        while (cur) |ccd| {
-                            // Check implemented interfaces
-                            for (ccd.interfaces) |iface| {
-                                if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name))
-                                    return Value{ .boolean = true };
-                                // Also match when interface name has a prefix (e.g.,
-                                // "di_Binding.Provider" matches "Provider")
-                                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                                    if (std.ascii.eqlIgnoreCase(
-                                        iface.name[dot_pos + 1 ..],
-                                        ie.type_name.name,
-                                    )) return Value{ .boolean = true };
-                                }
-                            }
-                            if (ccd.super_class) |sc| {
-                                if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name))
-                                    return Value{ .boolean = true };
-                                cur = self.find_class(sc.name);
-                            } else break;
-                        }
-                    }
-                    // Check if it's an exception type matching Exception hierarchy
-                    if (std.mem.endsWith(u8, ie.type_name.name, "Exception") and
-                        std.mem.endsWith(u8, val.object.class_name, "Exception"))
-                    {
-                        return Value{ .boolean = true };
-                    }
-                    return Value{ .boolean = false };
-                }
-                if (val == .list) {
-                    const tn = ie.type_name.name;
-                    const tn_base = blk: {
-                        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| break :blk tn[di + 1 ..];
-                        break :blk tn;
-                    };
-                    // Apex List implements Iterable<Object>
-                    const is_list_match = std.ascii.eqlIgnoreCase(tn, "List");
-                    const is_iter_match = std.ascii.eqlIgnoreCase(tn_base, "Iterable");
-                    if (!is_list_match and !is_iter_match) return Value{ .boolean = false };
-                    // If no element type params specified, match any list
-                    if (ie.type_name.params.len == 0) return Value{ .boolean = true };
-                    // Check element type against actual list items
-                    // Note: type params are validated to have non-empty names
-                    const elem_type = ie.type_name.params[0].name;
-                    if (std.ascii.eqlIgnoreCase(elem_type, "Object"))
-                        return Value{ .boolean = true };
-                    if (elem_type.len > 0 and elem_type.len <= 128) {
-                        for (val.list.items.items) |item| {
-                            if (item == .null_val) continue;
-                            if (instanceof_matches_primitive(item, elem_type))
-                                return Value{ .boolean = true };
-                            if (item == .object and
-                                self.is_subclass_of(item.object.class_name, elem_type))
-                            {
-                                return Value{ .boolean = true };
-                            }
-                            return Value{ .boolean = false };
-                        }
-                    }
-                    return Value{ .boolean = true }; // empty list or unknown element type matches any
-                }
-                if (val == .map)
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
-                if (val == .set) {
-                    const tn = ie.type_name.name;
-                    const tn_base =
-                        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(
-                        tn,
-                        "Set",
-                    ) or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
-                }
-                if (val == .string) {
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String"))
-                        return Value{ .boolean = true };
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
-                        return Value{ .boolean = is_salesforce_id_string(val.string) };
-                    }
-                    return Value{ .boolean = false };
-                }
-                if (val == .integer) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .long) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .double) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(
-                    ie.type_name.name,
-                    "Boolean",
-                ) };
-                return Value{ .boolean = false };
-            },
+            .instanceof => |ie| return self.eval_instanceof_expr(ie, current_env),
 
             .soql => |sq| return self.execute_soql(sq.raw, current_env),
 
