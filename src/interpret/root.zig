@@ -487,6 +487,7 @@ fn run_tests_filtered(
 ) !TestSuiteResult {
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
+
     const parse_alloc = parse_arena.allocator();
 
     // 1. .cls ファイルを収集
