@@ -1725,7 +1725,10 @@ fn json_gen_write_field_name(
     }
     const count = json_generator_current_count(obj);
     if (count > 0) try json_generator_append(ctx, obj, ",");
-    const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    const name_value: Value = blk: {
+        if (args[0] == .string) break :blk args[0];
+        break :blk Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    };
     try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
     try json_generator_append(ctx, obj, ":");
     try json_generator_set_current_count(ctx, obj, count + 1);
@@ -1739,7 +1742,10 @@ fn json_gen_write_string(
     args: []const Value,
 ) !Value {
     if (args.len == 0) return Value.void_val;
-    const string_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    const string_value: Value = blk: {
+        if (args[0] == .string) break :blk args[0];
+        break :blk Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    };
     try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
     return Value.void_val;
 }
