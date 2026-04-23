@@ -324,7 +324,8 @@ fn match_at(
                             const greedy = greedy_atom_bounds(a);
                             var alt_end: usize = initial_alt_end;
                             while (true) {
-                                if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
+                                if (grp_idx > 0)
+                                    groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
                                 if (rest_start >= pat.len) return alt_end;
                                 if (match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
                                     return final_end;

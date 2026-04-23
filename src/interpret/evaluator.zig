@@ -647,7 +647,8 @@ pub const Evaluator = struct {
                 if (record != .sobject or record.sobject.id == null) continue;
                 if (!std.ascii.eqlIgnoreCase(record.sobject.id.?, user_id)) continue;
                 if (utils.sobject_get(&record.sobject.fields, "UserType")) |user_type| {
-                    if (user_type == .string and std.ascii.eqlIgnoreCase(user_type.string, "Guest")) return true;
+                    if (user_type == .string and std.ascii.eqlIgnoreCase(user_type.string, "Guest"))
+                        return true;
                 }
                 if (utils.sobject_get(&record.sobject.fields, "Profile")) |profile_val| {
                     if (profile_val == .sobject) {
@@ -671,7 +672,8 @@ pub const Evaluator = struct {
         const where_clause = extract_where_clause(soql) orelse return false;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
+            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name))
+                continue;
             if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
@@ -689,7 +691,8 @@ pub const Evaluator = struct {
         const where_clause = extract_where_clause(soql) orelse return false;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
+            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name))
+                continue;
             if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
@@ -1708,7 +1711,8 @@ pub const Evaluator = struct {
                         for (entry.value_ptr.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                    if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                    if (dn == .string)
+                                        try map.entries.put(self.arena, dn.string, item);
                                 }
                             }
                         }
@@ -1781,7 +1785,8 @@ pub const Evaluator = struct {
                             if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
                                 if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
                                     for (ed.values) |v| {
-                                        if (std.ascii.eqlIgnoreCase(v, args[0].string)) return Value{ .string = v };
+                                        if (std.ascii.eqlIgnoreCase(v, args[0].string))
+                                            return Value{ .string = v };
                                     }
                                     const exc = try self.arena.create(types.ObjectInstance);
                                     exc.* = .{ .class_name = "System.NoSuchElementException" };
@@ -1798,7 +1803,8 @@ pub const Evaluator = struct {
                                     return Value{ .list = list };
                                 }
                                 for (ed.values) |v| {
-                                    if (std.ascii.eqlIgnoreCase(v, method_name)) return Value{ .string = v };
+                                    if (std.ascii.eqlIgnoreCase(v, method_name))
+                                        return Value{ .string = v };
                                 }
                             }
                         },
@@ -2314,7 +2320,8 @@ pub const Evaluator = struct {
                     if (utils.sobject_get(&user_val.sobject.fields, "ProfileId") orelse utils.sobject_get(&user_val.sobject.fields, "profileId")) |pv| {
                         if (pv == .string) self.current_profile_id = pv.string;
                     } else if (utils.sobject_get(&user_val.sobject.fields, "Profile")) |prof| {
-                        if (prof == .sobject and prof.sobject.id != null) self.current_profile_id = prof.sobject.id.?;
+                        if (prof == .sobject and prof.sobject.id != null)
+                            self.current_profile_id = prof.sobject.id.?;
                     }
                     const profile_name = self.get_user_profile_name(user_val.sobject) orelse blk: {
                         if (self.find_record_by_id("Profile", self.current_profile_id)) |profile_val| {
@@ -2550,7 +2557,8 @@ pub const Evaluator = struct {
                     try self.upsert_record(target.sobject, external_id_field);
                 } else if (target == .list) {
                     for (target.list.items.items) |item| {
-                        if (item == .sobject) try self.upsert_record(item.sobject, external_id_field);
+                        if (item == .sobject)
+                            try self.upsert_record(item.sobject, external_id_field);
                     }
                 }
             },
@@ -2720,7 +2728,8 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Group")) return .{ '0', '0', 'G' };
         if (std.ascii.eqlIgnoreCase(type_name, "Profile")) return .{ '0', '0', 'e' };
         if (std.ascii.eqlIgnoreCase(type_name, "PermissionSet")) return .{ '0', 'P', 'S' };
-        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment")) return .{ '0', 'P', 'a' };
+        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment"))
+            return .{ '0', 'P', 'a' };
         if (std.ascii.eqlIgnoreCase(type_name, "FieldPermissions")) return .{ '0', 'F', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "ObjectPermissions")) return .{ '0', 'O', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "Attachment")) return .{ '0', '0', 'P' };
@@ -3586,7 +3595,8 @@ pub const Evaluator = struct {
             // Insert: field must exist and be non-null/non-empty
             // Update: field must not be explicitly set to null/empty
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+                if (!only_present)
+                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             } else if (name_val.? == .string and name_val.?.string.len == 0) {
@@ -3596,7 +3606,8 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
             const name_val = utils.sobject_get(&obj.fields, "LastName");
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
+                if (!only_present)
+                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
             }
@@ -3604,7 +3615,8 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) {
             const name_val = utils.sobject_get(&obj.fields, "Name");
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+                if (!only_present)
+                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             }
@@ -3672,7 +3684,8 @@ pub const Evaluator = struct {
     fn apply_missing_field_defaults(self: *Evaluator, obj: *types.SObject) !void {
         if (self.field_defaults.get(obj.type_name)) |defaults| {
             for (defaults.keys(), defaults.values()) |field_name, field_default| {
-                if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) continue;
+                if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null)
+                    continue;
                 try utils.sobject_put(&obj.fields, self.arena, field_name, field_default);
             }
         }
@@ -5126,7 +5139,8 @@ pub const Evaluator = struct {
                     if (utils.sobject_get(&record.sobject.fields, "ActiveVersionId")) |active_version_id| {
                         if (active_version_id == .string and std.ascii.eqlIgnoreCase(active_version_id.string, durable_id)) {
                             if (utils.sobject_get(&record.sobject.fields, "DurableId")) |definition_id| {
-                                if (definition_id == .string) flow_definition_id = definition_id.string;
+                                if (definition_id == .string)
+                                    flow_definition_id = definition_id.string;
                             }
                             break;
                         }
@@ -5636,7 +5650,8 @@ pub const Evaluator = struct {
                             .set => {
                                 var it = v.set.entries.iterator();
                                 if (it.next()) |entry| {
-                                    if (entry.value_ptr.* == .string) return entry.value_ptr.*.string;
+                                    if (entry.value_ptr.* == .string)
+                                        return entry.value_ptr.*.string;
                                 }
                                 return null;
                             },
@@ -5670,7 +5685,8 @@ pub const Evaluator = struct {
             if (j >= clause.len or clause[j] != '=') continue;
             j += 1;
             while (j < clause.len and is_soql_whitespace(clause[j])) j += 1;
-            if (j + 4 <= clause.len and std.ascii.eqlIgnoreCase(clause[j .. j + 4], "NULL")) return true;
+            if (j + 4 <= clause.len and std.ascii.eqlIgnoreCase(clause[j .. j + 4], "NULL"))
+                return true;
         }
         return false;
     }
@@ -6383,8 +6399,10 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(fn_name, "SUM")) return Value{ .double = sum };
         if (std.ascii.eqlIgnoreCase(fn_name, "AVG")) return if (count > 0) Value{ .double = sum / @as(f64, @floatFromInt(count)) } else Value{ .double = 0 };
-        if (std.ascii.eqlIgnoreCase(fn_name, "MIN")) return if (min_val) |v| Value{ .double = v } else Value.null_val;
-        if (std.ascii.eqlIgnoreCase(fn_name, "MAX")) return if (max_val) |v| Value{ .double = v } else Value.null_val;
+        if (std.ascii.eqlIgnoreCase(fn_name, "MIN"))
+            return if (min_val) |v| Value{ .double = v } else Value.null_val;
+        if (std.ascii.eqlIgnoreCase(fn_name, "MAX"))
+            return if (max_val) |v| Value{ .double = v } else Value.null_val;
         return Value{ .integer = count };
     }
 
@@ -6771,7 +6789,8 @@ pub const Evaluator = struct {
                 } else return false;
             }
             if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
-            if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'') pattern = pattern[0 .. pattern.len - 1];
+            if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'')
+                pattern = pattern[0 .. pattern.len - 1];
             pattern = self.collapse_like_wildcards(pattern);
             if (pattern.len == 0) return field_val.string.len == 0;
             var non_wildcard_len: usize = 0;
@@ -6818,7 +6837,8 @@ pub const Evaluator = struct {
                 var iter = std.mem.splitScalar(u8, inner, ',');
                 while (iter.next()) |part| {
                     const trimmed = std.mem.trim(u8, part, " \t\n\r'");
-                    if (field_val == .string and std.ascii.eqlIgnoreCase(field_val.string, trimmed)) return true;
+                    if (field_val == .string and std.ascii.eqlIgnoreCase(field_val.string, trimmed))
+                        return true;
                     if (field_val == .integer) {
                         if (std.fmt.parseInt(i64, trimmed, 10)) |int_val| {
                             if (field_val.integer == int_val) return true;
@@ -7422,7 +7442,8 @@ pub const Evaluator = struct {
             },
             .map => |map| blk: {
                 for (map.entries.keys(), map.entries.values()) |k, records| {
-                    if (std.ascii.eqlIgnoreCase(k, "records") and records == .list) break :blk records;
+                    if (std.ascii.eqlIgnoreCase(k, "records") and records == .list)
+                        break :blk records;
                 }
                 break :blk null;
             },
@@ -8987,7 +9008,8 @@ pub const Evaluator = struct {
                 }
                 if (val == .object) {
                     // Check class name and superclass/interface hierarchy
-                    if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name))
+                        return Value{ .boolean = true };
                     // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name
                     // is the simple name
                     if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
@@ -9004,7 +9026,8 @@ pub const Evaluator = struct {
                         while (cur) |ccd| {
                             // Check implemented interfaces
                             for (ccd.interfaces) |iface| {
-                                if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name)) return Value{ .boolean = true };
+                                if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name))
+                                    return Value{ .boolean = true };
                                 // Also match when interface name has a prefix (e.g.,
                                 // "di_Binding.Provider" matches "Provider")
                                 if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
@@ -9012,7 +9035,8 @@ pub const Evaluator = struct {
                                 }
                             }
                             if (ccd.super_class) |sc| {
-                                if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name)) return Value{ .boolean = true };
+                                if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name))
+                                    return Value{ .boolean = true };
                                 cur = self.find_class(sc.name);
                             } else break;
                         }
@@ -9038,18 +9062,21 @@ pub const Evaluator = struct {
                     // Check element type against actual list items
                     // Note: type params are validated to have non-empty names
                     const elem_type = ie.type_name.params[0].name;
-                    if (std.ascii.eqlIgnoreCase(elem_type, "Object")) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(elem_type, "Object"))
+                        return Value{ .boolean = true };
                     if (elem_type.len > 0 and elem_type.len <= 128) {
                         for (val.list.items.items) |item| {
                             if (item == .null_val) continue;
-                            if (instanceof_matches_primitive(item, elem_type)) return Value{ .boolean = true };
+                            if (instanceof_matches_primitive(item, elem_type))
+                                return Value{ .boolean = true };
                             if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) return Value{ .boolean = true };
                             return Value{ .boolean = false };
                         }
                     }
                     return Value{ .boolean = true }; // empty list or unknown element type matches any
                 }
-                if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
+                if (val == .map)
+                    return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
                 if (val == .set) {
                     const tn = ie.type_name.name;
                     const tn_base = if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
@@ -9059,7 +9086,8 @@ pub const Evaluator = struct {
                     ) or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
                 }
                 if (val == .string) {
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String"))
+                        return Value{ .boolean = true };
                     if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
                         return Value{ .boolean = is_salesforce_id_string(val.string) };
                     }
@@ -9240,7 +9268,8 @@ pub const Evaluator = struct {
                 for (ccd.members) |member| {
                     switch (member) {
                         .field_decl => |fd| {
-                            if (std.ascii.eqlIgnoreCase(fd.name, field_name)) return self.render_type_ref(fd.type_ref);
+                            if (std.ascii.eqlIgnoreCase(fd.name, field_name))
+                                return self.render_type_ref(fd.type_ref);
                         },
                         else => {},
                     }
@@ -10165,7 +10194,8 @@ pub const Evaluator = struct {
                             for (entry.value_ptr.items) |item| {
                                 if (item == .sobject) {
                                     if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                        if (dn == .string)
+                                            try map.entries.put(self.arena, dn.string, item);
                                     }
                                 }
                             }
@@ -10352,7 +10382,8 @@ pub const Evaluator = struct {
                             for (entry.value_ptr.items) |item| {
                                 if (item == .sobject) {
                                     if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                        if (dn == .string)
+                                            try map.entries.put(self.arena, dn.string, item);
                                     }
                                 }
                             }
@@ -11634,7 +11665,8 @@ pub const Evaluator = struct {
                     .see_all_data = self.see_all_data,
                     .eval = self,
                 };
-                if (builtins.sobject_field_exists(&get_bctx, obj.sobject, field_name)) return Value.null_val;
+                if (builtins.sobject_field_exists(&get_bctx, obj.sobject, field_name))
+                    return Value.null_val;
 
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.SObjectException" };
@@ -11780,7 +11812,8 @@ pub const Evaluator = struct {
             }
             if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
                 if (utils.sobject_get(&obj.sobject.fields, "errors")) |errs_val| {
-                    if (errs_val == .list) return Value{ .boolean = errs_val.list.items.items.len > 0 };
+                    if (errs_val == .list)
+                        return Value{ .boolean = errs_val.list.items.items.len > 0 };
                 }
                 return Value{ .boolean = false };
             }
@@ -11953,8 +11986,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
             return Value{ .boolean = self.values_equal(Value{ .list = list }, args[0]) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(list.items.items.len) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = list.items.items.len == 0 };
+        if (std.ascii.eqlIgnoreCase(method, "size"))
+            return Value{ .integer = @intCast(list.items.items.len) };
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+            return Value{ .boolean = list.items.items.len == 0 };
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0 and args[0] == .integer) {
             if (args[0].integer < 0) return Value.null_val;
             const i: usize = @intCast(args[0].integer);
@@ -12096,7 +12131,8 @@ pub const Evaluator = struct {
                     for (list.items.items) |item| {
                         if (item != .sobject) return Value.null_val;
                         if (inferred) |prev| {
-                            if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name)) return Value.null_val;
+                            if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name))
+                                return Value.null_val;
                         } else {
                             inferred = item.sobject.type_name;
                         }
@@ -12210,8 +12246,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "containsKey") and args.len > 0) {
             return Value{ .boolean = self.find_map_entry_key(map, args[0]) != null };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(map.entries.count()) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = map.entries.count() == 0 };
+        if (std.ascii.eqlIgnoreCase(method, "size"))
+            return Value{ .integer = @intCast(map.entries.count()) };
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+            return Value{ .boolean = map.entries.count() == 0 };
         if (std.ascii.eqlIgnoreCase(method, "keySet")) {
             const set = try self.arena.create(types.SetValue);
             set.* = .{};
@@ -12362,8 +12400,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
             return Value{ .boolean = self.find_set_entry_key(set, args[0]) != null };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(set.entries.count()) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = set.entries.count() == 0 };
+        if (std.ascii.eqlIgnoreCase(method, "size"))
+            return Value{ .integer = @intCast(set.entries.count()) };
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+            return Value{ .boolean = set.entries.count() == 0 };
         if (std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerce_to_string(Value{ .set = set }, self.arena) };
         }
@@ -12428,7 +12468,8 @@ pub const Evaluator = struct {
         args: []const Value,
     ) !Value {
         if (std.ascii.eqlIgnoreCase(method, "toString")) return Value{ .string = s };
-        if (std.ascii.eqlIgnoreCase(method, "hashCode")) return Value{ .integer = self.string_hash_code(s) };
+        if (std.ascii.eqlIgnoreCase(method, "hashCode"))
+            return Value{ .integer = self.string_hash_code(s) };
         if (std.ascii.eqlIgnoreCase(method, "length")) return Value{ .integer = @intCast(s.len) };
         if (std.ascii.eqlIgnoreCase(method, "toUpperCase")) {
             const upper = try self.arena.alloc(u8, s.len);
@@ -12440,7 +12481,8 @@ pub const Evaluator = struct {
             for (s, 0..) |ch, i| lower[i] = std.ascii.toLower(ch);
             return Value{ .string = lower };
         }
-        if (std.ascii.eqlIgnoreCase(method, "trim")) return Value{ .string = std.mem.trim(u8, s, " \t\r\n") };
+        if (std.ascii.eqlIgnoreCase(method, "trim"))
+            return Value{ .string = std.mem.trim(u8, s, " \t\r\n") };
         if (std.ascii.eqlIgnoreCase(method, "repeat") and args.len > 0) {
             const count: usize = switch (args[0]) {
                 .integer => |i| if (i > 0) @intCast(i) else 0,
@@ -13059,7 +13101,8 @@ pub const Evaluator = struct {
                 if (args[0] == .null_val) return Value.null_val;
                 const raw_value = if (args[0] == .string) args[0].string else try utils.coerce_to_string(args[0], self.arena);
                 for (enum_decl.values) |enum_value| {
-                    if (std.ascii.eqlIgnoreCase(enum_value, raw_value)) return Value{ .string = enum_value };
+                    if (std.ascii.eqlIgnoreCase(enum_value, raw_value))
+                        return Value{ .string = enum_value };
                 }
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.NoSuchElementException" };
@@ -13964,7 +14007,8 @@ pub const Evaluator = struct {
                 }
             }
             // List.size as property
-            if (std.ascii.eqlIgnoreCase(fa.field, "size")) return Value{ .integer = @intCast(obj.list.items.items.len) };
+            if (std.ascii.eqlIgnoreCase(fa.field, "size"))
+                return Value{ .integer = @intCast(obj.list.items.items.len) };
             return Value.null_val;
         }
 
@@ -14008,7 +14052,8 @@ pub const Evaluator = struct {
                                                     obj.object.fields.keys(),
                                                     obj.object.fields.values(),
                                                 ) |fk, fv| {
-                                                    if (std.ascii.eqlIgnoreCase(fk, fa.field)) return fv;
+                                                    if (std.ascii.eqlIgnoreCase(fk, fa.field))
+                                                        return fv;
                                                 }
                                                 return .null_val;
                                             }
@@ -14176,7 +14221,8 @@ pub const Evaluator = struct {
                 return try self.make_s_object_field_token(schema_name, fa.field);
             }
             // String.length as property (shouldn't be needed but just in case)
-            if (std.ascii.eqlIgnoreCase(fa.field, "length")) return Value{ .integer = @intCast(obj.string.len) };
+            if (std.ascii.eqlIgnoreCase(fa.field, "length"))
+                return Value{ .integer = @intCast(obj.string.len) };
             // Enum value pattern: when obj is an enum name (from ClassName.EnumName),
             // field access returns the enum value string (e.g., HttpVerb.GET → "GET")
             var enum_iter = self.classes.iterator();
@@ -14343,18 +14389,30 @@ pub const Evaluator = struct {
             // Trigger context
             if (std.ascii.eqlIgnoreCase(class_name, "Trigger")) {
                 if (self.trigger_context) |tc| {
-                    if (std.ascii.eqlIgnoreCase(fa.field, "new")) return tc.new_list orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "old")) return tc.old_list orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap")) return tc.new_map orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "oldMap")) return tc.old_map orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore")) return Value{ .boolean = tc.is_before };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isAfter")) return Value{ .boolean = tc.is_after };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isInsert")) return Value{ .boolean = tc.is_insert };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isUpdate")) return Value{ .boolean = tc.is_update };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isDelete")) return Value{ .boolean = tc.is_delete };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isUndelete")) return Value{ .boolean = tc.is_undelete };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isExecuting")) return Value{ .boolean = tc.is_executing };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "size")) return Value{ .integer = tc.size };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "new"))
+                        return tc.new_list orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "old"))
+                        return tc.old_list orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap"))
+                        return tc.new_map orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "oldMap"))
+                        return tc.old_map orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore"))
+                        return Value{ .boolean = tc.is_before };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isAfter"))
+                        return Value{ .boolean = tc.is_after };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isInsert"))
+                        return Value{ .boolean = tc.is_insert };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isUpdate"))
+                        return Value{ .boolean = tc.is_update };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isDelete"))
+                        return Value{ .boolean = tc.is_delete };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isUndelete"))
+                        return Value{ .boolean = tc.is_undelete };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "isExecuting"))
+                        return Value{ .boolean = tc.is_executing };
+                    if (std.ascii.eqlIgnoreCase(fa.field, "size"))
+                        return Value{ .integer = tc.size };
                     if (std.ascii.eqlIgnoreCase(fa.field, "operationType")) return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
                 } else {
                     if (std.ascii.eqlIgnoreCase(fa.field, "new") or std.ascii.eqlIgnoreCase(fa.field, "old")) {
@@ -15317,7 +15375,8 @@ pub const Evaluator = struct {
             if (self.find_class(args[0].object.class_name)) |install_handler_class| {
                 const install_context = try self.arena.create(types.ObjectInstance);
                 install_context.* = .{ .class_name = "System.InstallContext" };
-                if (args.len >= 2) try install_context.fields.put(self.arena, "previousVersion", args[1]);
+                if (args.len >= 2)
+                    try install_context.fields.put(self.arena, "previousVersion", args[1]);
                 if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
                 if (args.len >= 3 and args[2] == .boolean) {
                     try install_context.fields.put(
@@ -16171,7 +16230,8 @@ pub const Evaluator = struct {
                 }
                 // Wrap as COUNT query
                 const count_result = try self.execute_soql(soql, env);
-                if (count_result == .list) return Value{ .integer = @intCast(count_result.list.items.items.len) };
+                if (count_result == .list)
+                    return Value{ .integer = @intCast(count_result.list.items.items.len) };
                 return count_result;
             }
             return Value{ .integer = 0 };
@@ -17068,7 +17128,8 @@ pub const Evaluator = struct {
                     std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
                 {
                     if (obj.fields.get("value")) |raw_value| {
-                        if (raw_value == .string) break :blk self.string_hash_code(raw_value.string);
+                        if (raw_value == .string)
+                            break :blk self.string_hash_code(raw_value.string);
                     }
                 }
 
@@ -17882,7 +17943,8 @@ pub const Evaluator = struct {
             return 3;
         }
 
-        if (self.find_class(hint_base) != null and self.is_subclass_of(hint_base, pt_base)) return 2;
+        if (self.find_class(hint_base) != null and self.is_subclass_of(hint_base, pt_base))
+            return 2;
         return 0;
     }
 
@@ -18015,7 +18077,8 @@ pub const Evaluator = struct {
                             count += 1;
                         }
                     }
-                    if (best_any == null and (cd.params.len == args.len or args.len == 0)) best_any = cd;
+                    if (best_any == null and (cd.params.len == args.len or args.len == 0))
+                        best_any = cd;
                 },
                 else => {},
             }
@@ -18146,7 +18209,8 @@ pub const Evaluator = struct {
         for (class_decl.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
-                    if (!fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, name)) return true;
+                    if (!fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, name))
+                        return true;
                 },
                 else => {},
             }
@@ -18537,7 +18601,8 @@ pub const Evaluator = struct {
                     }
                 }
                 if (obj.fields.get("stackTraceString")) |stack_val| {
-                    if (stack_val == .string and stack_val.string.len > 0) stack_trace = stack_val.string;
+                    if (stack_val == .string and stack_val.string.len > 0)
+                        stack_trace = stack_val.string;
                 }
             },
             .string => |s| {
@@ -18961,7 +19026,8 @@ pub const Evaluator = struct {
         for (cd.interfaces) |iface| {
             if (std.ascii.eqlIgnoreCase(iface.name, interface_name)) return true;
             if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) return true;
+                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name))
+                    return true;
             }
         }
         // Check parent class
@@ -19635,7 +19701,8 @@ fn is_system_enum_type_name(pt: []const u8) bool {
 fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
     if (arg == .string) {
         if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Id")) return if (Evaluator.is_salesforce_id_string(arg.string)) 3 else 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Id"))
+            return if (Evaluator.is_salesforce_id_string(arg.string)) 3 else 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         // Date/DateTime-like strings should match Date/DateTime params
         if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.is_date_only_format_string(arg.string)) return 2;
@@ -19650,12 +19717,14 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
     }
     if (arg == .long) {
         if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double"))
+            return 1;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
     if (arg == .double) {
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double"))
+            return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
@@ -19684,14 +19753,16 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
                     if (arg.list.items.items.len > 0) {
                         const first = arg.list.items.items[0];
                         if (first == .sobject) {
-                            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
+                            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type))
+                                return 3;
                             // Simple name match
                             if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
                                 if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
                             }
                         }
                         if (first == .object) {
-                            if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) return 3;
+                            if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type))
+                                return 3;
                         }
                     }
                     return 1; // It's a List but element type doesn't match
@@ -19710,7 +19781,8 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
         if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
         if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable")) return 1;
+        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable"))
+            return 1;
         return 0;
     }
     if (arg == .sobject) {
@@ -19749,7 +19821,8 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
             return 0;
         }
         if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
-            if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
+            if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime"))
+                return 2;
             if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
             return 0;
         }
@@ -19980,12 +20053,15 @@ fn eval_compound_assign(
         fn from_arithmetic(current_value: Value, incoming_value: Value, result: f64) Value {
             if (current_value == .double or incoming_value == .double) {
                 if (is_integral(result)) {
-                    if (current_value == .integer or incoming_value == .integer) return .{ .integer = @intFromFloat(result) };
-                    if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+                    if (current_value == .integer or incoming_value == .integer)
+                        return .{ .integer = @intFromFloat(result) };
+                    if (current_value == .long or incoming_value == .long)
+                        return .{ .long = @intFromFloat(result) };
                 }
                 return .{ .double = result };
             }
-            if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+            if (current_value == .long or incoming_value == .long)
+                return .{ .long = @intFromFloat(result) };
             return .{ .integer = @intFromFloat(result) };
         }
 
@@ -20005,9 +20081,11 @@ fn eval_compound_assign(
 
     switch (op) {
         .plus_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer + value.integer };
+            if (current == .integer and value == .integer)
+                return .{ .integer = current.integer + value.integer };
             if (current == .long and value == .long) return .{ .long = current.long + value.long };
-            if (current == .double and value == .double) return .{ .double = current.double + value.double };
+            if (current == .double and value == .double)
+                return .{ .double = current.double + value.double };
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {
                     return Numeric.from_arithmetic(current, value, lhs + rhs);
@@ -20026,7 +20104,8 @@ fn eval_compound_assign(
             }
         },
         .minus_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer - value.integer };
+            if (current == .integer and value == .integer)
+                return .{ .integer = current.integer - value.integer };
             if (current == .long and value == .long) return .{ .long = current.long - value.long };
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {
@@ -20035,7 +20114,8 @@ fn eval_compound_assign(
             }
         },
         .star_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer * value.integer };
+            if (current == .integer and value == .integer)
+                return .{ .integer = current.integer * value.integer };
             if (current == .long and value == .long) return .{ .long = current.long * value.long };
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {

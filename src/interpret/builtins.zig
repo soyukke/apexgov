@@ -179,7 +179,8 @@ fn parse_loose_date_time(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 
         } else s_s.len;
         const s_clean = s_s[0..s_clean_end];
         second = if (s_clean.len == 0) 0 else (std.fmt.parseInt(i32, s_clean, 10) catch return null);
-        if (hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59) return null;
+        if (hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59)
+            return null;
     }
     return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{ @as(u32, @intCast(year)), @as(u32, @intCast(month)), @as(u32, @intCast(day)), @as(u32, @intCast(hour)), @as(u32, @intCast(minute)), @as(u32, @intCast(second)) }) catch null;
 }
@@ -193,24 +194,35 @@ pub fn dispatch_static(
     args: []const Value,
 ) !?Value {
     const ci = std.ascii;
-    if (ci.eqlIgnoreCase(class_name, "System")) return dispatch_static_system(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "String")) return dispatch_static_string(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "System"))
+        return dispatch_static_system(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "String"))
+        return dispatch_static_string(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Id")) return dispatch_static_id(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Integer")) return dispatch_static_integer(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Integer"))
+        return dispatch_static_integer(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Long")) return dispatch_static_long(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatch_static_boolean(method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Decimal")) return dispatch_static_decimal(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Double")) return dispatch_static_double_class(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Decimal"))
+        return dispatch_static_decimal(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Double"))
+        return dispatch_static_double_class(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Date")) return dispatch_static_date(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Math")) return dispatch_static_math(method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatch_static_time(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "TimeZone")) return dispatch_static_time_zone(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "DateTime")) return dispatch_static_date_time(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Approval")) return dispatch_static_approval(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "BusinessHours")) return dispatch_static_business_hours(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "TimeZone"))
+        return dispatch_static_time_zone(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "DateTime"))
+        return dispatch_static_date_time(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Approval"))
+        return dispatch_static_approval(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "BusinessHours"))
+        return dispatch_static_business_hours(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatch_static_json(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatch_static_user_info(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "LoggingLevel")) return dispatch_static_logging_level(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "UserInfo"))
+        return dispatch_static_user_info(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
+        return dispatch_static_logging_level(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
     if (ci.eqlIgnoreCase(class_name, "UUID")) {
         if (ci.eqlIgnoreCase(method_name, "randomUUID")) {
@@ -263,14 +275,17 @@ pub fn dispatch_static(
         return null;
     }
     if (ci.eqlIgnoreCase(class_name, "Database")) return dispatch_database(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "RestContext")) return dispatch_static_rest_context(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "RestContext"))
+        return dispatch_static_rest_context(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "HttpResponse") or ci.eqlIgnoreCase(class_name, "HttpRequest")) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = class_name };
         return Value{ .object = obj };
     }
-    if (ci.eqlIgnoreCase(class_name, "Schema")) return dispatch_static_schema(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Security")) return dispatch_static_security(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Schema"))
+        return dispatch_static_schema(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Security"))
+        return dispatch_static_security(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or ci.eqlIgnoreCase(class_name, "ConnectApi")) {
         if (ctx.see_all_data) return Value.null_val;
@@ -279,22 +294,27 @@ pub fn dispatch_static(
             "ConnectApi is not supported in data-siloed tests",
         );
     }
-    if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return dispatch_static_feature_management(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "FeatureManagement"))
+        return dispatch_static_feature_management(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Script") or
         (std.mem.startsWith(u8, class_name, "DataWeave") and ci.eqlIgnoreCase(method_name, "createScript")))
         return dispatch_static_data_weave(ctx, args);
-    if (ci.eqlIgnoreCase(class_name, "Pattern")) return dispatch_static_pattern(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Pattern"))
+        return dispatch_static_pattern(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Type")) return dispatch_static_type(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Request")) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Request" };
         return Value{ .object = obj };
     }
-    if (ci.eqlIgnoreCase(class_name, "Crypto")) return dispatch_static_crypto(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Crypto"))
+        return dispatch_static_crypto(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Blob")) return dispatch_static_blob(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatch_static_encoding_util(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatch_static_messaging(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "EncodingUtil"))
+        return dispatch_static_encoding_util(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Messaging"))
+        return dispatch_static_messaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatch_static_event_bus(method_name);
     if (ci.eqlIgnoreCase(class_name, "Invocable.Action")) {
         if (ci.eqlIgnoreCase(method_name, "createCustomAction") and args.len >= 2) {
@@ -360,14 +380,18 @@ pub fn dispatch_static(
             return Value{ .double = radius * c };
         }
     }
-    if (ci.eqlIgnoreCase(class_name, "Formula")) return dispatch_static_formula(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Formula"))
+        return dispatch_static_formula(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatch_static_http(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatch_static_can_the_user(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "CanTheUser"))
+        return dispatch_static_can_the_user(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "OrgShape")) return null;
-    if (ci.eqlIgnoreCase(class_name, "ApexPages")) return dispatch_static_apex_pages(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "ApexPages"))
+        return dispatch_static_apex_pages(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Network")) return dispatch_static_network(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "Url") or ci.eqlIgnoreCase(class_name, "URL")) return dispatch_static_url(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "Url") or ci.eqlIgnoreCase(class_name, "URL"))
+        return dispatch_static_url(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "AccessType")) return Value{ .string = method_name };
     // Stubbed utility classes — only provided when the user hasn't supplied a copy.
     // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
@@ -457,11 +481,15 @@ fn dispatch_static_system(
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
-    if (std.ascii.eqlIgnoreCase(method_name, "now")) return try make_datetime_value(ctx.arena, try current_date_time_string(ctx.arena));
-    if (std.ascii.eqlIgnoreCase(method_name, "today")) return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+    if (std.ascii.eqlIgnoreCase(method_name, "now"))
+        return try make_datetime_value(ctx.arena, try current_date_time_string(ctx.arena));
+    if (std.ascii.eqlIgnoreCase(method_name, "today"))
+        return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = ctx.eval.active_batch_job_id != null };
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) return Value{ .boolean = ctx.eval.active_queueable_job_id != null };
+    if (std.ascii.eqlIgnoreCase(method_name, "isBatch"))
+        return Value{ .boolean = ctx.eval.active_batch_job_id != null };
+    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable"))
+        return Value{ .boolean = ctx.eval.active_queueable_job_id != null };
     if (std.ascii.eqlIgnoreCase(method_name, "isScheduled")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "attachFinalizer")) {
         if (ctx.eval.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
@@ -577,14 +605,16 @@ fn dispatch_static_string(
     if (std.ascii.eqlIgnoreCase(method_name, "isBlank")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value{ .boolean = true };
-            if (args[0] == .string) return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0 };
+            if (args[0] == .string)
+                return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0 };
         }
         return Value{ .boolean = true };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isNotBlank")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value{ .boolean = false };
-            if (args[0] == .string) return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0 };
+            if (args[0] == .string)
+                return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0 };
         }
         return Value{ .boolean = false };
     }
@@ -773,7 +803,8 @@ fn dispatch_static_date(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "today")) return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+    if (std.ascii.eqlIgnoreCase(method_name, "today"))
+        return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         if (args.len >= 3) {
             const y = switch (args[0]) {
@@ -832,8 +863,10 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "floor") or std.ascii.eqlIgnoreCase(method_name, "ceil") or std.ascii.eqlIgnoreCase(method_name, "round")) {
         if (args.len > 0) {
             if (args[0] == .double) {
-                if (std.ascii.eqlIgnoreCase(method_name, "floor")) return Value{ .double = @floor(args[0].double) };
-                if (std.ascii.eqlIgnoreCase(method_name, "ceil")) return Value{ .double = @ceil(args[0].double) };
+                if (std.ascii.eqlIgnoreCase(method_name, "floor"))
+                    return Value{ .double = @floor(args[0].double) };
+                if (std.ascii.eqlIgnoreCase(method_name, "ceil"))
+                    return Value{ .double = @ceil(args[0].double) };
                 return Value{ .integer = @intFromFloat(@round(args[0].double)) };
             }
             if (args[0] == .integer) return args[0];
@@ -845,14 +878,16 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
             const a = if (args[0] == .double) args[0].double else if (args[0] == .integer) @as(f64, @floatFromInt(args[0].integer)) else 0.0;
             const b = if (args[1] == .double) args[1].double else if (args[1] == .integer) @as(f64, @floatFromInt(args[1].integer)) else 0.0;
             const result = if (std.ascii.eqlIgnoreCase(method_name, "max")) @max(a, b) else @min(a, b);
-            if (args[0] == .integer and args[1] == .integer) return Value{ .integer = @intFromFloat(result) };
+            if (args[0] == .integer and args[1] == .integer)
+                return Value{ .integer = @intFromFloat(result) };
             return Value{ .double = result };
         }
         return Value{ .integer = 0 };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "mod")) {
         if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
-            if (args[1].integer != 0) return Value{ .integer = @mod(args[0].integer, args[1].integer) };
+            if (args[1].integer != 0)
+                return Value{ .integer = @mod(args[0].integer, args[1].integer) };
         }
         return Value{ .integer = 0 };
     }
@@ -1494,7 +1529,8 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         if (ctx.eval.store.get("User")) |users| {
             for (users.items) |record| {
                 if (record != .sobject or record.sobject.id == null) continue;
-                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, ctx.eval.current_user_id)) break :blk record.sobject;
+                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, ctx.eval.current_user_id))
+                    break :blk record.sobject;
             }
         }
         break :blk null;
@@ -1509,8 +1545,10 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
             };
         }
     }.get;
-    if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) return Value{ .string = ctx.eval.current_user_id };
-    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) return Value{ .string = ctx.eval.current_profile_id };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUserId"))
+        return Value{ .string = ctx.eval.current_user_id };
+    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId"))
+        return Value{ .string = ctx.eval.current_profile_id };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
         if (current_user_string(current_user, "Name")) |name| return Value{ .string = name };
         return Value{ .string = "Test User" };
@@ -1551,11 +1589,16 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         if (current_user_string(current_user, "TimeZoneSidKey")) |time_zone| return Value{ .string = time_zone };
         return Value{ .string = "America/Los_Angeles" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationId")) return Value{ .string = "00D000000000001" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationName")) return Value{ .string = "Mock Org" };
-    if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed")) return Value{ .string = "Theme4d" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSessionId")) return Value{ .string = "mock-session-id" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationId"))
+        return Value{ .string = "00D000000000001" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationName"))
+        return Value{ .string = "Mock Org" };
+    if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization"))
+        return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed"))
+        return Value{ .string = "Theme4d" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSessionId"))
+        return Value{ .string = "mock-session-id" };
     return Value{ .string = "" };
 }
 
@@ -1903,7 +1946,8 @@ fn dispatch_static_security(
                         item.sobject.fields.keys(),
                         item.sobject.fields.values(),
                     ) |field_name, field_value| {
-                        if (rm_map.entries.get(field_name) == null) try clone.fields.put(ctx.arena, field_name, field_value);
+                        if (rm_map.entries.get(field_name) == null)
+                            try clone.fields.put(ctx.arena, field_name, field_value);
                     }
                     try stripped.items.append(ctx.arena, Value{ .sobject = clone });
                 } else {
@@ -1925,15 +1969,22 @@ fn dispatch_static_security(
 fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     const ci = std.ascii;
     // Usage counters
-    if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
-    if (ci.eqlIgnoreCase(method_name, "getDmlRows")) return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
-    if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
-    if (ci.eqlIgnoreCase(method_name, "getAsyncCalls")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    if (ci.eqlIgnoreCase(method_name, "getDmlStatements"))
+        return Value{ .integer = @intCast(ctx.eval.limits_dml) };
+    if (ci.eqlIgnoreCase(method_name, "getDmlRows"))
+        return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
+    if (ci.eqlIgnoreCase(method_name, "getQueries"))
+        return Value{ .integer = @intCast(ctx.eval.limits_soql) };
+    if (ci.eqlIgnoreCase(method_name, "getAsyncCalls"))
+        return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
-    if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
-    if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
-    if (ci.eqlIgnoreCase(method_name, "getEmailInvocations")) return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
+    if (ci.eqlIgnoreCase(method_name, "getQueueableJobs"))
+        return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    if (ci.eqlIgnoreCase(method_name, "getCallouts"))
+        return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    if (ci.eqlIgnoreCase(method_name, "getEmailInvocations"))
+        return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
     // Governor limit maximums (Salesforce default synchronous limits)
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
@@ -1947,10 +1998,12 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
     if (ci.eqlIgnoreCase(method_name, "getLimitEmailInvocations")) return Value{ .integer = 10 };
     if (ci.eqlIgnoreCase(method_name, "getLimitFutureCalls")) return Value{ .integer = 50 };
     if (ci.eqlIgnoreCase(method_name, "getLimitMobilePushApexCalls")) return Value{ .integer = 10 };
-    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML"))
+        return Value{ .integer = 150 };
     if (ci.eqlIgnoreCase(method_name, "getLimitQueueableJobs")) return Value{ .integer = 50 };
     if (ci.eqlIgnoreCase(method_name, "getLimitSoslQueries")) return Value{ .integer = 20 };
-    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor"))
+        return Value{ .integer = 10 };
     if (ci.eqlIgnoreCase(method_name, "getLimitApexCursorRows")) return Value{ .integer = 50000 };
     if (ci.eqlIgnoreCase(method_name, "getLimitAsyncCalls")) return Value{ .integer = 50 };
     // All other Limits methods return 0
@@ -1963,7 +2016,8 @@ fn find_stored_record_by_id(eval: *evaluator_mod.Evaluator, record_id: []const u
         for (entry.value_ptr.items) |*item| {
             if (item.* != .sobject) continue;
             const id_value = utils.sobject_get(&item.sobject.fields, "Id") orelse continue;
-            if (id_value == .string and std.ascii.eqlIgnoreCase(id_value.string, record_id)) return item.sobject;
+            if (id_value == .string and std.ascii.eqlIgnoreCase(id_value.string, record_id))
+                return item.sobject;
         }
     }
     return null;
@@ -2393,7 +2447,8 @@ fn dispatch_static_encoding_util(
         return Value{ .string = try out.toOwnedSlice(ctx.arena) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Encode") and args.len > 0) {
-        if (args[0] == .object) return args[0].object.fields.get("value") orelse Value{ .string = "" };
+        if (args[0] == .object)
+            return args[0].object.fields.get("value") orelse Value{ .string = "" };
         return Value{ .string = "base64encoded" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and args.len > 0 and args[0] == .string) {
@@ -3103,8 +3158,10 @@ fn describe_local_name(name: []const u8) []const u8 {
 fn default_describe_label_plural(arena: std.mem.Allocator, obj_name: []const u8) ![]const u8 {
     const local_name = describe_local_name(obj_name);
     if (local_name.len == 0) return "";
-    if (std.mem.endsWith(u8, local_name, "s")) return try std.fmt.allocPrint(arena, "{s}es", .{local_name});
-    if (std.mem.endsWith(u8, local_name, "y")) return try std.fmt.allocPrint(arena, "{s}ies", .{local_name[0 .. local_name.len - 1]});
+    if (std.mem.endsWith(u8, local_name, "s"))
+        return try std.fmt.allocPrint(arena, "{s}es", .{local_name});
+    if (std.mem.endsWith(u8, local_name, "y"))
+        return try std.fmt.allocPrint(arena, "{s}ies", .{local_name[0 .. local_name.len - 1]});
     return try std.fmt.allocPrint(arena, "{s}s", .{local_name});
 }
 
@@ -3299,7 +3356,8 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
         "OwnerId",   "IsDeleted",      "CreatedById",    "LastModifiedById",
         "CreatedBy", "LastModifiedBy", "SystemModstamp",
     }) |field_name| {
-        if (std.ascii.eqlIgnoreCase(field_name, "Name") and !has_implicit_name_field(obj_name)) continue;
+        if (std.ascii.eqlIgnoreCase(field_name, "Name") and !has_implicit_name_field(obj_name))
+            continue;
         try fields_kv.entries.put(
             ctx.arena,
             field_name,
@@ -3657,7 +3715,8 @@ fn add_describe_fields_from_record(
     object_type: []const u8,
     record: Value,
 ) !void {
-    if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
+    if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type))
+        return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
         if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) continue;
@@ -3841,18 +3900,23 @@ fn map_xml_type_to_display_type(xml_type: []const u8) []const u8 {
     if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) return "TEXTAREA";
     if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) return "BOOLEAN";
     if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) return "DOUBLE";
-    if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME")) return "DATETIME";
+    if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME"))
+        return "DATETIME";
     if (ci.eqlIgnoreCase(xml_type, "Date") or ci.eqlIgnoreCase(xml_type, "DATE")) return "DATE";
     if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) return "REFERENCE";
     if (ci.eqlIgnoreCase(xml_type, "Url") or ci.eqlIgnoreCase(xml_type, "URL")) return "URL";
     if (ci.eqlIgnoreCase(xml_type, "Phone") or ci.eqlIgnoreCase(xml_type, "PHONE")) return "PHONE";
     if (ci.eqlIgnoreCase(xml_type, "Email") or ci.eqlIgnoreCase(xml_type, "EMAIL")) return "EMAIL";
-    if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST")) return "PICKLIST";
+    if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST"))
+        return "PICKLIST";
     if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) return "MULTIPICKLIST";
-    if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY")) return "CURRENCY";
-    if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT")) return "PERCENT";
+    if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY"))
+        return "CURRENCY";
+    if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT"))
+        return "PERCENT";
     if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) return "ENCRYPTEDSTRING";
-    if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER")) return "INTEGER";
+    if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER"))
+        return "INTEGER";
     if (ci.eqlIgnoreCase(xml_type, "Long") or ci.eqlIgnoreCase(xml_type, "LONG")) return "LONG";
     if (ci.eqlIgnoreCase(xml_type, "Time") or ci.eqlIgnoreCase(xml_type, "TIME")) return "TIME";
     if (ci.eqlIgnoreCase(xml_type, "Id") or ci.eqlIgnoreCase(xml_type, "ID")) return "ID";
@@ -4167,7 +4231,8 @@ fn dispatch_double_instance(
                     const f = @floor(scaled);
                     const frac = scaled - f;
                     if (frac == 0.5 or frac == -0.5) {
-                        if (@mod(rounded, 2.0) != 0) break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
+                        if (@mod(rounded, 2.0) != 0)
+                            break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
                     }
                     break :blk rounded;
                 } else @round(scaled);
@@ -4179,11 +4244,13 @@ fn dispatch_double_instance(
     // doubleValue()
     if (std.ascii.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
     // intValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "intValue")) return Value{ .integer = @intFromFloat(d) };
+    if (std.ascii.eqlIgnoreCase(method_name, "intValue"))
+        return Value{ .integer = @intFromFloat(d) };
     // longValue()
     if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .long = @intFromFloat(d) };
     // round()
-    if (std.ascii.eqlIgnoreCase(method_name, "round")) return Value{ .integer = @intFromFloat(@round(d)) };
+    if (std.ascii.eqlIgnoreCase(method_name, "round"))
+        return Value{ .integer = @intFromFloat(@round(d)) };
     // abs()
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
     // pow(exponent) — Decimal raised to the given integer exponent
@@ -4303,9 +4370,11 @@ fn dispatch_object_instance(
     if (ci.eqlIgnoreCase(cn, "EventBus")) {
         if (try dispatch_obj_event_bus(ctx, obj, method_name, args)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "DataWeave.Script")) return dispatch_obj_data_weave_script(ctx, obj, method_name, args);
+    if (ci.eqlIgnoreCase(cn, "DataWeave.Script"))
+        return dispatch_obj_data_weave_script(ctx, obj, method_name, args);
     if (ci.eqlIgnoreCase(cn, "DataWeave.Result")) {
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value.null_val;
+        if (ci.eqlIgnoreCase(method_name, "getValue"))
+            return obj.fields.get("value") orelse Value.null_val;
         if (ci.eqlIgnoreCase(method_name, "getValueAsString")) {
             if (obj.fields.get("value")) |value| {
                 if (value == .string) return value;
@@ -4330,7 +4399,8 @@ fn dispatch_object_instance(
                     if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
                     var iter = headers_val.map.entries.iterator();
                     while (iter.next()) |entry| {
-                        if (ci.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+                        if (ci.eqlIgnoreCase(entry.key_ptr.*, args[0].string))
+                            return entry.value_ptr.*;
                     }
                 }
             }
@@ -4357,14 +4427,20 @@ fn dispatch_object_instance(
         if (try dispatch_obj_schema_describe_field(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.PicklistEntry")) {
-        if (ci.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
+        if (ci.eqlIgnoreCase(method_name, "getLabel"))
+            return obj.fields.get("label") orelse Value{ .string = "" };
+        if (ci.eqlIgnoreCase(method_name, "getValue"))
+            return obj.fields.get("value") orelse Value{ .string = "" };
+        if (ci.eqlIgnoreCase(method_name, "isActive"))
+            return obj.fields.get("active") orelse Value{ .boolean = true };
     }
     if (ci.eqlIgnoreCase(cn, "System.OrgLimit") or ci.eqlIgnoreCase(cn, "OrgLimit")) {
-        if (ci.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .integer = 0 };
-        if (ci.eqlIgnoreCase(method_name, "getLimit")) return obj.fields.get("limit") orelse Value{ .integer = 0 };
+        if (ci.eqlIgnoreCase(method_name, "getName"))
+            return obj.fields.get("name") orelse Value{ .string = "" };
+        if (ci.eqlIgnoreCase(method_name, "getValue"))
+            return obj.fields.get("value") orelse Value{ .integer = 0 };
+        if (ci.eqlIgnoreCase(method_name, "getLimit"))
+            return obj.fields.get("limit") orelse Value{ .integer = 0 };
     }
     if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
         if (try dispatch_obj_http(ctx, obj, method_name, args)) |v| return v;
@@ -4600,7 +4676,8 @@ fn dispatch_obj_common(
         try obj.fields.put(ctx.arena, "message", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) return obj.fields.get("message") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getMessage"))
+        return obj.fields.get("message") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getInaccessibleFields")) {
         // QueryException exposed by user-mode SOQL carries a
         // Map<String, Set<String>> of "objectName → inaccessible fields"
@@ -4609,14 +4686,18 @@ fn dispatch_obj_common(
         // exception wasn't raised by an FLS/CRUD check).
         return obj.fields.get("inaccessibleFields") orelse Value.null_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "get_fields")) return obj.fields.get("fields") orelse blk: {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        break :blk Value{ .list = list };
-    };
-    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber")) return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode"))
+        return obj.fields.get("statusCode") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "get_fields"))
+        return obj.fields.get("fields") orelse blk: {
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            break :blk Value{ .list = list };
+        };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString"))
+        return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber"))
+        return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {
         const cn = obj.class_name;
         if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
@@ -4656,12 +4737,14 @@ fn dispatch_obj_common(
     // DML result methods (SaveResult, UpsertResult, etc.)
     if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) return obj.fields.get("isSuccess") orelse obj.fields.get("success") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCreated")) return obj.fields.get("isCreated") orelse obj.fields.get("created") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getId")) return obj.fields.get("Id") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getErrors")) return obj.fields.get("errors") orelse blk: {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        break :blk Value{ .list = list };
-    };
+    if (std.ascii.eqlIgnoreCase(method_name, "getId"))
+        return obj.fields.get("Id") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getErrors"))
+        return obj.fields.get("errors") orelse blk: {
+            const list = try ctx.arena.create(types.ListValue);
+            list.* = .{};
+            break :blk Value{ .list = list };
+        };
 
     // Date-like methods
     if (std.ascii.eqlIgnoreCase(method_name, "addDays") or std.ascii.eqlIgnoreCase(method_name, "addMonths")) {
@@ -4669,8 +4752,10 @@ fn dispatch_obj_common(
     }
 
     // Request methods
-    if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity")) return Value{ .string = "RUNTEST_SYNC" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRequestId")) return Value{ .string = "4eR000000000001" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity"))
+        return Value{ .string = "RUNTEST_SYNC" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getRequestId"))
+        return Value{ .string = "4eR000000000001" };
 
     // Generic getDescribe
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
@@ -4851,7 +4936,8 @@ fn dispatch_obj_matcher(
         const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
         if (current == .object) {
             if (current.object.fields.get("groups")) |groups| {
-                if (groups == .list and idx < groups.list.items.items.len) return groups.list.items.items[idx];
+                if (groups == .list and idx < groups.list.items.items.len)
+                    return groups.list.items.items[idx];
             }
         }
         if (current == .list) {
@@ -4869,7 +4955,8 @@ fn dispatch_obj_matcher(
         if (current == .object) {
             const key = if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
             if (current.object.fields.get(key)) |values| {
-                if (values == .list and idx < values.list.items.items.len) return values.list.items.items[idx];
+                if (values == .list and idx < values.list.items.items.len)
+                    return values.list.items.items[idx];
             }
         }
         return Value.null_val;
@@ -5076,7 +5163,8 @@ fn dispatch_obj_schema_describe_field(
         ) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isNillable"))
+        return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isNameField")) {
         if (std.ascii.eqlIgnoreCase(field_name, "Name")) return Value{ .boolean = true };
@@ -5091,10 +5179,12 @@ fn dispatch_obj_schema_describe_field(
         const fn_val = obj.fields.get(
             "fieldName",
         ) orelse obj.fields.get("name") orelse Value{ .string = "" };
-        if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
+        if (fn_val == .string)
+            return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
         return Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
+        return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
@@ -5106,7 +5196,8 @@ fn dispatch_obj_schema_describe_field(
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText"))
+        return obj.fields.get("inlineHelpText") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula")) {
@@ -5174,9 +5265,12 @@ fn dispatch_obj_http(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getBody")) return obj.fields.get("body") orelse Value{ .string = "{}" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getCompressed")) return obj.fields.get("compressed") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode"))
+        return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getBody"))
+        return obj.fields.get("body") orelse Value{ .string = "{}" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getCompressed"))
+        return obj.fields.get("compressed") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "setStatusCode") and args.len > 0) {
         try obj.fields.put(ctx.arena, "statusCode", args[0]);
         return .void_val;
@@ -5193,16 +5287,20 @@ fn dispatch_obj_http(
         try obj.fields.put(ctx.arena, "status", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatus")) return obj.fields.get("status") orelse Value{ .string = "OK" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint")) return obj.fields.get("endpoint") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getMethod")) return obj.fields.get("method") orelse Value{ .string = "GET" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStatus"))
+        return obj.fields.get("status") orelse Value{ .string = "OK" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint"))
+        return obj.fields.get("endpoint") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getMethod"))
+        return obj.fields.get("method") orelse Value{ .string = "GET" };
     if (std.ascii.eqlIgnoreCase(method_name, "getHeader") and args.len > 0 and args[0] == .string) {
         if (obj.fields.get("headers")) |headers_val| {
             if (headers_val == .map) {
                 if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
                 var iter = headers_val.map.entries.iterator();
                 while (iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string))
+                        return entry.value_ptr.*;
                 }
             }
         }
@@ -5226,8 +5324,10 @@ fn dispatch_obj_http(
             "setHeader",
         ) or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
     {
-        if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0) try obj.fields.put(ctx.arena, "endpoint", args[0]);
-        if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0) try obj.fields.put(ctx.arena, "method", args[0]);
+        if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0)
+            try obj.fields.put(ctx.arena, "endpoint", args[0]);
+        if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0)
+            try obj.fields.put(ctx.arena, "method", args[0]);
         if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and args.len >= 2 and args[0] == .string) {
             const headers = try ensure_headers_map(ctx, obj);
             try headers.entries.put(ctx.arena, args[0].string, args[1]);
@@ -5256,7 +5356,8 @@ fn dispatch_obj_page_reference(
         else
             "";
         const params_val = obj.fields.get("parameters") orelse return Value{ .string = base_url };
-        if (params_val != .map or params_val.map.entries.count() == 0) return Value{ .string = base_url };
+        if (params_val != .map or params_val.map.entries.count() == 0)
+            return Value{ .string = base_url };
 
         var buf = std.ArrayListUnmanaged(u8).empty;
         try buf.appendSlice(ctx.arena, base_url);
@@ -5295,9 +5396,12 @@ fn dispatch_obj_page_reference(
 }
 
 fn dispatch_obj_apex_pages_message(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getSummary")) return obj.fields.get("summary") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSeverity")) return obj.fields.get("severity") orelse Value{ .string = "ERROR" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getDetail")) return obj.fields.get("detail") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSummary"))
+        return obj.fields.get("summary") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSeverity"))
+        return obj.fields.get("severity") orelse Value{ .string = "ERROR" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getDetail"))
+        return obj.fields.get("detail") orelse Value{ .string = "" };
     return null;
 }
 
@@ -5306,10 +5410,12 @@ fn dispatch_obj_standard_controller(
     obj: *types.ObjectInstance,
     method_name: []const u8,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecord")) return obj.fields.get("record") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecord"))
+        return obj.fields.get("record") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
         if (obj.fields.get("record")) |rec| {
-            if (rec == .sobject and rec.sobject.id != null) return Value{ .string = rec.sobject.id.? };
+            if (rec == .sobject and rec.sobject.id != null)
+                return Value{ .string = rec.sobject.id.? };
         }
         return Value.null_val;
     }
@@ -5328,7 +5434,8 @@ fn dispatch_obj_standard_set_controller(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getPageSize")) return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getPageSize"))
+        return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
     if (std.ascii.eqlIgnoreCase(method_name, "setPageSize") and args.len > 0) {
         try obj.fields.put(ctx.arena, "pageSize", args[0]);
         return Value.void_val;
@@ -5392,7 +5499,8 @@ fn dispatch_obj_type(
         }
         return try ctx.eval.instantiate_class_public(type_name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+        return obj.fields.get("name") orelse Value{ .string = "Object" };
     return null;
 }
 
@@ -5581,7 +5689,8 @@ fn dispatch_obj_describe_s_object(
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+        return obj.fields.get("name") orelse Value{ .string = "Object" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
@@ -5605,8 +5714,10 @@ fn dispatch_obj_describe_s_object(
         try obj.fields.put(ctx.arena, "childRelationships", relationships);
         return relationships;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isCustom"))
+        return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting"))
+        return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
         const name = if (obj.fields.get("name")) |n| n.string else "000";
         const prefix = evaluator_mod.Evaluator.sobject_key_prefix(name);
@@ -5632,13 +5743,20 @@ fn dispatch_obj_describe_s_object(
 }
 
 fn dispatch_obj_record_type_info(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getDeveloperName")) return obj.fields.get("developerName") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeId")) return obj.fields.get("recordTypeId") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "isMaster")) return obj.fields.get("master") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isAvailable")) return obj.fields.get("available") orelse Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isDefaultRecordTypeMapping")) return obj.fields.get("defaultRecordTypeMapping") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+        return obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getDeveloperName"))
+        return obj.fields.get("developerName") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeId"))
+        return obj.fields.get("recordTypeId") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "isMaster"))
+        return obj.fields.get("master") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isActive"))
+        return obj.fields.get("active") orelse Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isAvailable"))
+        return obj.fields.get("available") orelse Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isDefaultRecordTypeMapping"))
+        return obj.fields.get("defaultRecordTypeMapping") orelse Value{ .boolean = false };
     return null;
 }
 
@@ -5648,9 +5766,12 @@ fn dispatch_obj_select_option(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "isDisabled")) return obj.fields.get("disabled") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "getValue"))
+        return obj.fields.get("value") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel"))
+        return obj.fields.get("label") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "isDisabled"))
+        return obj.fields.get("disabled") orelse Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "setValue")) {
         if (args.len > 0) try obj.fields.put(ctx.arena, "value", args[0]);
         return Value.null_val;
@@ -5694,20 +5815,25 @@ fn dispatch_obj_describe_field_result(
         return obj.fields.get("isFilterable") orelse Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "isNillable"))
+        return obj.fields.get("isNillable") orelse Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength")) return obj.fields.get("length") orelse Value{ .integer = 131072 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
+        return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
     if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+        return obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get("name") orelse Value{ .string = "" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText"))
+        return obj.fields.get("inlineHelpText") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel"))
+        return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getReferenceTo")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -6336,7 +6462,8 @@ fn permission_name_allows_field_operation(
     operation: []const u8,
 ) bool {
     const obj_name = object_type orelse return false;
-    if (!permission_name_allows_object_operation(permission_name, obj_name, operation)) return false;
+    if (!permission_name_allows_object_operation(permission_name, obj_name, operation))
+        return false;
 
     if (lower_contains(permission_name, "all_fields")) {
         if (lower_contains(permission_name, "except") and permission_name_mentions_field(permission_name, object_type, field_name)) {
@@ -6584,7 +6711,8 @@ fn resolve_object_crud_permission(
         var assigned_names: [64][]const u8 = undefined;
         const assigned_count = collect_assigned_permission_set_names(eval, &assigned_names);
         for (assigned_names[0..assigned_count]) |permission_name| {
-            if (permission_name_allows_object_operation(permission_name, sobject_type, operation)) return true;
+            if (permission_name_allows_object_operation(permission_name, sobject_type, operation))
+                return true;
         }
         if (restricted_profile_allows_object_operation(eval, sobject_type, operation)) return true;
     }
@@ -6601,7 +6729,8 @@ fn resolve_field_read_permission(
         if (!resolve_object_crud_permission(eval, obj_name, "read")) return false;
     }
     if (relationship_read_target(field_name)) |child_type| {
-        if (eval.is_restricted_user) return resolve_object_crud_permission(eval, child_type, "read");
+        if (eval.is_restricted_user)
+            return resolve_object_crud_permission(eval, child_type, "read");
         return true;
     }
     if (eval.is_restricted_user) {
@@ -7006,8 +7135,10 @@ fn handle_csv_to_json(
 
 fn rename_field(name: []const u8) []const u8 {
     // Common field renames for CSV to JSON conversion
-    if (std.ascii.eqlIgnoreCase(name, "first_name") or std.ascii.eqlIgnoreCase(name, "First Name")) return "FirstName";
-    if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name")) return "LastName";
+    if (std.ascii.eqlIgnoreCase(name, "first_name") or std.ascii.eqlIgnoreCase(name, "First Name"))
+        return "FirstName";
+    if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name"))
+        return "LastName";
     if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) return "Email";
     if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) return "Company";
     if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) return "Phone";
@@ -7365,7 +7496,8 @@ fn append_picklist_entry(
         const existing_value = existing.object.fields.get(
             "value",
         ) orelse existing.object.fields.get("label") orelse Value.null_val;
-        if (existing_value == .string and std.ascii.eqlIgnoreCase(existing_value.string, value)) return;
+        if (existing_value == .string and std.ascii.eqlIgnoreCase(existing_value.string, value))
+            return;
     }
 
     const pe = try ctx.arena.create(types.ObjectInstance);
