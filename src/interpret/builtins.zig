@@ -1806,101 +1806,119 @@ fn dispatch_static_feature_management(
 
     const permission_name = args[0].string;
     var assigned_permission_set_ids: [32][]const u8 = undefined;
-    var assigned_permission_set_count: usize = 0;
-    var has_admin_permission_set = false;
-
-    if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
-        for (psa_records.items) |psa| {
-            if (psa != .sobject) continue;
-            const assignee_id = utils.sobject_get(
-                &psa.sobject.fields,
-                "AssigneeId",
-            ) orelse continue;
-            if (assignee_id != .string or
-                !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id))
-            {
-                continue;
-            }
-            const permission_set_id = utils.sobject_get(
-                &psa.sobject.fields,
-                "PermissionSetId",
-            ) orelse continue;
-            if (permission_set_id != .string) continue;
-            if (assigned_permission_set_count < assigned_permission_set_ids.len) {
-                assigned_permission_set_ids[assigned_permission_set_count] = permission_set_id.string;
-                assigned_permission_set_count += 1;
-            }
-        }
-    }
-
+    const assigned_permission_set_count = fm_collect_assigned_permission_set_ids(
+        ctx,
+        &assigned_permission_set_ids,
+    );
     if (assigned_permission_set_count == 0) return Value{ .boolean = false };
+    const assigned_slice = assigned_permission_set_ids[0..assigned_permission_set_count];
 
-    if (ctx.eval.store.get("PermissionSet")) |ps_records| {
-        for (ps_records.items) |ps| {
-            if (ps != .sobject or ps.sobject.id == null) continue;
-
-            var is_assigned = false;
-            for (assigned_permission_set_ids[0..assigned_permission_set_count]) |assigned_id| {
-                if (std.ascii.eqlIgnoreCase(ps.sobject.id.?, assigned_id)) {
-                    is_assigned = true;
-                    break;
-                }
-            }
-            if (!is_assigned) continue;
-
-            const ps_name_val = utils.sobject_get(&ps.sobject.fields, "Name") orelse continue;
-            if (ps_name_val != .string) continue;
-            const ps_name = ps_name_val.string;
-
-            if (std.ascii.indexOfIgnoreCase(ps_name, "LoggerAdmin") != null or
-                std.ascii.indexOfIgnoreCase(ps_name, "Admin") != null)
-            {
-                has_admin_permission_set = true;
-            }
-            if (std.ascii.eqlIgnoreCase(ps_name, permission_name)) return Value{ .boolean = true };
-        }
-    }
-
+    var has_admin_permission_set = false;
+    if (fm_check_assigned_permission_set_by_name(
+        ctx,
+        assigned_slice,
+        permission_name,
+        &has_admin_permission_set,
+    )) return Value{ .boolean = true };
     if (has_admin_permission_set) return Value{ .boolean = true };
+    if (fm_check_setup_entity_access(ctx, assigned_slice, permission_name))
+        return Value{ .boolean = true };
+    return Value{ .boolean = false };
+}
 
-    if (ctx.eval.store.get("SetupEntityAccess")) |sea_records| {
-        for (sea_records.items) |sea| {
-            if (sea != .sobject) continue;
-            const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
-            const setup_entity_id = utils.sobject_get(
-                &sea.sobject.fields,
-                "SetupEntityId",
-            ) orelse continue;
-            if (parent_id != .string or setup_entity_id != .string) continue;
-
-            var parent_matches = false;
-            for (assigned_permission_set_ids[0..assigned_permission_set_count]) |assigned_id| {
-                if (std.ascii.eqlIgnoreCase(parent_id.string, assigned_id)) {
-                    parent_matches = true;
-                    break;
-                }
-            }
-            if (!parent_matches) continue;
-
-            if (ctx.eval.store.get("CustomPermission")) |cp_records| {
-                for (cp_records.items) |cp| {
-                    if (cp != .sobject or cp.sobject.id == null) continue;
-                    if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
-                    const developer_name = utils.sobject_get(
-                        &cp.sobject.fields,
-                        "DeveloperName",
-                    ) orelse continue;
-                    if (developer_name == .string and
-                        std.ascii.eqlIgnoreCase(developer_name.string, permission_name))
-                    {
-                        return Value{ .boolean = true };
-                    }
-                }
-            }
+fn fm_collect_assigned_permission_set_ids(
+    ctx: *BuiltinContext,
+    out: *[32][]const u8,
+) usize {
+    const psa_records = ctx.eval.store.get("PermissionSetAssignment") orelse return 0;
+    var count: usize = 0;
+    for (psa_records.items) |psa| {
+        if (psa != .sobject) continue;
+        const assignee_id = utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
+        if (assignee_id != .string) continue;
+        if (!std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) continue;
+        const permission_set_id =
+            utils.sobject_get(&psa.sobject.fields, "PermissionSetId") orelse continue;
+        if (permission_set_id != .string) continue;
+        if (count < out.len) {
+            out[count] = permission_set_id.string;
+            count += 1;
         }
     }
+    return count;
+}
 
-    return Value{ .boolean = false };
+fn fm_check_assigned_permission_set_by_name(
+    ctx: *BuiltinContext,
+    assigned_slice: []const []const u8,
+    permission_name: []const u8,
+    has_admin_out: *bool,
+) bool {
+    const ps_records = ctx.eval.store.get("PermissionSet") orelse return false;
+    for (ps_records.items) |ps| {
+        if (ps != .sobject or ps.sobject.id == null) continue;
+        var is_assigned = false;
+        for (assigned_slice) |assigned_id| {
+            if (std.ascii.eqlIgnoreCase(ps.sobject.id.?, assigned_id)) {
+                is_assigned = true;
+                break;
+            }
+        }
+        if (!is_assigned) continue;
+        const ps_name_val = utils.sobject_get(&ps.sobject.fields, "Name") orelse continue;
+        if (ps_name_val != .string) continue;
+        const ps_name = ps_name_val.string;
+        if (std.ascii.indexOfIgnoreCase(ps_name, "LoggerAdmin") != null or
+            std.ascii.indexOfIgnoreCase(ps_name, "Admin") != null)
+        {
+            has_admin_out.* = true;
+        }
+        if (std.ascii.eqlIgnoreCase(ps_name, permission_name)) return true;
+    }
+    return false;
+}
+
+fn fm_check_setup_entity_access(
+    ctx: *BuiltinContext,
+    assigned_slice: []const []const u8,
+    permission_name: []const u8,
+) bool {
+    const sea_records = ctx.eval.store.get("SetupEntityAccess") orelse return false;
+    for (sea_records.items) |sea| {
+        if (sea != .sobject) continue;
+        const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
+        const setup_entity_id =
+            utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
+        if (parent_id != .string or setup_entity_id != .string) continue;
+        var parent_matches = false;
+        for (assigned_slice) |assigned_id| {
+            if (std.ascii.eqlIgnoreCase(parent_id.string, assigned_id)) {
+                parent_matches = true;
+                break;
+            }
+        }
+        if (!parent_matches) continue;
+        if (fm_custom_permission_matches(ctx, setup_entity_id.string, permission_name))
+            return true;
+    }
+    return false;
+}
+
+fn fm_custom_permission_matches(
+    ctx: *BuiltinContext,
+    setup_entity_id: []const u8,
+    permission_name: []const u8,
+) bool {
+    const cp_records = ctx.eval.store.get("CustomPermission") orelse return false;
+    for (cp_records.items) |cp| {
+        if (cp != .sobject or cp.sobject.id == null) continue;
+        if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id)) continue;
+        const developer_name =
+            utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
+        if (developer_name == .string and
+            std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) return true;
+    }
+    return false;
 }
 
 fn dispatch_static_logging_level(
