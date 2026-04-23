@@ -21,29 +21,10 @@ style_checker := env("ZIG_STYLE_CHECKER", "tools/check_style.zig")
 # - src/interpret/ と src/apex_parser/ は Apex ランタイム/パーサ実装で
 #   Apex 言語仕様の識別子 (camelCase) をミラーするため、
 #   function_not_snake_case だけ除外する。
-# - 同パス配下は Apex 言語の巨大 dispatcher (evalExpr, dispatch*, parsePrimary …)
-#   を持ち、70 行に収めるには本質的な再設計が必要なので function_too_long も除外。
-# - 同パス配下はインラインの Apex テストソース (raw multiline strings) を大量に含み、
-#   100/120 桁の line_too_long に収めるのは非現実的なので line_too_long も除外。
-# - src/check/scanner.zig と src/check/call_graph.zig も Apex ソースを 1 パスで走査する
-#   state machine / call-resolver のため function_too_long を除外。
-# - src/lsp/apex_stdlib.zig は Apex 標準ライブラリ定義の参照テーブル (1 行 1 member) で、
-#   改行すると可読性が落ちるため line_too_long を除外。
-# - src/lsp/semantic_tokens.zig の classify_token switch は zig fmt がマルチプロング
-#   match を常に 1 行に戻してしまうため、line_too_long を除外。
-# - --line-limit 120: snake_case への rename で短い camelCase より冗長になったため、
-#   標準の 100 桁では厳しすぎる。120 桁で実質的なチェックを残す。
-style_checker_args := "--root src --line-limit 120 " + \
+# これ以外のルール除外は付けない（残った違反は ratcheting baseline で扱う）。
+style_checker_args := "--root src " + \
     "--disable-path src/interpret/:function_not_snake_case " + \
-    "--disable-path src/apex_parser/:function_not_snake_case " + \
-    "--disable-path src/interpret/:function_too_long " + \
-    "--disable-path src/apex_parser/:function_too_long " + \
-    "--disable-path src/check/scanner.zig:function_too_long " + \
-    "--disable-path src/check/call_graph.zig:function_too_long " + \
-    "--disable-path src/interpret/:line_too_long " + \
-    "--disable-path src/apex_parser/:line_too_long " + \
-    "--disable-path src/lsp/apex_stdlib.zig:line_too_long " + \
-    "--disable-path src/lsp/semantic_tokens.zig:line_too_long"
+    "--disable-path src/apex_parser/:function_not_snake_case"
 
 # zig fmt でフォーマット崩れを検出 (書き換えはしない)
 fmt-check:
