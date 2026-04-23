@@ -8389,84 +8389,96 @@ fn handle_json_to_typed_records(
 
 /// Handle DataWeave JSON date format
 fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
-    // Extract contacts from input
-    var contacts_val: ?Value = null;
-    if (args.len > 0 and args[0] == .object) {
-        contacts_val = args[0].object.fields.get("records");
-    } else if (args.len > 0 and args[0] == .map) {
-        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, "records")) {
-                contacts_val = v;
-                break;
-            }
-        }
-    }
-
+    const contacts_val = jdf_extract_records(args);
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     try buf.appendSlice(ctx.arena, "{\n  \"users\": [\n");
-
     if (contacts_val) |cv| {
         if (cv == .list) {
             var first = true;
             for (cv.list.items.items) |item| {
                 if (!first) try buf.appendSlice(ctx.arena, ",\n");
                 first = false;
-                try buf.appendSlice(ctx.arena, "    {\n");
-                const first_name = if (item == .sobject) (if (utils.sobject_get(
-                    &item.sobject.fields,
-                    "FirstName",
-                )) |v| (if (v == .string) v.string else "") else "") else "";
-                const last_name = if (item == .sobject) (if (utils.sobject_get(
-                    &item.sobject.fields,
-                    "LastName",
-                )) |v| (if (v == .string) v.string else "") else "") else "";
-                const raw_date = if (item == .sobject)
-                    (if (utils.sobject_get(&item.sobject.fields, "CreatedDate")) |v| extract_date_string(v) orelse "2024-01-01T00:00:00.000Z" else "2024-01-01T00:00:00.000Z")
-                else
-                    "2024-01-01T00:00:00.000Z";
-                // Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
-                const created_date = blk: {
-                    if (raw_date.len >= 19 and
-                        raw_date[4] == '-' and
-                        raw_date[7] == '-' and
-                        raw_date[10] == 'T')
-                    {
-                        const year = raw_date[0..4];
-                        const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
-                        const day = raw_date[8..10];
-                        const hour24 = std.fmt.parseInt(u8, raw_date[11..13], 10) catch 0;
-                        const minute = raw_date[14..16];
-                        const second = raw_date[17..19];
-                        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-                        const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
-                        const hour12: u8 =
-                            if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
-                        const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
-                        break :blk try std.fmt.allocPrint(
-                            ctx.arena,
-                            "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
-                            .{ hour12, minute, second, am_pm, month_name, day, year },
-                        );
-                    }
-                    break :blk raw_date;
-                };
-
-                try buf.appendSlice(ctx.arena, "      \"firstName\": \"");
-                try buf.appendSlice(ctx.arena, first_name);
-                try buf.appendSlice(ctx.arena, "\",\n");
-                try buf.appendSlice(ctx.arena, "      \"lastName\": \"");
-                try buf.appendSlice(ctx.arena, last_name);
-                try buf.appendSlice(ctx.arena, "\",\n");
-                try buf.appendSlice(ctx.arena, "      \"createdDate\": \"");
-                try buf.appendSlice(ctx.arena, created_date);
-                try buf.appendSlice(ctx.arena, "\"\n");
-                try buf.appendSlice(ctx.arena, "    }");
+                try jdf_append_user_record(ctx, &buf, item);
             }
         }
     }
-
     try buf.appendSlice(ctx.arena, "\n  ]\n}");
     return buf.items;
+}
+
+fn jdf_extract_records(args: []const Value) ?Value {
+    if (args.len == 0) return null;
+    if (args[0] == .object) return args[0].object.fields.get("records");
+    if (args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "records")) return v;
+        }
+    }
+    return null;
+}
+
+fn jdf_append_user_record(
+    ctx: *BuiltinContext,
+    buf: *std.ArrayListUnmanaged(u8),
+    item: Value,
+) !void {
+    try buf.appendSlice(ctx.arena, "    {\n");
+    const first_name = jdf_string_field(item, "FirstName");
+    const last_name = jdf_string_field(item, "LastName");
+    const raw_date = jdf_raw_date(item);
+    const created_date = try jdf_format_date(ctx.arena, raw_date);
+    try buf.appendSlice(ctx.arena, "      \"firstName\": \"");
+    try buf.appendSlice(ctx.arena, first_name);
+    try buf.appendSlice(ctx.arena, "\",\n");
+    try buf.appendSlice(ctx.arena, "      \"lastName\": \"");
+    try buf.appendSlice(ctx.arena, last_name);
+    try buf.appendSlice(ctx.arena, "\",\n");
+    try buf.appendSlice(ctx.arena, "      \"createdDate\": \"");
+    try buf.appendSlice(ctx.arena, created_date);
+    try buf.appendSlice(ctx.arena, "\"\n");
+    try buf.appendSlice(ctx.arena, "    }");
+}
+
+fn jdf_string_field(item: Value, field_name: []const u8) []const u8 {
+    if (item != .sobject) return "";
+    const v = utils.sobject_get(&item.sobject.fields, field_name) orelse return "";
+    if (v != .string) return "";
+    return v.string;
+}
+
+fn jdf_raw_date(item: Value) []const u8 {
+    const default_date = "2024-01-01T00:00:00.000Z";
+    if (item != .sobject) return default_date;
+    const v = utils.sobject_get(&item.sobject.fields, "CreatedDate") orelse return default_date;
+    return extract_date_string(v) orelse default_date;
+}
+
+/// Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
+fn jdf_format_date(arena: std.mem.Allocator, raw_date: []const u8) ![]const u8 {
+    if (raw_date.len < 19 or raw_date[4] != '-' or raw_date[7] != '-' or raw_date[10] != 'T') {
+        return raw_date;
+    }
+    const year = raw_date[0..4];
+    const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
+    const day = raw_date[8..10];
+    const hour24 = std.fmt.parseInt(u8, raw_date[11..13], 10) catch 0;
+    const minute = raw_date[14..16];
+    const second = raw_date[17..19];
+    const month_names = [_][]const u8{
+        "January", "February", "March",     "April",   "May",      "June",
+        "July",    "August",   "September", "October", "November", "December",
+    };
+    const month_name = if (month_num >= 1 and month_num <= 12)
+        month_names[month_num - 1]
+    else
+        "January";
+    const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+    const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
+    return try std.fmt.allocPrint(
+        arena,
+        "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
+        .{ hour12, minute, second, am_pm, month_name, day, year },
+    );
 }
 
 /// Handle DataWeave logFilter / filterWinners: filter JSON array keeping only items where isWinner
