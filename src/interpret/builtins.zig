@@ -1622,7 +1622,9 @@ fn dispatch_static_feature_management(
                 &psa.sobject.fields,
                 "AssigneeId",
             ) orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) continue;
+            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) {
+                continue;
+            }
             const permission_set_id = utils.sobject_get(
                 &psa.sobject.fields,
                 "PermissionSetId",
@@ -3118,9 +3120,15 @@ fn standard_reference_target_for_field_name(field_name: []const u8) ?[]const u8 
 
 fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
-    if (std.ascii.eqlIgnoreCase(field_name, "Name") and has_implicit_name_field(object_type) and !has_custom_object_suffix(object_type)) return false;
-    if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
-    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") and has_implicit_name_field(object_type) and !has_custom_object_suffix(object_type)) {
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) {
+        return false;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) {
+        return false;
+    }
     if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "ContentVersion") and
         (std.ascii.eqlIgnoreCase(field_name, "PathOnClient") or std.ascii.eqlIgnoreCase(field_name, "VersionData"))) return false;
@@ -3719,7 +3727,9 @@ fn add_describe_fields_from_record(
         return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
-        if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) continue;
+        if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) {
+            continue;
+        }
         try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
     }
 }
@@ -3897,24 +3907,36 @@ fn create_field_describe_result_with_type(
 fn map_xml_type_to_display_type(xml_type: []const u8) []const u8 {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(xml_type, "Text") or ci.eqlIgnoreCase(xml_type, "STRING")) return "STRING";
-    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) return "TEXTAREA";
-    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) return "BOOLEAN";
-    if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) return "DOUBLE";
+    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) {
+        return "TEXTAREA";
+    }
+    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) {
+        return "BOOLEAN";
+    }
+    if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) {
+        return "DOUBLE";
+    }
     if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME"))
         return "DATETIME";
     if (ci.eqlIgnoreCase(xml_type, "Date") or ci.eqlIgnoreCase(xml_type, "DATE")) return "DATE";
-    if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) return "REFERENCE";
+    if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) {
+        return "REFERENCE";
+    }
     if (ci.eqlIgnoreCase(xml_type, "Url") or ci.eqlIgnoreCase(xml_type, "URL")) return "URL";
     if (ci.eqlIgnoreCase(xml_type, "Phone") or ci.eqlIgnoreCase(xml_type, "PHONE")) return "PHONE";
     if (ci.eqlIgnoreCase(xml_type, "Email") or ci.eqlIgnoreCase(xml_type, "EMAIL")) return "EMAIL";
     if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST"))
         return "PICKLIST";
-    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) return "MULTIPICKLIST";
+    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) {
+        return "MULTIPICKLIST";
+    }
     if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY"))
         return "CURRENCY";
     if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT"))
         return "PERCENT";
-    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) return "ENCRYPTEDSTRING";
+    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) {
+        return "ENCRYPTEDSTRING";
+    }
     if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER"))
         return "INTEGER";
     if (ci.eqlIgnoreCase(xml_type, "Long") or ci.eqlIgnoreCase(xml_type, "LONG")) return "LONG";
@@ -3966,7 +3988,9 @@ fn infer_field_type_for_object(object_type: []const u8, field_name: []const u8) 
         std.mem.endsWith(u8, field_name, "Date__c") or
         std.mem.endsWith(u8, field_name, "Timestamp__c"))
         return "DateTime";
-    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or std.ascii.eqlIgnoreCase(field_name, "Status")) return "Picklist";
+    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or std.ascii.eqlIgnoreCase(field_name, "Status")) {
+        return "Picklist";
+    }
     return "String";
 }
 
@@ -5169,9 +5193,15 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "isNameField")) {
         if (std.ascii.eqlIgnoreCase(field_name, "Name")) return Value{ .boolean = true };
         if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and std.ascii.eqlIgnoreCase(field_name, "CaseNumber")) return Value{ .boolean = true };
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and std.ascii.eqlIgnoreCase(field_name, "ContractNumber")) return Value{ .boolean = true };
-            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and std.ascii.eqlIgnoreCase(field_name, "OrderNumber")) return Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and std.ascii.eqlIgnoreCase(field_name, "CaseNumber")) {
+                return Value{ .boolean = true };
+            }
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and std.ascii.eqlIgnoreCase(field_name, "ContractNumber")) {
+                return Value{ .boolean = true };
+            }
+            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and std.ascii.eqlIgnoreCase(field_name, "OrderNumber")) {
+                return Value{ .boolean = true };
+            }
         }
         return Value{ .boolean = false };
     }
@@ -5186,8 +5216,12 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) {
+        return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) {
+        return obj.fields.get("type") orelse Value{ .string = "STRING" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get(
@@ -5821,8 +5855,12 @@ fn dispatch_obj_describe_field_result(
     if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) {
+        return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) {
+        return obj.fields.get("type") orelse Value{ .string = "STRING" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getName"))
         return obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
@@ -6257,7 +6295,9 @@ fn collect_assigned_permission_set_ids(eval: *evaluator_mod.Evaluator, out: *[64
                 &psa.sobject.fields,
                 "AssigneeId",
             ) orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) continue;
+            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) {
+                continue;
+            }
             if (utils.sobject_get(&psa.sobject.fields, "PermissionSetId")) |permission_set_id| {
                 if (permission_set_id == .string) {
                     var already_added = false;
@@ -6424,8 +6464,12 @@ fn permission_name_mentions_field(
     if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "LastName")) {
         if (lower_contains(permission_name, "name_field")) return true;
         if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and lower_contains(permission_name, "contact_name")) return true;
-            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and lower_contains(permission_name, "lead_name")) return true;
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and lower_contains(permission_name, "contact_name")) {
+                return true;
+            }
+            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and lower_contains(permission_name, "lead_name")) {
+                return true;
+            }
         }
     }
 
@@ -6583,7 +6627,9 @@ fn check_field_permission(
         if (!permission_record_matches_assigned_set(eval, utils.sobject_get(&fp.sobject.fields, "ParentId"))) continue;
 
         const fp_field = utils.sobject_get(&fp.sobject.fields, "Field") orelse continue;
-        if (fp_field != .string or !field_permission_matches(object_type, fp_field.string, field_name)) continue;
+        if (fp_field != .string or !field_permission_matches(object_type, fp_field.string, field_name)) {
+            continue;
+        }
 
         matched_any = true;
         const perm_val = utils.sobject_get(&fp.sobject.fields, perm_field) orelse continue;
@@ -6678,7 +6724,9 @@ fn lookup_object_permission(
 
 fn default_object_crud_access(eval: *evaluator_mod.Evaluator, sobject_type: []const u8) bool {
     if (eval.is_restricted_user) return false;
-    if (eval.is_standard_user and (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type))) return false;
+    if (eval.is_standard_user and (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type))) {
+        return false;
+    }
     return true;
 }
 
@@ -7139,10 +7187,18 @@ fn rename_field(name: []const u8) []const u8 {
         return "FirstName";
     if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name"))
         return "LastName";
-    if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) return "Email";
-    if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) return "Company";
-    if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) return "Phone";
-    if (std.ascii.eqlIgnoreCase(name, "address") or std.ascii.eqlIgnoreCase(name, "mailing_address")) return "MailingStreet";
+    if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) {
+        return "Email";
+    }
+    if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) {
+        return "Company";
+    }
+    if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) {
+        return "Phone";
+    }
+    if (std.ascii.eqlIgnoreCase(name, "address") or std.ascii.eqlIgnoreCase(name, "mailing_address")) {
+        return "MailingStreet";
+    }
     return name;
 }
 

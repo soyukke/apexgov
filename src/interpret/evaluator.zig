@@ -358,10 +358,14 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return true;
         }
         if (self.extract_where_field_value(soql, "Alias", current_env)) |alias| {
-            if (std.ascii.startsWithIgnoreCase(alias, "autoproc") or std.ascii.eqlIgnoreCase(alias, "tuser")) return true;
+            if (std.ascii.startsWithIgnoreCase(alias, "autoproc") or std.ascii.eqlIgnoreCase(alias, "tuser")) {
+                return true;
+            }
         }
         if (self.extract_where_field_value(soql, "Username", current_env)) |username| {
-            if (std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.eqlIgnoreCase(username, "testuser@example.com")) return true;
+            if (std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.eqlIgnoreCase(username, "testuser@example.com")) {
+                return true;
+            }
             if (std.ascii.startsWithIgnoreCase(username, "autoproc")) return true;
         }
         return false;
@@ -653,7 +657,9 @@ pub const Evaluator = struct {
                 if (utils.sobject_get(&record.sobject.fields, "Profile")) |profile_val| {
                     if (profile_val == .sobject) {
                         if (utils.sobject_get(&profile_val.sobject.fields, "UserType")) |profile_user_type| {
-                            if (profile_user_type == .string and std.ascii.eqlIgnoreCase(profile_user_type.string, "Guest")) return true;
+                            if (profile_user_type == .string and std.ascii.eqlIgnoreCase(profile_user_type.string, "Guest")) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -696,7 +702,9 @@ pub const Evaluator = struct {
             if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
-            if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) return true;
+            if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) {
+                return true;
+            }
         }
         return false;
     }
@@ -1694,7 +1702,9 @@ pub const Evaluator = struct {
                         for (entry.value_ptr.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
+                                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) {
+                                        return item;
+                                    }
                                 }
                             }
                         }
@@ -9069,7 +9079,9 @@ pub const Evaluator = struct {
                             if (item == .null_val) continue;
                             if (instanceof_matches_primitive(item, elem_type))
                                 return Value{ .boolean = true };
-                            if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) return Value{ .boolean = true };
+                            if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) {
+                                return Value{ .boolean = true };
+                            }
                             return Value{ .boolean = false };
                         }
                     }
@@ -9781,7 +9793,9 @@ pub const Evaluator = struct {
                         for (class_decl.members) |member| {
                             switch (member) {
                                 .field_decl => |fd| {
-                                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or fd.setter_body == null) continue;
+                                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or fd.setter_body == null) {
+                                        continue;
+                                    }
 
                                     const setter_env = try self.global_env.child();
                                     try setter_env.define("this", Value{ .object = obj.object });
@@ -10176,7 +10190,9 @@ pub const Evaluator = struct {
                                 for (entry.value_ptr.items) |item| {
                                     if (item == .sobject) {
                                         if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                            if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
+                                            if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) {
+                                                return item;
+                                            }
                                         }
                                     }
                                 }
@@ -13007,9 +13023,15 @@ pub const Evaluator = struct {
             ) or std.ascii.eqlIgnoreCase(method, "millisecondGmt"))
         {
             const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
-            if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt")) return Value{ .integer = dt.h };
-            if (std.ascii.eqlIgnoreCase(method, "minute") or std.ascii.eqlIgnoreCase(method, "minuteGmt")) return Value{ .integer = dt.mi };
-            if (std.ascii.eqlIgnoreCase(method, "second") or std.ascii.eqlIgnoreCase(method, "secondGmt")) return Value{ .integer = dt.sec };
+            if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt")) {
+                return Value{ .integer = dt.h };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "minute") or std.ascii.eqlIgnoreCase(method, "minuteGmt")) {
+                return Value{ .integer = dt.mi };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "second") or std.ascii.eqlIgnoreCase(method, "secondGmt")) {
+                return Value{ .integer = dt.sec };
+            }
             // millisecond — we currently store seconds-only; default to 0.
             return Value{ .integer = 0 };
         }
@@ -17354,7 +17376,9 @@ pub const Evaluator = struct {
                 for (owner.members) |member| {
                     switch (member) {
                         .method_decl => |md| {
-                            if (!std.ascii.eqlIgnoreCase(md.name, method_name_inner) or md.params.len != args_inner.len) continue;
+                            if (!std.ascii.eqlIgnoreCase(md.name, method_name_inner) or md.params.len != args_inner.len) {
+                                continue;
+                            }
                             if (eval.single_method_candidate_score(md, args_inner, hints)) |score| {
                                 if (best_inner.* == null or score > best_score_inner.*) {
                                     best_inner.* = .{ .owner = owner, .method = md };
@@ -17894,18 +17918,24 @@ pub const Evaluator = struct {
                     const hint_value = strip_type_namespace(hint_args.?.value);
                     const param_value = strip_type_namespace(param_args.?.value);
                     if (names_match_by_simple_name(hint_value, param_value)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_value), "SObject") and self.is_s_object_type_name(type_base_name(hint_value))) return 3;
+                    if (std.ascii.eqlIgnoreCase(type_base_name(param_value), "SObject") and self.is_s_object_type_name(type_base_name(hint_value))) {
+                        return 3;
+                    }
                 }
             } else if (extract_collection_element_type_name(hint)) |hint_elem_type| {
                 if (extract_collection_element_type_name(pt)) |param_elem_type| {
                     const hint_elem = strip_type_namespace(hint_elem_type);
                     const param_elem = strip_type_namespace(param_elem_type);
                     if (names_match_by_simple_name(hint_elem, param_elem)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and self.is_s_object_type_name(type_base_name(hint_elem))) return 3;
+                    if (std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and self.is_s_object_type_name(type_base_name(hint_elem))) {
+                        return 3;
+                    }
                 }
             }
         }
-        if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
+        if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) {
+            return 3;
+        }
         // Match dotted form against its simple tail (and vice versa) so that a
         // `ModeTarget2.Mode` declared-type hint scores against a bare `Mode`
         // parameter declaration. This is common when user code references an
@@ -19705,13 +19735,19 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
             return if (Evaluator.is_salesforce_id_string(arg.string)) 3 else 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         // Date/DateTime-like strings should match Date/DateTime params
-        if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.is_date_only_format_string(arg.string)) return 2;
-        if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and Evaluator.is_date_time_format_string(arg.string)) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.is_date_only_format_string(arg.string)) {
+            return 2;
+        }
+        if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and Evaluator.is_date_time_format_string(arg.string)) {
+            return 2;
+        }
         return 0;
     }
     if (arg == .integer) {
         if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Long") or std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Long") or std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) {
+            return 1;
+        }
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
@@ -19725,7 +19761,9 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
     if (arg == .double) {
         if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double"))
             return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
+        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) {
+            return 1;
+        }
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
@@ -19797,7 +19835,9 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
             if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
         }
         // Generic SObject match
-        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")) {
+            return 2;
+        }
         return 0;
     }
     if (arg == .object) {

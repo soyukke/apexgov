@@ -613,7 +613,9 @@ fn collect_cls_files(
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) {
+            continue;
+        }
         // Skip name-shadowing stub classes that intentionally shadow system classes
         // (e.g., extra-tests/name-shadowing/System/JSON.cls). These empty classes
         // exist only to verify that production code uses fully-qualified names in
