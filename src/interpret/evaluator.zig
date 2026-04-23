@@ -8554,237 +8554,274 @@ pub const Evaluator = struct {
             coerced_val = try self.coerce_soql_assignment_to_declared_type(coerced_val, asgn.value, target_type);
             coerced_val = self.annotate_declared_collection_type(coerced_val, target_type);
         }
-        switch (asgn.target.*) {
-            .identifier => |id| {
-                // ??= : only assign if current value is null
-                if (asgn.op == .null_coalesce_assign) {
-                    const cur = self.eval_expr(asgn.target, current_env) catch Value.null_val;
-                    if (cur != .null_val) return cur;
-                    // Current is null, fall through to assign the new value
-                    const nca = try self.arena.create(ast.Assignment);
-                    nca.* = .{ .target = asgn.target, .op = .assign, .value = asgn.value, .loc = asgn.loc };
-                    return self.eval_assignment(nca, coerced_val, current_env);
-                }
-                const final_val = if (asgn.op != .assign) blk: {
-                    const cur = if (current_env.has(id.name))
-                        (current_env.get(id.name) orelse Value.null_val)
-                    else
-                        (self.resolve_bare_static_value(current_env, id.name) orelse Value.null_val);
-                    var result = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                    // Handle string concatenation for +=
-                    if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
-                        const ls = try utils.coerce_to_string(cur, self.arena);
-                        const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                        result = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ ls, rs }) };
-                    }
-                    break :blk result;
-                } else coerced_val;
-                current_env.set(id.name, final_val) catch {
-                    // Before defining locally, check if this is a static field (ClassName.fieldName)
-                    // to avoid shadowing static variables with local bindings.
-                    var found_static = false;
-                    if (self.current_class) |cc| {
-                        const sk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch "";
-                        if (self.global_env.get(sk) != null) {
-                            self.global_env.set(sk, final_val) catch {};
-                            found_static = true;
-                        } else if (self.find_outer_class_name(cc)) |oc| {
-                            const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
-                            if (self.global_env.get(osk) != null) {
-                                self.global_env.set(osk, final_val) catch {};
-                                found_static = true;
-                            }
-                        }
-                    }
-                    if (current_env.get("this")) |tv| {
-                        if (tv == .object) {
-                            const sk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ tv.object.class_name, id.name }) catch "";
-                            if (self.global_env.get(sk) != null) {
-                                self.global_env.set(sk, final_val) catch {};
-                                found_static = true;
-                            } else if (self.find_outer_class_name(tv.object.class_name)) |oc| {
-                                const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
-                                if (self.global_env.get(osk) != null) {
-                                    self.global_env.set(osk, final_val) catch {};
-                                    found_static = true;
-                                }
-                            }
-                        }
-                    }
-                    if (!found_static) {
-                        try current_env.define(id.name, final_val);
-                    }
-                };
-                // Also update instance field on `this` if field exists or is declared
+        return switch (asgn.target.*) {
+            .identifier => |id| try self.eval_identifier_assignment(id.name, asgn, coerced_val, current_env),
+            .field_access => |fa| try self.eval_field_assignment(fa, asgn, coerced_val, current_env),
+            .index_access => |ia| try self.eval_index_assignment(ia, val, current_env),
+            else => return val,
+        };
+    }
+
+    fn eval_identifier_assignment(
+        self: *Evaluator,
+        id_name: []const u8,
+        asgn: *ast.Assignment,
+        coerced_val: Value,
+        current_env: *Env,
+    ) anyerror!Value {
+        if (asgn.op == .null_coalesce_assign) {
+            const current = self.eval_expr(asgn.target, current_env) catch Value.null_val;
+            if (current != .null_val) return current;
+            const assign = try self.arena.create(ast.Assignment);
+            assign.* = .{ .target = asgn.target, .op = .assign, .value = asgn.value, .loc = asgn.loc };
+            return self.eval_assignment(assign, coerced_val, current_env);
+        }
+
+        const final_val = if (asgn.op == .assign)
+            coerced_val
+        else
+            try self.eval_identifier_compound_assignment(id_name, asgn.op, coerced_val, current_env);
+        try self.assign_identifier_binding(id_name, final_val, current_env);
+        try self.update_this_identifier_field(id_name, final_val, current_env);
+        self.update_static_identifier_field(id_name, final_val, current_env);
+        return final_val;
+    }
+
+    fn eval_identifier_compound_assignment(
+        self: *Evaluator,
+        id_name: []const u8,
+        op: ast.AssignOp,
+        coerced_val: Value,
+        current_env: *Env,
+    ) !Value {
+        const current = if (current_env.has(id_name))
+            (current_env.get(id_name) orelse Value.null_val)
+        else
+            (self.resolve_bare_static_value(current_env, id_name) orelse Value.null_val);
+        return try self.apply_compound_assignment(current, op, coerced_val);
+    }
+
+    fn assign_identifier_binding(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) !void {
+        current_env.set(id_name, final_val) catch {
+            var found_static = false;
+            if (self.current_class) |class_name| {
+                found_static = self.assign_existing_static_field(class_name, id_name, final_val);
+            }
+            if (!found_static) {
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        // Check if this field already exists on the instance or is declared in class
-                        var should_update = false;
-                        for (this_val.object.fields.keys()) |k| {
-                            if (std.ascii.eqlIgnoreCase(k, id.name)) {
-                                should_update = true;
-                                break;
-                            }
-                        }
-                        if (!should_update) {
-                            if (self.find_class(this_val.object.class_name)) |cd| {
-                                should_update = self.is_instance_field(cd, id.name) or self.is_parent_instance_field(cd, id.name);
-                            }
-                        }
-                        if (should_update) {
-                            try this_val.object.fields.put(self.arena, id.name, final_val);
-                        }
-                        // Also update static field if applicable
-                        const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_val.object.class_name, id.name }) catch "";
-                        if (self.global_env.get(static_key) != null) {
-                            self.global_env.set(static_key, final_val) catch {};
-                        }
+                        found_static = self.assign_existing_static_field(
+                            this_val.object.class_name,
+                            id_name,
+                            final_val,
+                        );
                     }
                 }
-                // Also update current_class static field if applicable
-                if (self.current_class) |cc| {
-                    if (current_env.get("this") == null) { // Only in static context
-                        const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, id.name }) catch "";
-                        if (self.global_env.get(static_key) != null) {
-                            self.global_env.set(static_key, final_val) catch {};
-                        } else if (self.find_outer_class_name(cc)) |oc| {
-                            const osk = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ oc, id.name }) catch "";
-                            if (self.global_env.get(osk) != null) {
-                                self.global_env.set(osk, final_val) catch {};
-                            }
-                        }
-                    }
-                }
-                return final_val;
-            },
-            .field_access => |fa| {
-                // Handle static field assignment: ClassName.fieldName = val
-                if (fa.object.* == .identifier) {
-                    const cls = fa.object.identifier.name;
-                    // Check if it's a class name (not a local variable or a static field
-                    // in the enclosing class/inheritance chain).
-                    const is_class = self.find_class(cls) != null or
-                        std.ascii.eqlIgnoreCase(cls, "RestContext") or
-                        std.ascii.eqlIgnoreCase(cls, "System") or
-                        std.ascii.eqlIgnoreCase(cls, "Trigger");
-                    const is_var = current_env.get(cls) != null or self.resolve_bare_static_value(current_env, cls) != null;
-                    if (is_class and !is_var) {
-                        // Lazy static init: ensure the class is initialized before writing
-                        self.ensure_static_init(cls);
-                        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cls, fa.field });
-                        var final_val = coerced_val;
-                        if (asgn.op != .assign) {
-                            const cur = self.global_env.get(key) orelse Value.null_val;
-                            final_val = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                            if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
-                                const ls = try utils.coerce_to_string(cur, self.arena);
-                                const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                                final_val = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ ls, rs }) };
-                            }
-                        }
-                        self.global_env.set(key, final_val) catch {
-                            try self.global_env.define(key, final_val);
-                        };
-                        return final_val;
-                    }
-                }
-                const obj = try self.eval_expr(fa.object, current_env);
-                var final_val = coerced_val;
-                if (asgn.op != .assign) {
-                    // Compound assignment: get current value and compute
-                    const cur = if (obj == .sobject)
-                        utils.sobject_get(&obj.sobject.fields, fa.field) orelse Value.null_val
-                    else if (obj == .object)
-                        utils.sobject_get(&obj.object.fields, fa.field) orelse Value.null_val
-                    else
-                        Value.null_val;
-                    final_val = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                    // Handle string concatenation for +=
-                    if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
-                        const ls = try utils.coerce_to_string(cur, self.arena);
-                        const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                        final_val = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ ls, rs }) };
-                    }
-                }
-                if (obj == .sobject) {
-                    try utils.sobject_put(&obj.sobject.fields, self.arena, fa.field, final_val);
-                    // Sync SObject.id when Id field is set
-                    if (std.ascii.eqlIgnoreCase(fa.field, "Id")) {
-                        obj.sobject.id = if (final_val == .string) final_val.string else null;
-                    }
-                } else if (obj == .object) {
-                    if (self.find_class(obj.object.class_name)) |class_decl| {
-                        for (class_decl.members) |member| {
-                            switch (member) {
-                                .field_decl => |fd| {
-                                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or fd.setter_body == null) continue;
+            }
+            if (!found_static) try current_env.define(id_name, final_val);
+        };
+    }
 
-                                    const setter_env = try self.global_env.child();
-                                    try setter_env.define("this", Value{ .object = obj.object });
-
-                                    for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
-                                        setter_env.set(k, v) catch {
-                                            try setter_env.define(k, v);
-                                        };
-                                    }
-                                    try setter_env.define("value", final_val);
-                                    _ = try self.exec_block(fd.setter_body.?, setter_env);
-
-                                    if (setter_env.get("this")) |this_val| {
-                                        if (this_val == .object and this_val.object == obj.object) {
-                                            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
-                                            for (obj.object.fields.keys()) |k| field_keys.append(self.arena, k) catch {};
-                                            for (field_keys.items) |k| {
-                                                if (setter_env.get(k)) |updated| {
-                                                    try obj.object.fields.put(self.arena, k, updated);
-                                                }
-                                            }
-                                        } else if (this_val == .object) {
-                                            for (this_val.object.fields.keys(), this_val.object.fields.values()) |k, v| {
-                                                try obj.object.fields.put(self.arena, k, v);
-                                            }
-                                        }
-                                    }
-
-                                    if (fa.object.* == .this_expr) {
-                                        current_env.set(fa.field, obj.object.fields.get(fa.field) orelse final_val) catch {};
-                                    }
-                                    return final_val;
-                                },
-                                else => {},
-                            }
-                        }
-                    }
-                    // Case-insensitive put: use existing key if it matches
-                    var existing_key: ?[]const u8 = null;
-                    for (obj.object.fields.keys()) |k| {
-                        if (std.ascii.eqlIgnoreCase(k, fa.field)) {
-                            existing_key = k;
-                            break;
-                        }
-                    }
-                    try obj.object.fields.put(self.arena, existing_key orelse fa.field, final_val);
-                    // Sync local env when assigning to this.field
-                    // so that bare field references (without this.) see the updated value
-                    if (fa.object.* == .this_expr) {
-                        current_env.set(fa.field, final_val) catch {};
-                    }
-                }
-                return final_val;
-            },
-            .index_access => |ia| {
-                const obj = try self.eval_expr(ia.object, current_env);
-                const idx = try self.eval_expr(ia.index, current_env);
-                if (obj == .list and idx == .integer and idx.integer >= 0) {
-                    const i: usize = @intCast(idx.integer);
-                    if (i < obj.list.items.items.len) {
-                        obj.list.items.items[i] = val;
-                    }
-                }
-                return val;
-            },
-            else => return val,
+    fn update_this_identifier_field(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) !void {
+        const this_val = current_env.get("this") orelse return;
+        if (this_val != .object) return;
+        if (self.should_update_this_field(this_val.object, id_name)) {
+            try this_val.object.fields.put(self.arena, id_name, final_val);
         }
+        _ = self.assign_existing_static_field(this_val.object.class_name, id_name, final_val);
+    }
+
+    fn should_update_this_field(self: *Evaluator, object: *types.ObjectInstance, id_name: []const u8) bool {
+        for (object.fields.keys()) |key| {
+            if (std.ascii.eqlIgnoreCase(key, id_name)) return true;
+        }
+        const class_decl = self.find_class(object.class_name) orelse return false;
+        return self.is_instance_field(class_decl, id_name) or self.is_parent_instance_field(class_decl, id_name);
+    }
+
+    fn update_static_identifier_field(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) void {
+        if (current_env.get("this") != null) return;
+        if (self.current_class) |class_name| {
+            _ = self.assign_existing_static_field(class_name, id_name, final_val);
+        }
+    }
+
+    fn assign_existing_static_field(self: *Evaluator, class_name: []const u8, field_name: []const u8, value: Value) bool {
+        const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, field_name }) catch "";
+        if (self.global_env.get(static_key) != null) {
+            self.global_env.set(static_key, value) catch {};
+            return true;
+        }
+        const outer_name = self.find_outer_class_name(class_name) orelse return false;
+        const outer_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, field_name }) catch "";
+        if (self.global_env.get(outer_key) == null) return false;
+        self.global_env.set(outer_key, value) catch {};
+        return true;
+    }
+
+    fn eval_field_assignment(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        asgn: *ast.Assignment,
+        coerced_val: Value,
+        current_env: *Env,
+    ) !Value {
+        if (try self.assign_static_field_access(fa, asgn.op, coerced_val, current_env)) |result| return result;
+        const obj = try self.eval_expr(fa.object, current_env);
+        const final_val = try self.field_assignment_value(obj, fa.field, asgn.op, coerced_val);
+        if (obj == .sobject) {
+            try utils.sobject_put(&obj.sobject.fields, self.arena, fa.field, final_val);
+            if (std.ascii.eqlIgnoreCase(fa.field, "Id")) {
+                obj.sobject.id = if (final_val == .string) final_val.string else null;
+            }
+        } else if (obj == .object) {
+            try self.assign_object_field(fa, obj.object, final_val, current_env);
+        }
+        return final_val;
+    }
+
+    fn assign_static_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        op: ast.AssignOp,
+        coerced_val: Value,
+        current_env: *Env,
+    ) !?Value {
+        if (fa.object.* != .identifier) return null;
+        const class_name = fa.object.identifier.name;
+        const is_class = self.find_class(class_name) != null or
+            std.ascii.eqlIgnoreCase(class_name, "RestContext") or
+            std.ascii.eqlIgnoreCase(class_name, "System") or
+            std.ascii.eqlIgnoreCase(class_name, "Trigger");
+        const is_var = current_env.get(class_name) != null or
+            self.resolve_bare_static_value(current_env, class_name) != null;
+        if (!is_class or is_var) return null;
+
+        self.ensure_static_init(class_name);
+        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
+        const current = self.global_env.get(key) orelse Value.null_val;
+        const final_val = if (op == .assign) coerced_val else try self.apply_compound_assignment(current, op, coerced_val);
+        self.global_env.set(key, final_val) catch {
+            try self.global_env.define(key, final_val);
+        };
+        return final_val;
+    }
+
+    fn field_assignment_value(self: *Evaluator, obj: Value, field_name: []const u8, op: ast.AssignOp, value: Value) !Value {
+        if (op == .assign) return value;
+        const current = if (obj == .sobject)
+            utils.sobject_get(&obj.sobject.fields, field_name) orelse Value.null_val
+        else if (obj == .object)
+            utils.sobject_get(&obj.object.fields, field_name) orelse Value.null_val
+        else
+            Value.null_val;
+        return try self.apply_compound_assignment(current, op, value);
+    }
+
+    fn apply_compound_assignment(self: *Evaluator, current: Value, op: ast.AssignOp, value: Value) !Value {
+        var result = eval_compound_assign(current, op, value, self.arena);
+        if (op == .plus_assign and (current == .string or value == .string)) {
+            const left = try utils.coerce_to_string(current, self.arena);
+            const right = try utils.coerce_to_string(value, self.arena);
+            result = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ left, right }) };
+        }
+        return result;
+    }
+
+    fn assign_object_field(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        object: *types.ObjectInstance,
+        final_val: Value,
+        current_env: *Env,
+    ) !void {
+        if (try self.apply_object_field_setter(fa, object, final_val, current_env)) return;
+        try self.put_object_field_case_insensitive(object, fa.field, final_val);
+        if (fa.object.* == .this_expr) {
+            current_env.set(fa.field, final_val) catch {};
+        }
+    }
+
+    fn apply_object_field_setter(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        object: *types.ObjectInstance,
+        final_val: Value,
+        current_env: *Env,
+    ) !bool {
+        const class_decl = self.find_class(object.class_name) orelse return false;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .field_decl => |field_decl| {
+                    if (!std.ascii.eqlIgnoreCase(field_decl.name, fa.field) or field_decl.setter_body == null) continue;
+                    try self.execute_field_setter(object, field_decl.setter_body.?, final_val);
+                    if (fa.object.* == .this_expr) {
+                        current_env.set(fa.field, object.fields.get(fa.field) orelse final_val) catch {};
+                    }
+                    return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn execute_field_setter(self: *Evaluator, object: *types.ObjectInstance, setter_body: []ast.Stmt, value: Value) !void {
+        const setter_env = try self.global_env.child();
+        try setter_env.define("this", Value{ .object = object });
+        for (object.fields.keys(), object.fields.values()) |key, field_value| {
+            setter_env.set(key, field_value) catch {
+                try setter_env.define(key, field_value);
+            };
+        }
+        try setter_env.define("value", value);
+        _ = try self.exec_block(setter_body, setter_env);
+        try self.sync_field_setter_object(object, setter_env);
+    }
+
+    fn sync_field_setter_object(self: *Evaluator, object: *types.ObjectInstance, setter_env: *Env) !void {
+        const this_val = setter_env.get("this") orelse return;
+        if (this_val == .object and this_val.object == object) {
+            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+            for (object.fields.keys()) |key| field_keys.append(self.arena, key) catch {};
+            for (field_keys.items) |key| {
+                if (setter_env.get(key)) |updated| {
+                    try object.fields.put(self.arena, key, updated);
+                }
+            }
+        } else if (this_val == .object) {
+            for (this_val.object.fields.keys(), this_val.object.fields.values()) |key, value| {
+                try object.fields.put(self.arena, key, value);
+            }
+        }
+    }
+
+    fn put_object_field_case_insensitive(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        field_name: []const u8,
+        value: Value,
+    ) !void {
+        var existing_key: ?[]const u8 = null;
+        for (object.fields.keys()) |key| {
+            if (std.ascii.eqlIgnoreCase(key, field_name)) {
+                existing_key = key;
+                break;
+            }
+        }
+        try object.fields.put(self.arena, existing_key orelse field_name, value);
+    }
+
+    fn eval_index_assignment(self: *Evaluator, ia: *ast.IndexAccess, val: Value, current_env: *Env) !Value {
+        const obj = try self.eval_expr(ia.object, current_env);
+        const idx = try self.eval_expr(ia.index, current_env);
+        if (obj == .list and idx == .integer and idx.integer >= 0) {
+            const index: usize = @intCast(idx.integer);
+            if (index < obj.list.items.items.len) {
+                obj.list.items.items[index] = val;
+            }
+        }
+        return val;
     }
 
     fn eval_method_call(self: *Evaluator, mc: *ast.MethodCallExpr, current_env: *Env) anyerror!Value {
@@ -14708,223 +14745,227 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     fn handle_test_factory(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
-        // TestFactory.createSObject(sObj) / createSObject(sObj, doInsert) / createSObject(sObj, className)
         if (std.ascii.eqlIgnoreCase(class_name, "TestFactory")) {
-            if (std.ascii.eqlIgnoreCase(method_name, "createSObject")) {
-                if (args.len >= 1 and args[0] == .sobject) {
-                    // Apply default fields if not set
-                    if (utils.sobject_get(&args[0].sobject.fields, "Name") == null) {
-                        try args[0].sobject.fields.put(self.arena, "Name", Value{ .string = "Test Record" });
-                    }
-                    if (std.ascii.eqlIgnoreCase(args[0].sobject.type_name, "Contact") and utils.sobject_get(&args[0].sobject.fields, "LastName") == null) {
-                        try args[0].sobject.fields.put(self.arena, "LastName", Value{ .string = "Test Record" });
-                    }
-                    // If second arg is boolean and true, insert
-                    if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
-                        try self.insert_record(args[0].sobject);
-                    }
-                    // If second arg is string, it's a defaults class name — just insert
-                    if (args.len >= 2 and args[1] == .string) {
-                        try self.insert_record(args[0].sobject);
-                    }
-                    return args[0];
-                }
-                return Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "createSObjectList")) {
-                // createSObjectList(sObj, count, doInsert)
-                var template: ?*types.SObject = null;
-                var count: i64 = 5;
-                var do_insert = false;
-
-                if (args.len >= 1 and args[0] == .sobject) template = args[0].sobject;
-                if (args.len >= 2 and args[1] == .integer) count = args[1].integer;
-                if (args.len >= 3 and args[2] == .boolean) do_insert = args[2].boolean;
-
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                var i: i64 = 0;
-                while (i < count) : (i += 1) {
-                    const obj = try self.arena.create(types.SObject);
-                    obj.* = .{ .type_name = if (template) |t| t.type_name else "Account" };
-                    // Copy template fields
-                    if (template) |t| {
-                        for (t.fields.keys(), t.fields.values()) |k, v| {
-                            try obj.fields.put(self.arena, k, v);
-                        }
-                    }
-                    // Set Name with index
-                    const name = try std.fmt.allocPrint(self.arena, "Test Record {d}", .{i});
-                    try obj.fields.put(self.arena, "Name", Value{ .string = name });
-                    // Set required fields for specific object types
-                    if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") and utils.sobject_get(&obj.fields, "LastName") == null) {
-                        try obj.fields.put(self.arena, "LastName", Value{ .string = name });
-                    }
-                    if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity") and utils.sobject_get(&obj.fields, "StageName") == null) {
-                        try obj.fields.put(self.arena, "StageName", Value{ .string = "Prospecting" });
-                    }
-
-                    try list.items.append(self.arena, Value{ .sobject = obj });
-                }
-                // Insert all records with trigger support
-                if (do_insert) {
-                    self.execute_dml(.insert, Value{ .list = list }) catch |err| {
-                        if (err == error.ApexException) return err;
-                    };
-                }
-                return Value{ .list = list };
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "assignPermSetToUser")) {
-                // Delegate to user-defined TestFactory if available
-                var assign_iter = self.classes.iterator();
-                while (assign_iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
-                        if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
-                            return null; // Fall through to user-defined class
-                        }
-                    }
-                }
-                return .void_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "createTestUser") or
-                std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser") or
-                std.ascii.eqlIgnoreCase(method_name, "createMarketingUser"))
-            {
-                // If user-defined TestFactory class has this method, delegate to it
-                var class_iter = self.classes.iterator();
-                while (class_iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
-                        if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
-                            return null; // Let the caller fall through to user-defined class
-                        }
-                    }
-                }
-                // Fallback: create a minimal user stub
-                const user = try self.arena.create(types.SObject);
-                user.* = .{ .type_name = "User" };
-                try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-                const user_id = try self.alloc_id();
-                try user.fields.put(self.arena, "Id", Value{ .string = user_id });
-                user.id = user_id;
-                // Set profile info based on method name
-                const profile = try self.arena.create(types.SObject);
-                profile.* = .{ .type_name = "Profile" };
-                if (std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser")) {
-                    try profile.fields.put(self.arena, "Name", Value{ .string = "Minimum Access - Salesforce" });
-                } else if (std.ascii.eqlIgnoreCase(method_name, "createMarketingUser")) {
-                    try profile.fields.put(self.arena, "Name", Value{ .string = "Marketing User" });
-                } else {
-                    try profile.fields.put(self.arena, "Name", Value{ .string = "Standard User" });
-                }
-                try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
-                // Insert if first arg is true (or for createMinAccessUser/createMarketingUser)
-                if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
-                    try self.insert_record(user);
-                }
-                return Value{ .sobject = user };
-            }
-            return null;
+            return try self.handle_test_factory_class(method_name, args);
         }
-
-        // TestDataHelpers
         if (std.ascii.eqlIgnoreCase(class_name, "TestDataHelpers")) {
-            // If user-defined TestDataHelpers class has this method, delegate to it
-            var tdh_iter = self.classes.iterator();
-            while (tdh_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestDataHelpers")) {
-                    if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
-                        return null; // Fall through to user-defined class
-                    }
-                }
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "createAccount")) {
-                const acct = try self.arena.create(types.SObject);
-                acct.* = .{ .type_name = "Account" };
-                try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
-                // Check if shipping country arg provided
-                if (args.len >= 2 and args[1] == .string and args[1].string.len > 0) {
-                    try acct.fields.put(self.arena, "ShippingCountry", args[1]);
-                }
-                try self.insert_record(acct);
-                return Value{ .sobject = acct };
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "genXnumberOfAccounts")) {
-                const count = if (args.len >= 1 and args[0] == .integer) args[0].integer else 5;
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                var i: i64 = 0;
-                while (i < count) : (i += 1) {
-                    const acct = try self.arena.create(types.SObject);
-                    acct.* = .{ .type_name = "Account" };
-                    const name = try std.fmt.allocPrint(self.arena, "Awesome Test Account {d}", .{i});
-                    try acct.fields.put(self.arena, "Name", Value{ .string = name });
-                    try list.items.append(self.arena, Value{ .sobject = acct });
-                }
-                return Value{ .list = list };
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "genAccountWithOptions")) {
-                const acct = try self.arena.create(types.SObject);
-                acct.* = .{ .type_name = "Account" };
-                try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
-                try acct.fields.put(self.arena, "ShippingStreet", Value{ .string = "123 Sessame St." });
-                try acct.fields.put(self.arena, "ShippingCity", Value{ .string = "Wehawkin" });
-                // First arg is setCountry (not doInsert)
-                if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
-                    if (args.len >= 2 and args[1] == .string) {
-                        try acct.fields.put(self.arena, "ShippingCountry", args[1]);
-                    }
-                }
-                return Value{ .sobject = acct };
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "genContactForAccount")) {
-                const contact = try self.arena.create(types.SObject);
-                contact.* = .{ .type_name = "Contact" };
-                try contact.fields.put(self.arena, "LastName", Value{ .string = "Test Contact" });
-                try contact.fields.put(self.arena, "Name", Value{ .string = "Test Contact" });
-                if (args.len >= 1) {
-                    try contact.fields.put(self.arena, "AccountId", args[0]);
-                    try contact.fields.put(self.arena, "accountId", args[0]);
-                }
-                return Value{ .sobject = contact };
-            }
-            return null;
+            return try self.handle_test_data_helpers(method_name, args);
         }
-
-        // TestHelper
         if (std.ascii.eqlIgnoreCase(class_name, "TestHelper")) {
-            // If user-defined TestHelper class has this method, delegate to it
-            var th_iter = self.classes.iterator();
-            while (th_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestHelper")) {
-                    if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
-                        return null; // Fall through to user-defined class
-                    }
-                }
-            }
-            if (std.ascii.eqlIgnoreCase(method_name, "getUnknownObjectType")) {
-                // Return the class name of the object
-                if (args.len > 0) {
-                    return switch (args[0]) {
-                        .object => |o| Value{ .string = o.class_name },
-                        .sobject => |s| Value{ .string = s.type_name },
-                        .string => Value{ .string = "String" },
-                        .integer => Value{ .string = "Integer" },
-                        .long => Value{ .string = "Long" },
-                        .double => Value{ .string = "Double" },
-                        .boolean => Value{ .string = "Boolean" },
-                        .list => Value{ .string = "List" },
-                        .map => Value{ .string = "Map" },
-                        .set => Value{ .string = "Set" },
-                        .null_val => Value{ .string = "null" },
-                        .void_val => Value{ .string = "void" },
-                    };
-                }
-                return Value{ .string = "null" };
-            }
-            return null;
+            return self.handle_test_helper(method_name, args);
         }
-
         return null;
+    }
+
+    fn handle_test_factory_class(self: *Evaluator, method_name: []const u8, args: []const Value) !?Value {
+        if (std.ascii.eqlIgnoreCase(method_name, "createSObject")) {
+            return try self.create_test_factory_s_object(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "createSObjectList")) {
+            return try self.create_test_factory_s_object_list(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "assignPermSetToUser")) {
+            if (self.user_class_has_method("TestFactory", method_name, args)) return null;
+            return .void_val;
+        }
+        if (test_factory_user_method(method_name)) {
+            if (self.user_class_has_method("TestFactory", method_name, args)) return null;
+            return try self.create_test_factory_user(method_name, args);
+        }
+        return null;
+    }
+
+    fn create_test_factory_s_object(self: *Evaluator, args: []const Value) !Value {
+        if (args.len < 1 or args[0] != .sobject) return Value.null_val;
+        if (utils.sobject_get(&args[0].sobject.fields, "Name") == null) {
+            try args[0].sobject.fields.put(self.arena, "Name", Value{ .string = "Test Record" });
+        }
+        if (std.ascii.eqlIgnoreCase(args[0].sobject.type_name, "Contact") and
+            utils.sobject_get(&args[0].sobject.fields, "LastName") == null)
+        {
+            try args[0].sobject.fields.put(self.arena, "LastName", Value{ .string = "Test Record" });
+        }
+        if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
+            try self.insert_record(args[0].sobject);
+        }
+        if (args.len >= 2 and args[1] == .string) {
+            try self.insert_record(args[0].sobject);
+        }
+        return args[0];
+    }
+
+    fn create_test_factory_s_object_list(self: *Evaluator, args: []const Value) !Value {
+        const template: ?*types.SObject = if (args.len >= 1 and args[0] == .sobject) args[0].sobject else null;
+        const count = if (args.len >= 2 and args[1] == .integer) args[1].integer else 5;
+        const do_insert = args.len >= 3 and args[2] == .boolean and args[2].boolean;
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        var i: i64 = 0;
+        while (i < count) : (i += 1) {
+            const obj = try self.create_test_factory_list_item(template, i);
+            try list.items.append(self.arena, Value{ .sobject = obj });
+        }
+        if (do_insert) {
+            self.execute_dml(.insert, Value{ .list = list }) catch |err| {
+                if (err == error.ApexException) return err;
+            };
+        }
+        return Value{ .list = list };
+    }
+
+    fn create_test_factory_list_item(
+        self: *Evaluator,
+        template: ?*types.SObject,
+        index: i64,
+    ) !*types.SObject {
+        const obj = try self.arena.create(types.SObject);
+        obj.* = .{ .type_name = if (template) |t| t.type_name else "Account" };
+        if (template) |t| {
+            for (t.fields.keys(), t.fields.values()) |key, value| {
+                try obj.fields.put(self.arena, key, value);
+            }
+        }
+        const name = try std.fmt.allocPrint(self.arena, "Test Record {d}", .{index});
+        try obj.fields.put(self.arena, "Name", Value{ .string = name });
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") and utils.sobject_get(&obj.fields, "LastName") == null) {
+            try obj.fields.put(self.arena, "LastName", Value{ .string = name });
+        }
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity") and utils.sobject_get(&obj.fields, "StageName") == null) {
+            try obj.fields.put(self.arena, "StageName", Value{ .string = "Prospecting" });
+        }
+        return obj;
+    }
+
+    fn test_factory_user_method(method_name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(method_name, "createTestUser") or
+            std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser") or
+            std.ascii.eqlIgnoreCase(method_name, "createMarketingUser");
+    }
+
+    fn create_test_factory_user(self: *Evaluator, method_name: []const u8, args: []const Value) !Value {
+        const user = try self.arena.create(types.SObject);
+        user.* = .{ .type_name = "User" };
+        try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        const user_id = try self.alloc_id();
+        try user.fields.put(self.arena, "Id", Value{ .string = user_id });
+        user.id = user_id;
+
+        const profile = try self.arena.create(types.SObject);
+        profile.* = .{ .type_name = "Profile" };
+        if (std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser")) {
+            try profile.fields.put(self.arena, "Name", Value{ .string = "Minimum Access - Salesforce" });
+        } else if (std.ascii.eqlIgnoreCase(method_name, "createMarketingUser")) {
+            try profile.fields.put(self.arena, "Name", Value{ .string = "Marketing User" });
+        } else {
+            try profile.fields.put(self.arena, "Name", Value{ .string = "Standard User" });
+        }
+        try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
+        if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
+            try self.insert_record(user);
+        }
+        return Value{ .sobject = user };
+    }
+
+    fn handle_test_data_helpers(self: *Evaluator, method_name: []const u8, args: []const Value) !?Value {
+        if (self.user_class_has_method("TestDataHelpers", method_name, args)) return null;
+        if (std.ascii.eqlIgnoreCase(method_name, "createAccount")) {
+            return try self.create_test_data_account(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "genXnumberOfAccounts")) {
+            return try self.create_test_data_accounts(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "genAccountWithOptions")) {
+            return try self.create_test_data_account_with_options(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "genContactForAccount")) {
+            return try self.create_test_data_contact_for_account(args);
+        }
+        return null;
+    }
+
+    fn create_test_data_account(self: *Evaluator, args: []const Value) !Value {
+        const acct = try self.arena.create(types.SObject);
+        acct.* = .{ .type_name = "Account" };
+        try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
+        if (args.len >= 2 and args[1] == .string and args[1].string.len > 0) {
+            try acct.fields.put(self.arena, "ShippingCountry", args[1]);
+        }
+        try self.insert_record(acct);
+        return Value{ .sobject = acct };
+    }
+
+    fn create_test_data_accounts(self: *Evaluator, args: []const Value) !Value {
+        const count = if (args.len >= 1 and args[0] == .integer) args[0].integer else 5;
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        var i: i64 = 0;
+        while (i < count) : (i += 1) {
+            const acct = try self.arena.create(types.SObject);
+            acct.* = .{ .type_name = "Account" };
+            const name = try std.fmt.allocPrint(self.arena, "Awesome Test Account {d}", .{i});
+            try acct.fields.put(self.arena, "Name", Value{ .string = name });
+            try list.items.append(self.arena, Value{ .sobject = acct });
+        }
+        return Value{ .list = list };
+    }
+
+    fn create_test_data_account_with_options(self: *Evaluator, args: []const Value) !Value {
+        const acct = try self.arena.create(types.SObject);
+        acct.* = .{ .type_name = "Account" };
+        try acct.fields.put(self.arena, "Name", Value{ .string = "Awesome Test Account" });
+        try acct.fields.put(self.arena, "ShippingStreet", Value{ .string = "123 Sessame St." });
+        try acct.fields.put(self.arena, "ShippingCity", Value{ .string = "Wehawkin" });
+        if (args.len >= 1 and args[0] == .boolean and args[0].boolean) {
+            if (args.len >= 2 and args[1] == .string) {
+                try acct.fields.put(self.arena, "ShippingCountry", args[1]);
+            }
+        }
+        return Value{ .sobject = acct };
+    }
+
+    fn create_test_data_contact_for_account(self: *Evaluator, args: []const Value) !Value {
+        const contact = try self.arena.create(types.SObject);
+        contact.* = .{ .type_name = "Contact" };
+        try contact.fields.put(self.arena, "LastName", Value{ .string = "Test Contact" });
+        try contact.fields.put(self.arena, "Name", Value{ .string = "Test Contact" });
+        if (args.len >= 1) {
+            try contact.fields.put(self.arena, "AccountId", args[0]);
+            try contact.fields.put(self.arena, "accountId", args[0]);
+        }
+        return Value{ .sobject = contact };
+    }
+
+    fn handle_test_helper(self: *Evaluator, method_name: []const u8, args: []const Value) ?Value {
+        if (self.user_class_has_method("TestHelper", method_name, args)) return null;
+        if (!std.ascii.eqlIgnoreCase(method_name, "getUnknownObjectType")) return null;
+        if (args.len == 0) return Value{ .string = "null" };
+        return Value{ .string = test_helper_value_type_name(args[0]) };
+    }
+
+    fn test_helper_value_type_name(value: Value) []const u8 {
+        return switch (value) {
+            .object => |object| object.class_name,
+            .sobject => |sobject| sobject.type_name,
+            .string => "String",
+            .integer => "Integer",
+            .long => "Long",
+            .double => "Double",
+            .boolean => "Boolean",
+            .list => "List",
+            .map => "Map",
+            .set => "Set",
+            .null_val => "null",
+            .void_val => "void",
+        };
+    }
+
+    fn user_class_has_method(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) bool {
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) return true;
+        }
+        return false;
     }
 
     /// Create a new instance of the named class and call a method on it.
