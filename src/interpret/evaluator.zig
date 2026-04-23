@@ -2089,24 +2089,22 @@ pub const Evaluator = struct {
         const prev_user_id = self.current_user_id;
         const prev_profile_id = self.current_profile_id;
         const prev_user_override = self.current_user_override;
-        if (user_val == .sobject) {
-            self.current_user_override = user_val.sobject;
-        } else {
-            self.current_user_override = null;
-        }
         defer self.current_user_override = prev_user_override;
-        if (user_val == .sobject) {
-            self.update_run_as_profile_flags(user_val.sobject);
-        } else {
-            self.is_restricted_user = true;
-            self.is_min_access_user = true;
-            self.is_standard_user = false;
-        }
         defer self.is_restricted_user = prev_restricted;
         defer self.is_min_access_user = prev_min_access;
         defer self.is_standard_user = prev_standard;
         defer self.current_user_id = prev_user_id;
         defer self.current_profile_id = prev_profile_id;
+
+        if (user_val == .sobject) {
+            self.current_user_override = user_val.sobject;
+            self.update_run_as_profile_flags(user_val.sobject);
+        } else {
+            self.current_user_override = null;
+            self.is_restricted_user = true;
+            self.is_min_access_user = true;
+            self.is_standard_user = false;
+        }
 
         const result = self.exec_block(ras.body, current_env);
         if (result) |r| return r else |e| return e;
