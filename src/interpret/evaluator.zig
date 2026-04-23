@@ -1521,71 +1521,88 @@ pub const Evaluator = struct {
             const cd = entry.value_ptr.*;
             for (cd.members) |member| {
                 switch (member) {
-                    .static_init => |body| {
-                        const init_env = self.global_env.child() catch continue;
-                        var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
-                        var original_values: std.ArrayListUnmanaged(Value) = .empty;
-                        // Define static fields as local variables
-                        for (cd.members) |m2| {
-                            switch (m2) {
-                                .field_decl => |fd| {
-                                    if (fd.modifiers.is_static) {
-                                        const key = std.fmt.allocPrint(
-                                            self.arena,
-                                            "{s}.{s}",
-                                            .{ cd.name, fd.name },
-                                        ) catch continue;
-                                        const cur = self.global_env.get(key) orelse Value.null_val;
-                                        static_keys.append(self.arena, key) catch continue;
-                                        original_values.append(self.arena, cur) catch continue;
-                                        init_env.define(fd.name, cur) catch {};
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
-                        _ = self.exec_block(body, init_env) catch {};
-                        // Write back static fields to global env
-                        var static_index: usize = 0;
-                        for (cd.members) |m2| {
-                            switch (m2) {
-                                .field_decl => |fd| {
-                                    if (fd.modifiers.is_static) {
-                                        const key = if (static_index < static_keys.items.len)
-                                            static_keys.items[static_index]
-                                        else
-                                            std.fmt.allocPrint(
-                                                self.arena,
-                                                "{s}.{s}",
-                                                .{ cd.name, fd.name },
-                                            ) catch continue;
-                                        const original_value =
-                                            if (static_index < original_values.items.len)
-                                                original_values.items[static_index]
-                                            else
-                                                Value.null_val;
-                                        static_index += 1;
-                                        const local_value = init_env.get(
-                                            fd.name,
-                                        ) orelse Value.null_val;
-                                        const global_value =
-                                            self.global_env.get(key) orelse Value.null_val;
-                                        const writeback_value =
-                                            if (!utils.value_eql(local_value, original_value))
-                                                local_value
-                                            else
-                                                global_value;
-                                        self.global_env.set(key, writeback_value) catch {
-                                            self.global_env.define(key, writeback_value) catch {};
-                                        };
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
-                    },
+                    .static_init => |body| self.execute_static_init_block(cd, body),
                     else => {},
                 }
+            }
+        }
+    }
+
+    fn execute_static_init_block(
+        self: *Evaluator,
+        cd: *ast.ClassDecl,
+        body: []ast.Stmt,
+    ) void {
+        const init_env = self.global_env.child() catch return;
+        var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+        var original_values: std.ArrayListUnmanaged(Value) = .empty;
+        self.bind_static_fields_as_locals(cd, init_env, &static_keys, &original_values);
+        _ = self.exec_block(body, init_env) catch {};
+        self.writeback_static_fields(cd, init_env, static_keys.items, original_values.items);
+    }
+
+    fn bind_static_fields_as_locals(
+        self: *Evaluator,
+        cd: *ast.ClassDecl,
+        init_env: *Env,
+        static_keys: *std.ArrayListUnmanaged([]const u8),
+        original_values: *std.ArrayListUnmanaged(Value),
+    ) void {
+        for (cd.members) |m2| {
+            switch (m2) {
+                .field_decl => |fd| {
+                    if (!fd.modifiers.is_static) continue;
+                    const key = std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ cd.name, fd.name },
+                    ) catch continue;
+                    const cur = self.global_env.get(key) orelse Value.null_val;
+                    static_keys.append(self.arena, key) catch continue;
+                    original_values.append(self.arena, cur) catch continue;
+                    init_env.define(fd.name, cur) catch {};
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn writeback_static_fields(
+        self: *Evaluator,
+        cd: *ast.ClassDecl,
+        init_env: *Env,
+        static_keys: []const []const u8,
+        original_values: []const Value,
+    ) void {
+        var static_index: usize = 0;
+        for (cd.members) |m2| {
+            switch (m2) {
+                .field_decl => |fd| {
+                    if (!fd.modifiers.is_static) continue;
+                    const key = if (static_index < static_keys.len)
+                        static_keys[static_index]
+                    else
+                        std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
+                    const original_value = if (static_index < original_values.len)
+                        original_values[static_index]
+                    else
+                        Value.null_val;
+                    static_index += 1;
+                    const local_value = init_env.get(fd.name) orelse Value.null_val;
+                    const global_value = self.global_env.get(key) orelse Value.null_val;
+                    const writeback_value = if (!utils.value_eql(local_value, original_value))
+                        local_value
+                    else
+                        global_value;
+                    self.global_env.set(key, writeback_value) catch {
+                        self.global_env.define(key, writeback_value) catch {};
+                    };
+                },
+                else => {},
             }
         }
     }
