@@ -18606,6 +18606,7 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
+
         if (self.call_depth > self.max_call_depth) return .null_val;
 
         const frame_line = self.current_call_line;
