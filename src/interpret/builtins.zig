@@ -6869,84 +6869,106 @@ fn dispatch_obj_s_object_type(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    const ci = std.ascii;
+    const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getDescribe"))
         return try create_describe_result(ctx, name);
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel") or std.ascii.eqlIgnoreCase(
-        method_name,
-        "getLabelPlural",
-    ) or
-        std.ascii.eqlIgnoreCase(method_name, "getName"))
+    if (ci.eqlIgnoreCase(method_name, "getLabel") or
+        ci.eqlIgnoreCase(method_name, "getLabelPlural") or
+        ci.eqlIgnoreCase(method_name, "getName"))
     {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = name };
-        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
-            if (ctx.eval.object_labels.get(name)) |lbl| return Value{ .string = lbl };
-            return Value{ .string = describe_local_name(name) };
-        }
-        if (ctx.eval.object_label_plurals.get(name)) |lbl| return Value{ .string = lbl };
-        return Value{ .string = try default_describe_label_plural(ctx.arena, name) };
+        return try sot_label_methods(ctx, method_name, name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
+    if (ci.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
+        ci.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or
+        ci.eqlIgnoreCase(method_name, "getRecordTypeInfosByName") or
+        ci.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
     {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        const describe_val = try create_describe_result(ctx, name);
-        if (describe_val == .object) {
-            return try dispatch_obj_describe_s_object(ctx, describe_val.object, method_name);
-        }
+        return try sot_record_type_infos(ctx, name, method_name);
     }
-    if (std.ascii.eqlIgnoreCase(
-        method_name,
-        "isAccessible",
-    ) or std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
-        std.ascii.eqlIgnoreCase(
-            method_name,
-            "isUpdateable",
-        ) or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
+    if (ci.eqlIgnoreCase(method_name, "isAccessible") or
+        ci.eqlIgnoreCase(method_name, "isCreateable") or
+        ci.eqlIgnoreCase(method_name, "isUpdateable") or
+        ci.eqlIgnoreCase(method_name, "isDeletable"))
     {
-        const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
-        const operation = if (std.ascii.eqlIgnoreCase(method_name, "isAccessible"))
-            "read"
-        else if (std.ascii.eqlIgnoreCase(method_name, "isCreateable"))
-            "create"
-        else if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable"))
-            "edit"
-        else
-            "delete";
-        return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sobj_name, operation) };
+        return sot_crud_permission(ctx, name, method_name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or
-        std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
+    if (ci.eqlIgnoreCase(method_name, "isQueryable") or
+        ci.eqlIgnoreCase(method_name, "isSearchable"))
         return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "newSObject")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "SObject";
-        const new_sob = try ctx.arena.create(types.SObject);
-        new_sob.* = .{ .type_name = name };
-        if (args.len >= 1 and args[0] == .string) {
-            new_sob.id = args[0].string;
-            try new_sob.fields.put(ctx.arena, "Id", args[0]);
-        }
-        if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
-            if (std.mem.endsWith(u8, name, "__e")) {
-                try new_sob.fields.put(
-                    ctx.arena,
-                    "EventUuid",
-                    Value{ .string = "evt-00000001-0000-0000-0000-000000000001" },
-                );
-            }
-            if (ctx.eval.field_defaults.get(name)) |defaults| {
-                for (defaults.keys(), defaults.values()) |field_name, default_val| {
-                    try new_sob.fields.put(ctx.arena, field_name, default_val);
-                }
-            }
-        }
-        return Value{ .sobject = new_sob };
+    if (ci.eqlIgnoreCase(method_name, "newSObject"))
+        return try sot_new_sobject(ctx, name, args);
+    return null;
+}
+
+fn sot_label_methods(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    name: []const u8,
+) !Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getName")) return Value{ .string = name };
+    if (ci.eqlIgnoreCase(method_name, "getLabel")) {
+        if (ctx.eval.object_labels.get(name)) |lbl| return Value{ .string = lbl };
+        return Value{ .string = describe_local_name(name) };
+    }
+    // getLabelPlural
+    if (ctx.eval.object_label_plurals.get(name)) |lbl| return Value{ .string = lbl };
+    return Value{ .string = try default_describe_label_plural(ctx.arena, name) };
+}
+
+fn sot_record_type_infos(
+    ctx: *BuiltinContext,
+    name: []const u8,
+    method_name: []const u8,
+) !?Value {
+    const describe_val = try create_describe_result(ctx, name);
+    if (describe_val == .object) {
+        return try dispatch_obj_describe_s_object(ctx, describe_val.object, method_name);
     }
     return null;
+}
+
+fn sot_crud_permission(
+    ctx: *BuiltinContext,
+    sobj_name: []const u8,
+    method_name: []const u8,
+) Value {
+    const ci = std.ascii;
+    const operation = if (ci.eqlIgnoreCase(method_name, "isAccessible"))
+        "read"
+    else if (ci.eqlIgnoreCase(method_name, "isCreateable"))
+        "create"
+    else if (ci.eqlIgnoreCase(method_name, "isUpdateable"))
+        "edit"
+    else
+        "delete";
+    return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sobj_name, operation) };
+}
+
+fn sot_new_sobject(ctx: *BuiltinContext, name: []const u8, args: []const Value) !Value {
+    const effective_name = if (std.mem.eql(u8, name, "Object")) "SObject" else name;
+    const new_sob = try ctx.arena.create(types.SObject);
+    new_sob.* = .{ .type_name = effective_name };
+    if (args.len >= 1 and args[0] == .string) {
+        new_sob.id = args[0].string;
+        try new_sob.fields.put(ctx.arena, "Id", args[0]);
+    }
+    if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
+        if (std.mem.endsWith(u8, effective_name, "__e")) {
+            try new_sob.fields.put(
+                ctx.arena,
+                "EventUuid",
+                Value{ .string = "evt-00000001-0000-0000-0000-000000000001" },
+            );
+        }
+        if (ctx.eval.field_defaults.get(effective_name)) |defaults| {
+            for (defaults.keys(), defaults.values()) |field_name, default_val| {
+                try new_sob.fields.put(ctx.arena, field_name, default_val);
+            }
+        }
+    }
+    return Value{ .sobject = new_sob };
 }
 
 fn dispatch_obj_s_object_access_decision(
