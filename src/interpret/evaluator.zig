@@ -1942,6 +1942,300 @@ pub const Evaluator = struct {
         return .normal;
     }
 
+    fn try_switch_value_match(self: *Evaluator, subject: Value, val_copy: ast.Expr, when_val: Value) bool {
+        if (subject == .string and when_val == .string) {
+            if (std.mem.eql(u8, subject.string, when_val.string)) return true;
+        } else if (utils.value_eql(subject, when_val)) {
+            return true;
+        }
+        if (subject == .string and val_copy == .identifier) {
+            if (std.ascii.eqlIgnoreCase(subject.string, val_copy.identifier.name)) return true;
+        }
+        if (subject == .string and when_val == .null_val and val_copy == .identifier) {
+            if (std.ascii.eqlIgnoreCase(subject.string, val_copy.identifier.name)) return true;
+        }
+        if (self.switch_type_pattern_name(&val_copy)) |type_name| {
+            if (subject == .sobject and
+                std.ascii.eqlIgnoreCase(subject.sobject.type_name, type_name))
+            {
+                return true;
+            }
+            if (subject == .object) {
+                const subject_simple = if (std.mem.lastIndexOfScalar(
+                    u8,
+                    subject.object.class_name,
+                    '.',
+                )) |di| subject.object.class_name[di + 1 ..] else subject.object.class_name;
+                if (std.ascii.eqlIgnoreCase(subject_simple, type_name)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn exec_switch_stmt(self: *Evaluator, sw: *ast.SwitchStmt, current_env: *Env) anyerror!StmtResult {
+        const subject = try self.eval_expr(sw.subject, current_env);
+        for (sw.when_clauses) |clause| {
+            switch (clause.pattern) {
+                .values => |values| {
+                    for (values) |val_expr| {
+                        var val_copy = val_expr;
+                        const when_val = try self.eval_expr(&val_copy, current_env);
+                        if (self.try_switch_value_match(subject, val_copy, when_val)) {
+                            return self.exec_block(clause.body, current_env);
+                        }
+                    }
+                },
+                .else_clause => return self.exec_block(clause.body, current_env),
+            }
+        }
+        return .normal;
+    }
+
+    fn find_matching_catch(
+        self: *Evaluator,
+        catches: []const ast.CatchClause,
+        exc_class_name: []const u8,
+    ) ?*const ast.CatchClause {
+        var matched_catch: ?*const ast.CatchClause = null;
+        var generic_catch: ?*const ast.CatchClause = null;
+        for (catches) |*cc| {
+            const catch_type = cc.exception_type.name;
+            const catch_simple = if (std.mem.lastIndexOfScalar(u8, catch_type, '.')) |di|
+                catch_type[di + 1 ..]
+            else
+                catch_type;
+            const exc_simple = if (std.mem.lastIndexOfScalar(u8, exc_class_name, '.')) |di|
+                exc_class_name[di + 1 ..]
+            else
+                exc_class_name;
+            if (std.ascii.eqlIgnoreCase(catch_type, exc_class_name) or
+                std.ascii.eqlIgnoreCase(catch_simple, exc_simple) or
+                std.ascii.eqlIgnoreCase(catch_simple, exc_class_name) or
+                std.ascii.eqlIgnoreCase(catch_type, exc_simple))
+            {
+                matched_catch = cc;
+                break;
+            }
+            if (self.find_class(exc_class_name)) |exc_cd| {
+                if (exc_cd.super_class) |sc| {
+                    const sc_simple = if (std.mem.lastIndexOfScalar(u8, sc.name, '.')) |di|
+                        sc.name[di + 1 ..]
+                    else
+                        sc.name;
+                    if (std.ascii.eqlIgnoreCase(catch_simple, sc_simple) or
+                        std.ascii.eqlIgnoreCase(catch_type, sc.name))
+                    {
+                        matched_catch = cc;
+                        break;
+                    }
+                }
+            }
+            if (std.ascii.eqlIgnoreCase(catch_type, "Exception") or
+                std.ascii.eqlIgnoreCase(catch_type, "System.Exception"))
+            {
+                generic_catch = cc;
+            }
+        }
+        return matched_catch orelse generic_catch;
+    }
+
+    fn exec_try_stmt(self: *Evaluator, ts: *ast.TryStmt, current_env: *Env) anyerror!StmtResult {
+        const result = self.exec_block(ts.body, current_env);
+        if (result) |r| {
+            if (ts.finally_body) |fb| _ = try self.exec_block(fb, current_env);
+            return r;
+        } else |body_err| {
+            if (ts.catches.len == 0) {
+                if (ts.finally_body) |fb| _ = self.exec_block(fb, current_env) catch {};
+                return body_err;
+            }
+            const exc_val = if (self.pending_exception) |pe| pe else blk: {
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "Exception" };
+                break :blk Value{ .object = exc };
+            };
+            self.pending_exception = null;
+            const exc_obj = if (exc_val == .object) exc_val.object else blk: {
+                const exc = try self.arena.create(types.ObjectInstance);
+                exc.* = .{ .class_name = "Exception" };
+                break :blk exc;
+            };
+            const exc_class_name = exc_obj.class_name;
+            const selected = self.find_matching_catch(ts.catches, exc_class_name) orelse
+                &ts.catches[0];
+            const catch_env = try current_env.child();
+            try catch_env.define(selected.name, Value{ .object = exc_obj });
+            if (self.exec_block(selected.body, catch_env)) |catch_result| {
+                if (ts.finally_body) |fb| _ = try self.exec_block(fb, current_env);
+                return catch_result;
+            } else |catch_err| {
+                if (ts.finally_body) |fb| _ = self.exec_block(fb, current_env) catch {};
+                return catch_err;
+            }
+        }
+    }
+
+    fn iterable_is_list_of_lists(iterable: Value) bool {
+        if (iterable.list.element_type) |et| {
+            if (std.ascii.startsWithIgnoreCase(et, "List")) return true;
+            if (std.ascii.startsWithIgnoreCase(et, "Set")) return true;
+            if (std.ascii.startsWithIgnoreCase(et, "Map")) return true;
+        }
+        for (iterable.list.items.items) |item| {
+            switch (item) {
+                .list, .set, .map => return true,
+                else => {},
+            }
+            break;
+        }
+        return false;
+    }
+
+    fn exec_for_each_chunked_list(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+        const chunk_size: usize = 200;
+        const items = iterable.list.items.items;
+        var offset: usize = 0;
+        const loop_env = try current_env.child();
+        while (offset < items.len) {
+            const end = @min(offset + chunk_size, items.len);
+            const chunk_list = try self.arena.create(types.ListValue);
+            chunk_list.* = .{};
+            for (items[offset..end]) |item| {
+                try chunk_list.items.append(self.arena, item);
+            }
+            try loop_env.define(fes.elem_name, Value{ .list = chunk_list });
+            const result = try self.exec_block(fes.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+            offset = end;
+        }
+        return .normal;
+    }
+
+    fn exec_for_each_list(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+        const elem_type_is_list = std.ascii.eqlIgnoreCase(fes.elem_type.name, "List") and
+            fes.elem_type.params.len > 0;
+        const is_list_type = elem_type_is_list and !iterable_is_list_of_lists(iterable);
+        if (is_list_type) {
+            return try self.exec_for_each_chunked_list(fes, iterable, current_env);
+        }
+        const loop_env = try current_env.child();
+        for (iterable.list.items.items) |item| {
+            try loop_env.define(fes.elem_name, item);
+            const result = try self.exec_block(fes.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+        }
+        return .normal;
+    }
+
+    fn exec_for_each_set(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+        const loop_env = try current_env.child();
+        var values_copy: std.ArrayListUnmanaged(Value) = .empty;
+        for (iterable.set.entries.values()) |item| try values_copy.append(self.arena, item);
+        for (values_copy.items) |item| {
+            loop_env.set(fes.elem_name, item) catch {
+                try loop_env.define(fes.elem_name, item);
+            };
+            const result = try self.exec_block(fes.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+        }
+        return .normal;
+    }
+
+    fn exec_for_each_map(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+        const loop_env = try current_env.child();
+        for (iterable.map.entries.values()) |val| {
+            loop_env.set(fes.elem_name, val) catch {
+                try loop_env.define(fes.elem_name, val);
+            };
+            const result = try self.exec_block(fes.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+        }
+        return .normal;
+    }
+
+    fn exec_for_each_object(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+        const iterator_obj = blk: {
+            if (self.find_class(iterable.object.class_name)) |cd| {
+                const iter_val = self.call_instance_method(
+                    cd,
+                    iterable.object,
+                    "iterator",
+                    &.{},
+                ) catch break :blk iterable;
+                break :blk iter_val;
+            }
+            break :blk iterable;
+        };
+        if (iterator_obj != .object) return .normal;
+        const iter_cd = self.find_class(iterator_obj.object.class_name);
+        const loop_env = try current_env.child();
+        var iterations: u32 = 0;
+        while (iterations < 100_000) : (iterations += 1) {
+            const has_next = if (iter_cd) |icd|
+                self.call_instance_method(icd, iterator_obj.object, "hasNext", &.{}) catch break
+            else
+                break;
+            if (!(utils.coerce_to_bool(has_next) catch false)) break;
+            const next_val = if (iter_cd) |icd|
+                try self.call_instance_method(icd, iterator_obj.object, "next", &.{})
+            else
+                break;
+            loop_env.set(fes.elem_name, next_val) catch {
+                try loop_env.define(fes.elem_name, next_val);
+            };
+            const result = try self.exec_block(fes.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+        }
+        return .normal;
+    }
+
+    fn exec_for_each_stmt(self: *Evaluator, fes: anytype, current_env: *Env) anyerror!StmtResult {
+        const iterable = try self.eval_expr(fes.iterable, current_env);
+        if (iterable == .null_val) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NullPointerException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "Attempt to de-reference a null object" },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        return switch (iterable) {
+            .list => try self.exec_for_each_list(fes, iterable, current_env),
+            .set => try self.exec_for_each_set(fes, iterable, current_env),
+            .map => try self.exec_for_each_map(fes, iterable, current_env),
+            .object => try self.exec_for_each_object(fes, iterable, current_env),
+            else => .normal,
+        };
+    }
+
     pub fn exec_stmt(self: *Evaluator, stmt: ast.Stmt, current_env: *Env) anyerror!StmtResult {
         switch (stmt) {
             .expr_stmt => |expr| {
@@ -2008,174 +2302,7 @@ pub const Evaluator = struct {
                 }
                 return .normal;
             },
-            .for_each_stmt => |fes| {
-                const iterable = try self.eval_expr(fes.iterable, current_env);
-                if (iterable == .null_val) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.NullPointerException" };
-                    try exc.fields.put(
-                        self.arena,
-                        "message",
-                        Value{ .string = "Attempt to de-reference a null object" },
-                    );
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                } else if (iterable == .list) {
-                    // Chunk-into-batches applies only to SOQL for-loops like
-                    //   for (List<Account> batch : [SELECT Id FROM Account])
-                    // where the iterable is a flat list of SObjects and the loop
-                    // variable's declared type is List<Something>. In a plain
-                    //   for (List<String> inner : outerListOfLists)
-                    // we must iterate element-wise, otherwise `inner` ends up
-                    // holding the outer list itself.
-                    const elem_type_is_list = std.ascii.eqlIgnoreCase(
-                        fes.elem_type.name,
-                        "List",
-                    ) and fes.elem_type.params.len > 0;
-                    const iterable_is_list_of_lists = blk: {
-                        if (iterable.list.element_type) |et| {
-                            if (std.ascii.startsWithIgnoreCase(et, "List")) break :blk true;
-                            if (std.ascii.startsWithIgnoreCase(et, "Set")) break :blk true;
-                            if (std.ascii.startsWithIgnoreCase(et, "Map")) break :blk true;
-                        }
-                        for (iterable.list.items.items) |item| {
-                            switch (item) {
-                                .list, .set, .map => break :blk true,
-                                else => {},
-                            }
-                            break;
-                        }
-                        break :blk false;
-                    };
-                    const is_list_type = elem_type_is_list and !iterable_is_list_of_lists;
-                    if (is_list_type) {
-                        // Chunked iteration: iterate in chunks of 200
-                        const chunk_size: usize = 200;
-                        const items = iterable.list.items.items;
-                        var offset: usize = 0;
-                        const loop_env = try current_env.child();
-                        while (offset < items.len) {
-                            const end = @min(offset + chunk_size, items.len);
-                            const chunk_list = try self.arena.create(types.ListValue);
-                            chunk_list.* = .{};
-                            for (items[offset..end]) |item| {
-                                try chunk_list.items.append(self.arena, item);
-                            }
-                            try loop_env.define(fes.elem_name, Value{ .list = chunk_list });
-                            const result = try self.exec_block(fes.body, loop_env);
-                            switch (result) {
-                                .break_signal => break,
-                                .continue_signal => {},
-                                .return_val => return result,
-                                .normal => {},
-                            }
-                            offset = end;
-                        }
-                    } else {
-                        const loop_env = try current_env.child();
-                        for (iterable.list.items.items) |item| {
-                            try loop_env.define(fes.elem_name, item);
-                            const result = try self.exec_block(fes.body, loop_env);
-                            switch (result) {
-                                .break_signal => break,
-                                .continue_signal => {},
-                                .return_val => return result,
-                                .normal => {},
-                            }
-                        }
-                    }
-                } else if (iterable == .set) {
-                    const loop_env = try current_env.child();
-                    // Copy values to avoid mutation during iteration
-                    var values_copy: std.ArrayListUnmanaged(Value) = .empty;
-                    for (iterable.set.entries.values()) |item| try values_copy.append(
-                        self.arena,
-                        item,
-                    );
-                    for (values_copy.items) |item| {
-                        loop_env.set(fes.elem_name, item) catch {
-                            try loop_env.define(fes.elem_name, item);
-                        };
-                        const result = try self.exec_block(fes.body, loop_env);
-                        switch (result) {
-                            .break_signal => break,
-                            .continue_signal => {},
-                            .return_val => return result,
-                            .normal => {},
-                        }
-                    }
-                } else if (iterable == .map) {
-                    // Iterating over a map iterates over values
-                    const loop_env = try current_env.child();
-                    for (iterable.map.entries.values()) |val| {
-                        loop_env.set(fes.elem_name, val) catch {
-                            try loop_env.define(fes.elem_name, val);
-                        };
-                        const result = try self.exec_block(fes.body, loop_env);
-                        switch (result) {
-                            .break_signal => break,
-                            .continue_signal => {},
-                            .return_val => return result,
-                            .normal => {},
-                        }
-                    }
-                } else if (iterable == .object) {
-                    // Custom Iterable/Iterator: call iterator() then hasNext()/next()
-                    const iterator_obj = blk: {
-                        // Try calling iterator() method on the object
-                        if (self.find_class(iterable.object.class_name)) |cd| {
-                            const iter_val = self.call_instance_method(
-                                cd,
-                                iterable.object,
-                                "iterator",
-                                &.{},
-                            ) catch break :blk iterable;
-                            break :blk iter_val;
-                        }
-                        break :blk iterable;
-                    };
-                    if (iterator_obj == .object) {
-                        const iter_cd = self.find_class(iterator_obj.object.class_name);
-                        // debug removed
-                        const loop_env = try current_env.child();
-                        var iterations: u32 = 0;
-                        while (iterations < 100_000) : (iterations += 1) {
-                            // Call hasNext()
-                            const has_next = if (iter_cd) |icd|
-                                self.call_instance_method(
-                                    icd,
-                                    iterator_obj.object,
-                                    "hasNext",
-                                    &.{},
-                                ) catch break
-                            else
-                                break;
-                            if (!(utils.coerce_to_bool(has_next) catch false)) break;
-                            // Call next()
-                            const next_val = if (iter_cd) |icd|
-                                try self.call_instance_method(
-                                    icd,
-                                    iterator_obj.object,
-                                    "next",
-                                    &.{},
-                                )
-                            else
-                                break;
-                            loop_env.set(fes.elem_name, next_val) catch {
-                                try loop_env.define(fes.elem_name, next_val);
-                            };
-                            const result = try self.exec_block(fes.body, loop_env);
-                            switch (result) {
-                                .break_signal => break,
-                                .continue_signal => {},
-                                .return_val => return result,
-                                .normal => {},
-                            }
-                        }
-                    }
-                }
-                return .normal;
-            },
+            .for_each_stmt => |fes| return try self.exec_for_each_stmt(fes, current_env),
             .while_stmt => |ws| {
                 var iterations: u32 = 0;
                 while (iterations < 100_000) : (iterations += 1) {
@@ -2214,169 +2341,8 @@ pub const Evaluator = struct {
             },
             .break_stmt => return .break_signal,
             .continue_stmt => return .continue_signal,
-            .switch_stmt => |sw| {
-                const subject = try self.eval_expr(sw.subject, current_env);
-                for (sw.when_clauses) |clause| {
-                    switch (clause.pattern) {
-                        .values => |values| {
-                            for (values) |val_expr| {
-                                var val_copy = val_expr;
-                                const when_val = try self.eval_expr(&val_copy, current_env);
-                                // String switch is case-sensitive in Apex (unlike == operator)
-                                if (subject == .string and when_val == .string) {
-                                    if (std.mem.eql(u8, subject.string, when_val.string)) {
-                                        return self.exec_block(clause.body, current_env);
-                                    }
-                                } else if (utils.value_eql(subject, when_val)) {
-                                    return self.exec_block(clause.body, current_env);
-                                }
-                                // Enum matching: when identifier matches string subject
-                                // (case-insensitive for enums)
-                                if (subject == .string and val_copy == .identifier) {
-                                    if (std.ascii.eqlIgnoreCase(
-                                        subject.string,
-                                        val_copy.identifier.name,
-                                    )) {
-                                        return self.exec_block(clause.body, current_env);
-                                    }
-                                }
-                                // Also match when the when_val is null_val but the identifier
-                                // matches a string
-                                if (subject == .string and
-                                    when_val == .null_val and
-                                    val_copy == .identifier)
-                                {
-                                    if (std.ascii.eqlIgnoreCase(
-                                        subject.string,
-                                        val_copy.identifier.name,
-                                    )) {
-                                        return self.exec_block(clause.body, current_env);
-                                    }
-                                }
-                                // Type-binding switch cases: `when Account record { ... }`
-                                // The parser preserves only the type expression, so match the
-                                // subject's runtime SObject/object type name against it.
-                                if (self.switch_type_pattern_name(&val_copy)) |type_name| {
-                                    if (subject == .sobject and std.ascii.eqlIgnoreCase(
-                                        subject.sobject.type_name,
-                                        type_name,
-                                    )) {
-                                        return self.exec_block(clause.body, current_env);
-                                    }
-                                    if (subject == .object) {
-                                        const subject_simple = if (std.mem.lastIndexOfScalar(
-                                            u8,
-                                            subject.object.class_name,
-                                            '.',
-                                        )) |di|
-                                            subject.object.class_name[di + 1 ..]
-                                        else
-                                            subject.object.class_name;
-                                        if (std.ascii.eqlIgnoreCase(subject_simple, type_name)) {
-                                            return self.exec_block(clause.body, current_env);
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        .else_clause => {
-                            return self.exec_block(clause.body, current_env);
-                        },
-                    }
-                }
-                return .normal;
-            },
-            .try_stmt => |ts| {
-                const result = self.exec_block(ts.body, current_env);
-                if (result) |r| {
-                    if (ts.finally_body) |fb| _ = try self.exec_block(fb, current_env);
-                    return r;
-                } else |body_err| {
-                    if (ts.catches.len == 0) {
-                        // No catches — run finally and propagate.
-                        if (ts.finally_body) |fb| _ = self.exec_block(fb, current_env) catch {};
-                        return body_err;
-                    }
-                    {
-                        // Get the pending exception info
-                        const exc_val = if (self.pending_exception) |pe| pe else blk: {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "Exception" };
-                            break :blk Value{ .object = exc };
-                        };
-                        self.pending_exception = null;
-                        const exc_obj = if (exc_val == .object) exc_val.object else blk: {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "Exception" };
-                            break :blk exc;
-                        };
-                        const exc_class_name = exc_obj.class_name;
-                        // Find matching catch clause by exception type
-                        var matched_catch: ?*const ast.CatchClause = null;
-                        var generic_catch: ?*const ast.CatchClause = null;
-                        for (ts.catches) |*cc| {
-                            const catch_type = cc.exception_type.name;
-                            // Extract the simple name (after last dot) for both sides
-                            const catch_simple = if (std.mem.lastIndexOfScalar(
-                                u8,
-                                catch_type,
-                                '.',
-                            )) |di| catch_type[di + 1 ..] else catch_type;
-                            const exc_simple = if (std.mem.lastIndexOfScalar(
-                                u8,
-                                exc_class_name,
-                                '.',
-                            )) |di| exc_class_name[di + 1 ..] else exc_class_name;
-                            // Exact or suffix match (case-insensitive)
-                            if (std.ascii.eqlIgnoreCase(catch_type, exc_class_name) or
-                                std.ascii.eqlIgnoreCase(catch_simple, exc_simple) or
-                                std.ascii.eqlIgnoreCase(catch_simple, exc_class_name) or
-                                std.ascii.eqlIgnoreCase(catch_type, exc_simple))
-                            {
-                                matched_catch = cc;
-                                break;
-                            }
-                            // Check superclass hierarchy for exception matching
-                            if (self.find_class(exc_class_name)) |exc_cd| {
-                                if (exc_cd.super_class) |sc| {
-                                    const sc_simple = if (std.mem.lastIndexOfScalar(
-                                        u8,
-                                        sc.name,
-                                        '.',
-                                    )) |di| sc.name[di + 1 ..] else sc.name;
-                                    if (std.ascii.eqlIgnoreCase(catch_simple, sc_simple) or
-                                        std.ascii.eqlIgnoreCase(catch_type, sc.name))
-                                    {
-                                        matched_catch = cc;
-                                        break;
-                                    }
-                                }
-                            }
-                            // Generic Exception catch (fallback)
-                            if (std.ascii.eqlIgnoreCase(catch_type, "Exception") or
-                                std.ascii.eqlIgnoreCase(catch_type, "System.Exception"))
-                            {
-                                generic_catch = cc;
-                            }
-                        }
-                        // Use matched catch, or fall back to generic Exception, or first catch
-                        const selected = matched_catch orelse generic_catch orelse &ts.catches[0];
-                        const catch_env = try current_env.child();
-                        try catch_env.define(selected.name, Value{ .object = exc_obj });
-                        // If the catch body itself throws (or `throw e;` rethrows),
-                        // the Apex spec says the `finally` block still runs before
-                        // the exception propagates. Catch the error, run finally,
-                        // then rethrow.
-                        if (self.exec_block(selected.body, catch_env)) |catch_result| {
-                            if (ts.finally_body) |fb| _ = try self.exec_block(fb, current_env);
-                            return catch_result;
-                        } else |catch_err| {
-                            if (ts.finally_body) |fb| _ = self.exec_block(fb, current_env) catch {};
-                            return catch_err;
-                        }
-                    }
-                }
-            },
+            .switch_stmt => |sw| return try self.exec_switch_stmt(sw, current_env),
+            .try_stmt => |ts| return try self.exec_try_stmt(ts, current_env),
             .throw_stmt => |ts| {
                 const exc_val = try self.eval_expr(ts.expr, current_env);
                 // Store exception value for catch handler
