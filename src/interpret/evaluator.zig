@@ -4441,717 +4441,799 @@ pub const Evaluator = struct {
 
     pub fn execute_soql(self: *Evaluator, raw: []const u8, current_env: *Env) !Value {
         self.limits_soql += 1;
-        // Strip brackets
         var soql = raw;
         if (soql.len > 2 and soql[0] == '[') soql = soql[1 .. soql.len - 1];
         soql = std.mem.trim(u8, try self.strip_soql_line_comments(soql), " \t\n\r");
 
-        // Check security modes when running as restricted user
         if (self.is_restricted_user) {
-            if (std.ascii.indexOfIgnoreCase(soql, "WITH SECURITY_ENFORCED") != null or
-                std.ascii.indexOfIgnoreCase(soql, "WITH USER_MODE") != null or
-                std.ascii.indexOfIgnoreCase(soql, "USER_MODE") != null)
-            {
-                const from_type_name = extract_from_type(soql) orelse "SObject";
-                const msg = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.QueryException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                // Populate getInaccessibleFields() payload: Map<String, Set<String>>.
-                // fflib_SObjectSelectorTest expects the exception to carry the per-
-                // SObjectType set of fields the running user cannot read. Extract
-                // the bare SELECT column names and keep the ones that fail
-                // resolve_field_read_permission (or all of them, if the object itself
-                // is unreadable).
-                try self.attach_inaccessible_fields_to_exception(exc, soql, from_type_name);
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
+            try self.soql_check_restricted_security_and_throw(soql);
         }
 
-        // SOSL: FIND ... RETURNING Type(fields) → use fixed search results
         if (soql.len > 4 and std.ascii.eqlIgnoreCase(soql[0..4], "FIND")) {
             return self.execute_sosl(soql);
         }
 
-        // Strip ALL ROWS keyword (include deleted records from trash)
         var include_all_rows = false;
-        if (soql.len > 8) {
-            if (std.ascii.eqlIgnoreCase(soql[soql.len - 8 ..], "ALL ROWS")) {
-                soql = std.mem.trim(u8, soql[0 .. soql.len - 8], " \t\n\r");
-                include_all_rows = true;
-            }
+        if (soql.len > 8 and std.ascii.eqlIgnoreCase(soql[soql.len - 8 ..], "ALL ROWS")) {
+            soql = std.mem.trim(u8, soql[0 .. soql.len - 8], " \t\n\r");
+            include_all_rows = true;
         }
 
-        // COUNT() query
-        if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
-            const from_type = extract_from_type(soql);
-            if (from_type) |ft| {
-                var count: i64 = 0;
-                var store_iter = self.store.iterator();
-                while (store_iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, ft)) {
-                        // Apply WHERE filter even for COUNT
-                        for (entry.value_ptr.items) |record| {
-                            if (self.matches_where(record, soql, current_env)) count += 1;
-                        }
-                        break;
-                    }
-                }
-                // ALL ROWS: also count trashed records.
-                if (include_all_rows) {
-                    var trash_iter = self.trash.iterator();
-                    while (trash_iter.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, ft)) {
-                            for (entry.value_ptr.items) |record| {
-                                if (self.matches_where(record, soql, current_env)) count += 1;
-                            }
-                            break;
-                        }
-                    }
-                }
-                return Value{ .integer = count };
-            }
-            return Value{ .integer = 0 };
+        if (try self.soql_try_count_query(soql, current_env, include_all_rows)) |cnt| {
+            return cnt;
+        }
+        if (try self.soql_try_aggregate_dispatch(soql, current_env, include_all_rows)) |agg| {
+            return agg;
         }
 
-        // Aggregate functions (SUM/AVG/MIN/MAX/COUNT(field)) with optional GROUP BY
-        if (std.ascii.indexOfIgnoreCase(soql, "SUM(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "AVG(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "MIN(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "MAX(") orelse
-            std.ascii.indexOfIgnoreCase(soql, "COUNT(")) |_|
-        {
-            // Detect GROUP BY (skip plain COUNT() which is handled above)
-            if (std.ascii.indexOfIgnoreCase(soql, "count()") != null and
-                std.ascii.indexOfIgnoreCase(soql, "group by") == null)
-            {
-                // Already handled by COUNT() path above — shouldn't reach here, but guard
-            } else {
-                return self.execute_aggregate_query(soql, current_env, include_all_rows);
-            }
-        }
-        // GROUP BY without SUM/AVG/MIN/MAX (e.g., SELECT Field, COUNT(Id) ... GROUP BY Field)
-        if (std.ascii.indexOfIgnoreCase(soql, "group by") != null) {
-            return self.execute_aggregate_query(soql, current_env, include_all_rows);
-        }
-
-        // Regular SELECT query
         const from_type = extract_from_type(soql) orelse return self.make_empty_list();
         var records: std.ArrayListUnmanaged(Value) = .empty;
 
-        // Find matching records (case-insensitive type name)
-        // Return copies to avoid aliasing store objects (prevents iterator
-        // invalidation when the queried record is later DML-updated).
+        try self.soql_collect_store_records(soql, current_env, from_type, include_all_rows, &records);
+        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "UserRecordAccess")) {
+            try self.seed_user_record_access_records(soql, current_env, &records);
+        }
+        try self.soql_seed_perm_set_from_in_clause(soql, current_env, from_type, &records);
+        try self.soql_load_custom_metadata_mdt(soql, current_env, from_type, include_all_rows, &records);
+        if (include_all_rows) {
+            try self.soql_collect_trash_records(soql, current_env, from_type, &records);
+        }
+
+        try self.soql_ensure_select_fields_present(soql, &records);
+        try self.soql_apply_metadata_stubs(soql, current_env, from_type, &records);
+        try self.soql_seed_synthetic_system_records(soql, current_env, from_type, &records);
+        try self.soql_seed_fallback_user(soql, current_env, from_type, &records);
+        try self.soql_seed_fallback_profile(soql, current_env, from_type, &records);
+        try self.soql_seed_fallback_business_hours(soql, current_env, from_type, &records);
+        try self.soql_throw_if_unknown_type(soql, current_env, from_type, &records);
+        try self.soql_apply_sub_query(soql, from_type, &records);
+
+        try self.apply_parent_field_lookups(soql, from_type, &records);
+        try self.resolve_formula_fields(soql, &records);
+
+        try self.soql_reorder_by_in_bind(soql, current_env, &records);
+        self.soql_apply_order_by(soql, &records);
+        self.soql_apply_offset(soql, current_env, &records);
+        self.soql_apply_limit(soql, current_env, &records);
+
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{ .items = records };
+        return Value{ .list = list };
+    }
+
+    fn soql_check_restricted_security_and_throw(
+        self: *Evaluator,
+        soql: []const u8,
+    ) !void {
+        if (std.ascii.indexOfIgnoreCase(soql, "WITH SECURITY_ENFORCED") == null and
+            std.ascii.indexOfIgnoreCase(soql, "WITH USER_MODE") == null and
+            std.ascii.indexOfIgnoreCase(soql, "USER_MODE") == null) return;
+        const from_type_name = extract_from_type(soql) orelse "SObject";
+        const msg = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.QueryException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+        try self.attach_inaccessible_fields_to_exception(exc, soql, from_type_name);
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn soql_try_count_query(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        include_all_rows: bool,
+    ) !?Value {
+        if (std.ascii.indexOfIgnoreCase(soql, "count()") == null) return null;
+        const ft = extract_from_type(soql) orelse return Value{ .integer = 0 };
+        var count: i64 = 0;
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, ft)) {
                 for (entry.value_ptr.items) |record| {
-                    if (self.matches_where(record, soql, current_env)) {
-                        if (record == .sobject) {
-                            const copy = try self.clone_s_object(record.sobject);
-                            if (include_all_rows) {
-                                try utils.sobject_put(
-                                    &copy.fields,
-                                    self.arena,
-                                    "IsDeleted",
-                                    Value{ .boolean = false },
-                                );
-                            }
-                            try records.append(self.arena, Value{ .sobject = copy });
-                        } else {
-                            try records.append(self.arena, record);
-                        }
-                    }
+                    if (self.matches_where(record, soql, current_env)) count += 1;
                 }
                 break;
             }
         }
-
-        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "UserRecordAccess")) {
-            try self.seed_user_record_access_records(soql, current_env, &records);
-        }
-
-        // Seed PermissionSet/PermissionSetLicense from IN clause (before metadata stubs)
-        if (records.items.len == 0 and
-            (std.ascii.eqlIgnoreCase(from_type, "PermissionSet") or
-                std.ascii.eqlIgnoreCase(from_type, "PermissionSetLicense")))
-        {
-            const where_check = extract_where_clause(soql);
-            if (where_check) |wc| {
-                if (std.ascii.indexOfIgnoreCase(wc, " IN :") != null or
-                    std.ascii.indexOfIgnoreCase(wc, " IN (") != null)
-                {
-                    try self.seed_named_records(from_type, soql, current_env, &records);
-                }
-            }
-        }
-
-        // Load custom metadata records from .md-meta.xml files if store is empty
-        // Only load if generate_metadata_stub doesn't handle this type (to avoid conflicting stubs)
-        if (records.items.len == 0 and std.mem.endsWith(u8, from_type, "__mdt") and
-            self.store.get(from_type) == null)
-        {
-            // Check if this type has a hardcoded stub
-            const has_hardcoded_stub =
-                (try self.generate_metadata_stub(from_type, soql, current_env)) != null;
-            if (!has_hardcoded_stub) {
-                try self.load_custom_metadata_from_files(from_type);
-                // Re-scan store after loading
-                var mdt_iter = self.store.iterator();
-                while (mdt_iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
-                        for (entry.value_ptr.items) |record| {
-                            if (self.matches_where(record, soql, current_env)) {
-                                if (record == .sobject) {
-                                    const copy = try self.clone_s_object(record.sobject);
-                                    if (include_all_rows) {
-                                        try utils.sobject_put(
-                                            &copy.fields,
-                                            self.arena,
-                                            "IsDeleted",
-                                            Value{ .boolean = false },
-                                        );
-                                    }
-                                    try records.append(self.arena, Value{ .sobject = copy });
-                                } else {
-                                    try records.append(self.arena, record);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Include deleted records from trash when ALL ROWS is specified
         if (include_all_rows) {
             var trash_iter = self.trash.iterator();
             while (trash_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, ft)) {
                     for (entry.value_ptr.items) |record| {
-                        if (self.matches_where(record, soql, current_env)) {
-                            if (record == .sobject) {
-                                const copy = try self.clone_s_object(record.sobject);
-                                // Mark as deleted
-                                try copy.fields.put(
-                                    self.arena,
-                                    "IsDeleted",
-                                    Value{ .boolean = true },
-                                );
-                                try records.append(self.arena, Value{ .sobject = copy });
-                            } else {
-                                try records.append(self.arena, record);
-                            }
-                        }
+                        if (self.matches_where(record, soql, current_env)) count += 1;
                     }
                     break;
                 }
             }
         }
+        return Value{ .integer = count };
+    }
 
+    fn soql_try_aggregate_dispatch(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        include_all_rows: bool,
+    ) !?Value {
+        const has_agg_fn =
+            std.ascii.indexOfIgnoreCase(soql, "SUM(") != null or
+            std.ascii.indexOfIgnoreCase(soql, "AVG(") != null or
+            std.ascii.indexOfIgnoreCase(soql, "MIN(") != null or
+            std.ascii.indexOfIgnoreCase(soql, "MAX(") != null or
+            std.ascii.indexOfIgnoreCase(soql, "COUNT(") != null;
+        const has_count_parens = std.ascii.indexOfIgnoreCase(soql, "count()") != null;
+        const has_group_by = std.ascii.indexOfIgnoreCase(soql, "group by") != null;
+        if (has_agg_fn and !(has_count_parens and !has_group_by)) {
+            return try self.execute_aggregate_query(soql, current_env, include_all_rows);
+        }
+        if (has_group_by) {
+            return try self.execute_aggregate_query(soql, current_env, include_all_rows);
+        }
+        return null;
+    }
+
+    fn soql_collect_store_records(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        include_all_rows: bool,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        // Return copies to avoid aliasing store objects (prevents iterator
+        // invalidation when the queried record is later DML-updated).
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) continue;
+            for (entry.value_ptr.items) |record| {
+                if (!self.matches_where(record, soql, current_env)) continue;
+                if (record == .sobject) {
+                    const copy = try self.clone_s_object(record.sobject);
+                    if (include_all_rows) {
+                        try utils.sobject_put(
+                            &copy.fields,
+                            self.arena,
+                            "IsDeleted",
+                            Value{ .boolean = false },
+                        );
+                    }
+                    try records.append(self.arena, Value{ .sobject = copy });
+                } else {
+                    try records.append(self.arena, record);
+                }
+            }
+            break;
+        }
+    }
+
+    fn soql_seed_perm_set_from_in_clause(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (!(std.ascii.eqlIgnoreCase(from_type, "PermissionSet") or
+            std.ascii.eqlIgnoreCase(from_type, "PermissionSetLicense"))) return;
+        const wc = extract_where_clause(soql) orelse return;
+        if (std.ascii.indexOfIgnoreCase(wc, " IN :") == null and
+            std.ascii.indexOfIgnoreCase(wc, " IN (") == null) return;
+        try self.seed_named_records(from_type, soql, current_env, records);
+    }
+
+    fn soql_load_custom_metadata_mdt(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        include_all_rows: bool,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (!std.mem.endsWith(u8, from_type, "__mdt")) return;
+        if (self.store.get(from_type) != null) return;
+        const has_hardcoded_stub =
+            (try self.generate_metadata_stub(from_type, soql, current_env)) != null;
+        if (has_hardcoded_stub) return;
+        try self.load_custom_metadata_from_files(from_type);
+        var mdt_iter = self.store.iterator();
+        while (mdt_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) continue;
+            for (entry.value_ptr.items) |record| {
+                if (!self.matches_where(record, soql, current_env)) continue;
+                if (record == .sobject) {
+                    const copy = try self.clone_s_object(record.sobject);
+                    if (include_all_rows) {
+                        try utils.sobject_put(
+                            &copy.fields,
+                            self.arena,
+                            "IsDeleted",
+                            Value{ .boolean = false },
+                        );
+                    }
+                    try records.append(self.arena, Value{ .sobject = copy });
+                } else {
+                    try records.append(self.arena, record);
+                }
+            }
+            break;
+        }
+    }
+
+    fn soql_collect_trash_records(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        var trash_iter = self.trash.iterator();
+        while (trash_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) continue;
+            for (entry.value_ptr.items) |record| {
+                if (!self.matches_where(record, soql, current_env)) continue;
+                if (record == .sobject) {
+                    const copy = try self.clone_s_object(record.sobject);
+                    try copy.fields.put(
+                        self.arena,
+                        "IsDeleted",
+                        Value{ .boolean = true },
+                    );
+                    try records.append(self.arena, Value{ .sobject = copy });
+                } else {
+                    try records.append(self.arena, record);
+                }
+            }
+            break;
+        }
+    }
+
+    fn soql_ensure_select_fields_present(
+        self: *Evaluator,
+        soql: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         // Ensure SELECT clause fields exist on result records (even as null)
         // This allows Security.stripInaccessible to detect and strip them
+        const select_start2 =
+            if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
+        const from_start2 = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
+        if (from_start2 <= select_start2) return;
+        const select_clause2 = std.mem.trim(u8, soql[select_start2..from_start2], " \t\n\r");
+        if (std.ascii.indexOfIgnoreCase(select_clause2, "FIELDS(") != null) return;
+        if (std.ascii.indexOfIgnoreCase(select_clause2, "COUNT(") != null) return;
+        if (std.ascii.indexOfIgnoreCase(select_clause2, "SUM(") != null) return;
+        var field_iter = std.mem.splitScalar(u8, select_clause2, ',');
+        while (field_iter.next()) |raw_field| {
+            try self.soql_apply_select_field_to_records(raw_field, records);
+        }
+    }
+
+    fn soql_apply_select_field_to_records(
+        self: *Evaluator,
+        raw_field: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        var field_name = std.mem.trim(u8, raw_field, " \t\n\r");
+        if (field_name.len == 0) return;
+        if (field_name[0] == '(') return; // subquery
+        var is_to_label = false;
+        if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and
+            std.mem.endsWith(u8, field_name, ")"))
         {
-            const select_start2 =
-                if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
-            const from_start2 = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
-            if (from_start2 > select_start2) {
-                const select_clause2 = std.mem.trim(
-                    u8,
-                    soql[select_start2..from_start2],
-                    " \t\n\r",
-                );
-                // Skip FIELDS(STANDARD) and aggregate functions
-                if (std.ascii.indexOfIgnoreCase(select_clause2, "FIELDS(") == null and
-                    std.ascii.indexOfIgnoreCase(select_clause2, "COUNT(") == null and
-                    std.ascii.indexOfIgnoreCase(select_clause2, "SUM(") == null)
-                {
-                    var field_iter = std.mem.splitScalar(u8, select_clause2, ',');
-                    while (field_iter.next()) |raw_field| {
-                        var field_name = std.mem.trim(u8, raw_field, " \t\n\r");
-                        if (field_name.len == 0) continue;
-                        // Skip subqueries (SELECT ... FROM ...)
-                        if (field_name[0] == '(') continue;
-                        // Handle toLabel(FieldName) — extract inner field name and apply label
-                        // conversion
-                        var is_to_label = false;
-                        if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and
-                            std.mem.endsWith(u8, field_name, ")"))
-                        {
-                            field_name = field_name[8 .. field_name.len - 1];
-                            is_to_label = true;
-                        }
-                        // Skip parent references (Account.Name → skip)
-                        if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
-                        for (records.items) |item| {
-                            if (item == .sobject) {
-                                const selected_value = self.get_s_object_field_value_case_insensitive(item.sobject, field_name) orelse Value.null_val;
-                                try utils.sobject_put(
-                                    &item.sobject.fields,
-                                    self.arena,
-                                    field_name,
-                                    selected_value,
-                                );
-                                // toLabel: convert API name to picklist label using field-meta.xml
-                                if (is_to_label) {
-                                    if (utils.sobject_get(&item.sobject.fields, field_name)) |fv| {
-                                        if (fv == .string) {
-                                            if (self.resolve_picklist_label(
-                                                item.sobject.type_name,
-                                                field_name,
-                                                fv.string,
-                                            )) |label| {
-                                                try utils.sobject_put(
-                                                    &item.sobject.fields,
-                                                    self.arena,
-                                                    field_name,
-                                                    Value{ .string = label },
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            field_name = field_name[8 .. field_name.len - 1];
+            is_to_label = true;
         }
-
-        // For dynamic queries (Database.query), throw QueryException for unknown object types.
-        // An object type is "known" if it exists in the store OR has a metadata stub.
-        // This is checked BEFORE metadata stub generation — if stubs generate records,
-        // the object is known. If not, and the store doesn't have it either, it's unknown.
-
-        // Metadata type stubs: generate dummy records for system objects
-        // that don't exist in the in-memory store (ApexClass, PermissionSet, etc.)
-        if (records.items.len == 0) {
-            // FieldPermissions: return multiple field permission records
-            if (std.ascii.eqlIgnoreCase(from_type, "FieldPermissions")) {
-                const obj_type = self.extract_where_field_value(
-                    soql,
-                    "SobjectType",
-                    current_env,
-                ) orelse "Account";
-                // Generate field permissions: some readable+editable, some read-only
-                const fields = [_]struct { name: []const u8, read: bool, edit: bool }{
-                    .{ .name = "Name", .read = true, .edit = true },
-                    .{ .name = "Id", .read = true, .edit = false },
-                    .{ .name = "Description", .read = true, .edit = true },
-                    .{ .name = "Website", .read = true, .edit = true },
-                    .{ .name = "Industry", .read = true, .edit = true },
-                    .{ .name = "Phone", .read = true, .edit = true },
-                    .{ .name = "ShippingStreet", .read = true, .edit = true },
-                    .{ .name = "BillingStreet", .read = true, .edit = true },
-                };
-                for (fields) |f| {
-                    const fp = try self.arena.create(types.SObject);
-                    fp.* = .{ .type_name = "FieldPermissions" };
-                    const fp_id = try self.alloc_id();
-                    fp.id = fp_id;
-                    try fp.fields.put(self.arena, "Id", Value{ .string = fp_id });
-                    try fp.fields.put(self.arena, "Field", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name }) });
-                    try fp.fields.put(self.arena, "PermissionsRead", Value{ .boolean = f.read });
-                    try fp.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = f.edit });
-                    try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
-                    try records.append(self.arena, Value{ .sobject = fp });
-                }
-            } else if ((std.ascii.eqlIgnoreCase(from_type, "StaticResource") or std.ascii.eqlIgnoreCase(from_type, "ApexClass")) and std.ascii.indexOfIgnoreCase(soql, " IN (") != null) {
-                // Handle IN clause for metadata types: extract all names from IN ('a', 'b', 'c')
-                const where_clause = extract_where_clause(soql) orelse "";
-                if (std.ascii.indexOfIgnoreCase(where_clause, " IN ")) |in_pos| {
-                    // Find opening paren
-                    var pp = in_pos + 4;
-                    while (pp < where_clause.len and where_clause[pp] != '(') pp += 1;
-                    if (pp < where_clause.len) {
-                        pp += 1; // skip '('
-                        // Extract each quoted string
-                        while (pp < where_clause.len and where_clause[pp] != ')') {
-                            while (pp < where_clause.len and
-                                where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
-                            if (pp < where_clause.len and where_clause[pp] == '\'') {
-                                pp += 1;
-                                const start = pp;
-                                while (pp < where_clause.len and where_clause[pp] != '\'') pp += 1;
-                                if (pp > start) {
-                                    const in_name = where_clause[start..pp];
-                                    // debug removed
-                                    const tmp_soql = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "SELECT Id, Name FROM {s} WHERE Name = '{s}'",
-                                        .{ from_type, in_name },
-                                    );
-                                    if (try self.generate_metadata_stub(
-                                        from_type,
-                                        tmp_soql,
-                                        current_env,
-                                    )) |stub| {
-                                        try records.append(self.arena, stub);
-                                    }
-                                }
-                                if (pp < where_clause.len) pp += 1; // skip closing quote
-                            }
-                        }
-                    }
-                }
-            } else if (std.ascii.eqlIgnoreCase(from_type, "ApexClass") and
-                std.ascii.indexOfIgnoreCase(soql, " OR ") != null)
-            {
-                // ApexClass with OR: extract all Name values and generate stubs for each
-                const where_clause = extract_where_clause(soql) orelse "";
-                var wpos: usize = 0;
-                while (wpos < where_clause.len) {
-                    // Find next Name LIKE or Name =
-                    const name_pos = std.ascii.indexOfIgnoreCasePos(
-                        where_clause,
-                        wpos,
-                        "Name",
-                    ) orelse break;
-                    var j = name_pos + 4;
-                    while (j < where_clause.len and
-                        (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
-                    // Skip operator
-                    if (j + 4 <= where_clause.len and
-                        std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
-                    {
-                        j += 4;
-                    } else if (j < where_clause.len and where_clause[j] == '=') {
-                        j += 1;
-                    } else {
-                        wpos = j;
-                        continue;
-                    }
-                    while (j < where_clause.len and
-                        (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
-                    var name_val: ?[]const u8 = null;
-                    if (j < where_clause.len and where_clause[j] == '\'') {
-                        const start = j + 1;
-                        if (std.mem.indexOfPos(u8, where_clause, start, "'")) |end| {
-                            name_val = where_clause[start..end];
-                            wpos = end + 1;
-                        } else {
-                            wpos = j + 1;
-                        }
-                    } else if (j < where_clause.len and where_clause[j] == ':') {
-                        const start = j + 1;
-                        var end = start;
-                        while (end < where_clause.len and (std.ascii.isAlphanumeric(where_clause[end]) or where_clause[end] == '_')) end += 1;
-                        if (end > start) {
-                            if (current_env.get(where_clause[start..end])) |bv| {
-                                if (bv == .string) name_val = bv.string;
-                            }
-                        }
-                        wpos = end;
-                    } else {
-                        wpos = j + 1;
-                        continue;
-                    }
-                    if (name_val) |nv| {
-                        // Use a temporary soql for the stub generator with a single WHERE
-                        const tmp_soql = try std.fmt.allocPrint(
-                            self.arena,
-                            "SELECT Name, Body FROM {s} WHERE Name = '{s}'",
-                            .{ from_type, nv },
-                        );
-                        if (try self.generate_metadata_stub(
-                            from_type,
-                            tmp_soql,
-                            current_env,
-                        )) |stub| {
-                            try records.append(self.arena, stub);
-                        }
-                    }
-                }
-            } else if (try self.generate_metadata_stub(
-                from_type,
-                soql,
-                current_env,
-            )) |stub_record| {
-                try records.append(self.arena, stub_record);
-            }
-        }
-
-        // Seed synthetic records for User/Profile/RecordType if none exist in store
-        if (records.items.len == 0 and self.store.get(from_type) == null) {
-            if (std.ascii.eqlIgnoreCase(from_type, "User")) {
-                const use_query_specific_user = self.has_exact_where_field_comparison(
-                    soql,
-                    "Profile.Name",
-                ) or
-                    self.has_exact_where_field_comparison(soql, "Profile.UserType") or
-                    self.has_exact_where_field_comparison(soql, "UserType");
-                const user_record = if (self.query_matches_current_user(soql, current_env))
-                    try self.create_current_user_record()
-                else if (self.query_matches_default_synthetic_user(soql, current_env))
-                    try self.create_default_user_record()
-                else if (use_query_specific_user)
-                    try self.create_user_for_query(soql, current_env)
-                else
-                    try self.create_current_user_record();
-                // Only include seeded User if it matches WHERE clause
-                if (user_record != .null_val and
-                    self.matches_where(user_record, soql, current_env))
-                {
-                    try records.append(self.arena, user_record);
-                    if (user_record == .sobject) {
-                        const gop = try self.store.getOrPut(self.arena, "User");
-                        if (!gop.found_existing) gop.value_ptr.* = .empty;
-                        try gop.value_ptr.append(self.arena, user_record);
-                    }
-                }
-            } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-                const use_query_specific_profile = !self.has_where_field_like_comparison(
-                    soql,
-                    "Name",
-                );
-                const profile_record = if (use_query_specific_profile)
-                    try self.create_profile_for_query(soql, current_env)
-                else
-                    try self.create_default_profile_record();
-                if (self.matches_where(profile_record, soql, current_env)) {
-                    try records.append(self.arena, profile_record);
-                    // Also store in the data store so get_user_profile_name can resolve ProfileId
-                    // later
-                    if (profile_record == .sobject) {
-                        const gop = try self.store.getOrPut(self.arena, "Profile");
-                        if (!gop.found_existing) gop.value_ptr.* = .empty;
-                        try gop.value_ptr.append(self.arena, profile_record);
-                    }
-                }
-            } else if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
-                // Seed RecordType records into the store, then filter by WHERE clause
-                try self.seed_record_type_store();
-                // Re-scan store for matching records
-                if (self.store.get("RecordType")) |rt_records| {
-                    for (rt_records.items) |record| {
-                        if (self.matches_where(record, soql, current_env)) {
-                            if (record == .sobject) {
-                                const copy = try self.clone_s_object(record.sobject);
-                                try records.append(self.arena, Value{ .sobject = copy });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (records.items.len == 0 and
-            std.ascii.eqlIgnoreCase(from_type, "User") and
-            self.should_synthesize_builtin_user(soql, current_env))
-        {
-            const user_record = if (self.query_matches_current_user(soql, current_env))
-                try self.create_current_user_record()
-            else if (self.has_exact_where_field_comparison(soql, "Alias") or
-                self.has_exact_where_field_comparison(soql, "Username"))
-                try self.create_user_for_query(soql, current_env)
-            else
-                try self.create_current_user_record();
-            if (self.matches_where(user_record, soql, current_env)) {
-                try records.append(self.arena, user_record);
-                if (user_record == .sobject) {
-                    const gop = try self.store.getOrPut(self.arena, "User");
-                    if (!gop.found_existing) gop.value_ptr.* = .empty;
-                    try gop.value_ptr.append(self.arena, user_record);
-                }
-            }
-        }
-
-        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "Profile")) {
-            const profile_record = if (!self.has_where_field_like_comparison(soql, "Name"))
-                try self.create_profile_for_query(soql, current_env)
-            else
-                try self.create_default_profile_record();
-            if (self.matches_where(profile_record, soql, current_env)) {
-                try records.append(self.arena, profile_record);
-                if (profile_record == .sobject) {
-                    const gop = try self.store.getOrPut(self.arena, "Profile");
-                    if (!gop.found_existing) gop.value_ptr.* = .empty;
-                    try gop.value_ptr.append(self.arena, profile_record);
-                }
-            }
-        }
-
-        if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "BusinessHours")) {
-            const business_hours = try self.arena.create(types.SObject);
-            business_hours.* = .{ .type_name = "BusinessHours", .id = "01m000000000001AAA" };
-            try business_hours.fields.put(
+        if (std.mem.indexOfScalar(u8, field_name, '.') != null) return;
+        for (records.items) |item| {
+            if (item != .sobject) continue;
+            const selected_value = self.get_s_object_field_value_case_insensitive(
+                item.sobject,
+                field_name,
+            ) orelse Value.null_val;
+            try utils.sobject_put(&item.sobject.fields, self.arena, field_name, selected_value);
+            if (!is_to_label) continue;
+            const fv = utils.sobject_get(&item.sobject.fields, field_name) orelse continue;
+            if (fv != .string) continue;
+            const label = self.resolve_picklist_label(
+                item.sobject.type_name,
+                field_name,
+                fv.string,
+            ) orelse continue;
+            try utils.sobject_put(
+                &item.sobject.fields,
                 self.arena,
-                "Id",
-                Value{ .string = "01m000000000001AAA" },
+                field_name,
+                Value{ .string = label },
             );
-            try business_hours.fields.put(self.arena, "Name", Value{ .string = "Default" });
-            if (self.matches_where(Value{ .sobject = business_hours }, soql, current_env)) {
-                try records.append(self.arena, Value{ .sobject = business_hours });
-            }
         }
+    }
 
-        // If no records found from store or metadata stubs, and the object type
-        // is not recognized at all, throw QueryException (unknown SObject type).
-        // Known types: anything in the store, known metadata stubs, or common Salesforce objects.
-        if (records.items.len == 0) {
-            const in_store = self.store.get(from_type) != null;
-            if (!in_store) {
-                // Check if it's a common/known SObject type
-                const known_types = [_][]const u8{
-                    "Account",                    "Contact",                "Opportunity",
-                    "Case",                       "Lead",                   "Task",
-                    "Event",                      "Campaign",               "User",
-                    "ContentVersion",             "ContentDocument",        "ContentDocumentLink",
-                    "ContentDistribution",        "PermissionSet",          "PermissionSetAssignment",
-                    "ObjectPermissions",          "Profile",                "Organization",
-                    "ApexClass",                  "StaticResource",         "FieldPermissions",
-                    "PermissionSetGroup",         "PlatformCachePartition", "Metadata_Driven_Trigger__mdt",
-                    "CronTrigger",                "AsyncApexJob",           "EntityDefinition",
-                    "FieldDefinition",            "AggregateResult",        "RecordType",
-                    "DuplicateRule",              "DuplicateRecordSet",     "DuplicateRecordItem",
-                    "UserRecordAccess",           "AuthSession",            "LoginHistory",
-                    "TaskStatus",                 "BusinessHours",          "FeedItem",
-                    "CollaborationGroup",         "UserRole",               "GroupMember",
-                    "Group",                      "Attachment",             "Note",
-                    "EmailMessage",               "CaseComment",            "Solution",
-                    "Contract",                   "Product2",               "Pricebook2",
-                    "PricebookEntry",             "OpportunityLineItem",    "Quote",
-                    "QuoteLineItem",              "PermissionSetLicense",   "EmailTemplate",
-                    "Folder",                     "Document",               "CampaignMember",
-                    "CampaignMemberStatus",       "EmailMessageRelation",   "OrgWideEmailAddress",
-                    "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",
-                    "ServiceTerritory",           "ServiceTerritoryMember", "ApexTrigger",
-                    "CustomPermission",           "FlowDefinitionView",     "FlowVersionView",
-                    "ApexEmailNotification",      "Network",                "Topic",
-                    "OmniProcess",                "AppMenuItem",            "LeadStatus",
-                    "UserPreference",             "UserLogin",              "LoginIp",
-                    "LeadHistory",                "AccountHistory",         "EventBusSubscriber",
-                    "BatchApexErrorEvent",        "AsyncOperationEvent",    "AsyncOperationStatus",
-                };
-                var is_known = false;
-                for (known_types) |kt| {
-                    if (std.ascii.eqlIgnoreCase(from_type, kt)) {
-                        is_known = true;
-                        break;
-                    }
-                }
-                // Also known if it is a custom-object derivative type.
-                if (std.mem.endsWith(u8, from_type, "__c") or
-                    std.mem.endsWith(u8, from_type, "__e") or
-                    std.mem.endsWith(u8, from_type, "__mdt") or
-                    std.mem.endsWith(u8, from_type, "__b") or
-                    std.mem.endsWith(u8, from_type, "__Share") or
-                    std.mem.endsWith(u8, from_type, "__History") or
-                    std.mem.endsWith(u8, from_type, "__ChangeEvent"))
-                {
-                    is_known = true;
-                }
-                // Also known if generate_metadata_stub can handle it
-                if (!is_known) {
-                    if (try self.generate_metadata_stub(from_type, soql, current_env)) |_| {
-                        is_known = true;
-                    }
-                }
-                if (!is_known) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.QueryException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type}) });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-            }
+    fn soql_apply_metadata_stubs(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (std.ascii.eqlIgnoreCase(from_type, "FieldPermissions")) {
+            try self.soql_seed_field_permissions(soql, current_env, records);
+            return;
         }
+        const is_static_or_apex =
+            std.ascii.eqlIgnoreCase(from_type, "StaticResource") or
+            std.ascii.eqlIgnoreCase(from_type, "ApexClass");
+        if (is_static_or_apex and std.ascii.indexOfIgnoreCase(soql, " IN (") != null) {
+            try self.soql_seed_metadata_in_clause(soql, current_env, from_type, records);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "ApexClass") and
+            std.ascii.indexOfIgnoreCase(soql, " OR ") != null)
+        {
+            try self.soql_seed_apex_class_or(soql, current_env, from_type, records);
+            return;
+        }
+        if (try self.generate_metadata_stub(from_type, soql, current_env)) |stub_record| {
+            try records.append(self.arena, stub_record);
+        }
+    }
 
-        // Apply sub-queries: (SELECT ... FROM ChildRelationship)
-        if (extract_sub_query(soql)) |sub_info| {
-            const rel_name = sub_info.relationship;
-            const child_type = self.resolve_child_type(from_type, rel_name);
-            // For each parent record, find child records
-            for (records.items) |*rec| {
-                if (rec.* == .sobject) {
-                    const parent_id = rec.sobject.id;
-                    if (parent_id) |pid| {
-                        var child_records: std.ArrayListUnmanaged(Value) = .empty;
-                        // Look up the child type in the store
-                        if (child_type) |ct| {
-                            var child_iter = self.store.iterator();
-                            while (child_iter.next()) |child_entry| {
-                                if (std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, ct)) {
-                                    // Find the FK field name: for Contacts on Account, it's
-                                    // AccountId
-                                    const fk_field = self.resolve_foreign_key(
-                                        ct,
-                                        from_type,
-                                        rel_name,
-                                    );
-                                    for (child_entry.value_ptr.items) |child_rec| {
-                                        if (child_rec == .sobject) {
-                                            if (utils.sobject_get(
-                                                &child_rec.sobject.fields,
-                                                fk_field,
-                                            )) |fk_val| {
-                                                if (fk_val == .string and
-                                                    std.ascii.eqlIgnoreCase(fk_val.string, pid))
-                                                {
-                                                    try child_records.append(self.arena, child_rec);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                            try self.apply_parent_field_lookups(sub_info.query, ct, &child_records);
-                            try self.resolve_formula_fields(sub_info.query, &child_records);
-                        }
-                        const child_list = try self.arena.create(types.ListValue);
-                        child_list.* = .{ .items = child_records };
-                        try rec.sobject.fields.put(
-                            self.arena,
-                            rel_name,
-                            Value{ .list = child_list },
-                        );
-                    }
+    fn soql_seed_field_permissions(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const obj_type = self.extract_where_field_value(
+            soql,
+            "SobjectType",
+            current_env,
+        ) orelse "Account";
+        // Generate field permissions: some readable+editable, some read-only
+        const fields = [_]struct { name: []const u8, read: bool, edit: bool }{
+            .{ .name = "Name", .read = true, .edit = true },
+            .{ .name = "Id", .read = true, .edit = false },
+            .{ .name = "Description", .read = true, .edit = true },
+            .{ .name = "Website", .read = true, .edit = true },
+            .{ .name = "Industry", .read = true, .edit = true },
+            .{ .name = "Phone", .read = true, .edit = true },
+            .{ .name = "ShippingStreet", .read = true, .edit = true },
+            .{ .name = "BillingStreet", .read = true, .edit = true },
+        };
+        for (fields) |f| {
+            const fp = try self.arena.create(types.SObject);
+            fp.* = .{ .type_name = "FieldPermissions" };
+            const fp_id = try self.alloc_id();
+            fp.id = fp_id;
+            try fp.fields.put(self.arena, "Id", Value{ .string = fp_id });
+            try fp.fields.put(self.arena, "Field", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name }) });
+            try fp.fields.put(self.arena, "PermissionsRead", Value{ .boolean = f.read });
+            try fp.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = f.edit });
+            try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
+            try records.append(self.arena, Value{ .sobject = fp });
+        }
+    }
+
+    fn soql_seed_metadata_in_clause(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        // Handle IN clause for metadata types: extract all names from IN ('a', 'b', 'c')
+        const where_clause = extract_where_clause(soql) orelse "";
+        const in_pos = std.ascii.indexOfIgnoreCase(where_clause, " IN ") orelse return;
+        var pp = in_pos + 4;
+        while (pp < where_clause.len and where_clause[pp] != '(') pp += 1;
+        if (pp >= where_clause.len) return;
+        pp += 1; // skip '('
+        while (pp < where_clause.len and where_clause[pp] != ')') {
+            while (pp < where_clause.len and
+                where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
+            if (pp >= where_clause.len or where_clause[pp] != '\'') continue;
+            pp += 1;
+            const start = pp;
+            while (pp < where_clause.len and where_clause[pp] != '\'') pp += 1;
+            if (pp > start) {
+                const in_name = where_clause[start..pp];
+                const tmp_soql = try std.fmt.allocPrint(
+                    self.arena,
+                    "SELECT Id, Name FROM {s} WHERE Name = '{s}'",
+                    .{ from_type, in_name },
+                );
+                if (try self.generate_metadata_stub(from_type, tmp_soql, current_env)) |stub| {
+                    try records.append(self.arena, stub);
                 }
             }
+            if (pp < where_clause.len) pp += 1; // skip closing quote
         }
+    }
 
-        // Apply parent field lookups: Account.Name, parent__r.Name
-        try self.apply_parent_field_lookups(soql, from_type, &records);
+    fn soql_seed_apex_class_or(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        // ApexClass with OR: extract all Name values and generate stubs for each
+        const where_clause = extract_where_clause(soql) orelse "";
+        var wpos: usize = 0;
+        while (wpos < where_clause.len) {
+            const name_pos = std.ascii.indexOfIgnoreCasePos(where_clause, wpos, "Name") orelse break;
+            const extracted = self.soql_extract_apex_class_or_name(
+                where_clause,
+                name_pos,
+                current_env,
+            ) orelse {
+                wpos = name_pos + 4;
+                continue;
+            };
+            wpos = extracted.next_pos;
+            const nv = extracted.name orelse continue;
+            const tmp_soql = try std.fmt.allocPrint(
+                self.arena,
+                "SELECT Name, Body FROM {s} WHERE Name = '{s}'",
+                .{ from_type, nv },
+            );
+            if (try self.generate_metadata_stub(from_type, tmp_soql, current_env)) |stub| {
+                try records.append(self.arena, stub);
+            }
+        }
+    }
 
-        // Resolve formula-like fields: <Relationship>_Name__c → parent.Name
-        try self.resolve_formula_fields(soql, &records);
+    const ApexClassOrName = struct { name: ?[]const u8, next_pos: usize };
 
+    fn soql_extract_apex_class_or_name(
+        self: *Evaluator,
+        where_clause: []const u8,
+        name_pos: usize,
+        current_env: *Env,
+    ) ?ApexClassOrName {
+        _ = self;
+        var j = name_pos + 4;
+        while (j < where_clause.len and
+            (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+        if (j + 4 <= where_clause.len and
+            std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
+        {
+            j += 4;
+        } else if (j < where_clause.len and where_clause[j] == '=') {
+            j += 1;
+        } else {
+            return null;
+        }
+        while (j < where_clause.len and
+            (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+        if (j < where_clause.len and where_clause[j] == '\'') {
+            const start = j + 1;
+            if (std.mem.indexOfPos(u8, where_clause, start, "'")) |end| {
+                return .{ .name = where_clause[start..end], .next_pos = end + 1 };
+            }
+            return .{ .name = null, .next_pos = j + 1 };
+        }
+        if (j < where_clause.len and where_clause[j] == ':') {
+            const start = j + 1;
+            var end = start;
+            while (end < where_clause.len and
+                (std.ascii.isAlphanumeric(where_clause[end]) or where_clause[end] == '_')) end += 1;
+            var name_val: ?[]const u8 = null;
+            if (end > start) {
+                if (current_env.get(where_clause[start..end])) |bv| {
+                    if (bv == .string) name_val = bv.string;
+                }
+            }
+            return .{ .name = name_val, .next_pos = end };
+        }
+        return null;
+    }
+
+    fn soql_seed_synthetic_system_records(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (self.store.get(from_type) != null) return;
+        if (std.ascii.eqlIgnoreCase(from_type, "User")) {
+            try self.soql_seed_user_synthetic(soql, current_env, records);
+        } else if (std.ascii.eqlIgnoreCase(from_type, "Profile")) {
+            try self.soql_seed_profile_synthetic(soql, current_env, records);
+        } else if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
+            try self.soql_seed_record_type_synthetic(soql, current_env, records);
+        }
+    }
+
+    fn soql_seed_user_synthetic(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const use_query_specific_user =
+            self.has_exact_where_field_comparison(soql, "Profile.Name") or
+            self.has_exact_where_field_comparison(soql, "Profile.UserType") or
+            self.has_exact_where_field_comparison(soql, "UserType");
+        const user_record = if (self.query_matches_current_user(soql, current_env))
+            try self.create_current_user_record()
+        else if (self.query_matches_default_synthetic_user(soql, current_env))
+            try self.create_default_user_record()
+        else if (use_query_specific_user)
+            try self.create_user_for_query(soql, current_env)
+        else
+            try self.create_current_user_record();
+        if (user_record == .null_val) return;
+        if (!self.matches_where(user_record, soql, current_env)) return;
+        try records.append(self.arena, user_record);
+        if (user_record == .sobject) {
+            const gop = try self.store.getOrPut(self.arena, "User");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, user_record);
+        }
+    }
+
+    fn soql_seed_profile_synthetic(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const use_query_specific_profile = !self.has_where_field_like_comparison(soql, "Name");
+        const profile_record = if (use_query_specific_profile)
+            try self.create_profile_for_query(soql, current_env)
+        else
+            try self.create_default_profile_record();
+        if (!self.matches_where(profile_record, soql, current_env)) return;
+        try records.append(self.arena, profile_record);
+        if (profile_record == .sobject) {
+            const gop = try self.store.getOrPut(self.arena, "Profile");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, profile_record);
+        }
+    }
+
+    fn soql_seed_record_type_synthetic(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        try self.seed_record_type_store();
+        const rt_records = self.store.get("RecordType") orelse return;
+        for (rt_records.items) |record| {
+            if (!self.matches_where(record, soql, current_env)) continue;
+            if (record != .sobject) continue;
+            const copy = try self.clone_s_object(record.sobject);
+            try records.append(self.arena, Value{ .sobject = copy });
+        }
+    }
+
+    fn soql_seed_fallback_user(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (!std.ascii.eqlIgnoreCase(from_type, "User")) return;
+        if (!self.should_synthesize_builtin_user(soql, current_env)) return;
+        const user_record = if (self.query_matches_current_user(soql, current_env))
+            try self.create_current_user_record()
+        else if (self.has_exact_where_field_comparison(soql, "Alias") or
+            self.has_exact_where_field_comparison(soql, "Username"))
+            try self.create_user_for_query(soql, current_env)
+        else
+            try self.create_current_user_record();
+        if (!self.matches_where(user_record, soql, current_env)) return;
+        try records.append(self.arena, user_record);
+        if (user_record == .sobject) {
+            const gop = try self.store.getOrPut(self.arena, "User");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, user_record);
+        }
+    }
+
+    fn soql_seed_fallback_profile(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (!std.ascii.eqlIgnoreCase(from_type, "Profile")) return;
+        const profile_record = if (!self.has_where_field_like_comparison(soql, "Name"))
+            try self.create_profile_for_query(soql, current_env)
+        else
+            try self.create_default_profile_record();
+        if (!self.matches_where(profile_record, soql, current_env)) return;
+        try records.append(self.arena, profile_record);
+        if (profile_record == .sobject) {
+            const gop = try self.store.getOrPut(self.arena, "Profile");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, profile_record);
+        }
+    }
+
+    fn soql_seed_fallback_business_hours(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (!std.ascii.eqlIgnoreCase(from_type, "BusinessHours")) return;
+        const business_hours = try self.arena.create(types.SObject);
+        business_hours.* = .{ .type_name = "BusinessHours", .id = "01m000000000001AAA" };
+        try business_hours.fields.put(self.arena, "Id", Value{ .string = "01m000000000001AAA" });
+        try business_hours.fields.put(self.arena, "Name", Value{ .string = "Default" });
+        if (!self.matches_where(Value{ .sobject = business_hours }, soql, current_env)) return;
+        try records.append(self.arena, Value{ .sobject = business_hours });
+    }
+
+    fn soql_is_known_sobject_type(from_type: []const u8) bool {
+        const known_types = [_][]const u8{
+            "Account",                    "Contact",                "Opportunity",
+            "Case",                       "Lead",                   "Task",
+            "Event",                      "Campaign",               "User",
+            "ContentVersion",             "ContentDocument",        "ContentDocumentLink",
+            "ContentDistribution",        "PermissionSet",          "PermissionSetAssignment",
+            "ObjectPermissions",          "Profile",                "Organization",
+            "ApexClass",                  "StaticResource",         "FieldPermissions",
+            "PermissionSetGroup",         "PlatformCachePartition", "Metadata_Driven_Trigger__mdt",
+            "CronTrigger",                "AsyncApexJob",           "EntityDefinition",
+            "FieldDefinition",            "AggregateResult",        "RecordType",
+            "DuplicateRule",              "DuplicateRecordSet",     "DuplicateRecordItem",
+            "UserRecordAccess",           "AuthSession",            "LoginHistory",
+            "TaskStatus",                 "BusinessHours",          "FeedItem",
+            "CollaborationGroup",         "UserRole",               "GroupMember",
+            "Group",                      "Attachment",             "Note",
+            "EmailMessage",               "CaseComment",            "Solution",
+            "Contract",                   "Product2",               "Pricebook2",
+            "PricebookEntry",             "OpportunityLineItem",    "Quote",
+            "QuoteLineItem",              "PermissionSetLicense",   "EmailTemplate",
+            "Folder",                     "Document",               "CampaignMember",
+            "CampaignMemberStatus",       "EmailMessageRelation",   "OrgWideEmailAddress",
+            "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",
+            "ServiceTerritory",           "ServiceTerritoryMember", "ApexTrigger",
+            "CustomPermission",           "FlowDefinitionView",     "FlowVersionView",
+            "ApexEmailNotification",      "Network",                "Topic",
+            "OmniProcess",                "AppMenuItem",            "LeadStatus",
+            "UserPreference",             "UserLogin",              "LoginIp",
+            "LeadHistory",                "AccountHistory",         "EventBusSubscriber",
+            "BatchApexErrorEvent",        "AsyncOperationEvent",    "AsyncOperationStatus",
+        };
+        for (known_types) |kt| {
+            if (std.ascii.eqlIgnoreCase(from_type, kt)) return true;
+        }
+        return std.mem.endsWith(u8, from_type, "__c") or
+            std.mem.endsWith(u8, from_type, "__e") or
+            std.mem.endsWith(u8, from_type, "__mdt") or
+            std.mem.endsWith(u8, from_type, "__b") or
+            std.mem.endsWith(u8, from_type, "__Share") or
+            std.mem.endsWith(u8, from_type, "__History") or
+            std.mem.endsWith(u8, from_type, "__ChangeEvent");
+    }
+
+    fn soql_throw_if_unknown_type(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0) return;
+        if (self.store.get(from_type) != null) return;
+        if (soql_is_known_sobject_type(from_type)) return;
+        if (try self.generate_metadata_stub(from_type, soql, current_env)) |_| return;
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.QueryException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type}) });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn soql_apply_sub_query(
+        self: *Evaluator,
+        soql: []const u8,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const sub_info = extract_sub_query(soql) orelse return;
+        const rel_name = sub_info.relationship;
+        const child_type = self.resolve_child_type(from_type, rel_name);
+        for (records.items) |*rec| {
+            if (rec.* != .sobject) continue;
+            const parent_id = rec.sobject.id orelse continue;
+            var child_records: std.ArrayListUnmanaged(Value) = .empty;
+            if (child_type) |ct| {
+                try self.soql_collect_sub_query_children(ct, from_type, rel_name, parent_id, &child_records);
+                try self.apply_parent_field_lookups(sub_info.query, ct, &child_records);
+                try self.resolve_formula_fields(sub_info.query, &child_records);
+            }
+            const child_list = try self.arena.create(types.ListValue);
+            child_list.* = .{ .items = child_records };
+            try rec.sobject.fields.put(self.arena, rel_name, Value{ .list = child_list });
+        }
+    }
+
+    fn soql_collect_sub_query_children(
+        self: *Evaluator,
+        child_type: []const u8,
+        from_type: []const u8,
+        rel_name: []const u8,
+        parent_id: []const u8,
+        child_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        var child_iter = self.store.iterator();
+        while (child_iter.next()) |child_entry| {
+            if (!std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, child_type)) continue;
+            const fk_field = self.resolve_foreign_key(child_type, from_type, rel_name);
+            for (child_entry.value_ptr.items) |child_rec| {
+                if (child_rec != .sobject) continue;
+                const fk_val = utils.sobject_get(&child_rec.sobject.fields, fk_field) orelse continue;
+                if (fk_val != .string) continue;
+                if (!std.ascii.eqlIgnoreCase(fk_val.string, parent_id)) continue;
+                try child_records.append(self.arena, child_rec);
+            }
+            break;
+        }
+    }
+
+    fn soql_reorder_by_in_bind(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         // When a query filters by `Field IN :bindList`, preserve the bind order
         // for the matching records unless the query specifies ORDER BY.
-        if (extract_order_by_field(soql) == null) {
-            if (self.extract_where_in_bind_info(soql)) |bind_info| {
-                if (self.lookup_bind_value(current_env, bind_info.bind_name)) |bind_val| {
-                    try self.reorder_records_by_in_bind(&records, bind_info.field_name, bind_val);
-                }
+        if (extract_order_by_field(soql) != null) return;
+        const bind_info = self.extract_where_in_bind_info(soql) orelse return;
+        const bind_val = self.lookup_bind_value(current_env, bind_info.bind_name) orelse return;
+        try self.reorder_records_by_in_bind(records, bind_info.field_name, bind_val);
+    }
+
+    fn soql_apply_order_by(
+        self: *Evaluator,
+        soql: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) void {
+        const order_info = extract_order_by_field(soql) orelse return;
+        const field_name = order_info.field;
+        const descending = order_info.desc;
+        const items = records.items;
+        var ii: usize = 1;
+        while (ii < items.len) : (ii += 1) {
+            var jj = ii;
+            while (jj > 0) {
+                const cmp_result = self.compare_by_field(items[jj - 1], items[jj], field_name);
+                const should_swap = if (descending) cmp_result < 0 else cmp_result > 0;
+                if (should_swap) {
+                    const tmp = items[jj - 1];
+                    items[jj - 1] = items[jj];
+                    items[jj] = tmp;
+                    jj -= 1;
+                } else break;
             }
         }
+    }
 
-        // Apply ORDER BY
-        if (extract_order_by_field(soql)) |order_info| {
-            const field_name = order_info.field;
-            const descending = order_info.desc;
-            // Simple insertion sort by field value
-            const items = records.items;
-            var ii: usize = 1;
-            while (ii < items.len) : (ii += 1) {
-                var jj = ii;
-                while (jj > 0) {
-                    const cmp_result = self.compare_by_field(items[jj - 1], items[jj], field_name);
-                    const should_swap = if (descending) cmp_result < 0 else cmp_result > 0;
-                    if (should_swap) {
-                        const tmp = items[jj - 1];
-                        items[jj - 1] = items[jj];
-                        items[jj] = tmp;
-                        jj -= 1;
-                    } else break;
-                }
-            }
-        }
-
-        // Apply OFFSET (including :bindVar)
+    fn soql_apply_offset(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) void {
+        _ = self;
         var offset_val_opt = extract_offset(soql);
         if (offset_val_opt == null) {
             if (extract_offset_bind_var(soql)) |bind_name| {
@@ -5162,24 +5244,29 @@ pub const Evaluator = struct {
                 }
             }
         }
-        if (offset_val_opt) |offset_val| {
-            if (offset_val < records.items.len) {
-                const remaining = records.items.len - offset_val;
-                std.mem.copyForwards(
-                    Value,
-                    records.items[0..remaining],
-                    records.items[offset_val..records.items.len],
-                );
-                records.items.len = remaining;
-            } else {
-                records.items.len = 0;
-            }
+        const offset_val = offset_val_opt orelse return;
+        if (offset_val < records.items.len) {
+            const remaining = records.items.len - offset_val;
+            std.mem.copyForwards(
+                Value,
+                records.items[0..remaining],
+                records.items[offset_val..records.items.len],
+            );
+            records.items.len = remaining;
+        } else {
+            records.items.len = 0;
         }
+    }
 
-        // Apply LIMIT (including :bindVar)
+    fn soql_apply_limit(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) void {
+        _ = self;
         var limit_val_opt = extract_limit(soql);
         if (limit_val_opt == null) {
-            // Check for LIMIT :bindVar
             if (extract_limit_bind_var(soql)) |bind_name| {
                 if (current_env.get(bind_name)) |bv| {
                     if (bv == .integer and bv.integer > 0) {
@@ -5188,15 +5275,10 @@ pub const Evaluator = struct {
                 }
             }
         }
-        if (limit_val_opt) |limit_val| {
-            if (records.items.len > limit_val) {
-                records.items.len = limit_val;
-            }
+        const limit_val = limit_val_opt orelse return;
+        if (records.items.len > limit_val) {
+            records.items.len = limit_val;
         }
-
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{ .items = records };
-        return Value{ .list = list };
     }
 
     fn strip_soql_line_comments(self: *Evaluator, raw: []const u8) ![]const u8 {
