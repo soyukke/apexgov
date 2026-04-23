@@ -929,217 +929,268 @@ fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args
     return Value.null_val;
 }
 
-fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) anyerror!?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
-        if (args.len > 0) {
-            if (args[0] == .object and
-                (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
-                    std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
-            {
-                return ctx.throw_exception("System.JSONException", "Apex Type unsupported in JSON: Schema.SObjectField");
-            }
-            return Value{ .string = try utils.to_json(args[0], ctx.arena) };
-        }
-        return Value{ .string = "{}" };
+        return json_serialize(ctx, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "createGenerator")) {
-        const generator = try ctx.arena.create(types.ObjectInstance);
-        generator.* = .{ .class_name = "JSONGenerator" };
-        try generator.fields.put(ctx.arena, "__output__", Value{ .string = "" });
-        return Value{ .object = generator };
+        return try json_create_generator(ctx);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "deserializeUntyped")) {
-        if (args.len > 0 and args[0] == .string) {
-            const json_str = args[0].string;
-            const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
-            if (trimmed.len > 0 and trimmed[0] == '[') {
-                if (trimmed[trimmed.len - 1] != ']') {
-                    return ctx.throw_exception("System.JSONException", "Unexpected end-of-input while parsing JSON");
-                }
-                const list = try ctx.arena.create(types.ListValue);
-                list.* = .{};
-                var arr_depth: i32 = 0;
-                var elem_start: usize = 0;
-                var ai: usize = 1;
-                while (ai < trimmed.len) : (ai += 1) {
-                    if (trimmed[ai] == '"') {
-                        ai += 1;
-                        while (ai < trimmed.len and trimmed[ai] != '"') : (ai += 1) {
-                            if (trimmed[ai] == '\\') ai += 1;
-                        }
-                    } else if (trimmed[ai] == '{' or trimmed[ai] == '[') {
-                        if (arr_depth == 0) elem_start = ai;
-                        arr_depth += 1;
-                    } else if (trimmed[ai] == '}' or trimmed[ai] == ']') {
-                        arr_depth -= 1;
-                        if (arr_depth == 0 and trimmed[ai] == '}') {
-                            const elem_json = trimmed[elem_start .. ai + 1];
-                            const nested_args = [_]Value{Value{ .string = elem_json }};
-                            if (try dispatch_static_json(ctx, "deserializeUntyped", &nested_args)) |nested_val| {
-                                try list.items.append(ctx.arena, nested_val);
-                            }
-                        } else if (arr_depth < 0) break;
-                    } else if (trimmed[ai] == ',' and arr_depth == 0) {
-                        const elem = std.mem.trim(u8, trimmed[elem_start..ai], " \t\r\n,");
-                        if (elem.len > 0 and elem[0] == '"') {
-                            if (elem.len >= 2 and elem[elem.len - 1] == '"') {
-                                try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
-                            }
-                        }
-                        elem_start = ai + 1;
-                    }
-                }
-                return Value{ .list = list };
-            }
-            if (trimmed.len >= 2 and trimmed[0] == '"') {
-                if (find_json_string_end_alloc(trimmed, 1, ctx.arena)) |res| {
-                    return Value{ .string = res.value };
-                } else if (trimmed[trimmed.len - 1] == '"') {
-                    return Value{ .string = trimmed[1 .. trimmed.len - 1] };
-                }
-            }
-            if (std.fmt.parseInt(i64, trimmed, 10)) |num| return Value{ .integer = num } else |_| {}
-            if (std.ascii.eqlIgnoreCase(trimmed, "true")) return Value{ .boolean = true };
-            if (std.ascii.eqlIgnoreCase(trimmed, "false")) return Value{ .boolean = false };
-            if (std.ascii.eqlIgnoreCase(trimmed, "null")) return Value.null_val;
-            if (trimmed.len == 0 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
-                return ctx.throw_exception("System.JSONException", "Malformed JSON");
-            }
-            const map = try ctx.arena.create(types.MapValue);
-            map.* = .{};
-            var pos: usize = 0;
-            while (pos < json_str.len) {
-                const key_start_opt = std.mem.indexOfPos(u8, json_str, pos, "\"");
-                if (key_start_opt) |key_start| {
-                    const key_end_opt = std.mem.indexOfPos(u8, json_str, key_start + 1, "\"");
-                    if (key_end_opt) |key_end| {
-                        const key = json_str[key_start + 1 .. key_end];
-                        const colon_opt = std.mem.indexOfPos(u8, json_str, key_end + 1, ":");
-                        if (colon_opt) |colon_pos| {
-                            var val_start = colon_pos + 1;
-                            while (val_start < json_str.len and (json_str[val_start] == ' ' or json_str[val_start] == '\t' or json_str[val_start] == '\n' or json_str[val_start] == '\r')) val_start += 1;
-                            if (val_start < json_str.len) {
-                                if (json_str[val_start] == '"') {
-                                    if (find_json_string_end_alloc(json_str, val_start + 1, ctx.arena)) |res| {
-                                        try map.entries.put(ctx.arena, key, Value{ .string = res.value });
-                                        pos = res.end + 1;
-                                        continue;
-                                    } else if (std.mem.indexOfPos(u8, json_str, val_start + 1, "\"")) |val_end| {
-                                        try map.entries.put(ctx.arena, key, Value{ .string = json_str[val_start + 1 .. val_end] });
-                                        pos = val_end + 1;
-                                        continue;
-                                    }
-                                } else if (json_str[val_start] == '[') {
-                                    var arr_depth2: i32 = 1;
-                                    var arr_pos: usize = val_start + 1;
-                                    while (arr_pos < json_str.len and arr_depth2 > 0) : (arr_pos += 1) {
-                                        if (json_str[arr_pos] == '[') arr_depth2 += 1;
-                                        if (json_str[arr_pos] == ']') arr_depth2 -= 1;
-                                        if (json_str[arr_pos] == '"') {
-                                            arr_pos += 1;
-                                            while (arr_pos < json_str.len and json_str[arr_pos] != '"') : (arr_pos += 1) {
-                                                if (json_str[arr_pos] == '\\') arr_pos += 1;
-                                            }
-                                        }
-                                    }
-                                    const list = try ctx.arena.create(types.ListValue);
-                                    list.* = .{};
-                                    const arr_content = json_str[val_start + 1 .. if (arr_pos > 0) arr_pos - 1 else val_start + 1];
-                                    // Split array content by top-level commas, honouring strings
-                                    // and nested object/array depth. Then dispatch each element
-                                    // through deserializeUntyped so primitives (strings, numbers,
-                                    // booleans, null) and nested objects/arrays all round-trip.
-                                    var seg_start: usize = 0;
-                                    var seg_depth: i32 = 0;
-                                    var ei: usize = 0;
-                                    while (ei < arr_content.len) : (ei += 1) {
-                                        const ch = arr_content[ei];
-                                        if (ch == '"') {
-                                            ei += 1;
-                                            while (ei < arr_content.len and arr_content[ei] != '"') : (ei += 1) {
-                                                if (arr_content[ei] == '\\') ei += 1;
-                                            }
-                                        } else if (ch == '{' or ch == '[') {
-                                            seg_depth += 1;
-                                        } else if (ch == '}' or ch == ']') {
-                                            seg_depth -= 1;
-                                        } else if (ch == ',' and seg_depth == 0) {
-                                            const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..ei], " \t\r\n");
-                                            if (seg_trimmed.len > 0) {
-                                                const seg_args = [_]Value{Value{ .string = seg_trimmed }};
-                                                if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
-                                                    try list.items.append(ctx.arena, v);
-                                                }
-                                            }
-                                            seg_start = ei + 1;
-                                        }
-                                    }
-                                    if (seg_start < arr_content.len) {
-                                        const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..], " \t\r\n");
-                                        if (seg_trimmed.len > 0) {
-                                            const seg_args = [_]Value{Value{ .string = seg_trimmed }};
-                                            if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
-                                                try list.items.append(ctx.arena, v);
-                                            }
-                                        }
-                                    }
-                                    try map.entries.put(ctx.arena, key, Value{ .list = list });
-                                    pos = arr_pos;
-                                    continue;
-                                } else if (json_str[val_start] == '{') {
-                                    // Nested object — find matching closing brace and recursively deserialize
-                                    var obj_depth: i32 = 1;
-                                    var obj_pos: usize = val_start + 1;
-                                    while (obj_pos < json_str.len and obj_depth > 0) : (obj_pos += 1) {
-                                        if (json_str[obj_pos] == '{') obj_depth += 1;
-                                        if (json_str[obj_pos] == '}') obj_depth -= 1;
-                                        if (json_str[obj_pos] == '"') {
-                                            obj_pos += 1;
-                                            while (obj_pos < json_str.len and json_str[obj_pos] != '"') : (obj_pos += 1) {
-                                                if (json_str[obj_pos] == '\\') obj_pos += 1;
-                                            }
-                                        }
-                                    }
-                                    const nested_json = json_str[val_start..obj_pos];
-                                    const nested_args2 = [_]Value{Value{ .string = nested_json }};
-                                    if (try dispatch_static_json(ctx, "deserializeUntyped", &nested_args2)) |nested_val| {
-                                        try map.entries.put(ctx.arena, key, nested_val);
-                                    }
-                                    pos = obj_pos;
-                                    continue;
-                                } else {
-                                    var val_end = val_start;
-                                    while (val_end < json_str.len and json_str[val_end] != ',' and json_str[val_end] != '}' and json_str[val_end] != '\n') val_end += 1;
-                                    const val_str = std.mem.trim(u8, json_str[val_start..val_end], " \t\r\n");
-                                    if (std.ascii.eqlIgnoreCase(val_str, "true")) {
-                                        try map.entries.put(ctx.arena, key, Value{ .boolean = true });
-                                    } else if (std.ascii.eqlIgnoreCase(val_str, "false")) {
-                                        try map.entries.put(ctx.arena, key, Value{ .boolean = false });
-                                    } else if (std.ascii.eqlIgnoreCase(val_str, "null")) {
-                                        try map.entries.put(ctx.arena, key, Value.null_val);
-                                    } else if (std.fmt.parseInt(i64, val_str, 10)) |num| {
-                                        try map.entries.put(ctx.arena, key, Value{ .integer = num });
-                                    } else |_| {
-                                        if (std.fmt.parseFloat(f64, val_str)) |fnum| {
-                                            try map.entries.put(ctx.arena, key, Value{ .double = fnum });
-                                        } else |_| {
-                                            try map.entries.put(ctx.arena, key, Value{ .string = val_str });
-                                        }
-                                    }
-                                    pos = val_end;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-                pos += 1;
-            }
-            return Value{ .map = map };
-        }
-        return Value.null_val;
+        return try json_deserialize_untyped(ctx, args);
     }
     return null;
+}
+
+fn json_serialize(ctx: *BuiltinContext, args: []const Value) anyerror!?Value {
+    if (args.len == 0) return Value{ .string = "{}" };
+    if (args[0] == .object and
+        (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+            std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
+    {
+        return ctx.throw_exception(
+            "System.JSONException",
+            "Apex Type unsupported in JSON: Schema.SObjectField",
+        );
+    }
+    return Value{ .string = try utils.to_json(args[0], ctx.arena) };
+}
+
+fn json_create_generator(ctx: *BuiltinContext) !Value {
+    const generator = try ctx.arena.create(types.ObjectInstance);
+    generator.* = .{ .class_name = "JSONGenerator" };
+    try generator.fields.put(ctx.arena, "__output__", Value{ .string = "" });
+    return Value{ .object = generator };
+}
+
+fn json_deserialize_untyped(ctx: *BuiltinContext, args: []const Value) anyerror!?Value {
+    if (args.len == 0 or args[0] != .string) return Value.null_val;
+    const json_str = args[0].string;
+    const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
+    if (trimmed.len > 0 and trimmed[0] == '[') {
+        if (trimmed[trimmed.len - 1] != ']') {
+            return ctx.throw_exception("System.JSONException", "Unexpected end-of-input while parsing JSON");
+        }
+        return try parse_json_untyped_array(ctx, trimmed);
+    }
+    if (try parse_json_untyped_scalar(ctx, trimmed)) |value| return value;
+    if (trimmed.len == 0 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
+        return ctx.throw_exception("System.JSONException", "Malformed JSON");
+    }
+    return try parse_json_untyped_object(ctx, json_str);
+}
+
+fn parse_json_untyped_scalar(ctx: *BuiltinContext, trimmed: []const u8) !?Value {
+    if (trimmed.len >= 2 and trimmed[0] == '"') {
+        if (find_json_string_end_alloc(trimmed, 1, ctx.arena)) |res| {
+            return Value{ .string = res.value };
+        } else if (trimmed[trimmed.len - 1] == '"') {
+            return Value{ .string = trimmed[1 .. trimmed.len - 1] };
+        }
+    }
+    if (std.fmt.parseInt(i64, trimmed, 10)) |num| return Value{ .integer = num } else |_| {}
+    if (std.ascii.eqlIgnoreCase(trimmed, "true")) return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(trimmed, "false")) return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(trimmed, "null")) return Value.null_val;
+    return null;
+}
+
+fn parse_json_untyped_array(ctx: *BuiltinContext, trimmed: []const u8) anyerror!Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    var arr_depth: i32 = 0;
+    var elem_start: usize = 0;
+    var ai: usize = 1;
+    while (ai < trimmed.len) : (ai += 1) {
+        if (trimmed[ai] == '"') {
+            skip_json_string(trimmed, &ai);
+        } else if (trimmed[ai] == '{' or trimmed[ai] == '[') {
+            if (arr_depth == 0) elem_start = ai;
+            arr_depth += 1;
+        } else if (trimmed[ai] == '}' or trimmed[ai] == ']') {
+            arr_depth -= 1;
+            if (arr_depth == 0 and trimmed[ai] == '}') {
+                try append_json_deserialized_segment(ctx, list, trimmed[elem_start .. ai + 1]);
+            } else if (arr_depth < 0) break;
+        } else if (trimmed[ai] == ',' and arr_depth == 0) {
+            const elem = std.mem.trim(u8, trimmed[elem_start..ai], " \t\r\n,");
+            if (elem.len > 0 and elem[0] == '"' and elem.len >= 2 and elem[elem.len - 1] == '"') {
+                try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
+            }
+            elem_start = ai + 1;
+        }
+    }
+    return Value{ .list = list };
+}
+
+const JsonObjectEntry = struct {
+    key: []const u8,
+    value_start: usize,
+};
+
+const JsonParsedValue = struct {
+    value: Value,
+    end: usize,
+};
+
+fn parse_json_untyped_object(ctx: *BuiltinContext, json_str: []const u8) anyerror!Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    var pos: usize = 0;
+    while (pos < json_str.len) {
+        const entry = find_json_object_entry(json_str, pos) orelse {
+            pos += 1;
+            continue;
+        };
+        if (entry.value_start >= json_str.len) {
+            pos += 1;
+            continue;
+        }
+        if (try parse_json_object_value(ctx, json_str, entry.value_start)) |parsed| {
+            try map.entries.put(ctx.arena, entry.key, parsed.value);
+            pos = parsed.end;
+            continue;
+        }
+        pos += 1;
+    }
+    return Value{ .map = map };
+}
+
+fn find_json_object_entry(json_str: []const u8, pos: usize) ?JsonObjectEntry {
+    const key_start = std.mem.indexOfPos(u8, json_str, pos, "\"") orelse return null;
+    const key_end = std.mem.indexOfPos(u8, json_str, key_start + 1, "\"") orelse return null;
+    const colon_pos = std.mem.indexOfPos(u8, json_str, key_end + 1, ":") orelse return null;
+    var value_start = colon_pos + 1;
+    while (value_start < json_str.len and is_json_whitespace(json_str[value_start])) value_start += 1;
+    return .{ .key = json_str[key_start + 1 .. key_end], .value_start = value_start };
+}
+
+fn parse_json_object_value(
+    ctx: *BuiltinContext,
+    json_str: []const u8,
+    value_start: usize,
+) anyerror!?JsonParsedValue {
+    return switch (json_str[value_start]) {
+        '"' => parse_json_string_value(ctx, json_str, value_start),
+        '[' => try parse_json_array_value(ctx, json_str, value_start),
+        '{' => try parse_json_nested_object_value(ctx, json_str, value_start),
+        else => try parse_json_primitive_value(json_str, value_start),
+    };
+}
+
+fn parse_json_string_value(ctx: *BuiltinContext, json_str: []const u8, value_start: usize) ?JsonParsedValue {
+    if (find_json_string_end_alloc(json_str, value_start + 1, ctx.arena)) |res| {
+        return .{ .value = Value{ .string = res.value }, .end = res.end + 1 };
+    }
+    if (std.mem.indexOfPos(u8, json_str, value_start + 1, "\"")) |value_end| {
+        return .{ .value = Value{ .string = json_str[value_start + 1 .. value_end] }, .end = value_end + 1 };
+    }
+    return null;
+}
+
+fn parse_json_array_value(ctx: *BuiltinContext, json_str: []const u8, value_start: usize) anyerror!JsonParsedValue {
+    const arr_pos = find_json_balanced_end(json_str, value_start, '[', ']');
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const arr_content = json_str[value_start + 1 .. if (arr_pos > 0) arr_pos - 1 else value_start + 1];
+    try append_json_array_segments(ctx, list, arr_content);
+    return .{ .value = Value{ .list = list }, .end = arr_pos };
+}
+
+fn append_json_array_segments(ctx: *BuiltinContext, list: *types.ListValue, arr_content: []const u8) anyerror!void {
+    var seg_start: usize = 0;
+    var seg_depth: i32 = 0;
+    var ei: usize = 0;
+    while (ei < arr_content.len) : (ei += 1) {
+        const ch = arr_content[ei];
+        if (ch == '"') {
+            skip_json_string(arr_content, &ei);
+        } else if (ch == '{' or ch == '[') {
+            seg_depth += 1;
+        } else if (ch == '}' or ch == ']') {
+            seg_depth -= 1;
+        } else if (ch == ',' and seg_depth == 0) {
+            try append_json_deserialized_segment(ctx, list, arr_content[seg_start..ei]);
+            seg_start = ei + 1;
+        }
+    }
+    if (seg_start < arr_content.len) {
+        try append_json_deserialized_segment(ctx, list, arr_content[seg_start..]);
+    }
+}
+
+fn append_json_deserialized_segment(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    raw_segment: []const u8,
+) anyerror!void {
+    const segment = std.mem.trim(u8, raw_segment, " \t\r\n");
+    if (segment.len == 0) return;
+    const seg_args = [_]Value{Value{ .string = segment }};
+    if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |value| {
+        try list.items.append(ctx.arena, value);
+    }
+}
+
+fn parse_json_nested_object_value(
+    ctx: *BuiltinContext,
+    json_str: []const u8,
+    value_start: usize,
+) anyerror!JsonParsedValue {
+    const obj_pos = find_json_balanced_end(json_str, value_start, '{', '}');
+    const nested_args = [_]Value{Value{ .string = json_str[value_start..obj_pos] }};
+    const value = if (try dispatch_static_json(ctx, "deserializeUntyped", &nested_args)) |nested|
+        nested
+    else
+        Value.null_val;
+    return .{ .value = value, .end = obj_pos };
+}
+
+fn parse_json_primitive_value(json_str: []const u8, value_start: usize) !JsonParsedValue {
+    var value_end = value_start;
+    while (value_end < json_str.len and
+        json_str[value_end] != ',' and
+        json_str[value_end] != '}' and
+        json_str[value_end] != '\n') value_end += 1;
+    const value_str = std.mem.trim(u8, json_str[value_start..value_end], " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(value_str, "true")) {
+        return .{ .value = Value{ .boolean = true }, .end = value_end };
+    }
+    if (std.ascii.eqlIgnoreCase(value_str, "false")) {
+        return .{ .value = Value{ .boolean = false }, .end = value_end };
+    }
+    if (std.ascii.eqlIgnoreCase(value_str, "null")) {
+        return .{ .value = Value.null_val, .end = value_end };
+    }
+    if (std.fmt.parseInt(i64, value_str, 10)) |num| {
+        return .{ .value = Value{ .integer = num }, .end = value_end };
+    } else |_| {}
+    if (std.fmt.parseFloat(f64, value_str)) |num| {
+        return .{ .value = Value{ .double = num }, .end = value_end };
+    } else |_| {}
+    return .{ .value = Value{ .string = value_str }, .end = value_end };
+}
+
+fn find_json_balanced_end(json_str: []const u8, value_start: usize, open: u8, close: u8) usize {
+    var depth: i32 = 1;
+    var pos = value_start + 1;
+    while (pos < json_str.len and depth > 0) : (pos += 1) {
+        if (json_str[pos] == open) depth += 1;
+        if (json_str[pos] == close) depth -= 1;
+        if (json_str[pos] == '"') skip_json_string(json_str, &pos);
+    }
+    return pos;
+}
+
+fn skip_json_string(json_str: []const u8, index: *usize) void {
+    index.* += 1;
+    while (index.* < json_str.len and json_str[index.*] != '"') : (index.* += 1) {
+        if (json_str[index.*] == '\\') index.* += 1;
+    }
+}
+
+fn is_json_whitespace(ch: u8) bool {
+    return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
 }
 
 fn ensure_object_list_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, field_name: []const u8) !*types.ListValue {
