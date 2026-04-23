@@ -14836,6 +14836,207 @@ pub const Evaluator = struct {
         return null;
     }
 
+    /// Known non-SObject classes that should produce ObjectInstance values.
+    /// Dispatches specialised constructors for SelectOption / VisualEditor.* /
+    /// ApexPages.Message / PageReference / RestRequest / RestResponse; falls
+    /// back to a generic "store args[0] as message" exception pattern for
+    /// any remaining types ending in "Exception".
+    fn try_new_known_non_sobject(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        const non_sobject_types = [_][]const u8{
+            "RestRequest",            "RestResponse",        "HttpRequest",                      "HttpResponse",
+            "Http",                   "PageReference",       "SelectOption",                     "Messaging.SingleEmailMessage",
+            "Messaging.InboundEmail", "QueryException",      "DmlException",                     "AuraHandledException",
+            "CalloutException",       "Database.DmlOptions", "DmlOptions",                       "ApexPages.Message",
+            "VisualEditor.DataRow",   "DataRow",             "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
+        };
+        var matched = false;
+        for (non_sobject_types) |nst| {
+            if (std.ascii.eqlIgnoreCase(type_name, nst)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) return null;
+
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = type_name };
+        if (std.ascii.eqlIgnoreCase(type_name, "SelectOption")) {
+            return try self.build_new_select_option(ne, current_env, instance);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DataRow") or
+            std.ascii.eqlIgnoreCase(type_name, "DataRow"))
+        {
+            return try self.build_new_visual_data_row(ne, current_env, instance);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DynamicPickListRows") or
+            std.ascii.eqlIgnoreCase(type_name, "DynamicPickListRows"))
+        {
+            const data_rows = try self.arena.create(types.ListValue);
+            data_rows.* = .{};
+            try instance.fields.put(self.arena, "dataRows", Value{ .list = data_rows });
+            return Value{ .object = instance };
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.Message")) {
+            return try self.build_new_apex_pages_message(ne, current_env, instance);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
+            return try self.build_new_page_reference(ne, current_env, instance);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
+            return try self.build_new_rest_request(instance);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
+            return try self.build_new_rest_response(instance);
+        }
+        if (ne.args.len > 0 and std.mem.endsWith(u8, type_name, "Exception")) {
+            var arg_copy = ne.args[0];
+            const arg_val = try self.eval_expr(&arg_copy, current_env);
+            // AuraHandledException always reports "Script-thrown exception" from getMessage().
+            if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
+                try instance.fields.put(
+                    self.arena,
+                    "message",
+                    Value{ .string = "Script-thrown exception" },
+                );
+            } else {
+                try instance.fields.put(self.arena, "message", arg_val);
+            }
+        }
+        return Value{ .object = instance };
+    }
+
+    fn build_new_select_option(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        if (ne.args.len < 2) return Value{ .object = instance };
+        var arg0_copy = ne.args[0];
+        var arg1_copy = ne.args[1];
+        const val = try self.eval_expr(&arg0_copy, current_env);
+        const label = try self.eval_expr(&arg1_copy, current_env);
+        const val_str = try utils.coerce_to_string(val, self.arena);
+        const label_str = try utils.coerce_to_string(label, self.arena);
+        try instance.fields.put(self.arena, "value", Value{ .string = val_str });
+        try instance.fields.put(self.arena, "label", Value{ .string = label_str });
+        if (ne.args.len >= 3) {
+            var arg2_copy = ne.args[2];
+            const disabled = try self.eval_expr(&arg2_copy, current_env);
+            try instance.fields.put(self.arena, "disabled", disabled);
+        } else {
+            try instance.fields.put(self.arena, "disabled", Value{ .boolean = false });
+        }
+        return Value{ .object = instance };
+    }
+
+    fn build_new_visual_data_row(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        if (ne.args.len < 2) return Value{ .object = instance };
+        var arg0_copy = ne.args[0];
+        var arg1_copy = ne.args[1];
+        const label = try self.eval_expr(&arg0_copy, current_env);
+        const value = try self.eval_expr(&arg1_copy, current_env);
+        try instance.fields.put(self.arena, "label", label);
+        try instance.fields.put(self.arena, "value", value);
+        return Value{ .object = instance };
+    }
+
+    fn build_new_apex_pages_message(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        const severity = if (ne.args.len >= 1) blk: {
+            var arg0_copy = ne.args[0];
+            const severity_val = try self.eval_expr(&arg0_copy, current_env);
+            break :blk try utils.coerce_to_string(severity_val, self.arena);
+        } else "ERROR";
+        const summary = if (ne.args.len >= 2) blk: {
+            var arg1_copy = ne.args[1];
+            const summary_val = try self.eval_expr(&arg1_copy, current_env);
+            break :blk try utils.coerce_to_string(summary_val, self.arena);
+        } else "";
+        const detail = if (ne.args.len >= 3) blk: {
+            var arg2_copy = ne.args[2];
+            const detail_val = try self.eval_expr(&arg2_copy, current_env);
+            break :blk try utils.coerce_to_string(detail_val, self.arena);
+        } else summary;
+        try instance.fields.put(self.arena, "severity", Value{ .string = severity });
+        try instance.fields.put(self.arena, "summary", Value{ .string = summary });
+        try instance.fields.put(self.arena, "detail", Value{ .string = detail });
+        try instance.fields.put(self.arena, "message", Value{ .string = summary });
+        return Value{ .object = instance };
+    }
+
+    fn build_new_page_reference(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        if (ne.args.len > 0) {
+            var arg0_copy = ne.args[0];
+            const url_val = try self.eval_expr(&arg0_copy, current_env);
+            if (url_val == .string) {
+                try instance.fields.put(self.arena, "url", url_val);
+            } else {
+                try instance.fields.put(
+                    self.arena,
+                    "url",
+                    Value{ .string = try utils.coerce_to_string(url_val, self.arena) },
+                );
+            }
+        } else {
+            try instance.fields.put(self.arena, "url", Value{ .string = "" });
+        }
+        const params = try self.arena.create(types.MapValue);
+        params.* = .{};
+        try instance.fields.put(self.arena, "parameters", Value{ .map = params });
+        return Value{ .object = instance };
+    }
+
+    fn build_new_rest_request(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        const params = try self.arena.create(types.MapValue);
+        params.* = .{};
+        try instance.fields.put(self.arena, "params", Value{ .map = params });
+        const headers = try self.arena.create(types.MapValue);
+        headers.* = .{};
+        try instance.fields.put(self.arena, "headers", Value{ .map = headers });
+        const blob = try self.arena.create(types.ObjectInstance);
+        blob.* = .{ .class_name = "Blob" };
+        try blob.fields.put(self.arena, "value", Value.null_val);
+        try instance.fields.put(self.arena, "requestBody", Value{ .object = blob });
+        return Value{ .object = instance };
+    }
+
+    fn build_new_rest_response(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+    ) !Value {
+        const blob = try self.arena.create(types.ObjectInstance);
+        blob.* = .{ .class_name = "Blob" };
+        try blob.fields.put(self.arena, "value", Value{ .string = "" });
+        try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
+        const headers = try self.arena.create(types.MapValue);
+        headers.* = .{};
+        try instance.fields.put(self.arena, "headers", Value{ .map = headers });
+        return Value{ .object = instance };
+    }
+
     fn eval_new_expr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
         const raw_type_name = ne.type_name.name;
         const is_platform_qualified = std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
@@ -14863,161 +15064,7 @@ pub const Evaluator = struct {
 
         if (try self.try_new_builtin_exception(ne, type_name, current_env)) |v| return v;
         if (try self.try_new_standard_controller(ne, type_name, current_env)) |v| return v;
-
-        // Known non-SObject types: create ObjectInstance instead
-        const non_sobject_types = [_][]const u8{
-            "RestRequest",            "RestResponse",        "HttpRequest",                      "HttpResponse",
-            "Http",                   "PageReference",       "SelectOption",                     "Messaging.SingleEmailMessage",
-            "Messaging.InboundEmail", "QueryException",      "DmlException",                     "AuraHandledException",
-            "CalloutException",       "Database.DmlOptions", "DmlOptions",                       "ApexPages.Message",
-            "VisualEditor.DataRow",   "DataRow",             "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
-        };
-        for (non_sobject_types) |nst| {
-            if (std.ascii.eqlIgnoreCase(type_name, nst)) {
-                const instance = try self.arena.create(types.ObjectInstance);
-                instance.* = .{ .class_name = type_name };
-
-                // SelectOption constructor: (value, label) or (value, label, disabled)
-                if (std.ascii.eqlIgnoreCase(type_name, "SelectOption")) {
-                    if (ne.args.len >= 2) {
-                        var arg0_copy = ne.args[0];
-                        var arg1_copy = ne.args[1];
-                        const val = try self.eval_expr(&arg0_copy, current_env);
-                        const label = try self.eval_expr(&arg1_copy, current_env);
-                        const val_str = try utils.coerce_to_string(val, self.arena);
-                        const label_str = try utils.coerce_to_string(label, self.arena);
-                        try instance.fields.put(self.arena, "value", Value{ .string = val_str });
-                        try instance.fields.put(self.arena, "label", Value{ .string = label_str });
-                        if (ne.args.len >= 3) {
-                            var arg2_copy = ne.args[2];
-                            const disabled = try self.eval_expr(&arg2_copy, current_env);
-                            try instance.fields.put(self.arena, "disabled", disabled);
-                        } else {
-                            try instance.fields.put(
-                                self.arena,
-                                "disabled",
-                                Value{ .boolean = false },
-                            );
-                        }
-                    }
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DataRow") or
-                    std.ascii.eqlIgnoreCase(type_name, "DataRow"))
-                {
-                    if (ne.args.len >= 2) {
-                        var arg0_copy = ne.args[0];
-                        var arg1_copy = ne.args[1];
-                        const label = try self.eval_expr(&arg0_copy, current_env);
-                        const value = try self.eval_expr(&arg1_copy, current_env);
-                        try instance.fields.put(self.arena, "label", label);
-                        try instance.fields.put(self.arena, "value", value);
-                    }
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DynamicPickListRows") or
-                    std.ascii.eqlIgnoreCase(type_name, "DynamicPickListRows"))
-                {
-                    const data_rows = try self.arena.create(types.ListValue);
-                    data_rows.* = .{};
-                    try instance.fields.put(self.arena, "dataRows", Value{ .list = data_rows });
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.Message")) {
-                    const severity = if (ne.args.len >= 1) blk: {
-                        var arg0_copy = ne.args[0];
-                        const severity_val = try self.eval_expr(&arg0_copy, current_env);
-                        break :blk try utils.coerce_to_string(severity_val, self.arena);
-                    } else "ERROR";
-                    const summary = if (ne.args.len >= 2) blk: {
-                        var arg1_copy = ne.args[1];
-                        const summary_val = try self.eval_expr(&arg1_copy, current_env);
-                        break :blk try utils.coerce_to_string(summary_val, self.arena);
-                    } else "";
-                    const detail = if (ne.args.len >= 3) blk: {
-                        var arg2_copy = ne.args[2];
-                        const detail_val = try self.eval_expr(&arg2_copy, current_env);
-                        break :blk try utils.coerce_to_string(detail_val, self.arena);
-                    } else summary;
-                    try instance.fields.put(self.arena, "severity", Value{ .string = severity });
-                    try instance.fields.put(self.arena, "summary", Value{ .string = summary });
-                    try instance.fields.put(self.arena, "detail", Value{ .string = detail });
-                    try instance.fields.put(self.arena, "message", Value{ .string = summary });
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
-                    if (ne.args.len > 0) {
-                        var arg0_copy = ne.args[0];
-                        const url_val = try self.eval_expr(&arg0_copy, current_env);
-                        if (url_val == .string) {
-                            try instance.fields.put(self.arena, "url", url_val);
-                        } else {
-                            try instance.fields.put(
-                                self.arena,
-                                "url",
-                                Value{ .string = try utils.coerce_to_string(url_val, self.arena) },
-                            );
-                        }
-                    } else {
-                        try instance.fields.put(self.arena, "url", Value{ .string = "" });
-                    }
-                    const params = try self.arena.create(types.MapValue);
-                    params.* = .{};
-                    try instance.fields.put(self.arena, "parameters", Value{ .map = params });
-                    return Value{ .object = instance };
-                }
-
-                // RestRequest: initialize params map
-                if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
-                    const params = try self.arena.create(types.MapValue);
-                    params.* = .{};
-                    try instance.fields.put(self.arena, "params", Value{ .map = params });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value.null_val);
-                    try instance.fields.put(self.arena, "requestBody", Value{ .object = blob });
-                    return Value{ .object = instance };
-                }
-                // RestResponse: initialize responseBody as Blob
-                if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
-                    try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
-                    return Value{ .object = instance };
-                }
-
-                // If args contain a message (exception pattern)
-                if (ne.args.len > 0) {
-                    var arg_copy = ne.args[0];
-                    const arg_val = try self.eval_expr(&arg_copy, current_env);
-                    if (std.mem.endsWith(u8, type_name, "Exception")) {
-                        // AuraHandledException always returns "Script-thrown exception" from
-                        // getMessage()
-                        if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
-                            try instance.fields.put(
-                                self.arena,
-                                "message",
-                                Value{ .string = "Script-thrown exception" },
-                            );
-                        } else {
-                            try instance.fields.put(self.arena, "message", arg_val);
-                        }
-                    }
-                }
-                return Value{ .object = instance };
-            }
-        }
+        if (try self.try_new_known_non_sobject(ne, type_name, current_env)) |v| return v;
 
         // SObject with named params: new Account(Name = 'Test', ...)
         // Strip "Schema." prefix for SObject type names (e.g. Schema.User → User)
