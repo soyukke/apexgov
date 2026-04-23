@@ -1934,119 +1934,123 @@ fn dispatch_static_schema(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getGlobalDescribe")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        const known_types = [_][]const u8{
-            "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
-            "Case",              "User",                    "Group",              "Solution",               "Campaign",
-            "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
-            "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
-            "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
-            "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
-            "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
-            "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
-            "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
-            "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
-            "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
-            "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
-            "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
-            "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
-        };
-        for (known_types) |obj_name| {
-            const sot = try ctx.arena.create(types.ObjectInstance);
-            sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-            // Store with original case — Map.get uses case-insensitive lookup in eval_map_method
-            try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
-        }
-        // Also add custom objects from store
-        {
-            var store_iter = ctx.eval.store.iterator();
-            while (store_iter.next()) |entry| {
-                if (!map.entries.contains(entry.key_ptr.*)) {
-                    const sot2 = try ctx.arena.create(types.ObjectInstance);
-                    sot2.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot2.fields.put(ctx.arena, "name", Value{ .string = entry.key_ptr.* });
-                    try map.entries.put(ctx.arena, entry.key_ptr.*, Value{ .object = sot2 });
-                }
-            }
-        }
-        // Also add all objects loaded from object-meta.xml, whether or not they have data yet.
-        {
-            var labels_iter = ctx.eval.object_labels.iterator();
-            while (labels_iter.next()) |entry| {
-                const key = entry.key_ptr.*;
-                if (!map.entries.contains(key)) {
-                    const sot3 = try ctx.arena.create(types.ObjectInstance);
-                    sot3.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot3.fields.put(ctx.arena, "name", Value{ .string = key });
-                    try map.entries.put(ctx.arena, key, Value{ .object = sot3 });
-                }
-            }
-        }
-        return Value{ .map = map };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
-        const known_types = [_][]const u8{
-            "account",         "contact",  "opportunity", "task",  "lead",            "case",           "user",
-            "group",           "solution", "campaign",    "event", "contentdocument", "contentversion", "flowdefinitionview",
-            "flowversionview",
-        };
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        const names: []const Value = if (args.len > 0 and args[0] == .list)
-            args[0].list.items.items
-        else if (args.len > 0 and args[0] == .string)
-            (&[_]Value{args[0]})[0..]
-        else
-            (&[_]Value{})[0..];
-        for (names) |item| {
-            const obj_name = if (item == .string) item.string else "Object";
-            const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
-            var found = false;
-            for (known_types) |kt| {
-                if (std.mem.eql(u8, lower, kt)) {
-                    found = true;
-                    break;
-                }
-            }
-            const has_custom_suffix = std.mem.endsWith(u8, obj_name, "__c") or
-                std.mem.endsWith(u8, obj_name, "__e") or
-                std.mem.endsWith(u8, obj_name, "__mdt") or
-                std.mem.endsWith(u8, obj_name, "__b");
-            if (!found and has_custom_suffix) {
-                // Custom SObject types must have a registered object-meta.xml in the fixture.
-                // Matching is case-insensitive on the type name key.
-                var it = ctx.eval.object_labels.iterator();
-                while (it.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if (!found) {
-                return ctx.throw_exception(
-                    "System.InvalidParameterValueException",
-                    try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}),
-                );
-            }
-            const desc = try create_describe_result(ctx, obj_name);
-            try list.items.append(ctx.arena, desc);
-        }
-        return Value{ .list = list };
-    }
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getGlobalDescribe"))
+        return try schema_build_global_describe_map(ctx);
+    if (ci.eqlIgnoreCase(method_name, "describeSObjects"))
+        return try schema_describe_sobjects(ctx, args);
     // Minimal Schema.describeTabs() stub: return an empty list so utility
     // code (e.g. ActionPlansV4's SectionHeader controller) that iterates
     // `for (DescribeTabSetResult tsr : Schema.describeTabs())` falls through
     // to its default-icon branch instead of NPE-ing on a null return.
-    if (std.ascii.eqlIgnoreCase(method_name, "describeTabs")) {
+    if (ci.eqlIgnoreCase(method_name, "describeTabs")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         return Value{ .list = list };
     }
     return Value.null_val;
+}
+
+fn schema_build_global_describe_map(ctx: *BuiltinContext) !Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    const known_types = [_][]const u8{
+        "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
+        "Case",              "User",                    "Group",              "Solution",               "Campaign",
+        "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
+        "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
+        "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
+        "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
+        "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
+        "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
+        "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
+        "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
+        "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
+        "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
+        "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
+        "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
+    };
+    for (known_types) |obj_name| {
+        try schema_put_sobject_type(ctx, map, obj_name);
+    }
+    // Also add custom objects from store
+    var store_iter = ctx.eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        if (!map.entries.contains(entry.key_ptr.*)) {
+            try schema_put_sobject_type(ctx, map, entry.key_ptr.*);
+        }
+    }
+    // Also add all objects loaded from object-meta.xml, whether or not they have data yet.
+    var labels_iter = ctx.eval.object_labels.iterator();
+    while (labels_iter.next()) |entry| {
+        if (!map.entries.contains(entry.key_ptr.*)) {
+            try schema_put_sobject_type(ctx, map, entry.key_ptr.*);
+        }
+    }
+    return Value{ .map = map };
+}
+
+fn schema_put_sobject_type(
+    ctx: *BuiltinContext,
+    map: *types.MapValue,
+    obj_name: []const u8,
+) !void {
+    const sot = try ctx.arena.create(types.ObjectInstance);
+    sot.* = .{ .class_name = "Schema.SObjectType" };
+    try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
+    try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
+}
+
+fn schema_describe_sobjects(ctx: *BuiltinContext, args: []const Value) !?Value {
+    const known_types = [_][]const u8{
+        "account",        "contact",            "opportunity",     "task",
+        "lead",           "case",               "user",            "group",
+        "solution",       "campaign",           "event",           "contentdocument",
+        "contentversion", "flowdefinitionview", "flowversionview",
+    };
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const names: []const Value = if (args.len > 0 and args[0] == .list)
+        args[0].list.items.items
+    else if (args.len > 0 and args[0] == .string)
+        (&[_]Value{args[0]})[0..]
+    else
+        (&[_]Value{})[0..];
+    for (names) |item| {
+        const obj_name = if (item == .string) item.string else "Object";
+        if (!try schema_describe_is_known_name(ctx, obj_name, &known_types)) {
+            return ctx.throw_exception(
+                "System.InvalidParameterValueException",
+                try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}),
+            );
+        }
+        const desc = try create_describe_result(ctx, obj_name);
+        try list.items.append(ctx.arena, desc);
+    }
+    return Value{ .list = list };
+}
+
+fn schema_describe_is_known_name(
+    ctx: *BuiltinContext,
+    obj_name: []const u8,
+    known_types: []const []const u8,
+) !bool {
+    const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
+    for (known_types) |kt| {
+        if (std.mem.eql(u8, lower, kt)) return true;
+    }
+    const has_custom_suffix = std.mem.endsWith(u8, obj_name, "__c") or
+        std.mem.endsWith(u8, obj_name, "__e") or
+        std.mem.endsWith(u8, obj_name, "__mdt") or
+        std.mem.endsWith(u8, obj_name, "__b");
+    if (!has_custom_suffix) return false;
+    // Custom SObject types must have a registered object-meta.xml in the fixture.
+    // Matching is case-insensitive on the type name key.
+    var it = ctx.eval.object_labels.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) return true;
+    }
+    return false;
 }
 
 fn dispatch_static_security(
