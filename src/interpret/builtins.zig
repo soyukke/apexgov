@@ -7867,6 +7867,59 @@ test "String.valueOf converts integer" {
 /// keywords and extracting capture groups.
 /// Handle DataWeave pluralize script: maps singular words to plural
 fn handle_pluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
+    const input_str = pluralize_extract_input_str(args);
+    var words: std.ArrayListUnmanaged([]const u8) = .empty;
+    try pluralize_parse_word_array(ctx.arena, input_str, &words);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(ctx.arena, "[");
+    var first = true;
+    for (words.items) |word| {
+        if (!first) try buf.appendSlice(ctx.arena, ", ");
+        first = false;
+        const plural = try pluralize_word(ctx.arena, word);
+        try buf.appendSlice(ctx.arena, "{\"");
+        try buf.appendSlice(ctx.arena, word);
+        try buf.appendSlice(ctx.arena, "\": \"");
+        try buf.appendSlice(ctx.arena, plural);
+        try buf.appendSlice(ctx.arena, "\"}");
+    }
+    try buf.appendSlice(ctx.arena, "]");
+    return buf.items;
+}
+
+fn pluralize_extract_input_str(args: []const Value) []const u8 {
+    // args[0] is a Map with 'inputs' key containing the JSON string
+    if (args.len == 0) return "[]";
+    if (args[0] == .object) {
+        if (args[0].object.fields.get("inputs")) |inputs| {
+            if (inputs == .string) return inputs.string;
+        }
+    } else if (args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "inputs") and v == .string) return v.string;
+        }
+    }
+    return "[]";
+}
+
+fn pluralize_parse_word_array(
+    arena: std.mem.Allocator,
+    input_str: []const u8,
+    words: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    // Simple JSON array parser: [ "word1", "word2", ... ]
+    var pi: usize = 0;
+    while (pi < input_str.len) : (pi += 1) {
+        if (input_str[pi] != '"') continue;
+        const start = pi + 1;
+        pi += 1;
+        while (pi < input_str.len and input_str[pi] != '"') pi += 1;
+        if (pi > start) try words.append(arena, input_str[start..pi]);
+    }
+}
+
+fn pluralize_word(arena: std.mem.Allocator, word: []const u8) ![]const u8 {
     // Common English pluralization rules
     const mappings = [_]struct { singular: []const u8, plural: []const u8 }{
         .{ .singular = "box", .plural = "boxes" },
@@ -7880,72 +7933,16 @@ fn handle_pluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
         .{ .singular = "mouse", .plural = "mice" },
         .{ .singular = "foot", .plural = "feet" },
     };
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.appendSlice(ctx.arena, "[");
-    // Extract input words from the args
-    // args[0] is a Map with 'inputs' key containing the JSON string
-    var input_str: []const u8 = "[]";
-    if (args.len > 0 and args[0] == .object) {
-        if (args[0].object.fields.get("inputs")) |inputs| {
-            if (inputs == .string) input_str = inputs.string;
-        }
-    } else if (args.len > 0 and args[0] == .map) {
-        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, "inputs") and v == .string) {
-                input_str = v.string;
-                break;
-            }
-        }
+    for (mappings) |m| {
+        if (std.ascii.eqlIgnoreCase(word, m.singular)) return m.plural;
     }
-
-    // Parse the JSON array of singular words
-    var words: std.ArrayListUnmanaged([]const u8) = .empty;
-    // Simple JSON array parser: [ "word1", "word2", ... ]
-    var pi: usize = 0;
-    while (pi < input_str.len) : (pi += 1) {
-        if (input_str[pi] == '"') {
-            const start = pi + 1;
-            pi += 1;
-            while (pi < input_str.len and input_str[pi] != '"') pi += 1;
-            if (pi > start) {
-                try words.append(ctx.arena, input_str[start..pi]);
-            }
-        }
+    // If not in known list, apply basic rules
+    if (std.mem.endsWith(u8, word, "s") or std.mem.endsWith(u8, word, "x") or
+        std.mem.endsWith(u8, word, "ch") or std.mem.endsWith(u8, word, "sh"))
+    {
+        return try std.fmt.allocPrint(arena, "{s}es", .{word});
     }
-
-    var first = true;
-    for (words.items) |word| {
-        if (!first) try buf.appendSlice(ctx.arena, ", ");
-        first = false;
-        // Find plural form
-        var plural: []const u8 = word;
-        var found_mapping = false;
-        for (mappings) |m| {
-            if (std.ascii.eqlIgnoreCase(word, m.singular)) {
-                plural = m.plural;
-                found_mapping = true;
-                break;
-            }
-        }
-        // If not in known list, apply basic rules
-        if (!found_mapping) {
-            if (std.mem.endsWith(u8, word, "s") or std.mem.endsWith(u8, word, "x") or
-                std.mem.endsWith(u8, word, "ch") or std.mem.endsWith(u8, word, "sh"))
-            {
-                plural = try std.fmt.allocPrint(ctx.arena, "{s}es", .{word});
-            } else {
-                plural = try std.fmt.allocPrint(ctx.arena, "{s}s", .{word});
-            }
-        }
-        try buf.appendSlice(ctx.arena, "{\"");
-        try buf.appendSlice(ctx.arena, word);
-        try buf.appendSlice(ctx.arena, "\": \"");
-        try buf.appendSlice(ctx.arena, plural);
-        try buf.appendSlice(ctx.arena, "\"}");
-    }
-    try buf.appendSlice(ctx.arena, "]");
-    return buf.items;
+    return try std.fmt.allocPrint(arena, "{s}s", .{word});
 }
 
 /// Handle DataWeave reserved keyword escaping
