@@ -9223,62 +9223,17 @@ pub const Evaluator = struct {
     }
 
     fn eval_method_call(self: *Evaluator, mc: *ast.MethodCallExpr, current_env: *Env) anyerror!Value {
-        // Set call-site line for stack trace generation, and update parent frame's line
         if (mc.loc.line > 0) {
             self.current_call_line = mc.loc.line;
             if (self.call_stack.items.len > 0)
                 self.call_stack.items[self.call_stack.items.len - 1].line = mc.loc.line;
         }
 
-        // Apex platform magic: `record.FieldName.addError(msg)` is sugar for
-        // `record.addError(FieldName, msg)` — it attaches an error to the field
-        // on the record rather than dereferencing the field's value. Detect the
-        // pattern before evaluating the receiver so we don't NPE on null field
-        // values.
-        if (std.ascii.eqlIgnoreCase(mc.method, "addError") and
-            mc.args.len == 1 and
-            mc.object.* == .field_access)
-        {
-            const fa = mc.object.field_access;
-            const receiver_val = self.eval_expr(fa.object, current_env) catch Value.null_val;
-            if (receiver_val == .sobject) {
-                const msg_val = try self.eval_expr(&mc.args[0], current_env);
-                const msg_str: []const u8 = switch (msg_val) {
-                    .string => |s| s,
-                    else => try utils.coerce_to_string(msg_val, self.arena),
-                };
-                const err_obj = try self.arena.create(types.ObjectInstance);
-                err_obj.* = .{ .class_name = "Database.Error" };
-                try err_obj.fields.put(self.arena, "message", Value{ .string = msg_str });
-                try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
-                try err_obj.fields.put(self.arena, "field", Value{ .string = fa.field });
-                const fields_list = try self.arena.create(types.ListValue);
-                fields_list.* = .{};
-                try fields_list.items.append(self.arena, Value{ .string = fa.field });
-                try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+        if (try self.eval_field_add_error_sugar_method_call(mc, current_env)) |result| return result;
 
-                var errors_list = if (utils.sobject_get(&receiver_val.sobject.fields, "errors")) |existing|
-                    if (existing == .list) existing.list else blk: {
-                        const lst = try self.arena.create(types.ListValue);
-                        lst.* = .{};
-                        break :blk lst;
-                    }
-                else blk: {
-                    const lst = try self.arena.create(types.ListValue);
-                    lst.* = .{};
-                    break :blk lst;
-                };
-                try errors_list.items.append(self.arena, Value{ .object = err_obj });
-                try utils.sobject_put(&receiver_val.sobject.fields, self.arena, "errors", Value{ .list = errors_list });
-                return Value.void_val;
-            }
-        }
-
-        // Null-safe operator (?.) - if object is null, return null
         if (mc.null_safe) {
             const obj_val = self.eval_expr(mc.object, current_env) catch |err| {
                 if (err == error.ApexException and self.pending_exception != null) {
-                    // Check if it's a NullPointerException
                     if (self.pending_exception.? == .object) {
                         const class_name = self.pending_exception.?.object.class_name;
                         if (std.ascii.indexOfIgnoreCase(class_name, "NullPointer") != null) {
@@ -9298,579 +9253,758 @@ pub const Evaluator = struct {
             var arg_value = try self.eval_expr(arg, current_env);
             arg_value = try self.maybe_coerce_schema_expr_value(arg, arg_value);
             try args.append(self.arena, arg_value);
-            // Extract cast and declared-type hints for overload resolution.
-            const hint = self.extract_expr_type_hint(arg, current_env);
-            try arg_type_hints.append(self.arena, hint);
+            try arg_type_hints.append(self.arena, self.extract_expr_type_hint(arg, current_env));
         }
-        // Set cast type hints for method overload resolution
         const prev_hints = self.cast_type_hints;
         self.cast_type_hints = arg_type_hints.items;
         defer self.cast_type_hints = prev_hints;
 
-        if (mc.object.* == .field_access) {
-            const search_fa = mc.object.field_access;
-            if (search_fa.object.* == .identifier and
-                std.ascii.eqlIgnoreCase(search_fa.object.identifier.name, "System") and
-                std.ascii.eqlIgnoreCase(search_fa.field, "Search") and
-                std.ascii.eqlIgnoreCase(mc.method, "query"))
-            {
-                if (args.items.len > 0 and args.items[0] == .string) {
-                    return self.execute_sosl(args.items[0].string);
-                }
-                const outer = try self.arena.create(types.ListValue);
-                outer.* = .{};
-                return Value{ .list = outer };
-            }
+        if (try self.eval_system_search_method_call(mc, args.items)) |result| return result;
+        if (try self.eval_super_method_call(mc, current_env, args.items)) |result| return result;
+        if (try self.eval_identifier_method_call(mc, current_env, args.items)) |result| return result;
+        if (try self.eval_field_access_method_call(mc, current_env, args.items)) |result| return result;
+
+        const obj = try self.eval_expr(mc.object, current_env);
+        return self.eval_instance_method(obj, mc.method, args.items, current_env);
+    }
+
+    fn eval_field_add_error_sugar_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(mc.method, "addError") and
+            mc.args.len == 1 and
+            mc.object.* == .field_access))
+        {
+            return null;
         }
 
-        if (mc.object.* == .super_expr) {
-            if (current_env.get("this")) |this_val| {
-                if (this_val == .object) {
-                    if (self.current_class) |current_class_name| {
-                        if (self.find_class(current_class_name)) |current_decl| {
-                            if (current_decl.super_class) |sc| {
-                                if (self.find_class(sc.name)) |super_decl| {
-                                    return self.call_super_instance_method(super_decl, this_val.object, mc.method, args.items);
-                                }
+        const fa = mc.object.field_access;
+        const receiver_val = self.eval_expr(fa.object, current_env) catch Value.null_val;
+        if (receiver_val != .sobject) return null;
+
+        const msg_val = try self.eval_expr(&mc.args[0], current_env);
+        const msg_str: []const u8 = switch (msg_val) {
+            .string => |s| s,
+            else => try utils.coerce_to_string(msg_val, self.arena),
+        };
+        const err_obj = try self.arena.create(types.ObjectInstance);
+        err_obj.* = .{ .class_name = "Database.Error" };
+        try err_obj.fields.put(self.arena, "message", Value{ .string = msg_str });
+        try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+        try err_obj.fields.put(self.arena, "field", Value{ .string = fa.field });
+        const fields_list = try self.arena.create(types.ListValue);
+        fields_list.* = .{};
+        try fields_list.items.append(self.arena, Value{ .string = fa.field });
+        try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+
+        var errors_list = if (utils.sobject_get(&receiver_val.sobject.fields, "errors")) |existing|
+            if (existing == .list) existing.list else blk: {
+                const lst = try self.arena.create(types.ListValue);
+                lst.* = .{};
+                break :blk lst;
+            }
+        else blk: {
+            const lst = try self.arena.create(types.ListValue);
+            lst.* = .{};
+            break :blk lst;
+        };
+        try errors_list.items.append(self.arena, Value{ .object = err_obj });
+        try utils.sobject_put(
+            &receiver_val.sobject.fields,
+            self.arena,
+            "errors",
+            Value{ .list = errors_list },
+        );
+        return Value.void_val;
+    }
+
+    fn eval_system_search_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (mc.object.* != .field_access) return null;
+        const search_fa = mc.object.field_access;
+        if (!(search_fa.object.* == .identifier and
+            std.ascii.eqlIgnoreCase(search_fa.object.identifier.name, "System") and
+            std.ascii.eqlIgnoreCase(search_fa.field, "Search") and
+            std.ascii.eqlIgnoreCase(mc.method, "query")))
+        {
+            return null;
+        }
+
+        if (args.len > 0 and args[0] == .string) return try self.execute_sosl(args[0].string);
+        const outer = try self.arena.create(types.ListValue);
+        outer.* = .{};
+        return Value{ .list = outer };
+    }
+
+    fn eval_super_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (mc.object.* != .super_expr) return null;
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object) {
+                if (self.current_class) |current_class_name| {
+                    if (self.find_class(current_class_name)) |current_decl| {
+                        if (current_decl.super_class) |sc| {
+                            if (self.find_class(sc.name)) |super_decl| {
+                                return try self.call_super_instance_method(
+                                    super_decl,
+                                    this_val.object,
+                                    mc.method,
+                                    args,
+                                );
                             }
                         }
                     }
                 }
             }
+        }
+        return Value.null_val;
+    }
+
+    fn eval_identifier_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (mc.object.* != .identifier) return null;
+        const class_name = mc.object.identifier.name;
+
+        if (try self.eval_identifier_assert_or_test_method_call(class_name, mc.method, args)) |result| return result;
+        if (try self.eval_identifier_system_special_method_call(class_name, mc.method, args, current_env)) |result| return result;
+        if (try self.eval_identifier_json_method_call(class_name, mc.method, args)) |result| return result;
+        if (try self.eval_identifier_early_custom_metadata_method(class_name, mc.method, args)) |result| return result;
+        if (try self.eval_identifier_integer_value_of_method_call(class_name, mc.method, args)) |result| return result;
+        if (try self.eval_resolved_identifier_method_call(class_name, mc.method, args, current_env, mc)) |result| return result;
+        return try self.eval_identifier_static_dispatch(class_name, mc.method, args, current_env, mc);
+    }
+
+    fn eval_identifier_assert_or_test_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(class_name, "Assert")) return try self.handle_assert(method, args);
+        if (std.ascii.eqlIgnoreCase(class_name, "Test")) return try self.handle_test(method, args);
+        if (std.ascii.eqlIgnoreCase(class_name, "System") and
+            (std.ascii.startsWithIgnoreCase(method, "assert") or
+                std.ascii.eqlIgnoreCase(method, "assert")))
+        {
+            return try self.handle_assert(method, args);
+        }
+        return null;
+    }
+
+    fn eval_identifier_system_special_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(class_name, "System"))) return null;
+        if (std.ascii.eqlIgnoreCase(method, "enqueueJob")) {
+            if (args.len > 0 and args[0] == .object) return try self.enqueue_job(args[0].object);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "schedule")) {
+            return try self.handle_system_method("schedule", method, args, current_env);
+        }
+        return null;
+    }
+
+    fn eval_identifier_integer_value_of_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(class_name, "Integer") and
+            std.ascii.eqlIgnoreCase(method, "valueOf") and
+            args.len > 0 and
+            args[0] == .string))
+        {
+            return null;
+        }
+        if (std.fmt.parseInt(i64, args[0].string, 10)) |value| {
+            return Value{ .integer = value };
+        } else |_| {
+            const message = try std.fmt.allocPrint(self.arena, "Invalid integer: {s}", .{args[0].string});
+            return try self.throw_named_exception("System.TypeException", message);
+        }
+    }
+
+    fn eval_identifier_json_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(class_name, "JSON"))) return null;
+        if (try self.eval_json_serialize_method_call(method, args)) |result| return result;
+        if (try self.eval_json_deserialize_method_call(method, args)) |result| return result;
+        if (std.ascii.eqlIgnoreCase(method, "createParser")) {
+            return try self.handle_system_json_create_parser(args);
+        }
+        return null;
+    }
+
+    fn eval_json_serialize_method_call(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "serialize") or
+            std.ascii.eqlIgnoreCase(method, "serializePretty")))
+        {
+            return null;
+        }
+        if (args.len == 0) return Value{ .string = "{}" };
+        if (args[0] == .object and
+            (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
+        {
+            return try self.throw_system_json_exception("Apex Type unsupported in JSON: Schema.SObjectField");
+        }
+        self.last_json_value = args[0];
+        return Value{ .string = try utils.to_json(args[0], self.arena) };
+    }
+
+    fn eval_json_deserialize_method_call(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "deserialize") or
+            std.ascii.eqlIgnoreCase(method, "deserializeStrict")))
+        {
+            return null;
+        }
+        if (args.len >= 1 and args[0] == .null_val) {
+            return try self.throw_named_exception("JSONException", "Argument cannot be null.");
+        }
+        if (!(args.len >= 1 and args[0] == .string)) return Value.null_val;
+
+        const json_str = args[0].string;
+        const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
+        if (trimmed_json.len == 0 or
+            (trimmed_json[0] != '{' and trimmed_json[0] != '[' and trimmed_json[0] != '"' and
+                !std.ascii.isDigit(trimmed_json[0]) and
+                !std.mem.startsWith(u8, trimmed_json, "null") and
+                !std.mem.startsWith(u8, trimmed_json, "true") and
+                !std.mem.startsWith(u8, trimmed_json, "false")))
+        {
+            const message = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str});
+            return try self.throw_named_exception("JSONException", message);
+        }
+
+        const type_name = json_deserialize_type_name(args);
+        const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List") or
+            std.mem.endsWith(u8, type_name, "[]");
+        if (!utils.is_json_balanced(trimmed_json)) {
+            const message = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str});
+            return try self.throw_named_exception("System.JSONException", message);
+        }
+        if (self.parse_json_value(json_str, type_name)) |parsed| return parsed;
+        if (trimmed_json.len > 2) {
+            const message = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str});
+            return try self.throw_named_exception("JSONException", message);
+        }
+        if (is_list_type) {
+            const list = try self.arena.create(types.ListValue);
+            list.* = .{};
+            return Value{ .list = list };
+        }
+        const obj = try self.arena.create(types.SObject);
+        obj.* = .{ .type_name = "Object" };
+        return Value{ .sobject = obj };
+    }
+
+    fn json_deserialize_type_name(args: []const Value) []const u8 {
+        if (args.len >= 2 and args[1] == .object) {
+            const type_obj = args[1].object;
+            if (std.ascii.eqlIgnoreCase(type_obj.class_name, "Type")) {
+                if (type_obj.fields.get("name")) |name| {
+                    if (name == .string) return name.string;
+                }
+            }
+            return type_obj.class_name;
+        }
+        return "Object";
+    }
+
+    fn throw_named_exception(
+        self: *Evaluator,
+        class_name: []const u8,
+        message: []const u8,
+    ) anyerror!Value {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = class_name };
+        try exc.fields.put(self.arena, "message", Value{ .string = message });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn eval_identifier_early_custom_metadata_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.mem.endsWith(u8, class_name, "__mdt") and
+            (std.ascii.eqlIgnoreCase(method, "getInstance") or
+                std.ascii.eqlIgnoreCase(method, "getAll"))))
+        {
+            return null;
+        }
+        self.ensure_custom_metadata_loaded(class_name);
+        if (std.ascii.eqlIgnoreCase(method, "getInstance")) {
+            const dev_name = if (args.len > 0 and args[0] == .string) args[0].string else "";
+            if (dev_name.len == 0) return Value.null_val;
+            return try self.custom_metadata_get_instance(class_name, dev_name);
+        }
+        return try self.custom_metadata_get_all(class_name);
+    }
+
+    fn ensure_custom_metadata_loaded(self: *Evaluator, class_name: []const u8) void {
+        var found_in_store = false;
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
+                found_in_store = true;
+                break;
+            }
+        }
+        if (!found_in_store) self.load_custom_metadata_from_files(class_name) catch {};
+    }
+
+    fn custom_metadata_get_instance(
+        self: *Evaluator,
+        class_name: []const u8,
+        developer_name: []const u8,
+    ) anyerror!Value {
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item != .sobject) continue;
+                if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, developer_name)) return item;
+                }
+            }
+        }
+        return Value.null_val;
+    }
+
+    fn custom_metadata_get_all(self: *Evaluator, class_name: []const u8) anyerror!Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item != .sobject) continue;
+                if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                    if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                }
+            }
+        }
+        return Value{ .map = map };
+    }
+
+    fn eval_resolved_identifier_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+        mc: *ast.MethodCallExpr,
+    ) anyerror!?Value {
+        const resolved_var = try self.resolve_identifier_method_receiver_value(class_name, current_env);
+        switch (resolved_var) {
+            .list, .map, .set, .sobject, .object, .string, .double, .integer, .boolean => {
+                return try self.eval_instance_method(resolved_var, method, args, current_env);
+            },
+            else => {},
+        }
+        if (resolved_var == .null_val and current_env.has(class_name)) {
+            const rebound = try self.eval_expr(mc.object, current_env);
+            return try self.eval_instance_method(rebound, method, args, current_env);
+        }
+        if (is_builtin_static_namespace(class_name)) {
+            if (self.resolve_visible_user_class_in_scope(current_env, class_name)) |visible_class| {
+                return try self.call_method(visible_class, method, args);
+            }
+        }
+        return null;
+    }
+
+    fn resolve_identifier_method_receiver_value(
+        self: *Evaluator,
+        class_name: []const u8,
+        current_env: *Env,
+    ) anyerror!Value {
+        if (current_env.get(class_name)) |value| return value;
+        if (try self.resolve_current_class_method_receiver_value(class_name)) |value| return value;
+        if (self.resolve_this_class_method_receiver_value(class_name, current_env)) |value| return value;
+        return Value.null_val;
+    }
+
+    fn resolve_current_class_method_receiver_value(
+        self: *Evaluator,
+        class_name: []const u8,
+    ) anyerror!?Value {
+        const current_class_name = self.current_class orelse return null;
+        const already_in_getter = if (self.evaluating_getter) |getter_name|
+            std.ascii.eqlIgnoreCase(getter_name, class_name)
+        else
+            false;
+        if (!already_in_getter) {
+            if (try self.resolve_current_class_static_getter_value(current_class_name, class_name)) |value| {
+                return value;
+            }
+        }
+        const current_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ current_class_name, class_name }) catch {
             return Value.null_val;
-        }
+        };
+        if (self.global_env.get(current_key)) |value| return value;
+        return self.resolve_outer_static_field(current_class_name, class_name);
+    }
 
-        // Handle chained calls: System.Assert.areEqual → object = System.Assert, method = areEqual
-        // Also handle: Test.startTest, Test.stopTest, TriggerHandler.bypass
-        if (mc.object.* == .identifier) {
-            const class_name = mc.object.identifier.name;
-
-            // System.Assert / Assert methods
-            if (std.ascii.eqlIgnoreCase(class_name, "Assert")) {
-                return self.handle_assert(mc.method, args.items);
-            }
-
-            // System.assertEquals / System.assert / System.assertNotEquals
-            if (std.ascii.eqlIgnoreCase(class_name, "System") and
-                (std.ascii.startsWithIgnoreCase(mc.method, "assert") or
-                    std.ascii.eqlIgnoreCase(mc.method, "assert")))
-            {
-                return self.handle_assert(mc.method, args.items);
-            }
-
-            // Test methods
-            if (std.ascii.eqlIgnoreCase(class_name, "Test")) {
-                return self.handle_test(mc.method, args.items);
-            }
-
-            // System.enqueueJob → execute synchronously (separate transaction in Salesforce)
-            if (std.ascii.eqlIgnoreCase(class_name, "System") and std.ascii.eqlIgnoreCase(mc.method, "enqueueJob")) {
-                if (args.items.len > 0 and args.items[0] == .object) {
-                    return self.enqueue_job(args.items[0].object);
-                }
-                return .void_val;
-            }
-
-            // System.schedule → queue Schedulable for execution on Test.stopTest()
-            if (std.ascii.eqlIgnoreCase(class_name, "System") and std.ascii.eqlIgnoreCase(mc.method, "schedule")) {
-                return self.handle_system_method("schedule", mc.method, args.items, current_env);
-            }
-
-            // JSON.serialize/deserialize with round-trip support
-            if (std.ascii.eqlIgnoreCase(class_name, "JSON")) {
-                if (std.ascii.eqlIgnoreCase(mc.method, "serialize") or std.ascii.eqlIgnoreCase(mc.method, "serializePretty")) {
-                    if (args.items.len > 0) {
-                        if (args.items[0] == .object and
-                            (std.ascii.eqlIgnoreCase(args.items[0].object.class_name, "Schema.SObjectField") or
-                                std.ascii.eqlIgnoreCase(args.items[0].object.class_name, "SObjectField")))
-                        {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.JSONException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = "Apex Type unsupported in JSON: Schema.SObjectField" });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        self.last_json_value = args.items[0];
-                        return Value{ .string = try utils.to_json(args.items[0], self.arena) };
+    fn resolve_current_class_static_getter_value(
+        self: *Evaluator,
+        current_class_name: []const u8,
+        class_name: []const u8,
+    ) anyerror!?Value {
+        const class_decl = self.find_class(current_class_name) orelse return null;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .field_decl => |field_decl| {
+                    if (!(field_decl.modifiers.is_static and
+                        std.ascii.eqlIgnoreCase(field_decl.name, class_name) and
+                        field_decl.getter_body != null))
+                    {
+                        continue;
                     }
-                    return Value{ .string = "{}" };
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "deserialize") or std.ascii.eqlIgnoreCase(mc.method, "deserializeStrict")) {
-                    // Parse JSON string
-                    if (args.items.len >= 1 and args.items[0] == .string) {
-                        const json_str = args.items[0].string;
-                        // Check for obviously malformed JSON
-                        const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
-                        if (trimmed_json.len == 0 or
-                            (trimmed_json[0] != '{' and trimmed_json[0] != '[' and trimmed_json[0] != '"' and
-                                !std.ascii.isDigit(trimmed_json[0]) and
-                                !std.mem.startsWith(u8, trimmed_json, "null") and
-                                !std.mem.startsWith(u8, trimmed_json, "true") and
-                                !std.mem.startsWith(u8, trimmed_json, "false")))
-                        {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "JSONException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        // Determine target type name from second arg
-                        const type_name: []const u8 = if (args.items.len >= 2 and args.items[1] == .object) blk: {
-                            const tobj = args.items[1].object;
-                            // For Type objects (from ClassName.class), use the "name" field
-                            if (std.ascii.eqlIgnoreCase(tobj.class_name, "Type")) {
-                                if (tobj.fields.get("name")) |n| {
-                                    if (n == .string) break :blk n.string;
-                                }
-                            }
-                            break :blk tobj.class_name;
-                        } else "Object";
-                        const is_list_type = std.ascii.startsWithIgnoreCase(type_name, "List") or std.mem.endsWith(u8, type_name, "[]");
-                        // Pre-validate: check for balanced braces/brackets (detect truncated JSON)
-                        if (!utils.is_json_balanced(trimmed_json)) {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.JSONException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        const parsed = self.parse_json_value(json_str, type_name);
-                        if (parsed) |pv| {
-                            return pv;
-                        }
-                        // parseJsonValue returned null → malformed JSON
-                        // Check if the input looks like it should have parsed (not trivially malformed)
-                        if (trimmed_json.len > 2) {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "JSONException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Malformed JSON: {s}", .{json_str}) });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        // Fallback for list types
-                        if (is_list_type) {
-                            const list = try self.arena.create(types.ListValue);
-                            list.* = .{};
-                            return Value{ .list = list };
-                        }
-                        const obj = try self.arena.create(types.SObject);
-                        obj.* = .{ .type_name = "Object" };
-                        return Value{ .sobject = obj };
+                    const getter_env = self.global_env.child() catch return Value.null_val;
+                    const saved_class = self.current_class;
+                    const saved_getter = self.evaluating_getter;
+                    self.current_class = current_class_name;
+                    self.evaluating_getter = class_name;
+                    defer {
+                        self.current_class = saved_class;
+                        self.evaluating_getter = saved_getter;
                     }
-                    // Null input
-                    if (args.items.len >= 1 and args.items[0] == .null_val) {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "JSONException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = "Argument cannot be null." });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    return Value.null_val;
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "createParser")) {
-                    if (args.items.len >= 1 and args.items[0] == .string) {
-                        const parser_obj = try self.arena.create(types.ObjectInstance);
-                        parser_obj.* = .{ .class_name = "JSONParser" };
-                        try parser_obj.fields.put(self.arena, "__json_body__", args.items[0]);
-                        return Value{ .object = parser_obj };
-                    }
-                    return Value.null_val;
-                }
-            }
 
-            // Custom Metadata Type: Type__mdt.getInstance(developerName) — early intercept
-            if (std.mem.endsWith(u8, class_name, "__mdt") and
-                (std.ascii.eqlIgnoreCase(mc.method, "getInstance") or std.ascii.eqlIgnoreCase(mc.method, "getAll")))
-            {
-                // Ensure records are loaded from .md-meta.xml files
-                {
-                    var fi = false;
-                    var si = self.store.iterator();
-                    while (si.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            fi = true;
-                            break;
-                        }
-                    }
-                    if (!fi) self.load_custom_metadata_from_files(class_name) catch {};
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "getInstance")) {
-                    const dev_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "";
-                    if (dev_name.len > 0) {
-                        var mi = self.store.iterator();
-                        while (mi.next()) |entry| {
-                            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                                for (entry.value_ptr.items) |item| {
-                                    if (item == .sobject) {
-                                        if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                            if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value.null_val;
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "getAll")) {
-                    const map = try self.arena.create(types.MapValue);
-                    map.* = .{};
-                    var mi = self.store.iterator();
-                    while (mi.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            for (entry.value_ptr.items) |item| {
-                                if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value{ .map = map };
-                }
-            }
-
-            // Integer.valueOf with invalid string → throw TypeException
-            if (std.ascii.eqlIgnoreCase(class_name, "Integer") and std.ascii.eqlIgnoreCase(mc.method, "valueOf")) {
-                if (args.items.len > 0 and args.items[0] == .string) {
-                    if (std.fmt.parseInt(i64, args.items[0].string, 10)) |v| {
-                        return Value{ .integer = v };
-                    } else |_| {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "System.TypeException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Invalid integer: {s}", .{args.items[0].string}) });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                }
-            }
-
-            // Check if identifier is a local variable (instance method call)
-            // This comes BEFORE builtin checks so that variables named like
-            // builtin classes (e.g., "Http http = new Http(); http.send()")
-            // are resolved as instance methods, not static builtins.
-            const resolved_var = blk: {
-                if (current_env.get(class_name)) |v| break :blk v;
-                // Also check current_class static fields (e.g., handler stored as ClassName.handler)
-                if (self.current_class) |cc| {
-                    // Check for static property getter first
-                    const already_in_getter2 = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, class_name) else false;
-                    if (!already_in_getter2) {
-                        if (self.find_class(cc)) |cd| {
-                            for (cd.members) |member| {
-                                switch (member) {
-                                    .field_decl => |fd| {
-                                        if (fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, class_name) and fd.getter_body != null) {
-                                            const getter_env2 = self.global_env.child() catch break :blk Value.null_val;
-                                            const saved_class2 = self.current_class;
-                                            const saved_getter2 = self.evaluating_getter;
-                                            self.current_class = cc;
-                                            self.evaluating_getter = class_name;
-                                            defer {
-                                                self.current_class = saved_class2;
-                                                self.evaluating_getter = saved_getter2;
-                                            }
-
-                                            const result2 = self.exec_block(fd.getter_body.?, getter_env2) catch break :blk Value.null_val;
-                                            break :blk switch (result2) {
-                                                .return_val => |v| v,
-                                                else => self.return_value,
-                                            };
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-                        }
-                    }
-                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch break :blk Value.null_val;
-                    if (self.global_env.get(key)) |v| break :blk v;
-                    // Check outer class static fields/getters when current_class is an inner class
-                    if (self.resolve_outer_static_field(cc, class_name)) |v| break :blk v;
-                }
-                // Check "this" class static fields (and parent class hierarchy)
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        const this_cn = this_val.object.class_name;
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, class_name }) catch break :blk Value.null_val;
-                        if (self.global_env.get(key)) |v| break :blk v;
-                        // Walk parent class chain for inherited static fields
-                        if (self.find_class(this_cn)) |this_cd| {
-                            var cur_parent = this_cd.super_class;
-                            while (cur_parent) |sc| {
-                                self.ensure_static_init(sc.name);
-                                const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, class_name }) catch break;
-                                if (self.global_env.get(pkey)) |v| break :blk v;
-                                cur_parent = if (self.find_class(sc.name)) |pcd| pcd.super_class else null;
-                            }
-                        }
-                        // Check outer class static fields/getters (for inner classes)
-                        if (self.resolve_outer_static_field(this_cn, class_name)) |v| break :blk v;
-                    }
-                }
-                break :blk Value.null_val;
-            };
-            switch (resolved_var) {
-                .list, .map, .set, .sobject, .object, .string, .double, .integer, .boolean => {
-                    return self.eval_instance_method(resolved_var, mc.method, args.items, current_env);
+                    const getter_result = self.exec_block(field_decl.getter_body.?, getter_env) catch {
+                        return Value.null_val;
+                    };
+                    return switch (getter_result) {
+                        .return_val => |value| value,
+                        else => self.return_value,
+                    };
                 },
                 else => {},
             }
-            if (resolved_var == .null_val and current_env.has(class_name)) {
-                // Bare identifier method calls need the normal identifier resolution
-                // path so instance property getters can override null backing fields.
-                const rebound = try self.eval_expr(mc.object, current_env);
-                return self.eval_instance_method(rebound, mc.method, args.items, current_env);
-            }
-
-            // Let user-defined classes shadow platform static namespaces only
-            // when the identifier collides with a builtin class name.
-            if (is_builtin_static_namespace(class_name)) {
-                if (self.resolve_visible_user_class_in_scope(current_env, class_name)) |visible_class| {
-                    return self.call_method(visible_class, mc.method, args.items);
-                }
-            }
-
-            // Database methods need the current lexical environment so dynamic SOQL
-            // bind variables resolve local variables and method parameters.
-            if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
-                return self.handle_database_method(mc.method, args.items, current_env);
-            }
-
-            // Builtin static dispatch (only reached when no local variable matched)
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx, class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // Custom Metadata Type: Type__mdt.getInstance(developerName) / getAll()
-            // Must be checked BEFORE findClass to avoid falling through to callMethod
-            if (std.mem.endsWith(u8, class_name, "__mdt")) {
-                // Ensure records are loaded from .md-meta.xml files
-                {
-                    var found_in_store = false;
-                    var si = self.store.iterator();
-                    while (si.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            found_in_store = true;
-                            break;
-                        }
-                    }
-                    if (!found_in_store) self.load_custom_metadata_from_files(class_name) catch {};
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "getInstance")) {
-                    const dev_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "";
-                    var mdt_iter = self.store.iterator();
-                    while (mdt_iter.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            for (entry.value_ptr.items) |item| {
-                                if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                        if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) {
-                                            return item;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value.null_val;
-                }
-                if (std.ascii.eqlIgnoreCase(mc.method, "getAll")) {
-                    const map = try self.arena.create(types.MapValue);
-                    map.* = .{};
-                    var mdt_iter = self.store.iterator();
-                    while (mdt_iter.next()) |entry| {
-                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                            for (entry.value_ptr.items) |item| {
-                                if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                        if (dn == .string) try map.entries.put(self.arena, dn.string, item);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value{ .map = map };
-                }
-            }
-
-            if (try self.handle_custom_setting_static_method(class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // User-defined class method (check before stubs/getSObjectType fallback)
-            if (!std.ascii.eqlIgnoreCase(class_name, "Database") and self.find_class(class_name) != null) {
-                return self.call_method(class_name, mc.method, args.items);
-            }
-
-            // TestFactory / TestDataHelpers stubs (only when no user-defined class exists)
-            if (try self.handle_test_factory(class_name, mc.method, args.items)) |result| {
-                return result;
-            }
-
-            // SObjectType.getSObjectType() → return Schema.SObjectType (only for non-class identifiers)
-            if (std.ascii.eqlIgnoreCase(mc.method, "getSObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
-                return Value{ .object = sot };
-            }
-
-            // Unknown static target — the identifier may actually resolve to an
-            // instance value via implicit `this` (a property getter on the enclosing
-            // class, for example `triggerNew.size()` inside a peer property getter).
-            // Route through evalExpr so instance-property getters fire.
-            if (self.find_class(class_name) == null) {
-                if (self.eval_expr(mc.object, current_env)) |obj_val| {
-                    if (obj_val != .null_val) {
-                        return self.eval_instance_method(obj_val, mc.method, args.items, current_env);
-                    }
-                } else |_| {}
-            }
-
-            return self.call_method(class_name, mc.method, args.items);
         }
+        return null;
+    }
 
-        // Handle three-level field_access chains: Schema.TypeName.SObjectType.method()
-        if (mc.object.* == .field_access) {
-            const fa = mc.object.field_access;
-            // Schema.TypeName.SObjectType.newSObject(...) / getDescribe() etc.
-            if (fa.object.* == .field_access) {
-                const inner_fa = fa.object.field_access;
-                if (inner_fa.object.* == .identifier) {
-                    const outer_name = inner_fa.object.identifier.name;
-                    const type_name = inner_fa.field;
-                    if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                        std.ascii.eqlIgnoreCase(type_name, "SObjectType"))
-                    {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                        return self.eval_instance_method(Value{ .object = sot }, mc.method, args.items, current_env);
-                    }
-                    if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                        std.ascii.eqlIgnoreCase(fa.field, "SObjectType"))
-                    {
-                        // Build Schema.SObjectType object with name
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
-                        return self.eval_instance_method(Value{ .object = sot }, mc.method, args.items, current_env);
-                    }
-                    if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                        std.ascii.eqlIgnoreCase(mc.method, "getDescribe"))
-                    {
-                        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                        return builtins.create_field_describe_result(&bctx, type_name, fa.field);
-                    }
-                }
-            }
+    fn resolve_this_class_method_receiver_value(
+        self: *Evaluator,
+        class_name: []const u8,
+        current_env: *Env,
+    ) ?Value {
+        const this_val = current_env.get("this") orelse return null;
+        if (this_val != .object) return null;
 
-            if (fa.object.* == .identifier) {
-                const outer_class = fa.object.identifier.name;
-                const inner = fa.field;
-
-                // System.Assert.areEqual(...)
-                if (std.ascii.eqlIgnoreCase(outer_class, "System") and std.ascii.eqlIgnoreCase(inner, "Assert")) {
-                    return self.handle_assert(mc.method, args.items);
-                }
-
-                // System.enqueueJob, System.runAs, etc.
-                if (std.ascii.eqlIgnoreCase(outer_class, "System")) {
-                    return self.handle_system_method(inner, mc.method, args.items, current_env);
-                }
-
-                // SObjectType.FieldToken.getDescribe() → Schema.DescribeFieldResult
-                // Exception: Type.SObjectType.getDescribe() is the object-level token,
-                // which returns DescribeSObjectResult (handled via createDescribeResult)
-                if (std.ascii.eqlIgnoreCase(mc.method, "getDescribe")) {
-                    if (std.ascii.eqlIgnoreCase(inner, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = outer_class });
-                        return self.eval_instance_method(Value{ .object = sot }, mc.method, args.items, current_env);
-                    }
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    return builtins.create_field_describe_result(&bctx, outer_class, inner);
-                }
-
-                // DataWeave.Script.createScript(scriptName)
-                if (std.ascii.eqlIgnoreCase(outer_class, "DataWeave") and std.ascii.eqlIgnoreCase(inner, "Script")) {
-                    if (std.ascii.eqlIgnoreCase(mc.method, "createScript") and args.items.len > 0 and args.items[0] == .string) {
-                        const dw = try self.arena.create(types.ObjectInstance);
-                        dw.* = .{ .class_name = "DataWeave.Script" };
-                        try dw.fields.put(self.arena, "scriptName", args.items[0]);
-                        return Value{ .object = dw };
-                    }
-                }
-
-                // Invocable.Action.createCustomAction(actionType, actionName)
-                if (std.ascii.eqlIgnoreCase(outer_class, "Invocable") and std.ascii.eqlIgnoreCase(inner, "Action")) {
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    if (try builtins.dispatch_static(&bctx, "Invocable.Action", mc.method, args.items)) |v| return v;
-                }
-
-                if (std.ascii.eqlIgnoreCase(outer_class, "Flow") and std.ascii.eqlIgnoreCase(inner, "Interview")) {
-                    if (std.ascii.eqlIgnoreCase(mc.method, "createInterview") and args.items.len > 0 and args.items[0] == .string) {
-                        if (!self.has_flow_definition(args.items[0].string)) {
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "TypeException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = "Unknown Flow" });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-
-                        const interview = try self.arena.create(types.ObjectInstance);
-                        interview.* = .{ .class_name = "Flow.Interview" };
-                        try interview.fields.put(self.arena, "flowName", args.items[0]);
-                        if (args.items.len > 1 and args.items[1] == .map) {
-                            for (args.items[1].map.entries.keys(), args.items[1].map.entries.values()) |k, v| {
-                                try interview.fields.put(self.arena, k, v);
-                            }
-                        }
-                        return Value{ .object = interview };
-                    }
-                }
-
-                if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-                    return (try self.handle_connect_api_namespace(inner, mc.method, args.items)) orelse Value.null_val;
-                }
-
-                // Cache.Session.getPartition / Cache.Org.getPartition
-                if (std.ascii.eqlIgnoreCase(outer_class, "Cache") and
-                    (std.ascii.eqlIgnoreCase(inner, "Session") or std.ascii.eqlIgnoreCase(inner, "Org")))
-                {
-                    if (std.ascii.eqlIgnoreCase(mc.method, "getPartition")) {
-                        const partition_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "default";
-                        const partition = try self.arena.create(types.ObjectInstance);
-                        partition.* = .{ .class_name = "Cache.Partition" };
-                        // Use a map to store cache entries
-                        const cache_map = try self.arena.create(types.MapValue);
-                        cache_map.* = .{};
-                        // Use a global key to find this cache partition
-                        const cache_key = try std.fmt.allocPrint(self.arena, "Cache.{s}.partition:{s}", .{ inner, partition_name });
-                        if (self.global_env.get(cache_key)) |existing| {
-                            if (existing == .object) {
-                                return existing;
-                            }
-                        }
-                        const is_available = std.ascii.indexOfIgnoreCase(partition_name, "NeverExist") == null;
-                        try partition.fields.put(self.arena, "_cache", Value{ .map = cache_map });
-                        try partition.fields.put(self.arena, "_is_available", Value{ .boolean = is_available });
-                        self.global_env.set(cache_key, Value{ .object = partition }) catch {
-                            try self.global_env.define(cache_key, Value{ .object = partition });
-                        };
-                        return Value{ .object = partition };
-                    }
-                }
+        const this_class_name = this_val.object.class_name;
+        const this_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_class_name, class_name }) catch {
+            return Value.null_val;
+        };
+        if (self.global_env.get(this_key)) |value| return value;
+        if (self.find_class(this_class_name)) |this_class_decl| {
+            var current_parent = this_class_decl.super_class;
+            while (current_parent) |super_class| {
+                self.ensure_static_init(super_class.name);
+                const parent_key = std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ super_class.name, class_name },
+                ) catch break;
+                if (self.global_env.get(parent_key)) |value| return value;
+                current_parent = if (self.find_class(super_class.name)) |parent_decl|
+                    parent_decl.super_class
+                else
+                    null;
             }
         }
+        return self.resolve_outer_static_field(this_class_name, class_name);
+    }
 
-        // Instance method on evaluated object
-        const obj = try self.eval_expr(mc.object, current_env);
-        return self.eval_instance_method(obj, mc.method, args.items, current_env);
+    fn eval_identifier_static_dispatch(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+        mc: *ast.MethodCallExpr,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(class_name, "Database")) {
+            return try self.handle_database_method(method, args, current_env);
+        }
+        var builtin_ctx = self.make_builtin_context();
+        if (try builtins.dispatch_static(&builtin_ctx, class_name, method, args)) |result| return result;
+        if (try self.eval_identifier_custom_metadata_method(class_name, method, args)) |result| return result;
+        if (try self.handle_custom_setting_static_method(class_name, method, args)) |result| return result;
+        if (!std.ascii.eqlIgnoreCase(class_name, "Database") and self.find_class(class_name) != null) {
+            return try self.call_method(class_name, method, args);
+        }
+        if (try self.handle_test_factory(class_name, method, args)) |result| return result;
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) return try self.schema_s_object_type_value(class_name);
+        if (self.find_class(class_name) == null) {
+            if (self.eval_expr(mc.object, current_env)) |obj_val| {
+                if (obj_val != .null_val) return try self.eval_instance_method(obj_val, method, args, current_env);
+            } else |_| {}
+        }
+        return try self.call_method(class_name, method, args);
+    }
+
+    fn eval_identifier_custom_metadata_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.mem.endsWith(u8, class_name, "__mdt"))) return null;
+        self.ensure_custom_metadata_loaded(class_name);
+        if (std.ascii.eqlIgnoreCase(method, "getInstance")) {
+            const dev_name = if (args.len > 0 and args[0] == .string) args[0].string else "";
+            return try self.custom_metadata_get_instance(class_name, dev_name);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getAll")) return try self.custom_metadata_get_all(class_name);
+        return null;
+    }
+
+    fn eval_field_access_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (mc.object.* != .field_access) return null;
+        const field_access = mc.object.field_access;
+        if (try self.eval_three_level_field_access_method_call(field_access, mc.method, args, current_env)) |result| {
+            return result;
+        }
+        return try self.eval_identifier_field_access_method_call(field_access, mc.method, args, current_env);
+    }
+
+    fn eval_three_level_field_access_method_call(
+        self: *Evaluator,
+        field_access: *ast.FieldAccess,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (field_access.object.* != .field_access) return null;
+        const inner_access = field_access.object.field_access;
+        if (inner_access.object.* != .identifier) return null;
+
+        const outer_name = inner_access.object.identifier.name;
+        const type_name = inner_access.field;
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            std.ascii.eqlIgnoreCase(type_name, "SObjectType"))
+        {
+            return try self.eval_instance_method(
+                try self.schema_s_object_type_value(field_access.field),
+                method,
+                args,
+                current_env,
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            std.ascii.eqlIgnoreCase(field_access.field, "SObjectType"))
+        {
+            return try self.eval_instance_method(
+                try self.schema_s_object_type_value(type_name),
+                method,
+                args,
+                current_env,
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and std.ascii.eqlIgnoreCase(method, "getDescribe")) {
+            var builtin_ctx = self.make_builtin_context();
+            return try builtins.create_field_describe_result(&builtin_ctx, type_name, field_access.field);
+        }
+        return null;
+    }
+
+    fn eval_identifier_field_access_method_call(
+        self: *Evaluator,
+        field_access: *ast.FieldAccess,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (field_access.object.* != .identifier) return null;
+        const outer_class = field_access.object.identifier.name;
+        const inner = field_access.field;
+
+        if (try self.eval_system_namespace_method_call(outer_class, inner, method, args, current_env)) |result| return result;
+        if (try self.eval_schema_field_token_method_call(outer_class, inner, method, args, current_env)) |result| return result;
+        if (try self.eval_dataweave_script_method_call(outer_class, inner, method, args)) |result| return result;
+        if (try self.eval_invocable_action_method_call(outer_class, inner, method, args)) |result| return result;
+        if (try self.eval_flow_interview_namespace_method_call(outer_class, inner, method, args)) |result| return result;
+        if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
+            return (try self.handle_connect_api_namespace(inner, method, args)) orelse Value.null_val;
+        }
+        return try self.eval_cache_namespace_method_call(outer_class, inner, method, args);
+    }
+
+    fn eval_system_namespace_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(outer_class, "System"))) return null;
+        if (std.ascii.eqlIgnoreCase(inner, "Assert")) return try self.handle_assert(method, args);
+        return try self.handle_system_method(inner, method, args, current_env);
+    }
+
+    fn eval_schema_field_token_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "getDescribe"))) return null;
+        if (std.ascii.eqlIgnoreCase(inner, "SObjectType")) {
+            return try self.eval_instance_method(
+                try self.schema_s_object_type_value(outer_class),
+                method,
+                args,
+                current_env,
+            );
+        }
+        var builtin_ctx = self.make_builtin_context();
+        return try builtins.create_field_describe_result(&builtin_ctx, outer_class, inner);
+    }
+
+    fn eval_dataweave_script_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(outer_class, "DataWeave") and
+            std.ascii.eqlIgnoreCase(inner, "Script") and
+            std.ascii.eqlIgnoreCase(method, "createScript") and
+            args.len > 0 and
+            args[0] == .string))
+        {
+            return null;
+        }
+        const dataweave = try self.arena.create(types.ObjectInstance);
+        dataweave.* = .{ .class_name = "DataWeave.Script" };
+        try dataweave.fields.put(self.arena, "scriptName", args[0]);
+        return Value{ .object = dataweave };
+    }
+
+    fn eval_invocable_action_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(outer_class, "Invocable") and
+            std.ascii.eqlIgnoreCase(inner, "Action")))
+        {
+            return null;
+        }
+        var builtin_ctx = self.make_builtin_context();
+        return try builtins.dispatch_static(&builtin_ctx, "Invocable.Action", method, args);
+    }
+
+    fn eval_flow_interview_namespace_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(outer_class, "Flow") and
+            std.ascii.eqlIgnoreCase(inner, "Interview") and
+            std.ascii.eqlIgnoreCase(method, "createInterview") and
+            args.len > 0 and
+            args[0] == .string))
+        {
+            return null;
+        }
+        if (!self.has_flow_definition(args[0].string)) {
+            return try self.throw_named_exception("TypeException", "Unknown Flow");
+        }
+        const interview = try self.arena.create(types.ObjectInstance);
+        interview.* = .{ .class_name = "Flow.Interview" };
+        try interview.fields.put(self.arena, "flowName", args[0]);
+        if (args.len > 1 and args[1] == .map) {
+            for (args[1].map.entries.keys(), args[1].map.entries.values()) |key, value| {
+                try interview.fields.put(self.arena, key, value);
+            }
+        }
+        return Value{ .object = interview };
+    }
+
+    fn eval_cache_namespace_method_call(
+        self: *Evaluator,
+        outer_class: []const u8,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(outer_class, "Cache") and
+            (std.ascii.eqlIgnoreCase(inner, "Session") or
+                std.ascii.eqlIgnoreCase(inner, "Org")) and
+            std.ascii.eqlIgnoreCase(method, "getPartition")))
+        {
+            return null;
+        }
+        const partition_name = if (args.len > 0 and args[0] == .string) args[0].string else "default";
+        const cache_key = try std.fmt.allocPrint(
+            self.arena,
+            "Cache.{s}.partition:{s}",
+            .{ inner, partition_name },
+        );
+        if (self.global_env.get(cache_key)) |existing| {
+            if (existing == .object) return existing;
+        }
+        const partition = try self.arena.create(types.ObjectInstance);
+        partition.* = .{ .class_name = "Cache.Partition" };
+        const cache_map = try self.arena.create(types.MapValue);
+        cache_map.* = .{};
+        const is_available = std.ascii.indexOfIgnoreCase(partition_name, "NeverExist") == null;
+        try partition.fields.put(self.arena, "_cache", Value{ .map = cache_map });
+        try partition.fields.put(self.arena, "_is_available", Value{ .boolean = is_available });
+        self.global_env.set(cache_key, Value{ .object = partition }) catch {
+            try self.global_env.define(cache_key, Value{ .object = partition });
+        };
+        return Value{ .object = partition };
     }
 
     fn connect_api_create_object(self: *Evaluator, class_name: []const u8) !*types.ObjectInstance {
