@@ -16272,143 +16272,158 @@ pub const Evaluator = struct {
     /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
     fn format_date_time_pattern(self: *Evaluator, s: []const u8, pattern: []const u8) !Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
-        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-        const month_abbr = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-        const month_name = if (dt.m >= 1 and dt.m <= 12) month_names[dt.m - 1] else "January";
-        const month_short = if (dt.m >= 1 and dt.m <= 12) month_abbr[dt.m - 1] else "Jan";
-
         var result: std.ArrayListUnmanaged(u8) = .empty;
         var i: usize = 0;
         while (i < pattern.len) {
             const c = pattern[i];
-            // Count consecutive same characters
             var count: usize = 1;
             while (i + count < pattern.len and pattern[i + count] == c) : (count += 1) {}
-
-            switch (c) {
-                'y' => {
-                    if (count <= 2) {
-                        const short_y: u32 = @intCast(@mod(dt.y, 100));
-                        const ys = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{short_y});
-                        try result.appendSlice(self.arena, ys);
-                    } else {
-                        const ys = try std.fmt.allocPrint(
-                            self.arena,
-                            "{d:0>4}",
-                            .{@as(u32, @intCast(dt.y))},
-                        );
-                        try result.appendSlice(self.arena, ys);
-                    }
-                },
-                'M' => {
-                    if (count >= 4) {
-                        try result.appendSlice(self.arena, month_name);
-                    } else if (count == 3) {
-                        try result.appendSlice(self.arena, month_short);
-                    } else if (count == 2) {
-                        const ms = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.m});
-                        try result.appendSlice(self.arena, ms);
-                    } else {
-                        const ms = try std.fmt.allocPrint(self.arena, "{d}", .{dt.m});
-                        try result.appendSlice(self.arena, ms);
-                    }
-                },
-                'd' => {
-                    if (count >= 2) {
-                        const ds = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.d});
-                        try result.appendSlice(self.arena, ds);
-                    } else {
-                        const ds = try std.fmt.allocPrint(self.arena, "{d}", .{dt.d});
-                        try result.appendSlice(self.arena, ds);
-                    }
-                },
-                'H' => {
-                    if (count >= 2) {
-                        const hs = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.h});
-                        try result.appendSlice(self.arena, hs);
-                    } else {
-                        const hs = try std.fmt.allocPrint(self.arena, "{d}", .{dt.h});
-                        try result.appendSlice(self.arena, hs);
-                    }
-                },
-                'h' => {
-                    const h12: u8 = if (dt.h == 0) 12 else if (dt.h > 12) dt.h - 12 else dt.h;
-                    if (count >= 2) {
-                        const hs = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{h12});
-                        try result.appendSlice(self.arena, hs);
-                    } else {
-                        const hs = try std.fmt.allocPrint(self.arena, "{d}", .{h12});
-                        try result.appendSlice(self.arena, hs);
-                    }
-                },
-                'm' => {
-                    if (count >= 2) {
-                        const ms = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.mi});
-                        try result.appendSlice(self.arena, ms);
-                    } else {
-                        const ms = try std.fmt.allocPrint(self.arena, "{d}", .{dt.mi});
-                        try result.appendSlice(self.arena, ms);
-                    }
-                },
-                's' => {
-                    if (count >= 2) {
-                        const ss = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{dt.sec});
-                        try result.appendSlice(self.arena, ss);
-                    } else {
-                        const ss = try std.fmt.allocPrint(self.arena, "{d}", .{dt.sec});
-                        try result.appendSlice(self.arena, ss);
-                    }
-                },
-                'a' => {
-                    try result.appendSlice(self.arena, if (dt.h < 12) "AM" else "PM");
-                },
-                'w', 'Y' => {
-                    // ISO week (week-of-week-based-year) and week-year pair.
-                    // Week 1 is the week containing the first Thursday.
-                    const iso = iso_week_of_year(dt.y, dt.m, dt.d);
-                    if (c == 'w') {
-                        const ws = try std.fmt.allocPrint(self.arena, "{d}", .{iso.week});
-                        try result.appendSlice(self.arena, ws);
-                    } else {
-                        const ys = try std.fmt.allocPrint(
-                            self.arena,
-                            "{d:0>4}",
-                            .{@as(u32, @intCast(iso.year))},
-                        );
-                        try result.appendSlice(self.arena, ys);
-                    }
-                },
-                'u' => {
-                    // ISO day of week: Monday=1..Sunday=7.
-                    const dow = iso_day_of_week(dt.y, dt.m, dt.d);
-                    const ds = try std.fmt.allocPrint(self.arena, "{d}", .{dow});
-                    try result.appendSlice(self.arena, ds);
-                },
-                'D' => {
-                    // Day of year (1-based).
-                    const is_leap =
-                        (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
-                    var doy: u16 = day_of_year(dt.m, dt.d);
-                    if (is_leap and dt.m > 2) doy += 1;
-                    const ds = try std.fmt.allocPrint(self.arena, "{d}", .{doy});
-                    try result.appendSlice(self.arena, ds);
-                },
-                '\'' => {
-                    // Quoted literal text
-                    i += 1; // skip opening quote
-                    while (i < pattern.len and pattern[i] != '\'') : (i += 1) {
-                        try result.append(self.arena, pattern[i]);
-                    }
-                    if (i < pattern.len) i += 1; // skip closing quote
-                    continue;
-                },
-                else => {
-                    for (0..count) |_| try result.append(self.arena, c);
-                },
+            if (c == '\'') {
+                // Quoted literal: skip the opening quote, copy contents, skip closing.
+                i += 1;
+                while (i < pattern.len and pattern[i] != '\'') : (i += 1) {
+                    try result.append(self.arena, pattern[i]);
+                }
+                if (i < pattern.len) i += 1;
+                continue;
             }
+            try self.format_date_time_token(&result, c, count, dt);
             i += count;
         }
         return Value{ .string = result.items };
+    }
+
+    /// Render a single Java SimpleDateFormat token (character `c` repeated
+    /// `count` times) into `out`, using the already-parsed Datetime `dt`.
+    fn format_date_time_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        c: u8,
+        count: usize,
+        dt: anytype,
+    ) !void {
+        switch (c) {
+            'y' => try self.format_year_token(out, count, dt.y),
+            'M' => try self.format_month_token(out, count, dt.m),
+            'd' => try self.format_padded_token(out, count, dt.d),
+            'H' => try self.format_padded_token(out, count, dt.h),
+            'h' => {
+                const h12: u8 = if (dt.h == 0) 12 else if (dt.h > 12) dt.h - 12 else dt.h;
+                try self.format_padded_token(out, count, h12);
+            },
+            'm' => try self.format_padded_token(out, count, dt.mi),
+            's' => try self.format_padded_token(out, count, dt.sec),
+            'a' => try out.appendSlice(self.arena, if (dt.h < 12) "AM" else "PM"),
+            'w', 'Y' => try self.format_iso_week_token(out, c, dt.y, dt.m, dt.d),
+            'u' => {
+                const dow = iso_day_of_week(dt.y, dt.m, dt.d);
+                const ds = try std.fmt.allocPrint(self.arena, "{d}", .{dow});
+                try out.appendSlice(self.arena, ds);
+            },
+            'D' => try self.format_day_of_year_token(out, dt.y, dt.m, dt.d),
+            else => for (0..count) |_| try out.append(self.arena, c),
+        }
+    }
+
+    fn format_year_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        count: usize,
+        y: i32,
+    ) !void {
+        if (count <= 2) {
+            const short_y: u32 = @intCast(@mod(y, 100));
+            const ys = try std.fmt.allocPrint(self.arena, "{d:0>2}", .{short_y});
+            try out.appendSlice(self.arena, ys);
+        } else {
+            const ys = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}",
+                .{@as(u32, @intCast(y))},
+            );
+            try out.appendSlice(self.arena, ys);
+        }
+    }
+
+    fn format_month_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        count: usize,
+        m: u8,
+    ) !void {
+        const month_names = [_][]const u8{
+            "January", "February", "March",     "April",   "May",      "June",
+            "July",    "August",   "September", "October", "November", "December",
+        };
+        const month_abbr = [_][]const u8{
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        };
+        if (count >= 4) {
+            try out.appendSlice(
+                self.arena,
+                if (m >= 1 and m <= 12) month_names[m - 1] else "January",
+            );
+            return;
+        }
+        if (count == 3) {
+            try out.appendSlice(
+                self.arena,
+                if (m >= 1 and m <= 12) month_abbr[m - 1] else "Jan",
+            );
+            return;
+        }
+        try self.format_padded_token(out, count, m);
+    }
+
+    /// Either `{d:0>2}` when count>=2, otherwise `{d}`.
+    fn format_padded_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        count: usize,
+        value: anytype,
+    ) !void {
+        const rendered = if (count >= 2)
+            try std.fmt.allocPrint(self.arena, "{d:0>2}", .{value})
+        else
+            try std.fmt.allocPrint(self.arena, "{d}", .{value});
+        try out.appendSlice(self.arena, rendered);
+    }
+
+    fn format_iso_week_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        c: u8,
+        y: i32,
+        m: u8,
+        d: u8,
+    ) !void {
+        const iso = iso_week_of_year(y, m, d);
+        if (c == 'w') {
+            const ws = try std.fmt.allocPrint(self.arena, "{d}", .{iso.week});
+            try out.appendSlice(self.arena, ws);
+        } else {
+            const ys = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}",
+                .{@as(u32, @intCast(iso.year))},
+            );
+            try out.appendSlice(self.arena, ys);
+        }
+    }
+
+    fn format_day_of_year_token(
+        self: *Evaluator,
+        out: *std.ArrayListUnmanaged(u8),
+        y: i32,
+        m: u8,
+        d: u8,
+    ) !void {
+        const is_leap = (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0));
+        var doy: u16 = day_of_year(m, d);
+        if (is_leap and m > 2) doy += 1;
+        const ds = try std.fmt.allocPrint(self.arena, "{d}", .{doy});
+        try out.appendSlice(self.arena, ds);
     }
 
     /// addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
