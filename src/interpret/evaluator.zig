@@ -956,7 +956,8 @@ pub const Evaluator = struct {
             if (std.ascii.indexOfIgnoreCase(where_clause, " IN (")) |in_pos| {
                 var j = in_pos + 5;
                 while (j < where_clause.len and where_clause[j] != ')') {
-                    while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ')') j += 1;
+                    while (j < where_clause.len and
+                        where_clause[j] != '\'' and where_clause[j] != ')') j += 1;
                     if (j < where_clause.len and where_clause[j] == '\'') {
                         j += 1;
                         const start = j;
@@ -4475,7 +4476,8 @@ pub const Evaluator = struct {
                         pp += 1; // skip '('
                         // Extract each quoted string
                         while (pp < where_clause.len and where_clause[pp] != ')') {
-                            while (pp < where_clause.len and where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
+                            while (pp < where_clause.len and
+                                where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
                             if (pp < where_clause.len and where_clause[pp] == '\'') {
                                 pp += 1;
                                 const start = pp;
@@ -5552,7 +5554,8 @@ pub const Evaluator = struct {
                     const start = j;
                     while (j < where_clause.len) : (j += 1) {
                         const ch = where_clause[j];
-                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == ')' or ch == ',') break;
+                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') break;
+                        if (ch == ')' or ch == ',') break;
                         // Stop at AND/OR boundary (defensive — WHERE terminators
                         // beyond whitespace).
                     }
@@ -19973,7 +19976,9 @@ fn extract_from_type(soql: []const u8) ?[]const u8 {
             var start = i + 5;
             while (start < lower.len and is_soql_whitespace(lower[start])) start += 1;
             var end = start;
-            while (end < lower.len and !is_soql_whitespace(lower[end]) and lower[end] != ']' and lower[end] != ')') end += 1;
+            while (end < lower.len and
+                !is_soql_whitespace(lower[end]) and
+                lower[end] != ']' and lower[end] != ')') end += 1;
             if (end > start) return lower[start..end];
         }
     }
@@ -20129,7 +20134,10 @@ fn extract_order_by_field(soql: []const u8) ?OrderByInfo {
             var start = i + 9;
             while (start < soql.len and (soql[start] == ' ' or soql[start] == '\t' or soql[start] == '\n' or soql[start] == '\r')) start += 1;
             var end = start;
-            while (end < soql.len and soql[end] != ' ' and soql[end] != '\n' and soql[end] != '\t' and soql[end] != ',' and soql[end] != ')') end += 1;
+            while (end < soql.len and
+                soql[end] != ' ' and soql[end] != '\n' and
+                soql[end] != '\t' and soql[end] != ',' and
+                soql[end] != ')') end += 1;
             if (end > start) {
                 const field = soql[start..end];
                 // Check for DESC/ASC after the field
@@ -20206,7 +20214,9 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
                     var start = from_pos + 4;
                     while (start < inner_query.len and (inner_query[start] == ' ' or inner_query[start] == '\t' or inner_query[start] == '\n')) start += 1;
                     var end = start;
-                    while (end < inner_query.len and inner_query[end] != ' ' and inner_query[end] != ')' and inner_query[end] != '\n' and inner_query[end] != '\t') end += 1;
+                    while (end < inner_query.len and
+                        inner_query[end] != ' ' and inner_query[end] != ')' and
+                        inner_query[end] != '\n' and inner_query[end] != '\t') end += 1;
                     if (end > start) {
                         const raw_rel = inner_query[start..end];
                         // Strip parent prefix: "Account.Contacts" → "Contacts"
