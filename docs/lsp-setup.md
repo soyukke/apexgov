@@ -28,7 +28,7 @@ mv apexgov ~/.local/bin/
 
 ### ソースからビルド
 
-[Zig](https://ziglang.org/) (0.15+) が必要です:
+[Zig](https://ziglang.org/) 0.16+ が必要です:
 
 ```bash
 git clone https://github.com/soyukke/apexgov.git

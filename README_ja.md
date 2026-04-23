@@ -111,7 +111,7 @@ regression_percent = 15
 
 ## ビルドとテスト
 
-[Zig](https://ziglang.org/) (0.15+) が必要です。`nix develop` を使うと Zig + ZLS の再現可能な環境を利用できます。
+[Zig](https://ziglang.org/) 0.16+ が必要です。このフレークの devShell には zig/zls を同梱していません。home-manager の `zig-overlay` などで PATH 上の `zig` が 0.16 に解決されるようにセットアップしてください。
 
 ```bash
 zig build          # ビルド (zig-out/bin/apexgov)
