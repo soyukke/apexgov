@@ -5226,93 +5226,132 @@ pub const Evaluator = struct {
 
     /// Generate a stub record for metadata/system types not in the in-memory store.
     /// Returns a dummy SObject with plausible field values, or null if not a metadata type.
+    /// Synthesize an ApexClass or ApexTrigger SObject when the queried Name
+    /// matches a loaded class/trigger source. Returns null when no metadata
+    /// source matches; returns the stored record when one already exists.
+    fn generate_apex_metadata_stub(
+        self: *Evaluator,
+        from_type: []const u8,
+        name_val: []const u8,
+    ) !?Value {
+        const is_class = std.ascii.eqlIgnoreCase(from_type, "ApexClass");
+        const metadata_sources = if (is_class) &self.class_sources else &self.trigger_sources;
+        const type_label = if (is_class) "class" else "trigger";
+
+        const metadata_exists = self.metadata_name_matches_loaded_source(
+            is_class,
+            name_val,
+            metadata_sources,
+        );
+        if (!metadata_exists) return null;
+
+        if (self.find_apex_metadata_record_by_name(from_type, name_val)) |record| return record;
+        return try self.build_apex_metadata_record(
+            from_type,
+            name_val,
+            type_label,
+            metadata_sources,
+        );
+    }
+
+    fn metadata_name_matches_loaded_source(
+        self: *Evaluator,
+        is_class: bool,
+        name_val: []const u8,
+        metadata_sources: *std.StringArrayHashMapUnmanaged([]const u8),
+    ) bool {
+        if (is_class and self.find_class(name_val) != null) return true;
+        for (metadata_sources.keys()) |k| {
+            if (std.ascii.eqlIgnoreCase(k, name_val)) return true;
+        }
+        return false;
+    }
+
+    fn find_apex_metadata_record_by_name(
+        self: *Evaluator,
+        from_type: []const u8,
+        name_val: []const u8,
+    ) ?Value {
+        const records = self.store.get(from_type) orelse return null;
+        for (records.items) |record| {
+            if (record != .sobject) continue;
+            const stored_name = utils.sobject_get(&record.sobject.fields, "Name") orelse continue;
+            if (stored_name == .string and std.ascii.eqlIgnoreCase(stored_name.string, name_val)) {
+                return record;
+            }
+        }
+        return null;
+    }
+
+    fn build_apex_metadata_record(
+        self: *Evaluator,
+        from_type: []const u8,
+        name_val: []const u8,
+        type_label: []const u8,
+        metadata_sources: *std.StringArrayHashMapUnmanaged([]const u8),
+    ) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = from_type };
+        const prefix = if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) "01p" else "01q";
+        const id = try std.fmt.allocPrint(self.arena, "{s}{d:0>15}", .{ prefix, self.next_id });
+        self.next_id += 1;
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
+        try sob.fields.put(self.arena, "ApiVersion", Value{ .double = 62.0 });
+        try sob.fields.put(self.arena, "LengthWithoutComments", Value{ .integer = 100 });
+        try sob.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
+        try sob.fields.put(
+            self.arena,
+            "CreatedDate",
+            Value{ .string = "2026-01-01T00:00:00Z" },
+        );
+        try sob.fields.put(
+            self.arena,
+            "LastModifiedDate",
+            Value{ .string = "2026-01-01T00:00:00Z" },
+        );
+        try sob.fields.put(self.arena, "CreatedById", Value{ .string = "005000000000001" });
+        try sob.fields.put(
+            self.arena,
+            "LastModifiedById",
+            Value{ .string = "005000000000001" },
+        );
+        const metadata_user = try self.create_current_user_record();
+        try sob.fields.put(self.arena, "CreatedBy", metadata_user);
+        try sob.fields.put(self.arena, "LastModifiedBy", metadata_user);
+        const body = blk: {
+            if (metadata_sources.get(name_val)) |src| break :blk src;
+            for (metadata_sources.keys(), metadata_sources.values()) |k, v| {
+                if (std.ascii.eqlIgnoreCase(k, name_val)) break :blk v;
+            }
+            break :blk try std.fmt.allocPrint(
+                self.arena,
+                "public {s} {s} {{\n    // mock body\n}}",
+                .{ type_label, name_val },
+            );
+        };
+        try sob.fields.put(self.arena, "Body", Value{ .string = body });
+        const gop = try self.store.getOrPut(self.arena, from_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+        try self.id_type_map.put(self.arena, id, from_type);
+        return Value{ .sobject = sob };
+    }
+
     fn generate_metadata_stub(
         self: *Evaluator,
         from_type: []const u8,
         soql: []const u8,
         current_env: *Env,
     ) !?Value {
-        // Extract the Name value from WHERE clause (supports = 'val', LIKE :bindVar, = :bindVar)
+        // WHERE-name extraction supports `= 'val'`, `LIKE :bindVar`, `= :bindVar`.
         const name_val = self.extract_where_name_value(soql, current_env) orelse "MockRecord";
 
         if (std.ascii.eqlIgnoreCase(from_type, "ApexClass") or
             std.ascii.eqlIgnoreCase(from_type, "ApexTrigger"))
         {
-            const metadata_sources = if (std.ascii.eqlIgnoreCase(
-                from_type,
-                "ApexClass",
-            )) &self.class_sources else &self.trigger_sources;
-            const type_label =
-                if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) "class" else "trigger";
-            var metadata_exists = false;
-            if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) {
-                metadata_exists = self.find_class(name_val) != null;
-            }
-            if (!metadata_exists) {
-                for (metadata_sources.keys()) |k| {
-                    if (std.ascii.eqlIgnoreCase(k, name_val)) {
-                        metadata_exists = true;
-                        break;
-                    }
-                }
-            }
-            if (!metadata_exists) return null;
-
-            if (self.store.get(from_type)) |records| {
-                for (records.items) |record| {
-                    if (record == .sobject) {
-                        if (utils.sobject_get(&record.sobject.fields, "Name")) |stored_name| {
-                            if (stored_name == .string and
-                                std.ascii.eqlIgnoreCase(stored_name.string, name_val))
-                            {
-                                return record;
-                            }
-                        }
-                    }
-                }
-            }
-
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = from_type };
-            const prefix = if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) "01p" else "01q";
-            const id = try std.fmt.allocPrint(self.arena, "{s}{d:0>15}", .{ prefix, self.next_id });
-            self.next_id += 1;
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
-            try sob.fields.put(self.arena, "ApiVersion", Value{ .double = 62.0 });
-            try sob.fields.put(self.arena, "LengthWithoutComments", Value{ .integer = 100 });
-            try sob.fields.put(self.arena, "NamespacePrefix", Value{ .string = "" });
-            const created_date = "2026-01-01T00:00:00Z";
-            const modified_date = "2026-01-01T00:00:00Z";
-            try sob.fields.put(self.arena, "CreatedDate", Value{ .string = created_date });
-            try sob.fields.put(self.arena, "LastModifiedDate", Value{ .string = modified_date });
-            try sob.fields.put(self.arena, "CreatedById", Value{ .string = "005000000000001" });
-            try sob.fields.put(
-                self.arena,
-                "LastModifiedById",
-                Value{ .string = "005000000000001" },
-            );
-            const metadata_user = try self.create_current_user_record();
-            try sob.fields.put(self.arena, "CreatedBy", metadata_user);
-            try sob.fields.put(self.arena, "LastModifiedBy", metadata_user);
-            const body = blk: {
-                if (metadata_sources.get(name_val)) |src| break :blk src;
-                for (metadata_sources.keys(), metadata_sources.values()) |k, v| {
-                    if (std.ascii.eqlIgnoreCase(k, name_val)) break :blk v;
-                }
-                break :blk try std.fmt.allocPrint(
-                    self.arena,
-                    "public {s} {s} {{\n    // mock body\n}}",
-                    .{ type_label, name_val },
-                );
-            };
-            try sob.fields.put(self.arena, "Body", Value{ .string = body });
-            const gop = try self.store.getOrPut(self.arena, from_type);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            try self.id_type_map.put(self.arena, id, from_type);
-            return Value{ .sobject = sob };
+            return try self.generate_apex_metadata_stub(from_type, name_val);
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "FlowDefinitionView")) {
