@@ -2002,7 +2002,8 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\        JSONParser parentsParser = JSON.createParser(JSON.serialize(new List<Account>{ parent }));
         \\        JSONParser childrenParser = JSON.createParser(JSON.serialize(children));
         \\        JSONGenerator out = JSON.createGenerator(false);
-        \\        streamTokens(parentsParser, out, new InjectChildrenEventHandler(childrenParser, children));
+        \\        streamTokens(parentsParser, out,
+        \\ new InjectChildrenEventHandler(childrenParser, children));
         \\        String combined = out.getAsString();
         \\        Account typed = ((List<Account>) JSON.deserialize(combined, List<Account>.class))[0];
         \\        SObject generic = ((List<SObject>) JSON.deserialize(combined, List<SObject>.class))[0];
@@ -2106,7 +2107,8 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         \\        JSONParser parentsParser = JSON.createParser(JSON.serialize(new List<Account>{ parent }));
         \\        JSONParser childrenParser = JSON.createParser(JSON.serialize(children));
         \\        JSONGenerator out = JSON.createGenerator(false);
-        \\        streamTokens(parentsParser, out, new InjectChildrenEventHandler(childrenParser, children));
+        \\        streamTokens(parentsParser, out,
+        \\ new InjectChildrenEventHandler(childrenParser, children));
         \\        return out.getAsString();
         \\    }
         \\}
@@ -2538,15 +2540,18 @@ test "E2E: FeatureManagement.checkPermission honors assigned custom permissions 
         \\public class FeaturePermissionTest {
         \\    public static Boolean test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'perm@example.com', Email = 'perm@example.com', Alias = 'pusr');
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User',
+        \\ Username = 'perm@example.com', Email = 'perm@example.com', Alias = 'pusr');
         \\        insert u;
-        \\        PermissionSet ps = new PermissionSet(Name = 'CustomPermissionEnabled', Label = 'Custom Permission Enabled');
+        \\        PermissionSet ps = new PermissionSet(Name = 'CustomPermissionEnabled',
+        \\ Label = 'Custom Permission Enabled');
         \\        insert ps;
         \\        SetupEntityAccess sea = new SetupEntityAccess(
         \\            ParentId = ps.Id,
         \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName = 'CanModifyLoggerSettings'].Id
         \\        );
-        \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id,
+        \\ PermissionSetId = ps.Id);
         \\        insert new List<SObject>{ sea, psa };
         \\        Boolean hasPermission = false;
         \\        System.runAs(u) {
@@ -2570,7 +2575,8 @@ test "E2E: standard user custom object describe is not updateable by default" {
         \\public class StandardUserCrudTest {
         \\    public static Boolean test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'crud@example.com', Email = 'crud@example.com', Alias = 'cusr');
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User',
+        \\ Username = 'crud@example.com', Email = 'crud@example.com', Alias = 'cusr');
         \\        insert u;
         \\        Boolean canUpdate = true;
         \\        System.runAs(u) {
@@ -2594,7 +2600,8 @@ test "E2E: schema-qualified standard user custom object describe is not updateab
         \\public class SchemaQualifiedCrudTest {
         \\    public static String test() {
         \\        Schema.Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        Schema.User u = new Schema.User(ProfileId = p.Id, LastName = 'User', Username = 'schema-crud@example.com', Email = 'schema-crud@example.com', Alias = 'sqru');
+        \\        Schema.User u = new Schema.User(ProfileId = p.Id, LastName = 'User',
+        \\ Username = 'schema-crud@example.com', Email = 'schema-crud@example.com', Alias = 'sqru');
         \\        insert u;
         \\        String result = '';
         \\        System.runAs(u) {
@@ -2619,7 +2626,8 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
         \\public class ProfileInCrudTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User',
+        \\ Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
         \\        String result = '';
         \\        System.runAs(u) {
         \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
@@ -2862,9 +2870,11 @@ test "E2E: stripInaccessible READABLE removes selected null fields without acces
         \\            Alias = 'rdrs'
         \\        );
         \\        insert u;
-        \\        PermissionSet ps = new PermissionSet(Name = 'AccountReadOnly', Label = 'AccountReadOnly');
+        \\        PermissionSet ps = new PermissionSet(Name = 'AccountReadOnly',
+        \\ Label = 'AccountReadOnly');
         \\        insert ps;
-        \\        ObjectPermissions op = new ObjectPermissions(ParentId = ps.Id, SobjectType = 'Account');
+        \\        ObjectPermissions op = new ObjectPermissions(ParentId = ps.Id,
+        \\ SobjectType = 'Account');
         \\        op.PermissionsRead = true;
         \\        insert op;
         \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
@@ -2956,7 +2966,8 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
         \\    }
         \\    public static String test() {
         \\        User u = makeUser();
-        \\        Thing__c record = new Thing__c(Id = 'a00000000000001AAA', Name = 'Example', Detail__c = 'secret');
+        \\        Thing__c record = new Thing__c(Id = 'a00000000000001AAA', Name = 'Example',
+        \\ Detail__c = 'secret');
         \\        String json;
         \\        System.runAs(u) {
         \\            SObjectAccessDecision decision = Security.stripInaccessible(
@@ -3294,7 +3305,8 @@ test "E2E: synthetic automated-process User query works when the User store is n
         \\public class AutomatedProcessUserQueryTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        insert new User(ProfileId = p.Id, LastName = 'StoreUser', Username = 'store-user@example.com', Email = 'store-user@example.com', Alias = 'stor');
+        \\        insert new User(ProfileId = p.Id, LastName = 'StoreUser',
+        \\ Username = 'store-user@example.com', Email = 'store-user@example.com', Alias = 'stor');
         \\        User autoproc = [SELECT Alias, Username, UserType FROM User WHERE Alias = 'autoproc'];
         \\        return autoproc.Alias + ':' + autoproc.Username + ':' + autoproc.UserType;
         \\    }
@@ -3353,7 +3365,8 @@ test "E2E: User query by UserInfo username resolves the current user when other 
         \\public class CurrentUserUsernameQueryTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        insert new User(ProfileId = p.Id, LastName = 'Other', Username = 'other.user@example.com', Email = 'other.user@example.com', Alias = 'othr');
+        \\        insert new User(ProfileId = p.Id, LastName = 'Other',
+        \\ Username = 'other.user@example.com', Email = 'other.user@example.com', Alias = 'othr');
         \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
         \\        return currentUser.Id + ':' + currentUser.Username;
         \\    }
@@ -3415,7 +3428,9 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
         \\public class AccountBrandAccessTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'accountbrand@example.com', Email = 'accountbrand@example.com', Alias = 'abrd');
+        \\        User u = new User(ProfileId = p.Id, LastName = 'User',
+        \\ Username = 'accountbrand@example.com', Email = 'accountbrand@example.com',
+        \\ Alias = 'abrd');
         \\        String result = '';
         \\        System.runAs(u) {
         \\            result = String.valueOf(Schema.AccountBrand.SObjectType.getDescribe().isAccessible()) + ':' +
@@ -3948,7 +3963,8 @@ test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
         \\            new Thing__c(UniqueId__c = 'u1', Name = 'Updated'),
         \\            new Thing__c(UniqueId__c = 'u2', Name = 'Created')
         \\        };
-        \\        List<Database.UpsertResult> results = Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Database.UpsertResult> results = Database.upsert(rows,
+        \\ Schema.Thing__c.UniqueId__c);
         \\        List<Thing__c> saved = [SELECT UniqueId__c, Name FROM Thing__c];
         \\        String existingName = null;
         \\        for (Thing__c row : saved) {
@@ -4108,7 +4124,8 @@ test "E2E: getFilteredAttachments full flow" {
         \\        // queryWithBinds to get CDLs
         \\        Map<String, Object> recordBind = new Map<String, Object>{ 'recordId' => acct.Id };
         \\        String qs = 'SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = :recordId';
-        \\        List<ContentDocumentLink> links = Database.queryWithBinds(qs, recordBind, AccessLevel.USER_MODE);
+        \\        List<ContentDocumentLink> links = Database.queryWithBinds(qs, recordBind,
+        \\ AccessLevel.USER_MODE);
         \\        Set<Id> fileIds = new Set<Id>();
         \\        for (ContentDocumentLink cdl : links) {
         \\            fileIds.add(cdl.ContentDocumentId);
@@ -4844,7 +4861,8 @@ test "E2E: enum-valued string argument disambiguates overloads" {
         \\    public static String test() {
         \\        // Must pick the (String, Direction, Boolean) overload even though the string
         \\        // 'ASC' would otherwise score equally against (String, String, Direction).
-        \\        EnumOverloadProbe.Ordering ord = new EnumOverloadProbe.Ordering('Name', EnumOverloadProbe.Direction.ASC, false);
+        \\        EnumOverloadProbe.Ordering ord = new EnumOverloadProbe.Ordering('Name',
+        \\ EnumOverloadProbe.Direction.ASC, false);
         \\        return ord.field;
         \\    }
         \\}
@@ -5034,7 +5052,8 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     const source =
         \\public class RunAsUserOverrideProbe {
         \\    public static String test() {
-        \\        User target = new User(FirstName = 'Bob', LastName = 'Smith', Email = 'bob@example.com', LanguageLocaleKey = 'en_US');
+        \\        User target = new User(FirstName = 'Bob', LastName = 'Smith',
+        \\ Email = 'bob@example.com', LanguageLocaleKey = 'en_US');
         \\        String result = '';
         \\        System.runAs(target) {
         \\            result = UserInfo.getFirstName() + '|' + UserInfo.getLastName() + '|' +
@@ -5822,7 +5841,8 @@ test "E2E: filtered rollup matches enum name string values" {
         \\    public static Integer test() {
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
-        \\        insert new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
+        \\        insert new Child__c(Parent__c = parentRecord.Id,
+        \\ Level__c = LogLevel.ERROR.name());
         \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
         \\    }
@@ -6108,7 +6128,8 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         \\    public static Integer test() {
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
-        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
+        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id,
+        \\ Level__c = LogLevel.ERROR.name());
         \\        insert Builder.fill(childRecord);
         \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
@@ -6216,7 +6237,8 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     const source =
         \\public class MultiHopCountQueryTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(Name = 'Parent',
+        \\ RetentionDate__c = System.today().addDays(-1));
         \\        insert parent;
         \\        Child__c child = new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        insert child;
@@ -6687,8 +6709,10 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         \\    public static String test() {
         \\        SObject record = new ApexClass(Name = 'SomeClass', Body = 'body');
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
-        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Map<String, Object> deserializedRecordMap = (Map<String,
+        \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(),
+        \\ Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        SObject updatedRecord = (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
         \\        return updatedRecord.getSObjectType().getDescribe().getName() + ':' +
         \\            String.valueOf(updatedRecord.get('Name')) + ':' +
@@ -6715,8 +6739,10 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         \\    public static String test() {
         \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
-        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Map<String, Object> deserializedRecordMap = (Map<String,
+        \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(),
+        \\ Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        record = (Schema.ApexClass) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
@@ -6768,11 +6794,13 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
     const source =
         \\public class ReadOnlyFieldSetterProbe {
         \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
+        \\ Object>{ field => value });
         \\    }
         \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String,
+        \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
         \\            String fieldName = sobjectField.toString();
         \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
@@ -6782,7 +6810,8 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
         \\    }
         \\    public static String test() {
         \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
-        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        record = (Schema.ApexClass) setReadOnlyField(record,
+        \\ Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body) + ':' +
@@ -6806,11 +6835,13 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
     const source =
         \\public class ReadOnlyFieldSetterCommaProbe {
         \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
+        \\ Object>{ field => value });
         \\    }
         \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String,
+        \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
         \\            String fieldName = sobjectField.toString();
         \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
@@ -6823,7 +6854,8 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
         \\            Name = 'SomeClass',
         \\            Body = 'Wow, look at this code for a mock version of apex class SomeClass'
         \\        );
-        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        record = (Schema.ApexClass) setReadOnlyField(record,
+        \\ Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body);
@@ -6859,13 +6891,16 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         \\}
         \\public class QualifiedSchemaSetupObjectProbe {
         \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
+        \\ Object>{ field => value });
         \\    }
         \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap = (Map<String,
+        \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
-        \\            deserializedRecordMap.put(sobjectField.toString(), changesToFields.get(sobjectField));
+        \\            deserializedRecordMap.put(sobjectField.toString(),
+        \\ changesToFields.get(sobjectField));
         \\        }
         \\        return (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
         \\    }
@@ -7239,7 +7274,8 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\    public static String test() {
         \\        Case supportCase = new Case(Subject = 'Support');
         \\        insert supportCase;
-        \\        EmailMessage emailMessage = new EmailMessage(ParentId = supportCase.Id, Subject = 'Some subject');
+        \\        EmailMessage emailMessage = new EmailMessage(ParentId = supportCase.Id,
+        \\ Subject = 'Some subject');
         \\        insert emailMessage;
         \\        String displayField = getDisplayFieldApiName(emailMessage.Id.getSObjectType());
         \\        List<Id> recordIds = new List<Id>{ emailMessage.Id };
@@ -7493,7 +7529,8 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
         \\    public static String test() {
         \\        Account accountRecord = new Account(Name = 'Acme');
         \\        insert accountRecord;
-        \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
+        \\        Contact contactRecord = new Contact(LastName = 'User',
+        \\ AccountId = accountRecord.Id);
         \\        insert contactRecord;
         \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id = :contactRecord.Id];
         \\        SObject parentRecord = queried.getSObject(Schema.Contact.AccountId);
@@ -7718,7 +7755,8 @@ test "E2E: top-level custom child queries preserve custom parent relationship fi
         \\    public static String test() {
         \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
         \\        insert parentRecord;
-        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
+        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id,
+        \\ Status__c = 'Open');
         \\        insert childRecord;
         \\        Child__c queried = [SELECT Id, Parent__r.Name FROM Child__c WHERE Id = :childRecord.Id];
         \\        return queried.Parent__r.Name;
@@ -9051,7 +9089,8 @@ test "E2E: implicit standard Name fields are treated as required" {
         \\            if (fieldDescribe.isCreateable() && !fieldDescribe.isNillable()) {
         \\                requiredFields.add(fieldDescribe.getName());
         \\                if (fieldDescribe.getType() == Schema.DisplayType.STRING) {
-        \\                    record.put(fieldDescribe.getName(), fieldDescribe.getName() + ' value');
+        \\                    record.put(fieldDescribe.getName(),
+        \\ fieldDescribe.getName() + ' value');
         \\                }
         \\            }
         \\        }
@@ -9281,7 +9320,8 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
         \\    public static String test() {
         \\        Integer inlineMaxLength = Schema.Thing__c.ShortText__c.getDescribe().getLength();
         \\        Integer tokenMaxLength = getFieldLength(Schema.Thing__c.ShortText__c);
-        \\        String truncatedValue = truncateFieldValue(Schema.Thing__c.ShortText__c, 'abcdef');
+        \\        String truncatedValue = truncateFieldValue(Schema.Thing__c.ShortText__c,
+        \\ 'abcdef');
         \\        return String.valueOf(inlineMaxLength) + ':' + String.valueOf(tokenMaxLength) +
         \\ ':' + truncatedValue;
         \\    }
@@ -9408,7 +9448,8 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
         \\public class ThingPicklist extends VisualEditor.DynamicPickList {
         \\    public override VisualEditor.DataRow getDefaultValue() {
         \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c.fieldSets.getMap().get('Related_List_Defaults');
-        \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName());
+        \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(),
+        \\ fieldSet.getName());
         \\    }
         \\    public override VisualEditor.DynamicPickListRows getValues() {
         \\        VisualEditor.DynamicPickListRows rows = new VisualEditor.DynamicPickListRows();
@@ -9671,8 +9712,10 @@ test "E2E: List<SObject> preserves token-based field access for Apex metadata re
     const source =
         \\public class ApexMetadataListAccessTest {
         \\    public static String test() {
-        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
-        \\        apexClassRecord.put(Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass',
+        \\ Body = 'public class ExampleClass {}');
+        \\        apexClassRecord.put(Schema.ApexClass.LastModifiedDate,
+        \\ Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ apexClassRecord };
         \\        List<SObject> metadataRecords = typedRecords;
         \\        SObject metadataRecord = metadataRecords.get(0);
@@ -9713,12 +9756,14 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
     const source =
         \\public class SObjectJsonRoundTripTest {
         \\    public static String test() {
-        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass',
+        \\ Body = 'public class ExampleClass {}');
         \\        String serialized = JSON.serialize(originalRecord);
         \\        Map<String,
         \\ Object> fields = (Map<String, Object>) JSON.deserializeUntyped(serialized);
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        SObject roundTripped = (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        SObject roundTripped = (SObject) JSON.deserialize(JSON.serialize(fields),
+        \\ SObject.class);
         \\        return String.valueOf(roundTripped.get('Name')) + ':' +
         \\            String.valueOf(roundTripped.get('Body')) + ':' +
         \\            String.valueOf(roundTripped.get('LastModifiedDate') != null) + ':' +
@@ -9742,8 +9787,10 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
     const source =
         \\public class CastedApexMetadataTypeTest {
         \\    public static String test() {
-        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
-        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass',
+        \\ Body = 'public class ExampleClass {}');
+        \\        Map<String, Object> fields = (Map<String,
+        \\ Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
         \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(JSON.serialize(fields), SObject.class);
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ castedRecord };
@@ -10270,7 +10317,8 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
         \\        return (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
         \\    }
         \\    public static String test() {
-        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass',
+        \\ Body = 'public class ExampleClass {}');
         \\        apexClassRecord = (Schema.ApexClass) setReadOnlyField(
         \\            apexClassRecord,
         \\            Schema.ApexClass.LastModifiedDate,
@@ -11117,7 +11165,8 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\}
         \\public class WrappedHardDeleteBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(Name = 'Parent',
+        \\ RetentionDate__c = System.today().addDays(-1));
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new WrappedHardDeleteBatch());
@@ -11478,7 +11527,8 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\}
         \\public class SingletonCleanupBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(Name = 'Parent',
+        \\ RetentionDate__c = System.today().addDays(-1));
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new SingletonCleanupBatch());
@@ -11602,7 +11652,8 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\}
         \\public class DirectCleanupBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(Name = 'Parent',
+        \\ RetentionDate__c = System.today().addDays(-1));
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new DirectCleanupBatch());
@@ -12169,7 +12220,8 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
         \\        insert accountRecord;
         \\        Datetime target = Datetime.newInstance(2025, 1, 2, 3, 4, 5);
         \\        System.Test.setCreatedDate(accountRecord.Id, target);
-        \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
+        \\        Contact contactRecord = new Contact(LastName = 'User',
+        \\ AccountId = accountRecord.Id);
         \\        insert contactRecord;
         \\        Contact queried = [SELECT AccountId, Account.CreatedDate FROM Contact WHERE Id = :contactRecord.Id];
         \\        Datetime actual = (Datetime) queried.getSObject('Account').get('CreatedDate');
@@ -12524,7 +12576,8 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
         \\        };
         \\        Database.DmlOptions insertOptions = new Database.DmlOptions();
         \\        insertOptions.OptAllOrNone = false;
-        \\        List<Database.SaveResult> insertResults = Database.insert(insertRows, insertOptions);
+        \\        List<Database.SaveResult> insertResults = Database.insert(insertRows,
+        \\ insertOptions);
         \\
         \\        List<Account> updateRows = new List<Account>{
         \\            new Account(Id = existing.Id, Name = 'Updated'),
@@ -12532,7 +12585,8 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
         \\        };
         \\        Database.DmlOptions updateOptions = new Database.DmlOptions();
         \\        updateOptions.OptAllOrNone = false;
-        \\        List<Database.SaveResult> updateResults = Database.update(updateRows, updateOptions);
+        \\        List<Database.SaveResult> updateResults = Database.update(updateRows,
+        \\ updateOptions);
         \\
         \\        return String.valueOf(insertResults[0].isSuccess()) + ':' +
         \\            String.valueOf(insertResults[1].isSuccess()) + ':' +
@@ -14192,7 +14246,8 @@ test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
     const source =
         \\public class InvocableActionFlowFailureProbe {
         \\    public static String test() {
-        \\        Invocable.Action action = Invocable.Action.createCustomAction('Flow', 'NoSuchFlow');
+        \\        Invocable.Action action = Invocable.Action.createCustomAction('Flow',
+        \\ 'NoSuchFlow');
         \\        action.setInvocations(new List<Map<String, Object>>{
         \\            new Map<String, Object>(),
         \\            new Map<String, Object>()
