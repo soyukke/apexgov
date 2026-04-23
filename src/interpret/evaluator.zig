@@ -12951,6 +12951,20 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !Value {
+        if (try self.eval_set_membership_method(set, method, args)) |v| return v;
+        if (try self.eval_set_mutation_method(set, method, args)) |v| return v;
+        if (try self.eval_set_copy_method(set, method, args)) |v| return v;
+        return Value.null_val;
+    }
+
+    /// Predicate / introspection methods: add (also mutates), contains, equals,
+    /// hashCode, size, isEmpty, toString, containsAll.
+    fn eval_set_membership_method(
+        self: *Evaluator,
+        set: *types.SetValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "add") and args.len > 0) {
             if (self.find_set_entry_key(set, args[0]) != null) return Value{ .boolean = false };
             const key = try self.set_entry_key(args[0]);
@@ -12966,13 +12980,33 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
             return Value{ .boolean = self.find_set_entry_key(set, args[0]) != null };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size"))
+        if (std.ascii.eqlIgnoreCase(method, "size")) {
             return Value{ .integer = @intCast(set.entries.count()) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) {
             return Value{ .boolean = set.entries.count() == 0 };
+        }
         if (std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerce_to_string(Value{ .set = set }, self.arena) };
         }
+        if (std.ascii.eqlIgnoreCase(method, "containsAll") and
+            args.len > 0 and args[0] == .set)
+        {
+            for (args[0].set.entries.values()) |item| {
+                if (self.find_set_entry_key(set, item) == null) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
+        }
+        return null;
+    }
+
+    /// Mutating methods: addAll, remove, clear.
+    fn eval_set_mutation_method(
+        self: *Evaluator,
+        set: *types.SetValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "addAll") and args.len > 0) {
             if (args[0] == .list) {
                 for (args[0].list.items.items) |item| {
@@ -12997,12 +13031,16 @@ pub const Evaluator = struct {
             set.entries = .empty;
             return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(method, "containsAll") and args.len > 0 and args[0] == .set) {
-            for (args[0].set.entries.values()) |item| {
-                if (self.find_set_entry_key(set, item) == null) return Value{ .boolean = false };
-            }
-            return Value{ .boolean = true };
-        }
+        return null;
+    }
+
+    /// Set-wide copy/iterator methods: clone/deepClone/iterator.
+    fn eval_set_copy_method(
+        self: *Evaluator,
+        set: *types.SetValue,
+        method: []const u8,
+        _: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "clone") or
             std.ascii.eqlIgnoreCase(method, "deepClone"))
         {
@@ -13026,7 +13064,7 @@ pub const Evaluator = struct {
             try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
             return Value{ .object = iter };
         }
-        return Value.null_val;
+        return null;
     }
 
     /// Simple pure queries and case conversions.
