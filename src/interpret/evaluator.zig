@@ -5856,119 +5856,165 @@ pub const Evaluator = struct {
         const where_clause = extract_where_clause(soql) orelse return null;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name) and
-                (pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(') and
-                (pos + field_name.len == where_clause.len or is_soql_whitespace(where_clause[pos + field_name.len]) or where_clause[pos + field_name.len] == ')'))
-            {
-                var j = pos + field_name.len;
-                while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
-
-                var is_in = false;
-                if (j + 2 <= where_clause.len and
-                    std.ascii.eqlIgnoreCase(where_clause[j .. j + 2], "IN"))
-                {
-                    is_in = true;
-                    j += 2;
-                } else if (j + 4 <= where_clause.len and
-                    std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
-                {
-                    j += 4;
-                } else if (j < where_clause.len and where_clause[j] == '=') {
-                    j += 1;
-                } else {
-                    while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(' and where_clause[j] != ' ') j += 1;
-                }
-
-                while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
-
-                if (is_in and j < where_clause.len and where_clause[j] == '(') {
-                    j += 1;
-                    while (j < where_clause.len and
-                        (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
-                    if (j < where_clause.len and where_clause[j] == '\'') {
-                        j += 1;
-                        const start = j;
-                        while (j < where_clause.len and where_clause[j] != '\'') j += 1;
-                        return where_clause[start..j];
-                    }
-                    const start = j;
-                    while (j < where_clause.len and
-                        where_clause[j] != ',' and where_clause[j] != ')' and
-                        where_clause[j] != ' ' and where_clause[j] != '\t') j += 1;
-                    if (j > start) return std.mem.trim(u8, where_clause[start..j], " \t\n\r'");
-                    continue;
-                }
-
-                if (j < where_clause.len and where_clause[j] == '\'') {
-                    j += 1;
-                    const start = j;
-                    while (j < where_clause.len and where_clause[j] != '\'') j += 1;
-                    return where_clause[start..j];
-                }
-                // Bare literal (TRUE / FALSE / number / unquoted identifier) — consume
-                // up to the next WHERE terminator so predicates like
-                // `PermissionsModifyAllData = TRUE` resolve to the string "TRUE"
-                // rather than returning null and being skipped during synthesis.
-                if (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(') {
-                    const start = j;
-                    while (j < where_clause.len) : (j += 1) {
-                        const ch = where_clause[j];
-                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') break;
-                        if (ch == ')' or ch == ',') break;
-                        // Stop at AND/OR boundary (defensive — WHERE terminators
-                        // beyond whitespace).
-                    }
-                    if (j > start) {
-                        const raw = std.mem.trim(u8, where_clause[start..j], " \t\n\r");
-                        if (raw.len > 0) return raw;
-                    }
-                }
-                if (j < where_clause.len and where_clause[j] == ':') {
-                    j += 1;
-                    const start = j;
-                    j = scan_bind_expression_end(where_clause, j);
-                    const var_name = where_clause[start..j];
-                    if (self.lookup_bind_value(current_env, var_name)) |v| {
-                        switch (v) {
-                            .string => return v.string,
-                            .list => {
-                                for (v.list.items.items) |item| {
-                                    switch (item) {
-                                        .string => return item.string,
-                                        .sobject => {
-                                            if (item.sobject.id) |id| return id;
-                                        },
-                                        else => {
-                                            const coerced = utils.coerce_to_string(
-                                                item,
-                                                self.arena,
-                                            ) catch continue;
-                                            return coerced;
-                                        },
-                                    }
-                                }
-                                return null;
-                            },
-                            .set => {
-                                var it = v.set.entries.iterator();
-                                if (it.next()) |entry| {
-                                    if (entry.value_ptr.* == .string)
-                                        return entry.value_ptr.*.string;
-                                }
-                                return null;
-                            },
-                            .map => {
-                                var it = v.map.entries.iterator();
-                                if (it.next()) |entry| return entry.key_ptr.*;
-                                return null;
-                            },
-                            else => return (utils.coerce_to_string(v, self.arena) catch null),
-                        }
-                    }
-                }
-            }
+            if (!is_where_field_match(where_clause, pos, field_name)) continue;
+            if (self.extract_where_field_rhs(
+                where_clause,
+                pos + field_name.len,
+                current_env,
+            )) |value| return value;
         }
         return null;
+    }
+
+    fn is_where_field_match(where_clause: []const u8, pos: usize, field_name: []const u8) bool {
+        if (!std.ascii.eqlIgnoreCase(
+            where_clause[pos .. pos + field_name.len],
+            field_name,
+        )) return false;
+        const at_left_boundary = pos == 0 or
+            is_soql_whitespace(where_clause[pos - 1]) or
+            where_clause[pos - 1] == '(';
+        const at_right_boundary = pos + field_name.len == where_clause.len or
+            is_soql_whitespace(where_clause[pos + field_name.len]) or
+            where_clause[pos + field_name.len] == ')';
+        return at_left_boundary and at_right_boundary;
+    }
+
+    /// Scan the operator and literal after a matched field name. Returns the
+    /// literal text (or first element of an IN list / bind collection), or
+    /// null when no literal follows.
+    fn extract_where_field_rhs(
+        self: *Evaluator,
+        where_clause: []const u8,
+        after_field: usize,
+        current_env: *Env,
+    ) ?[]const u8 {
+        var j = after_field;
+        while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+        var is_in = false;
+        if (j + 2 <= where_clause.len and
+            std.ascii.eqlIgnoreCase(where_clause[j .. j + 2], "IN"))
+        {
+            is_in = true;
+            j += 2;
+        } else if (j + 4 <= where_clause.len and
+            std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
+        {
+            j += 4;
+        } else if (j < where_clause.len and where_clause[j] == '=') {
+            j += 1;
+        } else {
+            while (j < where_clause.len and where_clause[j] != '\'' and
+                where_clause[j] != ':' and where_clause[j] != '(' and
+                where_clause[j] != ' ') j += 1;
+        }
+        while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+
+        if (is_in and j < where_clause.len and where_clause[j] == '(') {
+            return extract_in_clause_first_element(where_clause, j + 1);
+        }
+        if (j < where_clause.len and where_clause[j] == '\'') {
+            return extract_quoted_string_literal(where_clause, j + 1);
+        }
+        if (j < where_clause.len and where_clause[j] != '\'' and
+            where_clause[j] != ':' and where_clause[j] != '(')
+        {
+            // Bare literal (TRUE / FALSE / number / unquoted identifier) —
+            // consume up to the next WHERE terminator so predicates like
+            // `PermissionsModifyAllData = TRUE` resolve to the string "TRUE"
+            // rather than returning null and being skipped during synthesis.
+            if (extract_bare_literal(where_clause, j)) |literal| return literal;
+        }
+        if (j < where_clause.len and where_clause[j] == ':') {
+            return self.extract_bind_variable_literal(where_clause, j + 1, current_env);
+        }
+        return null;
+    }
+
+    fn extract_in_clause_first_element(
+        where_clause: []const u8,
+        start_after_paren: usize,
+    ) ?[]const u8 {
+        var j = start_after_paren;
+        while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) {
+            j += 1;
+        }
+        if (j < where_clause.len and where_clause[j] == '\'') {
+            j += 1;
+            const start = j;
+            while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+            return where_clause[start..j];
+        }
+        const start = j;
+        while (j < where_clause.len and where_clause[j] != ',' and where_clause[j] != ')' and
+            where_clause[j] != ' ' and where_clause[j] != '\t') j += 1;
+        if (j > start) return std.mem.trim(u8, where_clause[start..j], " \t\n\r'");
+        return null;
+    }
+
+    fn extract_quoted_string_literal(
+        where_clause: []const u8,
+        start: usize,
+    ) []const u8 {
+        var j = start;
+        while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+        return where_clause[start..j];
+    }
+
+    fn extract_bare_literal(where_clause: []const u8, start: usize) ?[]const u8 {
+        var j = start;
+        while (j < where_clause.len) : (j += 1) {
+            const ch = where_clause[j];
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') break;
+            if (ch == ')' or ch == ',') break;
+        }
+        if (j <= start) return null;
+        const raw = std.mem.trim(u8, where_clause[start..j], " \t\n\r");
+        if (raw.len == 0) return null;
+        return raw;
+    }
+
+    fn extract_bind_variable_literal(
+        self: *Evaluator,
+        where_clause: []const u8,
+        start: usize,
+        current_env: *Env,
+    ) ?[]const u8 {
+        const j = scan_bind_expression_end(where_clause, start);
+        const var_name = where_clause[start..j];
+        const v = self.lookup_bind_value(current_env, var_name) orelse return null;
+        return switch (v) {
+            .string => |s| s,
+            .list => blk: {
+                for (v.list.items.items) |item| {
+                    switch (item) {
+                        .string => break :blk item.string,
+                        .sobject => if (item.sobject.id) |id| break :blk id,
+                        else => {
+                            const coerced = utils.coerce_to_string(
+                                item,
+                                self.arena,
+                            ) catch continue;
+                            break :blk coerced;
+                        },
+                    }
+                }
+                break :blk null;
+            },
+            .set => blk: {
+                var it = v.set.entries.iterator();
+                if (it.next()) |entry| {
+                    if (entry.value_ptr.* == .string) break :blk entry.value_ptr.*.string;
+                }
+                break :blk null;
+            },
+            .map => blk: {
+                var it = v.map.entries.iterator();
+                if (it.next()) |entry| break :blk entry.key_ptr.*;
+                break :blk null;
+            },
+            else => utils.coerce_to_string(v, self.arena) catch null,
+        };
     }
 
     fn has_where_field_null_literal(
