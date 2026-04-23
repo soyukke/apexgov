@@ -11865,6 +11865,155 @@ pub const Evaluator = struct {
         try inst.fields.put(self.arena, "__text__", Value{ .string = text });
     }
 
+    /// Time.hour/minute/second/millisecond → the stored field values.
+    fn eval_time_accessor_method(obj: Value, method: []const u8) ?Value {
+        if (obj != .object) return null;
+        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "Time")) return null;
+        const keys = [_][]const u8{ "hour", "minute", "second", "millisecond" };
+        for (keys) |key| {
+            if (std.ascii.eqlIgnoreCase(method, key)) {
+                return obj.object.fields.get(key) orelse Value{ .integer = 0 };
+            }
+        }
+        return null;
+    }
+
+    /// Date / Datetime instance methods: extract the inner date string and
+    /// dispatch through eval_string_method, re-wrapping results back into
+    /// Date/Datetime where the original method preserves the type.
+    fn eval_date_like_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        if (!(std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime")))
+        {
+            return null;
+        }
+        const date_str = builtins.extract_date_string(obj) orelse return null;
+
+        // No-arg format(): Salesforce default is M/d/yyyy for Date, M/d/yyyy, h:mm a for Datetime.
+        if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
+            if (try self.default_date_like_format(obj, date_str)) |v| return v;
+        }
+
+        const result = try self.eval_string_method(date_str, method, args);
+        if (result != .string) return result;
+        if (std.ascii.eqlIgnoreCase(method, "date") or
+            std.ascii.eqlIgnoreCase(method, "dateGmt"))
+        {
+            return try builtins.make_date_value(self.arena, result.string);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "addDays") or
+            std.ascii.eqlIgnoreCase(method, "addMonths") or
+            std.ascii.eqlIgnoreCase(method, "addYears") or
+            std.ascii.eqlIgnoreCase(method, "addHours") or
+            std.ascii.eqlIgnoreCase(method, "addMinutes") or
+            std.ascii.eqlIgnoreCase(method, "addSeconds"))
+        {
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
+                return try builtins.make_date_value(self.arena, result.string);
+            }
+            return try builtins.make_datetime_value(self.arena, result.string);
+        }
+        return result;
+    }
+
+    /// Default format for Date → `M/d/yyyy`, Datetime → `M/d/yyyy, h:mm AM/PM`.
+    /// Returns null when parse_iso_date cannot interpret the stored value.
+    fn default_date_like_format(
+        self: *Evaluator,
+        obj: Value,
+        date_str: []const u8,
+    ) anyerror!?Value {
+        const dt = parse_iso_date(date_str) orelse return null;
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
+            return Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{d}/{d}/{d:0>4}",
+                .{ dt.m, dt.d, @as(u32, @intCast(dt.y)) },
+            ) };
+        }
+        const hour12: u8 = blk: {
+            const h_mod = dt.h % 12;
+            break :blk if (h_mod == 0) 12 else h_mod;
+        };
+        const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
+        return Value{ .string = try std.fmt.allocPrint(
+            self.arena,
+            "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}",
+            .{ dt.m, dt.d, @as(u32, @intCast(dt.y)), hour12, dt.mi, am_pm },
+        ) };
+    }
+
+    /// Dispatch user-defined class methods for ObjectInstance values. When the
+    /// current `this` points at `obj` and `current_class` is known, prefer the
+    /// declared class over the instance's `class_name`. Also walks outer
+    /// classes to resolve methods shadowed by same-named top-level classes
+    /// (e.g. `LoggerDataStore.Database` vs top-level `Database`).
+    fn eval_user_class_dispatch(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        const dispatch_decl = blk: {
+            if (current_env.get("this")) |this_val| {
+                if (this_val == .object and this_val.object == obj.object) {
+                    if (self.current_class) |current_class_name| {
+                        if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
+                    }
+                }
+            }
+            break :blk self.find_class(obj.object.class_name) orelse null;
+        };
+        const class_decl = dispatch_decl orelse return null;
+        const md = self.find_method_in_hierarchy_typed(null, class_decl, method, args) orelse
+            self.find_method_in_hierarchy(null, class_decl, method, args.len);
+        if (md != null) {
+            return try self.call_instance_method(class_decl, obj.object, method, args);
+        }
+        // Method not found in this class — it may be shadowed by a same-named
+        // top-level class. Search outer classes whose inner class matches the
+        // instance class_name and has the method.
+        var cls_iter = self.classes.iterator();
+        while (cls_iter.next()) |entry| {
+            const cd = entry.value_ptr.*;
+            for (cd.members) |member| {
+                switch (member) {
+                    .class_decl => |inner_cd| {
+                        if (!std.ascii.eqlIgnoreCase(
+                            inner_cd.name,
+                            obj.object.class_name,
+                        ) or inner_cd == class_decl) continue;
+                        const inner_md = self.find_method_in_hierarchy_typed(
+                            null,
+                            inner_cd,
+                            method,
+                            args,
+                        ) orelse
+                            self.find_method_in_hierarchy(null, inner_cd, method, args.len);
+                        if (inner_md != null) {
+                            return try self.call_instance_method(
+                                inner_cd,
+                                obj.object,
+                                method,
+                                args,
+                            );
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
     fn stub_provider_param_type_fallback(a: Value) []const u8 {
         return switch (a) {
             .string => "String",
@@ -11900,138 +12049,9 @@ pub const Evaluator = struct {
         if (try self.eval_stub_provider_method(obj, method, args)) |v| return v;
         if (try self.eval_type_new_instance_user_class(obj, method)) |v| return v;
         if (try self.eval_json_parser_method(obj, method, args)) |v| return v;
-
-        // Time objects: expose h/m/s/ms components directly from stored fields.
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time")) {
-            if (std.ascii.eqlIgnoreCase(method, "hour")) {
-                return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "minute")) {
-                return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "second")) {
-                return obj.object.fields.get("second") orelse Value{ .integer = 0 };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "millisecond")) {
-                return obj.object.fields.get("millisecond") orelse Value{ .integer = 0 };
-            }
-        }
-
-        // Date/DateTime objects: extract the inner date string and dispatch as string methods
-        if (obj == .object) {
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime"))
-            {
-                if (builtins.extract_date_string(obj)) |date_str| {
-                    // No-arg format(): Salesforce default is M/d/yyyy for Date, M/d/yyyy, h:mm a
-                    // for Datetime.
-                    if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
-                        if (parse_iso_date(date_str)) |dt| {
-                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
-                                return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}", .{
-                                    dt.m, dt.d, @as(u32, @intCast(dt.y)),
-                                }) };
-                            }
-                            const hour12: u8 = blk: {
-                                const h_mod = dt.h % 12;
-                                break :blk if (h_mod == 0) 12 else h_mod;
-                            };
-                            const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
-                            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}", .{
-                                dt.m, dt.d, @as(u32, @intCast(dt.y)), hour12, dt.mi, am_pm,
-                            }) };
-                        }
-                    }
-                    const result = try self.eval_string_method(date_str, method, args);
-                    // Wrap date() result back into a Date object, and addDays etc. keep their type
-                    if (result == .string) {
-                        if (std.ascii.eqlIgnoreCase(method, "date") or
-                            std.ascii.eqlIgnoreCase(method, "dateGmt"))
-                        {
-                            return try builtins.make_date_value(self.arena, result.string);
-                        }
-                        if (std.ascii.eqlIgnoreCase(method, "addDays") or
-                            std.ascii.eqlIgnoreCase(method, "addMonths") or
-                            std.ascii.eqlIgnoreCase(method, "addYears") or
-                            std.ascii.eqlIgnoreCase(method, "addHours") or
-                            std.ascii.eqlIgnoreCase(method, "addMinutes") or
-                            std.ascii.eqlIgnoreCase(method, "addSeconds"))
-                        {
-                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
-                                return try builtins.make_date_value(self.arena, result.string);
-                            }
-                            return try builtins.make_datetime_value(self.arena, result.string);
-                        }
-                    }
-                    return result;
-                }
-            }
-        }
-
-        // For ObjectInstance with a user-defined class, try class methods first
-        if (obj == .object) {
-            const dispatch_decl = blk: {
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object and this_val.object == obj.object) {
-                        if (self.current_class) |current_class_name| {
-                            if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
-                        }
-                    }
-                }
-                break :blk self.find_class(obj.object.class_name) orelse null;
-            };
-            if (dispatch_decl) |class_decl| {
-                const md = self.find_method_in_hierarchy_typed(
-                    null,
-                    class_decl,
-                    method,
-                    args,
-                ) orelse
-                    self.find_method_in_hierarchy(null, class_decl, method, args.len);
-                if (md != null) {
-                    return self.call_instance_method(class_decl, obj.object, method, args);
-                }
-                // Method not found in this class — it may be shadowed by a same-named
-                // top-level class. Search for an outer class whose inner class matches
-                // and has the method (e.g., LoggerDataStore.Database vs top-level Database).
-                var cls_iter = self.classes.iterator();
-                while (cls_iter.next()) |entry| {
-                    const cd = entry.value_ptr.*;
-                    for (cd.members) |member| {
-                        switch (member) {
-                            .class_decl => |inner_cd| {
-                                if (std.ascii.eqlIgnoreCase(
-                                    inner_cd.name,
-                                    obj.object.class_name,
-                                ) and inner_cd != class_decl) {
-                                    const inner_md = self.find_method_in_hierarchy_typed(
-                                        null,
-                                        inner_cd,
-                                        method,
-                                        args,
-                                    ) orelse
-                                        self.find_method_in_hierarchy(
-                                            null,
-                                            inner_cd,
-                                            method,
-                                            args.len,
-                                        );
-                                    if (inner_md != null) {
-                                        return self.call_instance_method(
-                                            inner_cd,
-                                            obj.object,
-                                            method,
-                                            args,
-                                        );
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-            }
-        }
+        if (eval_time_accessor_method(obj, method)) |v| return v;
+        if (try self.eval_date_like_instance_method(obj, method, args)) |v| return v;
+        if (try self.eval_user_class_dispatch(obj, method, args, current_env)) |v| return v;
 
         var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
         if (try builtins.dispatch_instance(&bctx, obj, method, args)) |result| {
