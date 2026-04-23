@@ -18718,79 +18718,18 @@ pub const Evaluator = struct {
         static_only: bool,
     ) ?*ast.MethodDecl {
         var candidates: [64]*ast.MethodDecl = undefined;
-        var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
-
-        for (class_decl.members) |member| {
-            switch (member) {
-                .method_decl => |md| {
-                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and
-                        md.modifiers.is_static == static_only)
-                    {
-                        if (md.params.len == args.len) {
-                            if (count < candidates.len) {
-                                candidates[count] = md;
-                                count += 1;
-                            }
-                        }
-                        if (best_any == null) best_any = md;
-                    }
-                },
-                else => {},
-            }
-        }
-
-        if (count == 0) return if (best_any != null) best_any else null;
+        const count = collect_method_candidates_filtered(
+            class_decl,
+            method_name,
+            args.len,
+            static_only,
+            &candidates,
+            &best_any,
+        );
+        if (count == 0) return best_any;
         if (count == 1) return candidates[0];
-
-        const arg_type_hints = self.cast_type_hints;
-
-        // Multiple candidates: score each by type compatibility
-        var best: ?*ast.MethodDecl = null;
-        var best_score: i32 = -1;
-        for (candidates[0..count]) |md| {
-            var score: i32 = 0;
-            for (md.params, 0..) |param, i| {
-                if (i >= args.len) break;
-                const pt = param.type_ref.name;
-                const arg = args[i];
-                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                if (arg_hint) |hint| {
-                    const hint_score = self.overload_score_for_type_hint(
-                        hint,
-                        self.render_type_ref(param.type_ref),
-                    );
-                    if (hint_score > 0) {
-                        score += hint_score;
-                        if (arg == .null_val) continue;
-                    }
-                }
-                var arg_score = overload_score_for_arg(arg, pt);
-                // For object args with score 0, check inheritance chain
-                if (arg_score == 0 and arg == .object) {
-                    if (self.is_subclass_of(arg.object.class_name, pt)) {
-                        arg_score = 2;
-                    }
-                }
-                // For List args, score generic element compatibility using declared element types.
-                if (arg == .list and
-                    std.ascii.eqlIgnoreCase(pt, "List") and
-                    param.type_ref.params.len > 0)
-                {
-                    arg_score = self.score_list_argument_for_param(
-                        arg.list,
-                        arg_hint,
-                        param.type_ref,
-                    );
-                }
-                score += arg_score;
-            }
-            if (score > best_score) {
-                best_score = score;
-                best = md;
-            }
-        }
-        return best orelse candidates[0];
+        return self.pick_best_candidate(candidates[0..count], args, false);
     }
 
     /// Type-aware method resolution for overloaded methods.
@@ -18803,84 +18742,142 @@ pub const Evaluator = struct {
         args: []const Value,
     ) ?*ast.MethodDecl {
         var candidates: [64]*ast.MethodDecl = undefined;
-        var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
+        const count = collect_method_candidates_filtered(
+            class_decl,
+            method_name,
+            args.len,
+            null,
+            &candidates,
+            &best_any,
+        );
+        if (count == 0) return best_any;
+        if (count == 1) return candidates[0];
+        return self.pick_best_candidate(candidates[0..count], args, true);
+    }
 
+    /// Scan `class_decl.members` for methods matching name and arg count.
+    /// Fills `candidates` with up-to-buffer-length matches and tracks the
+    /// first same-named method as `best_any` (a fallback when no arity match
+    /// is found). `static_only`: null = no filter, true = static only,
+    /// false = instance only.
+    fn collect_method_candidates_filtered(
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        arg_count: usize,
+        static_only: ?bool,
+        candidates: []*ast.MethodDecl,
+        best_any: *?*ast.MethodDecl,
+    ) usize {
+        var count: usize = 0;
         for (class_decl.members) |member| {
             switch (member) {
                 .method_decl => |md| {
-                    if (std.ascii.eqlIgnoreCase(md.name, method_name)) {
-                        if (md.params.len == args.len) {
-                            if (count < candidates.len) {
-                                candidates[count] = md;
-                                count += 1;
-                            }
-                        }
-                        if (best_any == null) best_any = md;
+                    if (!std.ascii.eqlIgnoreCase(md.name, method_name)) continue;
+                    if (static_only) |want_static| {
+                        if (md.modifiers.is_static != want_static) continue;
                     }
+                    if (md.params.len == arg_count) {
+                        if (count < candidates.len) {
+                            candidates[count] = md;
+                            count += 1;
+                        }
+                    }
+                    if (best_any.* == null) best_any.* = md;
                 },
                 else => {},
             }
         }
+        return count;
+    }
 
-        if (count == 0) return best_any;
-        if (count == 1) return candidates[0];
-
-        // Multiple candidates: score each by type compatibility
+    /// Score every candidate and return the highest. `apply_collection_penalty`
+    /// switches between the two call sites' slightly different treatments of
+    /// the SObject↔List and List↔non-List mismatches.
+    fn pick_best_candidate(
+        self: *Evaluator,
+        candidates: []const *ast.MethodDecl,
+        args: []const Value,
+        apply_collection_penalty: bool,
+    ) *ast.MethodDecl {
         const arg_type_hints = self.cast_type_hints;
         var best: ?*ast.MethodDecl = null;
         var best_score: i32 = -1;
-        for (candidates[0..count]) |md| {
-            var score: i32 = 0;
-            for (md.params, 0..) |param, i| {
-                if (i >= args.len) break;
-                const pt = param.type_ref.name;
-                const arg = args[i];
-                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                if (arg_hint) |hint| {
-                    const hint_score = self.overload_score_for_type_hint(
-                        hint,
-                        self.render_type_ref(param.type_ref),
-                    );
-                    if (hint_score > 0) {
-                        score += hint_score;
-                        if (arg == .null_val) continue;
-                    }
-                }
-                // Score: higher is better match (with special cases for collection mismatches)
-                if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
-                    // SObject passed where List expected = poor match
-                    score -= 1;
-                } else if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
-                    // List passed where non-List expected = poor match
-                    score -= 1;
-                } else {
-                    var arg_score = overload_score_for_arg(arg, pt);
-                    if (arg_score == 0 and arg == .object) {
-                        if (self.is_subclass_of(arg.object.class_name, pt)) {
-                            arg_score = 2;
-                        }
-                    }
-                    // List generic element type check
-                    if (arg == .list and
-                        std.ascii.eqlIgnoreCase(pt, "List") and
-                        param.type_ref.params.len > 0)
-                    {
-                        arg_score = self.score_list_argument_for_param(
-                            arg.list,
-                            arg_hint,
-                            param.type_ref,
-                        );
-                    }
-                    score += arg_score;
-                }
-            }
+        for (candidates) |md| {
+            const score = self.score_candidate_method(
+                md,
+                args,
+                arg_type_hints,
+                apply_collection_penalty,
+            );
             if (best == null or score > best_score) {
-                best = md;
                 best_score = score;
+                best = md;
             }
         }
         return best orelse candidates[0];
+    }
+
+    fn score_candidate_method(
+        self: *Evaluator,
+        md: *ast.MethodDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+        apply_collection_penalty: bool,
+    ) i32 {
+        var score: i32 = 0;
+        for (md.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const pt = param.type_ref.name;
+            const arg = args[i];
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len)
+                arg_type_hints.?[i]
+            else
+                null;
+            if (arg_hint) |hint| {
+                const hint_score = self.overload_score_for_type_hint(
+                    hint,
+                    self.render_type_ref(param.type_ref),
+                );
+                if (hint_score > 0) {
+                    score += hint_score;
+                    if (arg == .null_val) continue;
+                }
+            }
+            if (apply_collection_penalty) {
+                if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
+                    score -= 1;
+                    continue;
+                }
+                if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
+                    score -= 1;
+                    continue;
+                }
+            }
+            score += self.score_candidate_arg(arg, param, pt, arg_hint);
+        }
+        return score;
+    }
+
+    fn score_candidate_arg(
+        self: *Evaluator,
+        arg: Value,
+        param: ast.Param,
+        pt: []const u8,
+        arg_hint: ?[]const u8,
+    ) i32 {
+        var arg_score = overload_score_for_arg(arg, pt);
+        if (arg_score == 0 and arg == .object and
+            self.is_subclass_of(arg.object.class_name, pt))
+        {
+            arg_score = 2;
+        }
+        if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and
+            param.type_ref.params.len > 0)
+        {
+            arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+        }
+        return arg_score;
     }
 
     fn find_compatible_method_in_class(
