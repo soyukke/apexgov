@@ -2617,7 +2617,8 @@ test "E2E: schema-qualified standard user custom object describe is not updateab
         \\        insert u;
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\            Boolean upd = Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable();
+        \\            result = String.valueOf(upd) + ':' +
         \\                String.valueOf(System.FeatureManagement.checkPermission('CanModifyLoggerSettings'));
         \\        }
         \\        return result;
@@ -2643,7 +2644,8 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
         \\ Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
+        \\            Boolean upd = Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable();
+        \\            result = String.valueOf(upd) + ':' +
         \\                String.valueOf(Schema.Log__c.SObjectType.getDescribe().isDeletable());
         \\        }
         \\        return result;
@@ -3456,7 +3458,8 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
         \\ Alias = 'abrd');
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.AccountBrand.SObjectType.getDescribe().isAccessible()) + ':' +
+        \\            Boolean acc = Schema.AccountBrand.SObjectType.getDescribe().isAccessible();
+        \\            result = String.valueOf(acc) + ':' +
         \\                String.valueOf(Schema.AccountBrand.CompanyName.getDescribe().isAccessible()) + ':' +
         \\                String.valueOf(Schema.AccountBrand.Name.getDescribe().isAccessible());
         \\        }
@@ -5924,7 +5927,9 @@ test "E2E: required field population preserves explicitly set picklist-like valu
         \\    public class RequiredFieldBuilder {
         \\        public static Example__c fill(Example__c record) {
         \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
-        \\            for (Schema.SObjectField field : Example__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            Map<String, Schema.SObjectField> ex_fields =
+        \\                Example__c.SObjectType.getDescribe().fields.getMap();
+        \\            for (Schema.SObjectField field : ex_fields.values()) {
         \\                Schema.DescribeFieldResult describe = field.getDescribe();
         \\                if (describe.isCreateable() == false) {
         \\                    continue;
@@ -6051,7 +6056,8 @@ test "E2E: picklist describe preserves metadata order when records only use a su
         \\public class PicklistMetadataOrderTest {
         \\    public static String test() {
         \\        insert new Thing__c(Name = 'One', Priority__c = 'Low');
-        \\        List<Schema.PicklistEntry> values = Schema.Thing__c.Priority__c.getDescribe().getPicklistValues();
+        \\        Schema.DescribeFieldResult desc = Schema.Thing__c.Priority__c.getDescribe();
+        \\        List<Schema.PicklistEntry> values = desc.getPicklistValues();
         \\        return String.valueOf(values.size()) + ':' +
         \\            values.get(0).getValue() + ':' +
         \\            values.get(1).getValue() + ':' +
@@ -6142,7 +6148,9 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         \\    public class Builder {
         \\        public static Child__c fill(Child__c record) {
         \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
-        \\            for (Schema.SObjectField field : Child__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            Map<String, Schema.SObjectField> ch_fields =
+        \\                Child__c.SObjectType.getDescribe().fields.getMap();
+        \\            for (Schema.SObjectField field : ch_fields.values()) {
         \\                Schema.DescribeFieldResult describe = field.getDescribe();
         \\                if (describe.isCreateable() == false || populated.containsKey(describe.getName())) {
         \\                    continue;
@@ -6417,7 +6425,8 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     const source =
         \\public class HierarchySettingNullDefaultTest {
         \\    public static String test() {
-        \\        AppSettings__c settings = (AppSettings__c) AppSettings__c.SObjectType.newSObject(null, true);
+        \\        SObject raw = AppSettings__c.SObjectType.newSObject(null, true);
+        \\        AppSettings__c settings = (AppSettings__c) raw;
         \\        settings.SetupOwnerId = UserInfo.getUserId();
         \\        settings.Mode__c = null;
         \\        upsert settings;
@@ -6674,7 +6683,8 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
         \\}
         \\public class InnerHandlerFactoryTest {
         \\    public static String test() {
-        \\        HandlerBase handler = (HandlerBase) Type.forName('HandlerFactoryHost.AccountHandler').newInstance();
+        \\        Type t = Type.forName('HandlerFactoryHost.AccountHandler');
+        \\        HandlerBase handler = (HandlerBase) t.newInstance();
         \\        handler.execute();
         \\        return String.valueOf(HandlerBase.getExecutionCount(Schema.Account.SObjectType));
         \\    }
@@ -6719,9 +6729,11 @@ test "E2E: Type.forName event handler retains platform event SObjectType map key
         \\}
         \\public class EventHandlerFactoryTest {
         \\    public static String test() {
-        \\        EventHandlerBase handler = (EventHandlerBase) Type.forName('EventHandlerFactoryHost.PlatformEventHandler').newInstance();
+        \\        Type t = Type.forName('EventHandlerFactoryHost.PlatformEventHandler');
+        \\        EventHandlerBase handler = (EventHandlerBase) t.newInstance();
         \\        handler.execute();
-        \\        return String.valueOf(EventHandlerBase.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\        Integer count = EventHandlerBase.getExecutionCount(Schema.LogEntryEvent__e.SObjectType);
+        \\        return String.valueOf(count);
         \\    }
         \\}
     ;
@@ -6744,7 +6756,8 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(),
         \\ Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        SObject updatedRecord = (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        String json = System.JSON.serialize(deserializedRecordMap);
+        \\        SObject updatedRecord = (SObject) System.JSON.deserialize(json, SObject.class);
         \\        return updatedRecord.getSObjectType().getDescribe().getName() + ':' +
         \\            String.valueOf(updatedRecord.get('Name')) + ':' +
         \\            String.valueOf(updatedRecord.get('Body')) + ':' +
@@ -6774,7 +6787,8 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(),
         \\ Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        record = (Schema.ApexClass) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        String json = System.JSON.serialize(deserializedRecordMap);
+        \\        record = (Schema.ApexClass) System.JSON.deserialize(json, SObject.class);
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body) + ':' +
@@ -6940,7 +6954,8 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         \\            deserializedRecordMap.put(sobjectField.toString(),
         \\ changesToFields.get(sobjectField));
         \\        }
-        \\        return (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        String json = System.JSON.serialize(deserializedRecordMap);
+        \\        return (SObject) System.JSON.deserialize(json, SObject.class);
         \\    }
         \\    public static String test() {
         \\        Schema.ApexClass record = new Schema.ApexClass(
@@ -7031,7 +7046,8 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
         \\}
         \\public class QualifiedInnerInstanceTest {
         \\    public static String test() {
-        \\        SharedHandlerBase inside = (SharedHandlerBase) Type.forName(HandlerHostA.getInnerHandlerName()).newInstance();
+        \\        Type inner_t = Type.forName(HandlerHostA.getInnerHandlerName());
+        \\        SharedHandlerBase inside = (SharedHandlerBase) inner_t.newInstance();
         \\        SharedHandlerBase outside = (SharedHandlerBase) Type.forName(HandlerHostA.SharedHandler.class.getName()).newInstance();
         \\        return inside.whoAmI() + outside.whoAmI();
         \\    }
