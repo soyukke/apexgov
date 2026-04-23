@@ -5352,29 +5352,8 @@ pub const Evaluator = struct {
         const api_name = self.extract_where_field_value(soql, "ApiName", current_env) orelse
             name_val;
         if (std.mem.indexOfScalar(u8, api_name, ' ') != null) return null;
-        const has_active_true_literal =
-            std.ascii.indexOfIgnoreCase(soql, "IsActive = TRUE") != null or
-            std.ascii.indexOfIgnoreCase(soql, "IsActive=TRUE") != null;
-        const is_active_filter = self.extract_where_field_value(soql, "IsActive", current_env);
-        const should_synthesize = has_active_true_literal or
-            if (is_active_filter) |filter_value|
-                std.ascii.eqlIgnoreCase(filter_value, "TRUE")
-            else
-                false;
-
-        if (self.store.get(from_type)) |records| {
-            for (records.items) |record| {
-                if (record != .sobject) continue;
-                const stored_api_name =
-                    utils.sobject_get(&record.sobject.fields, "ApiName") orelse continue;
-                if (stored_api_name == .string and
-                    std.ascii.eqlIgnoreCase(stored_api_name.string, api_name))
-                {
-                    return record;
-                }
-            }
-        }
-        if (!should_synthesize) return null;
+        if (self.find_flow_definition_view_in_store(from_type, api_name)) |record| return record;
+        if (!flow_definition_view_should_synthesize(self, soql, current_env)) return null;
 
         const durable_id = try std.fmt.allocPrint(self.arena, "300{d:0>15}", .{self.next_id});
         self.next_id += 1;
@@ -5390,6 +5369,60 @@ pub const Evaluator = struct {
 
         const sob = try self.arena.create(types.SObject);
         sob.* = .{ .type_name = from_type, .id = durable_id };
+        try self.populate_flow_definition_view_fields(
+            sob,
+            durable_id,
+            active_version_id,
+            api_name,
+            trigger_object,
+        );
+        const gop = try self.store.getOrPut(self.arena, from_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+        try self.id_type_map.put(self.arena, durable_id, from_type);
+        return Value{ .sobject = sob };
+    }
+
+    fn find_flow_definition_view_in_store(
+        self: *Evaluator,
+        from_type: []const u8,
+        api_name: []const u8,
+    ) ?Value {
+        const records = self.store.get(from_type) orelse return null;
+        for (records.items) |record| {
+            if (record != .sobject) continue;
+            const stored = utils.sobject_get(&record.sobject.fields, "ApiName") orelse continue;
+            if (stored == .string and std.ascii.eqlIgnoreCase(stored.string, api_name)) {
+                return record;
+            }
+        }
+        return null;
+    }
+
+    fn flow_definition_view_should_synthesize(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+    ) bool {
+        const has_active_true_literal =
+            std.ascii.indexOfIgnoreCase(soql, "IsActive = TRUE") != null or
+            std.ascii.indexOfIgnoreCase(soql, "IsActive=TRUE") != null;
+        if (has_active_true_literal) return true;
+        const is_active_filter = self.extract_where_field_value(soql, "IsActive", current_env);
+        return if (is_active_filter) |filter_value|
+            std.ascii.eqlIgnoreCase(filter_value, "TRUE")
+        else
+            false;
+    }
+
+    fn populate_flow_definition_view_fields(
+        self: *Evaluator,
+        sob: *types.SObject,
+        durable_id: []const u8,
+        active_version_id: []const u8,
+        api_name: []const u8,
+        trigger_object: *types.SObject,
+    ) !void {
         try sob.fields.put(self.arena, "Id", Value{ .string = durable_id });
         try sob.fields.put(self.arena, "ActiveVersionId", Value{ .string = active_version_id });
         try sob.fields.put(self.arena, "ApiName", Value{ .string = api_name });
@@ -5414,11 +5447,6 @@ pub const Evaluator = struct {
         try sob.fields.put(self.arena, "TriggerType", Value{ .string = "RecordAfterSave" });
         try sob.fields.put(self.arena, "VersionNumber", Value{ .integer = 1 });
         try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
-        const gop = try self.store.getOrPut(self.arena, from_type);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-        try self.id_type_map.put(self.arena, durable_id, from_type);
-        return Value{ .sobject = sob };
     }
 
     fn generate_flow_version_view_stub(
