@@ -23693,10 +23693,10 @@ test "mock singleton override feeds nested inner-class getter" {
         \\}
         \\public class Runner {
         \\    public static String run() {
-        \\        LoggerSObjectProxy.LoginHistory mockLoginHistoryProxy = new LoggerSObjectProxy.LoginHistory();
-        \\        mockLoginHistoryProxy.Application = 'Application';
+        \\        LoggerSObjectProxy.LoginHistory mockLH = new LoggerSObjectProxy.LoginHistory();
+        \\        mockLH.Application = 'Application';
         \\        LoggerSObjectProxy.AuthSession mockAuthSessionProxy = new LoggerSObjectProxy.AuthSession();
-        \\        mockAuthSessionProxy.LoginHistory = mockLoginHistoryProxy;
+        \\        mockAuthSessionProxy.LoginHistory = mockLH;
         \\        MockSelector mockSelector = new MockSelector();
         \\        mockSelector.setCachedAuthSessionProxy(mockAuthSessionProxy);
         \\        Selector.setMock(mockSelector);
@@ -23828,7 +23828,8 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
         \\}
         \\public class StubStringProbe {
         \\    public static String run() {
-        \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(StubStringTarget.class, new StubStringRecorder());
+        \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(
+        \\            StubStringTarget.class, new StubStringRecorder());
         \\        String rendered = String.valueOf(stubbed);
         \\        System.assert(rendered != null);
         \\        System.assertEquals(0, StubStringRecorder.callCount);
