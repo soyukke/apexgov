@@ -13052,15 +13052,17 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_string_method(
+    /// Simple pure queries and case conversions.
+    fn eval_string_method_basic(
         self: *Evaluator,
         s: []const u8,
         method: []const u8,
         args: []const Value,
-    ) !Value {
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "toString")) return Value{ .string = s };
-        if (std.ascii.eqlIgnoreCase(method, "hashCode"))
+        if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
             return Value{ .integer = self.string_hash_code(s) };
+        }
         if (std.ascii.eqlIgnoreCase(method, "length")) return Value{ .integer = @intCast(s.len) };
         if (std.ascii.eqlIgnoreCase(method, "toUpperCase")) {
             const upper = try self.arena.alloc(u8, s.len);
@@ -13072,8 +13074,9 @@ pub const Evaluator = struct {
             for (s, 0..) |ch, i| lower[i] = std.ascii.toLower(ch);
             return Value{ .string = lower };
         }
-        if (std.ascii.eqlIgnoreCase(method, "trim"))
+        if (std.ascii.eqlIgnoreCase(method, "trim")) {
             return Value{ .string = std.mem.trim(u8, s, " \t\r\n") };
+        }
         if (std.ascii.eqlIgnoreCase(method, "repeat") and args.len > 0) {
             const count: usize = switch (args[0]) {
                 .integer => |i| if (i > 0) @intCast(i) else 0,
@@ -13085,23 +13088,38 @@ pub const Evaluator = struct {
             for (0..count) |ci| @memcpy(buf[ci * s.len ..][0..s.len], s);
             return Value{ .string = buf };
         }
+        return null;
+    }
+
+    /// Substring search / boundary checks.
+    fn eval_string_method_search(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        _ = self;
         if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0 and args[0] == .string) {
             return Value{ .boolean = std.mem.indexOf(u8, s, args[0].string) != null };
         }
         if (std.ascii.eqlIgnoreCase(method, "containsIgnoreCase") and
-            args.len > 0 and
-            args[0] == .string)
+            args.len > 0 and args[0] == .string)
         {
             return Value{ .boolean = std.ascii.indexOfIgnoreCase(s, args[0].string) != null };
         }
-        if (std.ascii.eqlIgnoreCase(method, "startsWith") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "startsWith") and
+            args.len > 0 and args[0] == .string)
+        {
             return Value{ .boolean = std.mem.startsWith(u8, s, args[0].string) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "endsWith") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "endsWith") and
+            args.len > 0 and args[0] == .string)
+        {
             return Value{ .boolean = std.mem.endsWith(u8, s, args[0].string) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0 and args[0] == .string) {
-            // Apex String.indexOf(substring) and String.indexOf(substring, fromIndex)
+        if (std.ascii.eqlIgnoreCase(method, "indexOf") and
+            args.len > 0 and args[0] == .string)
+        {
             const needle = args[0].string;
             var from: usize = 0;
             if (args.len >= 2 and args[1] == .integer) {
@@ -13116,12 +13134,22 @@ pub const Evaluator = struct {
             return Value{ .integer = if (idx) |i| @intCast(i) else -1 };
         }
         if (std.ascii.eqlIgnoreCase(method, "lastIndexOf") and
-            args.len > 0 and
-            args[0] == .string)
+            args.len > 0 and args[0] == .string)
         {
             const idx = std.mem.lastIndexOf(u8, s, args[0].string);
             return Value{ .integer = if (idx) |i| @intCast(i) else -1 };
         }
+        return null;
+    }
+
+    fn eval_string_method(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (try self.eval_string_method_basic(s, method, args)) |v| return v;
+        if (try self.eval_string_method_search(s, method, args)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "substring")) {
             if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
                 const s_len_i64: i64 = @intCast(s.len);
