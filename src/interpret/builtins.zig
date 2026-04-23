@@ -191,104 +191,169 @@ fn parse_loose_date_time(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 
 
 /// 静的メソッド呼び出しを試行する。
 /// 静的メソッド呼び出しを試行する。
+///
+/// Split into 4 phase helpers; each returns null when its class bucket
+/// doesn't match so dispatch_static falls through to the next phase. The
+/// outer function returns `.wrapped = null` for explicitly-handled classes
+/// whose inner dispatchers returned null (System.OrgShape etc.), preserving
+/// the "do not fall through" semantics of the original flat dispatcher.
 pub fn dispatch_static(
     ctx: *BuiltinContext,
     class_name: []const u8,
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
+    if (try dispatch_static_primitives(ctx, class_name, method_name, args)) |r| return r.wrapped;
+    if (try dispatch_static_system_and_metadata(ctx, class_name, method_name, args)) |r|
+        return r.wrapped;
+    if (try dispatch_static_misc(ctx, class_name, method_name, args)) |r| return r.wrapped;
+    return null;
+}
+
+/// Sentinel wrapper: outer dispatch_static must return the inner dispatcher's
+/// result EVEN if it's null (no fall-through between classes). `null` from the
+/// phase helper means "class didn't match — try next phase".
+const DispatchResult = struct { wrapped: ?Value };
+
+fn dispatch_static_primitives(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?DispatchResult {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(class_name, "System"))
-        return dispatch_static_system(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_system(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "String"))
-        return dispatch_static_string(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Id")) return dispatch_static_id(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_string(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Id"))
+        return .{ .wrapped = try dispatch_static_id(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Integer"))
-        return dispatch_static_integer(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Long")) return dispatch_static_long(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatch_static_boolean(method_name, args);
+        return .{ .wrapped = try dispatch_static_integer(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Long"))
+        return .{ .wrapped = try dispatch_static_long(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Boolean"))
+        return .{ .wrapped = try dispatch_static_boolean(method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Decimal"))
-        return dispatch_static_decimal(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_decimal(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Double"))
-        return dispatch_static_double_class(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Date")) return dispatch_static_date(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Math")) return dispatch_static_math(method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Time")) return dispatch_static_time(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_double_class(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Date"))
+        return .{ .wrapped = try dispatch_static_date(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Math"))
+        return .{ .wrapped = try dispatch_static_math(method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Time"))
+        return .{ .wrapped = try dispatch_static_time(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "TimeZone"))
-        return dispatch_static_time_zone(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_time_zone(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "DateTime"))
-        return dispatch_static_date_time(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_date_time(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Approval"))
-        return dispatch_static_approval(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_approval(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "BusinessHours"))
-        return dispatch_static_business_hours(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatch_static_json(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_business_hours(ctx, method_name, args) };
+    return null;
+}
+
+fn dispatch_static_system_and_metadata(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?DispatchResult {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(class_name, "JSON"))
+        return .{ .wrapped = try dispatch_static_json(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "UserInfo"))
-        return dispatch_static_user_info(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_user_info(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
-        return dispatch_static_logging_level(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
-    if (ci.eqlIgnoreCase(class_name, "UUID")) return dispatch_static_uuid(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_logging_level(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Quiddity")) return .{ .wrapped = Value{ .string = method_name } };
+    if (ci.eqlIgnoreCase(class_name, "UUID"))
+        return .{ .wrapped = try dispatch_static_uuid(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "OrgLimits"))
-        return dispatch_static_org_limits(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "Database")) return dispatch_database(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_org_limits(ctx, method_name) };
+    if (ci.eqlIgnoreCase(class_name, "Database"))
+        return .{ .wrapped = try dispatch_database(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "RestContext"))
-        return dispatch_static_rest_context(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_rest_context(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "HttpResponse") or
         ci.eqlIgnoreCase(class_name, "HttpRequest"))
-        return dispatch_static_http_instance(ctx, class_name);
+        return .{ .wrapped = try dispatch_static_http_instance(ctx, class_name) };
     if (ci.eqlIgnoreCase(class_name, "Schema"))
-        return dispatch_static_schema(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_schema(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Security"))
-        return dispatch_static_security(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
+        return .{ .wrapped = try dispatch_static_security(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "AccessLevel"))
+        return .{ .wrapped = Value{ .string = method_name } };
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or
         ci.eqlIgnoreCase(class_name, "ConnectApi"))
-        return dispatch_static_connect_api(ctx);
+        return .{ .wrapped = try dispatch_static_connect_api(ctx) };
     if (ci.eqlIgnoreCase(class_name, "FeatureManagement"))
-        return dispatch_static_feature_management(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_feature_management(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Limits"))
+        return .{ .wrapped = try dispatch_static_limits(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "Script") or
-        (std.mem.startsWith(
-            u8,
-            class_name,
-            "DataWeave",
-        ) and ci.eqlIgnoreCase(method_name, "createScript")))
-        return dispatch_static_data_weave(ctx, args);
+        (std.mem.startsWith(u8, class_name, "DataWeave") and
+            ci.eqlIgnoreCase(method_name, "createScript")))
+        return .{ .wrapped = try dispatch_static_data_weave(ctx, args) };
     if (ci.eqlIgnoreCase(class_name, "Pattern"))
-        return dispatch_static_pattern(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Type")) return dispatch_static_type(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Request")) return dispatch_static_request(ctx);
+        return .{ .wrapped = try dispatch_static_pattern(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Type"))
+        return .{ .wrapped = try dispatch_static_type(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Request"))
+        return .{ .wrapped = try dispatch_static_request(ctx) };
     if (ci.eqlIgnoreCase(class_name, "Crypto"))
-        return dispatch_static_crypto(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Blob")) return dispatch_static_blob(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_crypto(ctx, method_name, args) };
+    return null;
+}
+
+fn dispatch_static_misc(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?DispatchResult {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(class_name, "Blob"))
+        return .{ .wrapped = try dispatch_static_blob(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "EncodingUtil"))
-        return dispatch_static_encoding_util(ctx, method_name, args);
+        return .{ .wrapped = try dispatch_static_encoding_util(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Messaging"))
-        return dispatch_static_messaging(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatch_static_event_bus(method_name);
+        return .{ .wrapped = try dispatch_static_messaging(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "EventBus"))
+        return .{ .wrapped = try dispatch_static_event_bus(method_name) };
     if (ci.eqlIgnoreCase(class_name, "Invocable.Action")) {
-        if (try dispatch_static_invocable_action(ctx, method_name, args)) |v| return v;
+        if (try dispatch_static_invocable_action(ctx, method_name, args)) |v|
+            return .{ .wrapped = v };
+        // Original falls through to next class checks when inner returns null.
+        return null;
     }
-    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatch_static_test(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Test"))
+        return .{ .wrapped = try dispatch_static_test(ctx, method_name, args) };
     if (ci.eqlIgnoreCase(class_name, "Location") or
         ci.eqlIgnoreCase(class_name, "System.Location"))
     {
-        if (try dispatch_static_location(ctx, method_name, args)) |v| return v;
+        if (try dispatch_static_location(ctx, method_name, args)) |v|
+            return .{ .wrapped = v };
+        return null;
     }
     if (ci.eqlIgnoreCase(class_name, "Formula"))
-        return dispatch_static_formula(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
-    if (ci.eqlIgnoreCase(class_name, "Http")) return dispatch_static_http(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_formula(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Cache")) return .{ .wrapped = .void_val };
+    if (ci.eqlIgnoreCase(class_name, "Http"))
+        return .{ .wrapped = try dispatch_static_http(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "CanTheUser"))
-        return dispatch_static_can_the_user(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "OrgShape")) return null;
+        return .{ .wrapped = try dispatch_static_can_the_user(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "OrgShape")) return .{ .wrapped = null };
     if (ci.eqlIgnoreCase(class_name, "ApexPages"))
-        return dispatch_static_apex_pages(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Network")) return dispatch_static_network(ctx, method_name);
+        return .{ .wrapped = try dispatch_static_apex_pages(ctx, method_name, args) };
+    if (ci.eqlIgnoreCase(class_name, "Network"))
+        return .{ .wrapped = try dispatch_static_network(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "Url") or ci.eqlIgnoreCase(class_name, "URL"))
-        return dispatch_static_url(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "AccessType")) return Value{ .string = method_name };
+        return .{ .wrapped = try dispatch_static_url(ctx, method_name) };
+    if (ci.eqlIgnoreCase(class_name, "AccessType"))
+        return .{ .wrapped = Value{ .string = method_name } };
     // Stubbed utility classes — only provided when the user hasn't supplied a copy.
     // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
     // it even when the mock source isn't co-loaded. Emitting a deterministic fake Id
@@ -296,7 +361,9 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
         ctx.eval.classes.get("fflib_IDGenerator") == null)
     {
-        if (try dispatch_static_fflib_id_generator(ctx, method_name, args)) |v| return v;
+        if (try dispatch_static_fflib_id_generator(ctx, method_name, args)) |v|
+            return .{ .wrapped = v };
+        return null;
     }
     return null;
 }
