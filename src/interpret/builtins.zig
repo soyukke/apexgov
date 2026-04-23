@@ -6107,141 +6107,194 @@ fn dispatch_obj_cache_partition(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    const cache_map = if (obj.fields.get("_cache")) |cm| if (cm == .map) cm.map else null else null;
-    if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2) {
-        if (cache_map) |cm| {
-            const key = try utils.coerce_to_string(args[0], ctx.arena);
-            try cm.entries.put(ctx.arena, key, args[1]);
-        }
-        return .void_val;
+    const ci = std.ascii;
+    const cache_map = cache_partition_extract_map(obj);
+    if (ci.eqlIgnoreCase(method_name, "put") and args.len >= 2) {
+        return try cache_partition_put(ctx, cache_map, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len >= 1) {
-        if (args.len >= 2 and args[1] == .string) {
-            const builder_type = args[0];
-            const key = args[1].string;
-            if (cache_map) |cm| {
-                const builder_name = if (builder_type == .object) blk: {
-                    if (builder_type.object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk builder_type.object.class_name;
-                } else "";
-                const cache_key = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{s}:{s}",
-                    .{ builder_name, key },
-                );
-                if (cm.entries.get(cache_key)) |cached| return cached;
-                if (builder_name.len > 0) {
-                    const class_name = if (std.mem.startsWith(
-                        u8,
-                        builder_name,
-                        "Type:",
-                    )) builder_name[5..] else builder_name;
-                    const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
-                    const resolved_cache_key = try std.fmt.allocPrint(
-                        ctx.arena,
-                        "{s}:{s}",
-                        .{ resolved_class_name, key },
-                    );
-                    if (cm.entries.get(resolved_cache_key)) |cached| return cached;
-                    const result = ctx.eval.call_instance_method_by_name(
-                        resolved_class_name,
-                        "doLoad",
-                        &.{Value{ .string = key }},
-                    ) catch Value.null_val;
-                    if (result != .null_val) {
-                        try cm.entries.put(ctx.arena, resolved_cache_key, result);
-                        try cm.entries.put(ctx.arena, cache_key, result);
-                        return result;
-                    }
-
-                    var class_iter = ctx.eval.classes.iterator();
-                    while (class_iter.next()) |entry| {
-                        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
-                        const simple_name =
-                            if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
-                                entry.key_ptr.*[dot_idx + 1 ..]
-                            else
-                                entry.key_ptr.*;
-                        if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
-                        const fallback_cache_key = try std.fmt.allocPrint(
-                            ctx.arena,
-                            "{s}:{s}",
-                            .{ entry.key_ptr.*, key },
-                        );
-                        if (cm.entries.get(fallback_cache_key)) |cached| return cached;
-                        const fallback_result = ctx.eval.call_instance_method_by_name(
-                            entry.key_ptr.*,
-                            "doLoad",
-                            &.{Value{ .string = key }},
-                        ) catch Value.null_val;
-                        if (fallback_result == .null_val) continue;
-                        try cm.entries.put(ctx.arena, fallback_cache_key, fallback_result);
-                        try cm.entries.put(ctx.arena, resolved_cache_key, fallback_result);
-                        try cm.entries.put(ctx.arena, cache_key, fallback_result);
-                        return fallback_result;
-                    }
-                }
-            }
-            return Value.null_val;
-        }
-        if (cache_map) |cm| {
-            const key = try utils.coerce_to_string(args[0], ctx.arena);
-            return cm.entries.get(key) orelse Value.null_val;
-        }
-        return Value.null_val;
+    if (ci.eqlIgnoreCase(method_name, "get") and args.len >= 1) {
+        return try cache_partition_get(ctx, cache_map, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "contains") and args.len >= 1) {
-        if (cache_map) |cm| {
-            const key = try utils.coerce_to_string(args[0], ctx.arena);
-            return Value{ .boolean = cm.entries.contains(key) };
-        }
-        return Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "contains") and args.len >= 1) {
+        return try cache_partition_contains(ctx, cache_map, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
-        if (cache_map) |cm| {
-            if (args.len >= 2 and args[1] == .string) {
-                const builder_name = if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk args[0].object.class_name;
-                } else try utils.coerce_to_string(args[0], ctx.arena);
-                const cache_key = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{s}:{s}",
-                    .{ builder_name, args[1].string },
-                );
-                _ = cm.entries.orderedRemove(cache_key);
-            } else {
-                const key = try utils.coerce_to_string(args[0], ctx.arena);
-                _ = cm.entries.orderedRemove(key);
-            }
-        }
-        return .void_val;
+    if (ci.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
+        return try cache_partition_remove(ctx, cache_map, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAvailable")) {
+    if (ci.eqlIgnoreCase(method_name, "isAvailable")) {
         return obj.fields.get("_is_available") orelse Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getCapacity")) return Value{ .integer = 10000000 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getNumKeys")) {
+    if (ci.eqlIgnoreCase(method_name, "getCapacity")) return Value{ .integer = 10000000 };
+    if (ci.eqlIgnoreCase(method_name, "getNumKeys")) {
         if (cache_map) |cm| return Value{ .integer = @intCast(cm.entries.count()) };
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getKeys")) {
-        const set = try ctx.arena.create(types.SetValue);
-        set.* = .{};
-        if (cache_map) |cm| {
-            for (cm.entries.keys()) |key| try set.entries.put(
-                ctx.arena,
-                key,
-                Value{ .string = key },
-            );
-        }
-        return Value{ .set = set };
+    if (ci.eqlIgnoreCase(method_name, "getKeys")) {
+        return try cache_partition_get_keys(ctx, cache_map);
     }
     return null;
+}
+
+fn cache_partition_extract_map(obj: *types.ObjectInstance) ?*types.MapValue {
+    if (obj.fields.get("_cache")) |cm| {
+        if (cm == .map) return cm.map;
+    }
+    return null;
+}
+
+fn cache_partition_put(
+    ctx: *BuiltinContext,
+    cache_map: ?*types.MapValue,
+    args: []const Value,
+) !Value {
+    if (cache_map) |cm| {
+        const key = try utils.coerce_to_string(args[0], ctx.arena);
+        try cm.entries.put(ctx.arena, key, args[1]);
+    }
+    return .void_val;
+}
+
+fn cache_partition_get(
+    ctx: *BuiltinContext,
+    cache_map: ?*types.MapValue,
+    args: []const Value,
+) !Value {
+    if (args.len >= 2 and args[1] == .string) {
+        if (cache_map) |cm| {
+            return try cache_partition_get_with_builder(ctx, cm, args[0], args[1].string);
+        }
+        return Value.null_val;
+    }
+    if (cache_map) |cm| {
+        const key = try utils.coerce_to_string(args[0], ctx.arena);
+        return cm.entries.get(key) orelse Value.null_val;
+    }
+    return Value.null_val;
+}
+
+fn cache_partition_get_with_builder(
+    ctx: *BuiltinContext,
+    cm: *types.MapValue,
+    builder_type: Value,
+    key: []const u8,
+) !Value {
+    const builder_name = if (builder_type == .object) blk: {
+        if (builder_type.object.fields.get("name")) |n| {
+            if (n == .string) break :blk n.string;
+        }
+        break :blk builder_type.object.class_name;
+    } else "";
+    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+    if (cm.entries.get(cache_key)) |cached| return cached;
+    if (builder_name.len == 0) return Value.null_val;
+
+    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:"))
+        builder_name[5..]
+    else
+        builder_name;
+    const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
+    const resolved_cache_key =
+        try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
+    if (cm.entries.get(resolved_cache_key)) |cached| return cached;
+    const result = ctx.eval.call_instance_method_by_name(
+        resolved_class_name,
+        "doLoad",
+        &.{Value{ .string = key }},
+    ) catch Value.null_val;
+    if (result != .null_val) {
+        try cm.entries.put(ctx.arena, resolved_cache_key, result);
+        try cm.entries.put(ctx.arena, cache_key, result);
+        return result;
+    }
+    return try cache_partition_fallback_lookup(
+        ctx,
+        cm,
+        class_name,
+        key,
+        cache_key,
+        resolved_cache_key,
+    );
+}
+
+fn cache_partition_fallback_lookup(
+    ctx: *BuiltinContext,
+    cm: *types.MapValue,
+    class_name: []const u8,
+    key: []const u8,
+    cache_key: []const u8,
+    resolved_cache_key: []const u8,
+) !Value {
+    var class_iter = ctx.eval.classes.iterator();
+    while (class_iter.next()) |entry| {
+        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
+        const simple_name =
+            if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
+                entry.key_ptr.*[dot_idx + 1 ..]
+            else
+                entry.key_ptr.*;
+        if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
+        const fallback_cache_key =
+            try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
+        if (cm.entries.get(fallback_cache_key)) |cached| return cached;
+        const fallback_result = ctx.eval.call_instance_method_by_name(
+            entry.key_ptr.*,
+            "doLoad",
+            &.{Value{ .string = key }},
+        ) catch Value.null_val;
+        if (fallback_result == .null_val) continue;
+        try cm.entries.put(ctx.arena, fallback_cache_key, fallback_result);
+        try cm.entries.put(ctx.arena, resolved_cache_key, fallback_result);
+        try cm.entries.put(ctx.arena, cache_key, fallback_result);
+        return fallback_result;
+    }
+    return Value.null_val;
+}
+
+fn cache_partition_contains(
+    ctx: *BuiltinContext,
+    cache_map: ?*types.MapValue,
+    args: []const Value,
+) !Value {
+    if (cache_map) |cm| {
+        const key = try utils.coerce_to_string(args[0], ctx.arena);
+        return Value{ .boolean = cm.entries.contains(key) };
+    }
+    return Value{ .boolean = false };
+}
+
+fn cache_partition_remove(
+    ctx: *BuiltinContext,
+    cache_map: ?*types.MapValue,
+    args: []const Value,
+) !Value {
+    if (cache_map) |cm| {
+        if (args.len >= 2 and args[1] == .string) {
+            const builder_name = if (args[0] == .object) blk: {
+                if (args[0].object.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+                break :blk args[0].object.class_name;
+            } else try utils.coerce_to_string(args[0], ctx.arena);
+            const cache_key =
+                try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, args[1].string });
+            _ = cm.entries.orderedRemove(cache_key);
+        } else {
+            const key = try utils.coerce_to_string(args[0], ctx.arena);
+            _ = cm.entries.orderedRemove(key);
+        }
+    }
+    return .void_val;
+}
+
+fn cache_partition_get_keys(ctx: *BuiltinContext, cache_map: ?*types.MapValue) !Value {
+    const set = try ctx.arena.create(types.SetValue);
+    set.* = .{};
+    if (cache_map) |cm| {
+        for (cm.entries.keys()) |key| {
+            try set.entries.put(ctx.arena, key, Value{ .string = key });
+        }
+    }
+    return Value{ .set = set };
 }
 
 fn dispatch_obj_flow_interview(
