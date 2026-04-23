@@ -6399,99 +6399,119 @@ fn dispatch_obj_describe_field_result(
     obj: *types.ObjectInstance,
     method_name: []const u8,
 ) !?Value {
-    const object_type = if (obj.fields.get("objectType")) |ov|
-        if (ov == .string) ov.string else null
-    else
-        null;
-    const field_name = if (obj.fields.get("fieldName")) |fv|
-        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
-    else if (obj.fields.get("name")) |nv|
-        if (nv == .string) nv.string else ""
-    else
-        "";
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
-        return obj.fields.get("isAccessible") orelse Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
+    const object_type = describe_field_object_type(obj);
+    const field_name = describe_field_name(obj);
+    if (try dispatch_dfr_permission_methods(ctx, obj, method_name, object_type, field_name)) |v|
+        return v;
+    if (try dispatch_dfr_metadata_methods(obj, method_name)) |v| return v;
+    if (try dispatch_dfr_reference_methods(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_dfr_lookup_methods(ctx, obj, method_name, object_type, field_name)) |v|
+        return v;
+    return null;
+}
+
+fn describe_field_object_type(obj: *types.ObjectInstance) ?[]const u8 {
+    if (obj.fields.get("objectType")) |ov| {
+        if (ov == .string) return ov.string;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
-        return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "edit") };
+    return null;
+}
+
+fn describe_field_name(obj: *types.ObjectInstance) []const u8 {
+    if (obj.fields.get("fieldName")) |fv| {
+        if (fv == .string) return fv.string;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
-        return obj.fields.get("isCreateable") orelse Value{ .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "create") };
+    if (obj.fields.get("name")) |nv| {
+        if (nv == .string) return nv.string;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isFilterable")) {
-        return obj.fields.get("isFilterable") orelse Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
+    return "";
+}
+
+fn dispatch_dfr_permission_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "isAccessible")) {
+        return obj.fields.get("isAccessible") orelse
+            Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable"))
+    if (ci.eqlIgnoreCase(method_name, "isUpdateable")) {
+        return obj.fields.get("isUpdateable") orelse Value{
+            .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "edit"),
+        };
+    }
+    if (ci.eqlIgnoreCase(method_name, "isCreateable")) {
+        return obj.fields.get("isCreateable") orelse Value{
+            .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "create"),
+        };
+    }
+    if (ci.eqlIgnoreCase(method_name, "isFilterable")) {
+        return obj.fields.get("isFilterable") orelse
+            Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
+    }
+    return null;
+}
+
+fn dispatch_dfr_metadata_methods(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "isNillable"))
         return obj.fields.get("isNillable") orelse Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
+    if (ci.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or
-        std.ascii.eqlIgnoreCase(method_name, "getSoaptype"))
+    if (ci.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
+    if (ci.eqlIgnoreCase(method_name, "getSoapType") or
+        ci.eqlIgnoreCase(method_name, "getSoaptype"))
     {
         return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or
-        std.ascii.eqlIgnoreCase(method_name, "getDisplayType"))
+    if (ci.eqlIgnoreCase(method_name, "getType") or
+        ci.eqlIgnoreCase(method_name, "getDisplayType"))
     {
         return obj.fields.get("type") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+    if (ci.eqlIgnoreCase(method_name, "getName"))
         return obj.fields.get("name") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+    if (ci.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get("name") orelse Value{ .string = "" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText"))
+    if (ci.eqlIgnoreCase(method_name, "getInlineHelpText"))
         return obj.fields.get("inlineHelpText") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel"))
-        return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getReferenceTo")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        if (obj.fields.get("objectType")) |object_type_val| {
-            if (object_type_val == .string) {
-                const field_name_val = obj.fields.get(
-                    "fieldName",
-                ) orelse obj.fields.get("name") orelse Value{ .string = "" };
-                if (field_name_val == .string) {
-                    if (lookup_field_metadata(
-                        ctx,
-                        object_type_val.string,
-                        field_name_val.string,
-                    )) |metadata| {
-                        if (metadata.reference_to) |reference_to| {
-                            const token = try ctx.arena.create(types.ObjectInstance);
-                            token.* = .{ .class_name = "Schema.SObjectType" };
-                            try token.fields.put(
-                                ctx.arena,
-                                "name",
-                                Value{ .string = reference_to },
-                            );
-                            try list.items.append(ctx.arena, Value{ .object = token });
-                        }
-                    } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
-                        const token = try ctx.arena.create(types.ObjectInstance);
-                        token.* = .{ .class_name = "Schema.SObjectType" };
-                        try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
-                        try list.items.append(ctx.arena, Value{ .object = token });
-                    }
-                }
-            }
-        }
-        return Value{ .list = list };
+    if (ci.eqlIgnoreCase(method_name, "getLabel"))
+        return obj.fields.get("label") orelse
+            obj.fields.get("name") orelse Value{ .string = "" };
+    if (ci.eqlIgnoreCase(method_name, "toString"))
+        return obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "Field" };
+    return null;
+}
+
+fn dispatch_dfr_reference_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getReferenceTo")) {
+        return try dfr_resolve_reference_to(ctx, obj);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
-        if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+    if (ci.eqlIgnoreCase(method_name, "getDescribe")) {
+        if (ci.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+            ci.eqlIgnoreCase(obj.class_name, "SObjectField"))
         {
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
-            const field_name_val = obj.fields.get(
-                "fieldName",
-            ) orelse obj.fields.get("name") orelse Value.null_val;
+            const field_name_val = obj.fields.get("fieldName") orelse
+                obj.fields.get("name") orelse Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
                 return try create_field_describe_result_with_type(
                     ctx,
@@ -6503,12 +6523,11 @@ fn dispatch_obj_describe_field_result(
         }
         return Value{ .object = obj };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     // Schema.DescribeFieldResult.getSObjectType() returns the SObjectType of
     // the object that owns this field. fflib's upsert-by-external-id validation
     // compares `record.getSObjectType() == fieldDescribe.getSObjectType()` and
     // threw "Invalid argument: externalIdField" when we returned null here.
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+    if (ci.eqlIgnoreCase(method_name, "getSObjectType")) {
         if (obj.fields.get("objectType")) |ov| {
             if (ov == .string and ov.string.len > 0) {
                 const sot = try ctx.arena.create(types.ObjectInstance);
@@ -6519,10 +6538,50 @@ fn dispatch_obj_describe_field_result(
         }
         return Value.null_val;
     }
+    return null;
+}
+
+fn dfr_resolve_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const object_type_val = obj.fields.get("objectType") orelse return Value{ .list = list };
+    if (object_type_val != .string) return Value{ .list = list };
+    const field_name_val =
+        obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (field_name_val != .string) return Value{ .list = list };
+    if (lookup_field_metadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
+        if (metadata.reference_to) |reference_to| {
+            try dfr_append_sobject_type_token(ctx, list, reference_to);
+        }
+    } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
+        try dfr_append_sobject_type_token(ctx, list, reference_to);
+    }
+    return Value{ .list = list };
+}
+
+fn dfr_append_sobject_type_token(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    name: []const u8,
+) !void {
+    const token = try ctx.arena.create(types.ObjectInstance);
+    token.* = .{ .class_name = "Schema.SObjectType" };
+    try token.fields.put(ctx.arena, "name", Value{ .string = name });
+    try list.items.append(ctx.arena, Value{ .object = token });
+}
+
+fn dispatch_dfr_lookup_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
     // Schema.DescribeFieldResult.isIdLookup(): true for Id and any explicitly
     // id-lookup field (custom external IDs expose this flag via field-meta).
-    if (std.ascii.eqlIgnoreCase(method_name, "isIdLookup")) {
-        if (std.ascii.eqlIgnoreCase(field_name, "Id")) return Value{ .boolean = true };
+    if (ci.eqlIgnoreCase(method_name, "isIdLookup")) {
+        if (ci.eqlIgnoreCase(field_name, "Id")) return Value{ .boolean = true };
         if (object_type) |obj_name| {
             if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
                 if (meta.is_external_id) return Value{ .boolean = true };
@@ -6530,7 +6589,7 @@ fn dispatch_obj_describe_field_result(
         }
         return obj.fields.get("isIdLookup") orelse Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isExternalId")) {
+    if (ci.eqlIgnoreCase(method_name, "isExternalId")) {
         if (object_type) |obj_name| {
             if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
                 if (meta.is_external_id) return Value{ .boolean = true };
