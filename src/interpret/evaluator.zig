@@ -13552,6 +13552,380 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn eval_string_method_date_component(s: []const u8, method: []const u8) ?Value {
+        if (std.ascii.eqlIgnoreCase(method, "year") or
+            std.ascii.eqlIgnoreCase(method, "yearGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value.null_val;
+            return Value{ .integer = dt.y };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "month") or
+            std.ascii.eqlIgnoreCase(method, "monthGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value.null_val;
+            return Value{ .integer = dt.m };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "day") or
+            std.ascii.eqlIgnoreCase(method, "dayGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value.null_val;
+            return Value{ .integer = dt.d };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hour") or
+            std.ascii.eqlIgnoreCase(method, "hourGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
+            return Value{ .integer = dt.h };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "minute") or
+            std.ascii.eqlIgnoreCase(method, "minuteGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
+            return Value{ .integer = dt.mi };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "second") or
+            std.ascii.eqlIgnoreCase(method, "secondGmt"))
+        {
+            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
+            return Value{ .integer = dt.sec };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "millisecond") or
+            std.ascii.eqlIgnoreCase(method, "millisecondGmt"))
+        {
+            _ = parse_iso_date(s) orelse return Value{ .integer = 0 };
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "day_of_year")) {
+            const dt = parse_iso_date(s) orelse return Value.null_val;
+            const is_leap =
+                (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
+            var doy: i32 = @as(i32, day_of_year(dt.m, dt.d));
+            if (is_leap and dt.m > 2) doy += 1;
+            return Value{ .integer = doy };
+        }
+        return null;
+    }
+
+    fn arg_to_date_string(s: []const u8, arg: Value) []const u8 {
+        return switch (arg) {
+            .string => |os| os,
+            .object => |obj| blk: {
+                if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
+                break :blk s;
+            },
+            else => s,
+        };
+    }
+
+    fn eval_string_method_date_diff(s: []const u8, method: []const u8, args: []const Value) ?Value {
+        if (args.len == 0) return null;
+        if (std.ascii.eqlIgnoreCase(method, "daysBetween")) {
+            const other_str = arg_to_date_string(s, args[0]);
+            const a = parse_iso_date(s) orelse return Value.null_val;
+            const b = parse_iso_date(other_str) orelse return Value.null_val;
+            const a_days = iso_date_to_epoch_days(a.y, a.m, a.d);
+            const b_days = iso_date_to_epoch_days(b.y, b.m, b.d);
+            return Value{ .integer = b_days - a_days };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "monthsBetween")) {
+            const other_str = arg_to_date_string(s, args[0]);
+            const a = parse_iso_date(s) orelse return Value.null_val;
+            const b = parse_iso_date(other_str) orelse return Value.null_val;
+            const diff = (@as(i64, b.y) - @as(i64, a.y)) * 12 +
+                (@as(i64, b.m) - @as(i64, a.m));
+            return Value{ .integer = diff };
+        }
+        return null;
+    }
+
+    fn eval_string_method_format_gmt(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+        if (args.len > 0 and args[0] == .string) {
+            return self.format_date_time_pattern(s, args[0].string);
+        }
+        if (!(s.len >= 19 and s[4] == '-' and s[7] == '-' and s[10] == 'T')) {
+            return Value{ .string = s };
+        }
+        const year = s[0..4];
+        const month_num = std.fmt.parseInt(u8, s[5..7], 10) catch 1;
+        const day = s[8..10];
+        const hour24 = std.fmt.parseInt(u8, s[11..13], 10) catch 0;
+        const minute = s[14..16];
+        const second = s[17..19];
+        const month_names = [_][]const u8{
+            "January",   "February", "March",    "April",
+            "May",       "June",     "July",     "August",
+            "September", "October",  "November", "December",
+        };
+        const month_name = if (month_num >= 1 and month_num <= 12)
+            month_names[month_num - 1]
+        else
+            "January";
+        const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+        const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
+        return Value{ .string = try std.fmt.allocPrint(
+            self.arena,
+            "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
+            .{ hour12, minute, second, am_pm, month_name, day, year },
+        ) };
+    }
+
+    fn eval_string_method_enum_value_of(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+        if (self.find_visible_enum_decl(s)) |enum_decl| {
+            if (args[0] == .null_val) return Value.null_val;
+            const raw_value = if (args[0] == .string)
+                args[0].string
+            else
+                try utils.coerce_to_string(args[0], self.arena);
+            for (enum_decl.values) |enum_value| {
+                if (std.ascii.eqlIgnoreCase(enum_value, raw_value))
+                    return Value{ .string = enum_value };
+            }
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NoSuchElementException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "No enum constant {s}.{s}",
+                .{ s, raw_value },
+            ) });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        return args[0];
+    }
+
+    fn resolve_sobject_type_from_id(self: *Evaluator, s: []const u8) []const u8 {
+        var type_name: []const u8 = "SObject";
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            for (entry.value_ptr.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.ascii.eqlIgnoreCase(rec.sobject.id.?, s))
+                {
+                    type_name = rec.sobject.type_name;
+                    break;
+                }
+            }
+        }
+        if (std.mem.eql(u8, type_name, "SObject")) {
+            if (self.id_type_map.get(s)) |tn| type_name = tn;
+        }
+        if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
+            type_name = sobject_type_from_prefix(s[0..3]);
+        }
+        if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
+            const id_prefix = s[0..3];
+            var store_iter2 = self.store.iterator();
+            while (store_iter2.next()) |entry| {
+                const entry_prefix = sobject_key_prefix(entry.key_ptr.*);
+                if (std.mem.eql(u8, &entry_prefix, id_prefix)) {
+                    type_name = entry.key_ptr.*;
+                    break;
+                }
+            }
+            if (std.mem.eql(u8, type_name, "SObject")) {
+                var ft_iter = self.field_types.iterator();
+                while (ft_iter.next()) |entry| {
+                    const entry_prefix = sobject_key_prefix(entry.key_ptr.*);
+                    if (std.mem.eql(u8, &entry_prefix, id_prefix)) {
+                        type_name = entry.key_ptr.*;
+                        break;
+                    }
+                }
+            }
+        }
+        return type_name;
+    }
+
+    fn eval_string_method_get_sobject_type(self: *Evaluator, s: []const u8) !Value {
+        const type_name = self.resolve_sobject_type_from_id(s);
+        if (is_template_s_object_type(type_name)) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.SObjectException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "Cannot locate Apex Type for {s}",
+                .{type_name},
+            ) });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        const sot = try self.arena.create(types.ObjectInstance);
+        sot.* = .{ .class_name = "Schema.SObjectType" };
+        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = sot };
+    }
+
+    fn eval_string_method_enum_values(self: *Evaluator, s: []const u8) !?Value {
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .enum_decl => |ed| {
+                        if (!std.ascii.eqlIgnoreCase(ed.name, s)) continue;
+                        const list = try self.arena.create(types.ListValue);
+                        list.* = .{};
+                        for (ed.values) |v| {
+                            try list.items.append(self.arena, Value{ .string = v });
+                        }
+                        return Value{ .list = list };
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
+    fn eval_string_method_misc(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "toInteger")) {
+            return Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len == 0) {
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getDescribe")) {
+            const dfr = try self.arena.create(types.ObjectInstance);
+            dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
+            try dfr.fields.put(self.arena, "fieldName", Value{ .string = s });
+            return Value{ .object = dfr };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "name") or
+            std.ascii.eqlIgnoreCase(method, "toString"))
+        {
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
+            return Value{ .integer = lookup_enum_ordinal(s) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getOffset")) {
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getID") or std.ascii.eqlIgnoreCase(method, "getId")) {
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getDisplayName")) {
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isSameDay") and args.len > 0) {
+            const other_str = builtins.extract_date_string(args[0]) orelse
+                (if (args[0] == .string) args[0].string else "");
+            const dt = parse_iso_date(s) orelse return Value{ .boolean = false };
+            const odt = parse_iso_date(other_str) orelse return Value{ .boolean = false };
+            return Value{ .boolean = dt.y == odt.y and dt.m == odt.m and dt.d == odt.d };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "dateGmt") or
+            std.ascii.eqlIgnoreCase(method, "dateGMT"))
+        {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            return Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}",
+                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d },
+            ) };
+        }
+        return null;
+    }
+
+    fn eval_string_method_char_ops(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "countMatches") and
+            args.len > 0 and args[0] == .string)
+        {
+            const sep = args[0].string;
+            if (sep.len == 0) return Value{ .integer = 0 };
+            var count: i64 = 0;
+            var k: usize = 0;
+            while (k + sep.len <= s.len) {
+                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) {
+                    count += 1;
+                    k += sep.len;
+                } else {
+                    k += 1;
+                }
+            }
+            return Value{ .integer = count };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "reverse")) {
+            const reversed = try self.arena.alloc(u8, s.len);
+            for (s, 0..) |ch, i| reversed[s.len - 1 - i] = ch;
+            return Value{ .string = reversed };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "charAt") and
+            args.len > 0 and args[0] == .integer)
+        {
+            const idx: usize = @intCast(@max(args[0].integer, 0));
+            if (idx < s.len) return Value{ .integer = @intCast(s[idx]) };
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "compareTo") and
+            args.len > 0 and args[0] == .string)
+        {
+            const other = args[0].string;
+            const len = @min(s.len, other.len);
+            for (0..len) |i| {
+                if (s[i] < other[i]) return Value{ .integer = -1 };
+                if (s[i] > other[i]) return Value{ .integer = 1 };
+            }
+            if (s.len < other.len) return Value{ .integer = -1 };
+            if (s.len > other.len) return Value{ .integer = 1 };
+            return Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "starts_with_ignore_case") and
+            args.len > 0 and args[0] == .string)
+        {
+            return Value{ .boolean = std.ascii.startsWithIgnoreCase(s, args[0].string) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "endsWithIgnoreCase") and
+            args.len > 0 and args[0] == .string)
+        {
+            return Value{ .boolean = std.ascii.endsWithIgnoreCase(s, args[0].string) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "remove") and
+            args.len > 0 and args[0] == .string)
+        {
+            const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, "");
+            return Value{ .string = result };
+        }
+        return null;
+    }
+
+    fn eval_string_method_substring_family(s: []const u8, method: []const u8, args: []const Value) ?Value {
+        if (args.len == 0 or args[0] != .string) return null;
+        const sep = args[0].string;
+        if (std.ascii.eqlIgnoreCase(method, "substringAfter")) {
+            if (std.mem.indexOf(u8, s, sep)) |idx| {
+                return Value{ .string = s[idx + sep.len ..] };
+            }
+            return Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "substringBefore")) {
+            if (std.mem.indexOf(u8, s, sep)) |idx| {
+                return Value{ .string = s[0..idx] };
+            }
+            return Value{ .string = s };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "substringAfterLast")) {
+            if (sep.len == 0) return Value{ .string = "" };
+            var last_idx: ?usize = null;
+            var k: usize = 0;
+            while (k + sep.len <= s.len) : (k += 1) {
+                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) last_idx = k;
+            }
+            if (last_idx) |idx| return Value{ .string = s[idx + sep.len ..] };
+            return Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "substringBeforeLast")) {
+            if (sep.len == 0) return Value{ .string = s };
+            var last_idx: ?usize = null;
+            var k: usize = 0;
+            while (k + sep.len <= s.len) : (k += 1) {
+                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) last_idx = k;
+            }
+            if (last_idx) |idx| return Value{ .string = s[0..idx] };
+            return Value{ .string = s };
+        }
+        return null;
+    }
+
     fn eval_string_method_unescape(self: *Evaluator, s: []const u8, method: []const u8) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "unescapeJava")) {
             var buf = std.ArrayListUnmanaged(u8).empty;
@@ -13654,392 +14028,33 @@ pub const Evaluator = struct {
         }
         if (try self.eval_string_method_date_accessor(s, method)) |v| return v;
         if (try self.eval_string_method_add_hms(s, method, args)) |v| return v;
-        // year() / month() / day() — ISO 日付文字列からコンポーネント抽出
-        if (std.ascii.eqlIgnoreCase(method, "year") or
-            std.ascii.eqlIgnoreCase(method, "month") or
-            std.ascii.eqlIgnoreCase(method, "day"))
-        {
-            const dt = parse_iso_date(s) orelse return Value.null_val;
-            if (std.ascii.eqlIgnoreCase(method, "year")) return Value{ .integer = dt.y };
-            if (std.ascii.eqlIgnoreCase(method, "month")) return Value{ .integer = dt.m };
-            return Value{ .integer = dt.d };
-        }
-        // hour() / minute() / second() / millisecond() — Datetime components.
-        // yearGmt / monthGmt / dayGmt / hourGmt / minuteGmt / secondGmt mirror these;
-        // since we store UTC-ish ISO strings, both variants return the same value.
-        if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt") or
-            std.ascii.eqlIgnoreCase(
-                method,
-                "minute",
-            ) or std.ascii.eqlIgnoreCase(method, "minuteGmt") or
-            std.ascii.eqlIgnoreCase(
-                method,
-                "second",
-            ) or std.ascii.eqlIgnoreCase(method, "secondGmt") or
-            std.ascii.eqlIgnoreCase(
-                method,
-                "millisecond",
-            ) or std.ascii.eqlIgnoreCase(method, "millisecondGmt"))
-        {
-            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
-            if (std.ascii.eqlIgnoreCase(method, "hour") or
-                std.ascii.eqlIgnoreCase(method, "hourGmt"))
-            {
-                return Value{ .integer = dt.h };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "minute") or
-                std.ascii.eqlIgnoreCase(method, "minuteGmt"))
-            {
-                return Value{ .integer = dt.mi };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "second") or
-                std.ascii.eqlIgnoreCase(method, "secondGmt"))
-            {
-                return Value{ .integer = dt.sec };
-            }
-            // millisecond — we currently store seconds-only; default to 0.
-            return Value{ .integer = 0 };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "yearGmt") or
-            std.ascii.eqlIgnoreCase(method, "monthGmt") or
-            std.ascii.eqlIgnoreCase(method, "dayGmt"))
-        {
-            const dt = parse_iso_date(s) orelse return Value.null_val;
-            if (std.ascii.eqlIgnoreCase(method, "yearGmt")) return Value{ .integer = dt.y };
-            if (std.ascii.eqlIgnoreCase(method, "monthGmt")) return Value{ .integer = dt.m };
-            return Value{ .integer = dt.d };
-        }
-        // day_of_year() — 1-based day of year (Apex Date/Datetime helper)
-        if (std.ascii.eqlIgnoreCase(method, "day_of_year")) {
-            const dt = parse_iso_date(s) orelse return Value.null_val;
-            const is_leap = (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
-            var doy: i32 = @as(i32, day_of_year(dt.m, dt.d));
-            if (is_leap and dt.m > 2) doy += 1;
-            return Value{ .integer = doy };
-        }
-        // addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
+        if (eval_string_method_date_component(s, method)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "addYears") or
             std.ascii.eqlIgnoreCase(method, "addMonths") or
             std.ascii.eqlIgnoreCase(method, "addDays"))
         {
             return self.date_time_add(s, method, args);
         }
-        // daysBetween(other) — number of days from self to `other`
-        if (std.ascii.eqlIgnoreCase(method, "daysBetween") and args.len > 0) {
-            const other_str: []const u8 = switch (args[0]) {
-                .string => |os| os,
-                .object => |obj| blk: {
-                    if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
-                    break :blk s;
-                },
-                else => s,
-            };
-            const a = parse_iso_date(s) orelse return Value.null_val;
-            const b = parse_iso_date(other_str) orelse return Value.null_val;
-            const a_days = iso_date_to_epoch_days(a.y, a.m, a.d);
-            const b_days = iso_date_to_epoch_days(b.y, b.m, b.d);
-            return Value{ .integer = b_days - a_days };
-        }
-        // monthsBetween(other) — approximate month difference
-        if (std.ascii.eqlIgnoreCase(method, "monthsBetween") and args.len > 0) {
-            const other_str: []const u8 = switch (args[0]) {
-                .string => |os| os,
-                .object => |obj| blk: {
-                    if (obj.fields.get("value")) |v| if (v == .string) break :blk v.string;
-                    break :blk s;
-                },
-                else => s,
-            };
-            const a = parse_iso_date(s) orelse return Value.null_val;
-            const b = parse_iso_date(other_str) orelse return Value.null_val;
-            const diff = (@as(i64, b.y) - @as(i64, a.y)) * 12 + (@as(i64, b.m) - @as(i64, a.m));
-            return Value{ .integer = diff };
-        }
-        // formatGMT — format a DateTime string according to a pattern
+        if (eval_string_method_date_diff(s, method, args)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "formatGMT") or
             std.ascii.eqlIgnoreCase(method, "formatGmt"))
         {
-            if (args.len > 0 and args[0] == .string) {
-                return self.format_date_time_pattern(s, args[0].string);
-            }
-            // Parse ISO date: YYYY-MM-DDTHH:MM:SS
-            if (s.len >= 19 and s[4] == '-' and s[7] == '-' and s[10] == 'T') {
-                const year = s[0..4];
-                const month_num = std.fmt.parseInt(u8, s[5..7], 10) catch 1;
-                const day = s[8..10];
-                const hour24 = std.fmt.parseInt(u8, s[11..13], 10) catch 0;
-                const minute = s[14..16];
-                const second = s[17..19];
-                const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-                const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
-                const hour12: u8 =
-                    if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
-                const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
-                return Value{ .string = try std.fmt.allocPrint(
-                    self.arena,
-                    "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
-                    .{ hour12, minute, second, am_pm, month_name, day, year },
-                ) };
-            }
-            return Value{ .string = s };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "toInteger")) {
-            return Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 };
+            return self.eval_string_method_format_gmt(s, args);
         }
         if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0) {
-            if (self.find_visible_enum_decl(s)) |enum_decl| {
-                if (args[0] == .null_val) return Value.null_val;
-                const raw_value = if (args[0] == .string) args[0].string else try utils.coerce_to_string(args[0], self.arena);
-                for (enum_decl.values) |enum_value| {
-                    if (std.ascii.eqlIgnoreCase(enum_value, raw_value))
-                        return Value{ .string = enum_value };
-                }
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant {s}.{s}", .{ s, raw_value }) });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            return args[0];
+            return self.eval_string_method_enum_value_of(s, args);
         }
-        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len == 0) {
-            return Value{ .string = s };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "substringAfter") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const sep = args[0].string;
-            if (std.mem.indexOf(u8, s, sep)) |idx| {
-                return Value{ .string = s[idx + sep.len ..] };
-            }
-            return Value{ .string = "" };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "substringBefore") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const sep = args[0].string;
-            if (std.mem.indexOf(u8, s, sep)) |idx| {
-                return Value{ .string = s[0..idx] };
-            }
-            // Salesforce returns original string when separator not found
-            return Value{ .string = s };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "substringAfterLast") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const sep = args[0].string;
-            if (sep.len == 0) return Value{ .string = "" };
-            var last_idx: ?usize = null;
-            var k: usize = 0;
-            while (k + sep.len <= s.len) : (k += 1) {
-                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) last_idx = k;
-            }
-            if (last_idx) |idx| return Value{ .string = s[idx + sep.len ..] };
-            return Value{ .string = "" };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "substringBeforeLast") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const sep = args[0].string;
-            if (sep.len == 0) return Value{ .string = s };
-            var last_idx: ?usize = null;
-            var k: usize = 0;
-            while (k + sep.len <= s.len) : (k += 1) {
-                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) last_idx = k;
-            }
-            if (last_idx) |idx| return Value{ .string = s[0..idx] };
-            return Value{ .string = s };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "countMatches") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const sep = args[0].string;
-            if (sep.len == 0) return Value{ .integer = 0 };
-            var count: i64 = 0;
-            var k: usize = 0;
-            while (k + sep.len <= s.len) {
-                if (std.mem.eql(u8, s[k .. k + sep.len], sep)) {
-                    count += 1;
-                    k += sep.len;
-                } else {
-                    k += 1;
-                }
-            }
-            return Value{ .integer = count };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "reverse")) {
-            const reversed = try self.arena.alloc(u8, s.len);
-            for (s, 0..) |ch, i| reversed[s.len - 1 - i] = ch;
-            return Value{ .string = reversed };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "charAt") and args.len > 0 and args[0] == .integer) {
-            const idx: usize = @intCast(@max(args[0].integer, 0));
-            if (idx < s.len) return Value{ .integer = @intCast(s[idx]) };
-            return Value{ .integer = 0 };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "compareTo") and args.len > 0 and args[0] == .string) {
-            const other = args[0].string;
-            const len = @min(s.len, other.len);
-            for (0..len) |i| {
-                if (s[i] < other[i]) return Value{ .integer = -1 };
-                if (s[i] > other[i]) return Value{ .integer = 1 };
-            }
-            if (s.len < other.len) return Value{ .integer = -1 };
-            if (s.len > other.len) return Value{ .integer = 1 };
-            return Value{ .integer = 0 };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "starts_with_ignore_case") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            return Value{ .boolean = std.ascii.startsWithIgnoreCase(s, args[0].string) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "endsWithIgnoreCase") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            return Value{ .boolean = std.ascii.endsWithIgnoreCase(s, args[0].string) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0 and args[0] == .string) {
-            const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, "");
-            return Value{ .string = result };
-        }
-        // getSobjectType() on Id strings → determine type from our store IDs or key prefix
+        if (eval_string_method_substring_family(s, method, args)) |v| return v;
+        if (try self.eval_string_method_char_ops(s, method, args)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "getSobjectType") or
             std.ascii.eqlIgnoreCase(method, "getSObjectType"))
         {
-            // Look up the Id in our store to determine its type
-            var type_name: []const u8 = "SObject";
-            var store_iter = self.store.iterator();
-            while (store_iter.next()) |entry| {
-                for (entry.value_ptr.items) |rec| {
-                    if (rec == .sobject and rec.sobject.id != null and
-                        std.ascii.eqlIgnoreCase(rec.sobject.id.?, s))
-                    {
-                        type_name = rec.sobject.type_name;
-                        break;
-                    }
-                }
-            }
-            // Fallback: check id_type_map (populated by insert_record/createId)
-            if (std.mem.eql(u8, type_name, "SObject")) {
-                if (self.id_type_map.get(s)) |tn| {
-                    type_name = tn;
-                }
-            }
-            // Fallback: infer type from Id key prefix (standard objects)
-            if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
-                type_name = sobject_type_from_prefix(s[0..3]);
-            }
-            // Fallback: match prefix against known SObject types (store + field_types)
-            if (std.mem.eql(u8, type_name, "SObject") and s.len >= 3) {
-                const id_prefix = s[0..3];
-                // Check store
-                var store_iter2 = self.store.iterator();
-                while (store_iter2.next()) |entry| {
-                    const entry_prefix = sobject_key_prefix(entry.key_ptr.*);
-                    if (std.mem.eql(u8, &entry_prefix, id_prefix)) {
-                        type_name = entry.key_ptr.*;
-                        break;
-                    }
-                }
-                // Check field_types (knows about all SObject types from field-meta.xml)
-                if (std.mem.eql(u8, type_name, "SObject")) {
-                    var ft_iter = self.field_types.iterator();
-                    while (ft_iter.next()) |entry| {
-                        const entry_prefix = sobject_key_prefix(entry.key_ptr.*);
-                        if (std.mem.eql(u8, &entry_prefix, id_prefix)) {
-                            type_name = entry.key_ptr.*;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (is_template_s_object_type(type_name)) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.SObjectException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Cannot locate Apex Type for {s}", .{type_name}) });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            const sot = try self.arena.create(types.ObjectInstance);
-            sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(self.arena, "name", Value{ .string = type_name });
-            return Value{ .object = sot };
+            return self.eval_string_method_get_sobject_type(s);
         }
-        // getDescribe() - for SObjectField tokens (stored as strings), return DescribeFieldResult
-        if (std.ascii.eqlIgnoreCase(method, "getDescribe")) {
-            const dfr = try self.arena.create(types.ObjectInstance);
-            dfr.* = .{ .class_name = "Schema.DescribeFieldResult" };
-            try dfr.fields.put(self.arena, "fieldName", Value{ .string = s });
-            return Value{ .object = dfr };
-        }
-        // name() - for enum values, returns the string itself
-        if (std.ascii.eqlIgnoreCase(method, "name") or
-            std.ascii.eqlIgnoreCase(method, "toString"))
-        {
-            return Value{ .string = s };
-        }
-        // values() - for enum type names, returns a list of all enum values
         if (std.ascii.eqlIgnoreCase(method, "values")) {
-            var class_iter = self.classes.iterator();
-            while (class_iter.next()) |entry| {
-                for (entry.value_ptr.*.members) |member| {
-                    switch (member) {
-                        .enum_decl => |ed| {
-                            if (std.ascii.eqlIgnoreCase(ed.name, s)) {
-                                const list = try self.arena.create(types.ListValue);
-                                list.* = .{};
-                                for (ed.values) |v| {
-                                    try list.items.append(self.arena, Value{ .string = v });
-                                }
-                                return Value{ .list = list };
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
+            if (try self.eval_string_method_enum_values(s)) |v| return v;
         }
-        // ordinal() - for enum values, look up known system enum ordinals
-        if (std.ascii.eqlIgnoreCase(method, "ordinal")) {
-            return Value{ .integer = lookup_enum_ordinal(s) };
-        }
-        // getOffset(DateTime) — TimeZone のオフセット (ミリ秒)。UTC を返す。
-        if (std.ascii.eqlIgnoreCase(method, "getOffset")) {
-            return Value{ .integer = 0 };
-        }
-        // getID() — TimeZone の ID 文字列
-        if (std.ascii.eqlIgnoreCase(method, "getID") or std.ascii.eqlIgnoreCase(method, "getId")) {
-            return Value{ .string = s };
-        }
-        // getDisplayName() — TimeZone 表示名は ID をそのまま返す。
-        if (std.ascii.eqlIgnoreCase(method, "getDisplayName")) {
-            return Value{ .string = s };
-        }
-        // isSameDay(otherDate) — Date/DateTime が同じ日かどうか
-        if (std.ascii.eqlIgnoreCase(method, "isSameDay") and args.len > 0) {
-            const other_str = builtins.extract_date_string(
-                args[0],
-            ) orelse (if (args[0] == .string) args[0].string else "");
-            const dt = parse_iso_date(s) orelse return Value{ .boolean = false };
-            const odt = parse_iso_date(other_str) orelse return Value{ .boolean = false };
-            return Value{ .boolean = dt.y == odt.y and dt.m == odt.m and dt.d == odt.d };
-        }
-        // dateGmt() — DateTime から UTC Date 部分を返す (= date())
-        if (std.ascii.eqlIgnoreCase(method, "dateGmt") or
-            std.ascii.eqlIgnoreCase(method, "dateGMT"))
-        {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-                @as(u32, @intCast(dt.y)), dt.m, dt.d,
-            }) };
-        }
+        if (try self.eval_string_method_misc(s, method, args)) |v| return v;
         return Value.null_val;
     }
 
