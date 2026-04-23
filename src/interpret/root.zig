@@ -2559,7 +2559,8 @@ test "E2E: FeatureManagement.checkPermission honors assigned custom permissions 
         \\        insert ps;
         \\        SetupEntityAccess sea = new SetupEntityAccess(
         \\            ParentId = ps.Id,
-        \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName = 'CanModifyLoggerSettings'].Id
+        \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName =
+        \\ 'CanModifyLoggerSettings'].Id
         \\        );
         \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id,
         \\ PermissionSetId = ps.Id);
@@ -2636,7 +2637,8 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
     const source =
         \\public class ProfileInCrudTest {
         \\    public static String test() {
-        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN
+        \\ ('Standard User', 'Usuario estándar', '標準ユーザー')];
         \\        User u = new User(ProfileId = p.Id, LastName = 'User',
         \\ Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
         \\        String result = '';
@@ -2661,12 +2663,14 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
     const source =
         \\public class ProfileLikeSearchTest {
         \\    public static String test() {
-        \\        Profile currentProfile = [SELECT Id, Name FROM Profile WHERE Id = :UserInfo.getProfileId()];
+        \\        Profile currentProfile = [SELECT Id, Name FROM Profile WHERE Id =
+        \\ :UserInfo.getProfileId()];
         \\        String noMatchSearch = '%definitely-no-match%';
         \\        List<Profile> noMatches = [SELECT Id FROM Profile WHERE Name LIKE :noMatchSearch];
         \\        String innerSearch = '%' + currentProfile.Name.left(4) + '%';
         \\        String wrappedSearch = '%' + innerSearch + '%';
-        \\        List<Profile> matches = [SELECT Id, Name, UserLicense.Name FROM Profile WHERE Name LIKE :wrappedSearch];
+        \\        List<Profile> matches = [SELECT Id, Name, UserLicense.Name FROM Profile WHERE
+        \\ Name LIKE :wrappedSearch];
         \\        return String.valueOf(noMatches.size()) + ':' + matches.get(0).Name + ':' +
         \\ matches.get(0).UserLicense.Name;
         \\    }
@@ -3183,7 +3187,8 @@ test "E2E: permission set metadata expands composite address field permissions" 
         \\    }
         \\    public static Boolean test() {
         \\        User u = makeUser();
-        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit' LIMIT 1];
+        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit'
+        \\ LIMIT 1];
         \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
         \\        Boolean allowed = false;
         \\        System.runAs(u) {
@@ -3282,7 +3287,8 @@ test "E2E: stripInaccessible update records remain usable after JSON round-trip"
         \\        Account acct = new Account(Name = 'Example');
         \\        insert acct;
         \\        User u = makeUser();
-        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit' LIMIT 1];
+        \\        PermissionSet ps = [SELECT Id FROM PermissionSet WHERE Name = 'Address_Edit'
+        \\ LIMIT 1];
         \\        insert new PermissionSetAssignment(PermissionSetId = ps.Id, AssigneeId = u.Id);
         \\        List<Account> rows = [SELECT Name FROM Account WHERE Id = :acct.Id];
         \\        rows[0].ShippingStreet = '123 Main';
@@ -3319,7 +3325,8 @@ test "E2E: synthetic automated-process User query works when the User store is n
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
         \\        insert new User(ProfileId = p.Id, LastName = 'StoreUser',
         \\ Username = 'store-user@example.com', Email = 'store-user@example.com', Alias = 'stor');
-        \\        User autoproc = [SELECT Alias, Username, UserType FROM User WHERE Alias = 'autoproc'];
+        \\        User autoproc = [SELECT Alias, Username, UserType FROM User WHERE Alias =
+        \\ 'autoproc'];
         \\        return autoproc.Alias + ':' + autoproc.Username + ':' + autoproc.UserType;
         \\    }
         \\}
@@ -3379,7 +3386,8 @@ test "E2E: User query by UserInfo username resolves the current user when other 
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
         \\        insert new User(ProfileId = p.Id, LastName = 'Other',
         \\ Username = 'other.user@example.com', Email = 'other.user@example.com', Alias = 'othr');
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username =
+        \\ :UserInfo.getUsername()];
         \\        return currentUser.Id + ':' + currentUser.Username;
         \\    }
         \\}
@@ -3397,7 +3405,8 @@ test "E2E: User query by UserInfo username resolves the current user before any 
     const source =
         \\public class SeededCurrentUserUsernameQueryTest {
         \\    public static String test() {
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username =
+        \\ :UserInfo.getUsername()];
         \\        return currentUser.Id + ':' + currentUser.Username;
         \\    }
         \\}
@@ -3419,7 +3428,8 @@ test "E2E: runAs can query the original current user by username" {
         \\        User autoproc = [SELECT Id FROM User WHERE Alias = 'autoproc'];
         \\        String result = '';
         \\        System.runAs(new User(Id = autoproc.Id)) {
-        \\            User originalUser = [SELECT Id, Username FROM User WHERE Username = :originalUsername];
+        \\            User originalUser = [SELECT Id, Username FROM User WHERE Username =
+        \\ :originalUsername];
         \\            result = originalUser.Id + ':' + originalUser.Username;
         \\        }
         \\        return result;
@@ -3439,7 +3449,8 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
     const source =
         \\public class AccountBrandAccessTest {
         \\    public static String test() {
-        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN
+        \\ ('Standard User', 'Usuario estándar', '標準ユーザー')];
         \\        User u = new User(ProfileId = p.Id, LastName = 'User',
         \\ Username = 'accountbrand@example.com', Email = 'accountbrand@example.com',
         \\ Alias = 'abrd');
@@ -4033,7 +4044,8 @@ test "E2E: custom share objects are queryable" {
         \\            AccessLevel = 'Read'
         \\        );
         \\        insert shareRow;
-        \\        List<Thing__Share> rows = [SELECT ParentId, UserOrGroupId, AccessLevel FROM Thing__Share WHERE ParentId = :parentRecord.Id];
+        \\        List<Thing__Share> rows = [SELECT ParentId, UserOrGroupId, AccessLevel FROM
+        \\ Thing__Share WHERE ParentId = :parentRecord.Id];
         \\        Thing__Share savedRow = rows[0];
         \\        return String.valueOf(rows.size()) + ':' +
         \\ String.valueOf(savedRow.ParentId == parentRecord.Id) + ':' +
@@ -4142,7 +4154,8 @@ test "E2E: getFilteredAttachments full flow" {
         \\        for (ContentDocumentLink cdl : links) {
         \\            fileIds.add(cdl.ContentDocumentId);
         \\        }
-        \\        List<ContentVersion> versions = [SELECT Id, Title FROM ContentVersion WHERE ContentDocumentId IN :fileIds];
+        \\        List<ContentVersion> versions = [SELECT Id, Title FROM ContentVersion WHERE
+        \\ ContentDocumentId IN :fileIds];
         \\        return links.size() + ':' + fileIds.size() + ':' + versions.size();
         \\    }
         \\}
@@ -5782,7 +5795,8 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
         \\        insert new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
-        \\        Parent__c refreshed = [SELECT OpenChildren__c, TotalChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [SELECT OpenChildren__c, TotalChildren__c FROM Parent__c
+        \\ WHERE Id = :parentRecord.Id];
         \\        return String.valueOf(RollupUpdateCounter.updates) + ':' +
         \\            String.valueOf(refreshed.OpenChildren__c) + ':' +
         \\            String.valueOf(refreshed.TotalChildren__c);
@@ -5857,7 +5871,8 @@ test "E2E: filtered rollup matches enum name string values" {
         \\        insert parentRecord;
         \\        insert new Child__c(Parent__c = parentRecord.Id,
         \\ Level__c = LogLevel.ERROR.name());
-        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id =
+        \\ :parentRecord.Id];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
         \\    }
         \\}
@@ -6145,7 +6160,8 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id,
         \\ Level__c = LogLevel.ERROR.name());
         \\        insert Builder.fill(childRecord);
-        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id =
+        \\ :parentRecord.Id];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
         \\    }
         \\}
@@ -7240,7 +7256,8 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
     const source =
         \\public class SObjectTypeKeySetLoopTest {
         \\    public static String test() {
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Id = :System.UserInfo.getUserId()];
+        \\        User currentUser = [SELECT Id, Username FROM User WHERE Id =
+        \\ :System.UserInfo.getUserId()];
         \\        Map<Schema.SObjectType, List<Id>> idsByType = new Map<Schema.SObjectType,
         \\ List<Id>>();
         \\        idsByType.put(currentUser.Id.getSObjectType(), new List<Id>{ currentUser.Id });
@@ -7556,7 +7573,8 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
         \\        Contact contactRecord = new Contact(LastName = 'User',
         \\ AccountId = accountRecord.Id);
         \\        insert contactRecord;
-        \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id = :contactRecord.Id];
+        \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id =
+        \\ :contactRecord.Id];
         \\        SObject parentRecord = queried.getSObject(Schema.Contact.AccountId);
         \\        return String.valueOf(parentRecord.get('Name'));
         \\    }
@@ -7782,7 +7800,8 @@ test "E2E: top-level custom child queries preserve custom parent relationship fi
         \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id,
         \\ Status__c = 'Open');
         \\        insert childRecord;
-        \\        Child__c queried = [SELECT Id, Parent__r.Name FROM Child__c WHERE Id = :childRecord.Id];
+        \\        Child__c queried = [SELECT Id, Parent__r.Name FROM Child__c WHERE Id =
+        \\ :childRecord.Id];
         \\        return queried.Parent__r.Name;
         \\    }
         \\}
@@ -8848,7 +8867,8 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
     const source =
         \\public class UserQueryTest {
         \\    public static void testQuery() {
-        \\        User u = [SELECT Id, FirstName, LastName, Email FROM User WHERE Id = :UserInfo.getUserId()];
+        \\        User u = [SELECT Id, FirstName, LastName, Email FROM User WHERE Id =
+        \\ :UserInfo.getUserId()];
         \\        System.assertNotEquals(null, u);
         \\        System.assertEquals(UserInfo.getUserId(), u.Id);
         \\        System.assertEquals('Test', u.FirstName);
@@ -8913,7 +8933,8 @@ test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
         \\        cv.PathOnClient = 'pic.png';
         \\        cv.VersionData = EncodingUtil.base64Decode('AAAA');
         \\        insert cv;
-        \\        List<ContentDocument> docs = [SELECT Id, Title, LatestPublishedVersionId FROM ContentDocument LIMIT 1];
+        \\        List<ContentDocument> docs = [SELECT Id, Title, LatestPublishedVersionId FROM
+        \\ ContentDocument LIMIT 1];
         \\        ContentDocumentLink link = new ContentDocumentLink();
         \\        link.LinkedEntityId = property.Id;
         \\        link.ContentDocumentId = docs[0].Id;
@@ -8964,7 +8985,8 @@ test "E2E: StaticResource loads body from actual JSON file on disk" {
     const source =
         \\public class SRTest {
         \\    public static String test() {
-        \\        StaticResource sr = [SELECT Id, Body FROM StaticResource WHERE Name = 'test_data'];
+        \\        StaticResource sr = [SELECT Id, Body FROM StaticResource WHERE Name =
+        \\ 'test_data'];
         \\        String body = sr.Body.toString();
         \\        List<Object> parsed = (List<Object>) JSON.deserializeUntyped(body);
         \\        return String.valueOf(parsed.size());
@@ -12126,8 +12148,10 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
         \\        Datetime otherTarget = Datetime.newInstance(2024, 1, 1, 0, 0, 0);
         \\        System.Test.setCreatedDate(accountRecord.Id, target);
         \\        System.Test.setCreatedDate(otherRecord.Id, otherTarget);
-        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id = :accountRecord.Id];
-        \\        Account otherRefreshed = [SELECT CreatedDate FROM Account WHERE Id = :otherRecord.Id];
+        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id =
+        \\ :accountRecord.Id];
+        \\        Account otherRefreshed = [SELECT CreatedDate FROM Account WHERE Id =
+        \\ :otherRecord.Id];
         \\        List<Account> matches = [SELECT Id FROM Account WHERE CreatedDate = :target];
         \\        return String.valueOf(matches.size()) + ':' +
         \\            String.valueOf(refreshed.CreatedDate == target) + ':' +
@@ -12150,7 +12174,8 @@ test "E2E: inserted live records do not expose auto-generated CreatedDate before
         \\    public static String test() {
         \\        Account accountRecord = new Account(Name = 'Acme');
         \\        insert accountRecord;
-        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id = :accountRecord.Id];
+        \\        Account refreshed = [SELECT CreatedDate FROM Account WHERE Id =
+        \\ :accountRecord.Id];
         \\        return String.valueOf(accountRecord.get('CreatedDate') == null) + ':' +
         \\            String.valueOf(refreshed.CreatedDate != null);
         \\    }
@@ -12261,7 +12286,8 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
         \\        Contact contactRecord = new Contact(LastName = 'User',
         \\ AccountId = accountRecord.Id);
         \\        insert contactRecord;
-        \\        Contact queried = [SELECT AccountId, Account.CreatedDate FROM Contact WHERE Id = :contactRecord.Id];
+        \\        Contact queried = [SELECT AccountId, Account.CreatedDate FROM Contact WHERE Id =
+        \\ :contactRecord.Id];
         \\        Datetime actual = (Datetime) queried.getSObject('Account').get('CreatedDate');
         \\        return String.valueOf(actual == target);
         \\    }
@@ -12743,7 +12769,8 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\        delete rows.get(0);
         \\        rows = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
         \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undelete_records(rows, false);
-        \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
+        \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows
+        \\ ALL ROWS];
         \\        return String.valueOf(results.size()) + '|' +
         \\            String.valueOf(results.get(0).isSuccess()) + '|' +
         \\            String.valueOf(results.get(1).isSuccess()) + '|' +
@@ -13008,7 +13035,8 @@ test "E2E: custom object upsert by external id updates existing record" {
         \\        Thing__c secondRow = new Thing__c(Name = 'updated', UniqueId__c = 'txn-1');
         \\        Database.upsert(new List<SObject>{ secondRow }, Schema.Thing__c.UniqueId__c);
         \\
-        \\        List<Thing__c> rows = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'txn-1'];
+        \\        List<Thing__c> rows = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE
+        \\ UniqueId__c = 'txn-1'];
         \\        return String.valueOf(rows.size()) + ':' + rows.get(0).Name;
         \\    }
         \\}
@@ -13082,7 +13110,8 @@ test "E2E: synthetic User query respects Alias filters" {
     const source =
         \\public class UserAliasQueryProbe {
         \\    public static String test() {
-        \\        Schema.User userRow = [SELECT Id, Alias, UserType FROM User WHERE Alias = 'autoproc'];
+        \\        Schema.User userRow = [SELECT Id, Alias, UserType FROM User WHERE Alias =
+        \\ 'autoproc'];
         \\        return userRow.Alias + ':' + userRow.UserType;
         \\    }
         \\}
@@ -13184,7 +13213,8 @@ test "E2E: custom object upsert by external id inserts queryable row" {
         \\            new Thing__c(Name = 'Created', UniqueId__c = 'created-1')
         \\        };
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
-        \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'created-1'];
+        \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE
+        \\ UniqueId__c = 'created-1'];
         \\        return String.valueOf(saved.size()) + ':' +
         \\ String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
         \\    }
@@ -13314,7 +13344,8 @@ test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mod
         \\    public static String test() {
         \\        System.runAs(getMinimumAccessUser()) {
         \\            try {
-        \\                List<Opportunity> opps = [SELECT Name, Amount FROM Opportunity WITH USER_MODE];
+        \\                List<Opportunity> opps = [SELECT Name, Amount FROM Opportunity WITH
+        \\ USER_MODE];
         \\                return 'no-exception';
         \\            } catch (QueryException qe) {
         \\                Map<String, Set<String>> inaccess = qe.getInaccessibleFields();
@@ -13332,7 +13363,8 @@ test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mod
         \\        // Synthesize a restricted user inline by returning a User bound
         \\        // to a "Minimum Access" profile. setupTestUser-style helper kept
         \\        // terse for the probe.
-        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce' LIMIT 1];
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Minimum Access - Salesforce'
+        \\ LIMIT 1];
         \\        User u = new User(
         \\            Email='min@probe.test', Username='min@probe-x.test', LastName='min',
         \\            Alias='min', ProfileId=p.Id, LanguageLocaleKey='en_US',
@@ -14082,7 +14114,8 @@ test "E2E: BusinessHours query and diff return default day duration" {
     const source =
         \\public class BusinessHoursDiffTest {
         \\    public static String test() {
-        \\        BusinessHours hours = [SELECT Id, Name FROM BusinessHours WHERE Name = 'Default' LIMIT 1];
+        \\        BusinessHours hours = [SELECT Id, Name FROM BusinessHours WHERE Name = 'Default'
+        \\ LIMIT 1];
         \\        Datetime startDate = Datetime.newInstance(2020, 3, 27);
         \\        Datetime endDate = startDate.addDays(1);
         \\        Long duration = BusinessHours.diff(hours.Id, startDate, endDate);
@@ -14559,7 +14592,8 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\            u.EmailEncodingKey = 'UTF-8';
         \\            insert u;
         \\        }
-        \\        Integer activeMatches = [SELECT COUNT() FROM User WHERE Email = 'probe@example.com' AND IsActive = TRUE];
+        \\        Integer activeMatches = [SELECT COUNT() FROM User WHERE Email =
+        \\ 'probe@example.com' AND IsActive = TRUE];
         \\        return 'profiles=' + matchedProfiles + '|activeUsers=' + activeMatches;
         \\    }
         \\}
