@@ -9247,6 +9247,82 @@ pub const Evaluator = struct {
         return .null_val;
     }
 
+    fn eval_binary_expr(self: *Evaluator, bin: *ast.BinaryExpr, current_env: *Env) anyerror!Value {
+        const left = try self.eval_expr(bin.left, current_env);
+        switch (bin.op) {
+            .and_op => {
+                if (!(utils.coerce_to_bool(left) catch false)) return Value{ .boolean = false };
+            },
+            .or_op => {
+                if (utils.coerce_to_bool(left) catch false) return Value{ .boolean = true };
+            },
+            else => {},
+        }
+        const right = try self.eval_expr(bin.right, current_env);
+        return eval_binary(self, left, bin.op, right, self.arena);
+    }
+
+    fn eval_assignment_expr(self: *Evaluator, asgn: *ast.Assignment, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(asgn.value, current_env);
+        if (asgn.is_postfix) {
+            const original = self.eval_expr(asgn.target, current_env) catch Value.null_val;
+            _ = try self.eval_assignment(asgn, val, current_env);
+            return original;
+        }
+        return self.eval_assignment(asgn, val, current_env);
+    }
+
+    fn eval_index_access_expr(self: *Evaluator, ia: *ast.IndexAccess, current_env: *Env) anyerror!Value {
+        const obj = try self.eval_expr(ia.object, current_env);
+        const idx = try self.eval_expr(ia.index, current_env);
+        if (obj == .list and idx == .integer) {
+            if (idx.integer >= 0) {
+                const i: usize = @intCast(idx.integer);
+                if (i < obj.list.items.items.len) return obj.list.items.items[i];
+            }
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "ListException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "List index out of bounds: {d}",
+                .{idx.integer},
+            ) });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (obj == .map and idx == .string) {
+            return obj.map.entries.get(idx.string) orelse Value.null_val;
+        }
+        return Value.null_val;
+    }
+
+    fn eval_new_expr_wrapper(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) anyerror!Value {
+        if (ne.loc.line > 0) {
+            self.current_call_line = ne.loc.line;
+            if (self.call_stack.items.len > 0) {
+                self.call_stack.items[self.call_stack.items.len - 1].line = ne.loc.line;
+            }
+        }
+        const val = try self.eval_new_expr(ne, current_env);
+        if (val == .object and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
+            if (val.object.fields.get("stackTraceString") == null) {
+                const line = if (ne.loc.line > 0) ne.loc.line else 1;
+                const trace = try self.build_stack_trace_string();
+                try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
+                try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
+            }
+        }
+        return val;
+    }
+
+    fn eval_ternary_expr(self: *Evaluator, te: *ast.TernaryExpr, current_env: *Env) anyerror!Value {
+        const cond = try self.eval_expr(te.condition, current_env);
+        if (utils.coerce_to_bool(cond) catch false) {
+            return self.eval_expr(te.then_expr, current_env);
+        }
+        return self.eval_expr(te.else_expr, current_env);
+    }
+
     pub fn eval_expr(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
@@ -9256,125 +9332,29 @@ pub const Evaluator = struct {
             // OS スタックオーバーフローを引き起こす場合があるため null を返す
             return .null_val;
         }
-        switch (expr.*) {
-            .integer_literal => |v| return .{ .integer = v },
-            .long_literal => |v| return .{ .long = v },
-            .double_literal => |v| return .{ .double = v },
-            .string_literal => |v| return .{ .string = v },
-            .boolean_literal => |v| return .{ .boolean = v },
-            .null_literal => return .null_val,
-            .this_expr, .super_expr => {
-                return current_env.get("this") orelse .null_val;
-            },
-
-            .identifier => |id| return self.eval_identifier_expr(id.name, current_env),
-
-            .binary => |bin| {
-                const left = try self.eval_expr(bin.left, current_env);
-                switch (bin.op) {
-                    .and_op => {
-                        if (!(utils.coerce_to_bool(left) catch false)) {
-                            return Value{ .boolean = false };
-                        }
-                    },
-                    .or_op => {
-                        if (utils.coerce_to_bool(left) catch false) {
-                            return Value{ .boolean = true };
-                        }
-                    },
-                    else => {},
-                }
-                const right = try self.eval_expr(bin.right, current_env);
-                return eval_binary(self, left, bin.op, right, self.arena);
-            },
-
-            .unary => |un| {
-                const operand = try self.eval_expr(un.operand, current_env);
-                return eval_unary(un.op, operand);
-            },
-
-            .assignment => |asgn| {
-                const val = try self.eval_expr(asgn.value, current_env);
-                if (asgn.is_postfix) {
-                    // Postfix n++ / n--: return original value, but still perform the assignment
-                    const original = self.eval_expr(asgn.target, current_env) catch Value.null_val;
-                    _ = try self.eval_assignment(asgn, val, current_env);
-                    return original;
-                }
-                return self.eval_assignment(asgn, val, current_env);
-            },
-
-            .call => |call| return self.eval_call_expr(call, current_env),
-
-            .method_call => |mc| return self.eval_method_call(mc, current_env),
-
-            .field_access => |fa| return self.eval_field_access_expr(fa, current_env),
-
-            .index_access => |ia| {
-                const obj = try self.eval_expr(ia.object, current_env);
-                const idx = try self.eval_expr(ia.index, current_env);
-                if (obj == .list and idx == .integer) {
-                    if (idx.integer >= 0) {
-                        const i: usize = @intCast(idx.integer);
-                        if (i < obj.list.items.items.len) return obj.list.items.items[i];
-                    }
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "ListException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "List index out of bounds: {d}", .{idx.integer}) });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-                if (obj == .map and idx == .string) {
-                    return obj.map.entries.get(idx.string) orelse Value.null_val;
-                }
-                return Value.null_val;
-            },
-
-            .new_expr => |ne| {
-                // Set call-site line for constructor frame tracking, and update parent frame's line
-                if (ne.loc.line > 0) {
-                    self.current_call_line = ne.loc.line;
-                    if (self.call_stack.items.len > 0)
-                        self.call_stack.items[self.call_stack.items.len - 1].line = ne.loc.line;
-                }
-                const val = try self.eval_new_expr(ne, current_env);
-                // Capture stack trace for Exception objects at creation time
-                if (val == .object and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
-                    if (val.object.fields.get("stackTraceString") == null) {
-                        const line = if (ne.loc.line > 0) ne.loc.line else 1;
-                        const trace = try self.build_stack_trace_string();
-                        try val.object.fields.put(
-                            self.arena,
-                            "stackTraceString",
-                            Value{ .string = trace },
-                        );
-                        try val.object.fields.put(
-                            self.arena,
-                            "lineNumber",
-                            Value{ .integer = @intCast(line) },
-                        );
-                    }
-                }
-                return val;
-            },
-
-            .cast_expr => |ce| return self.eval_cast_expr(ce, current_env),
-
-            .ternary => |te| {
-                const cond = try self.eval_expr(te.condition, current_env);
-                if (utils.coerce_to_bool(cond) catch false) {
-                    return self.eval_expr(te.then_expr, current_env);
-                } else {
-                    return self.eval_expr(te.else_expr, current_env);
-                }
-            },
-
-            .instanceof => |ie| return self.eval_instanceof_expr(ie, current_env),
-
-            .soql => |sq| return self.execute_soql(sq.raw, current_env),
-
-            .grouped => |inner| return self.eval_expr(inner, current_env),
-        }
+        return switch (expr.*) {
+            .integer_literal => |v| Value{ .integer = v },
+            .long_literal => |v| Value{ .long = v },
+            .double_literal => |v| Value{ .double = v },
+            .string_literal => |v| Value{ .string = v },
+            .boolean_literal => |v| Value{ .boolean = v },
+            .null_literal => .null_val,
+            .this_expr, .super_expr => current_env.get("this") orelse .null_val,
+            .identifier => |id| try self.eval_identifier_expr(id.name, current_env),
+            .binary => |bin| try self.eval_binary_expr(bin, current_env),
+            .unary => |un| eval_unary(un.op, try self.eval_expr(un.operand, current_env)),
+            .assignment => |asgn| try self.eval_assignment_expr(asgn, current_env),
+            .call => |call| try self.eval_call_expr(call, current_env),
+            .method_call => |mc| try self.eval_method_call(mc, current_env),
+            .field_access => |fa| try self.eval_field_access_expr(fa, current_env),
+            .index_access => |ia| try self.eval_index_access_expr(ia, current_env),
+            .new_expr => |ne| try self.eval_new_expr_wrapper(ne, current_env),
+            .cast_expr => |ce| try self.eval_cast_expr(ce, current_env),
+            .ternary => |te| try self.eval_ternary_expr(te, current_env),
+            .instanceof => |ie| try self.eval_instanceof_expr(ie, current_env),
+            .soql => |sq| try self.execute_soql(sq.raw, current_env),
+            .grouped => |inner| try self.eval_expr(inner, current_env),
+        };
     }
 
     fn is_collection_type_name(type_name: []const u8) bool {
