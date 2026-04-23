@@ -639,117 +639,132 @@ fn dispatch_static_string(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "escapeSingleQuotes")) {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "escapeSingleQuotes")) {
         if (args.len > 0 and args[0] == .string) return args[0];
         return Value{ .string = "" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "join")) {
-        const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
-        if (args.len >= 1 and args[0] == .list) {
-            if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
-                const only = args[0].list.items.items[0];
-                if (only == .string and
-                    std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1"))
-                {
-                    // When ignored stack-trace frames collapse down to only the
-                    // synthetic anonymous entry point, Salesforce behaves as if
-                    // no useful trace remains.
-                    return Value{ .string = "" };
-                }
-            }
-            var result: std.ArrayListUnmanaged(u8) = .empty;
-            for (args[0].list.items.items, 0..) |item, idx| {
-                if (idx > 0) try result.appendSlice(ctx.arena, sep);
-                const s = try utils.coerce_to_string(item, ctx.arena);
-                try result.appendSlice(ctx.arena, s);
-            }
-            return Value{ .string = try result.toOwnedSlice(ctx.arena) };
-        }
-        if (args.len >= 1 and args[0] == .set) {
-            var result: std.ArrayListUnmanaged(u8) = .empty;
-            var first = true;
-            for (args[0].set.entries.values()) |item| {
-                if (!first) try result.appendSlice(ctx.arena, sep);
-                first = false;
-                const s = try utils.coerce_to_string(item, ctx.arena);
-                try result.appendSlice(ctx.arena, s);
-            }
-            return Value{ .string = try result.toOwnedSlice(ctx.arena) };
-        }
-        return Value{ .string = "" };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "format")) {
-        if (args.len >= 2 and args[0] == .string and args[1] == .list) {
-            const fmt_str = args[0].string;
-            const items = args[1].list.items.items;
-            var result = std.ArrayListUnmanaged(u8).empty;
-            var i: usize = 0;
-            while (i < fmt_str.len) {
-                if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
-                    if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
-                        const idx_str = fmt_str[i + 1 .. close];
-                        if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
-                            if (idx < items.len) {
-                                const val_str: []const u8 = utils.coerce_to_string(
-                                    items[idx],
-                                    ctx.arena,
-                                ) catch "null";
-                                result.appendSlice(ctx.arena, val_str) catch {};
-                                i = close + 1;
-                                continue;
-                            }
-                        } else |_| {}
-                    }
-                }
-                result.append(ctx.arena, fmt_str[i]) catch {};
-                i += 1;
-            }
-            return Value{ .string = result.items };
-        }
-        if (args.len > 0 and args[0] == .string) return args[0];
-        return Value{ .string = "" };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
-        if (args.len > 0) {
-            if (args[0] == .null_val) return Value.null_val;
-            return switch (args[0]) {
-                .object, .list, .map, .set, .sobject => Value{ .string = try ctx.eval.value_to_string_public(args[0]) },
-                else => Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) },
-            };
-        }
-        return Value.null_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isBlank")) {
-        if (args.len > 0) {
-            if (args[0] == .null_val) return Value{ .boolean = true };
-            if (args[0] == .string)
-                return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0 };
-        }
-        return Value{ .boolean = true };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isNotBlank")) {
-        if (args.len > 0) {
-            if (args[0] == .null_val) return Value{ .boolean = false };
-            if (args[0] == .string)
-                return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0 };
-        }
-        return Value{ .boolean = false };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isEmpty")) {
-        if (args.len > 0) {
-            if (args[0] == .null_val) return Value{ .boolean = true };
-            if (args[0] == .string) return Value{ .boolean = args[0].string.len == 0 };
-        }
-        return Value{ .boolean = true };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isNotEmpty")) {
-        if (args.len > 0) {
-            if (args[0] == .null_val) return Value{ .boolean = false };
-            if (args[0] == .string) return Value{ .boolean = args[0].string.len > 0 };
-        }
-        return Value{ .boolean = false };
-    }
+    if (ci.eqlIgnoreCase(method_name, "join")) return try handle_string_join(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "format")) return try handle_string_format(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "valueOf")) return try handle_string_value_of(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "isBlank")) return handle_string_is_blank(args);
+    if (ci.eqlIgnoreCase(method_name, "isNotBlank")) return handle_string_is_not_blank(args);
+    if (ci.eqlIgnoreCase(method_name, "isEmpty")) return handle_string_is_empty(args);
+    if (ci.eqlIgnoreCase(method_name, "isNotEmpty")) return handle_string_is_not_empty(args);
     return null;
+}
+
+fn handle_string_join(ctx: *BuiltinContext, args: []const Value) !Value {
+    const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
+    if (args.len >= 1 and args[0] == .list) {
+        if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
+            const only = args[0].list.items.items[0];
+            if (only == .string and
+                std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1"))
+            {
+                // When ignored stack-trace frames collapse down to only the
+                // synthetic anonymous entry point, Salesforce behaves as if
+                // no useful trace remains.
+                return Value{ .string = "" };
+            }
+        }
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        for (args[0].list.items.items, 0..) |item, idx| {
+            if (idx > 0) try result.appendSlice(ctx.arena, sep);
+            const s = try utils.coerce_to_string(item, ctx.arena);
+            try result.appendSlice(ctx.arena, s);
+        }
+        return Value{ .string = try result.toOwnedSlice(ctx.arena) };
+    }
+    if (args.len >= 1 and args[0] == .set) {
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        var first = true;
+        for (args[0].set.entries.values()) |item| {
+            if (!first) try result.appendSlice(ctx.arena, sep);
+            first = false;
+            const s = try utils.coerce_to_string(item, ctx.arena);
+            try result.appendSlice(ctx.arena, s);
+        }
+        return Value{ .string = try result.toOwnedSlice(ctx.arena) };
+    }
+    return Value{ .string = "" };
+}
+
+fn handle_string_format(ctx: *BuiltinContext, args: []const Value) !Value {
+    if (args.len >= 2 and args[0] == .string and args[1] == .list) {
+        const fmt_str = args[0].string;
+        const items = args[1].list.items.items;
+        var result = std.ArrayListUnmanaged(u8).empty;
+        var i: usize = 0;
+        while (i < fmt_str.len) {
+            if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
+                if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
+                    const idx_str = fmt_str[i + 1 .. close];
+                    if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
+                        if (idx < items.len) {
+                            const val_str: []const u8 = utils.coerce_to_string(
+                                items[idx],
+                                ctx.arena,
+                            ) catch "null";
+                            result.appendSlice(ctx.arena, val_str) catch {};
+                            i = close + 1;
+                            continue;
+                        }
+                    } else |_| {}
+                }
+            }
+            result.append(ctx.arena, fmt_str[i]) catch {};
+            i += 1;
+        }
+        return Value{ .string = result.items };
+    }
+    if (args.len > 0 and args[0] == .string) return args[0];
+    return Value{ .string = "" };
+}
+
+fn handle_string_value_of(ctx: *BuiltinContext, args: []const Value) !Value {
+    if (args.len == 0) return Value.null_val;
+    if (args[0] == .null_val) return Value.null_val;
+    return switch (args[0]) {
+        .object, .list, .map, .set, .sobject => Value{
+            .string = try ctx.eval.value_to_string_public(args[0]),
+        },
+        else => Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) },
+    };
+}
+
+fn handle_string_is_blank(args: []const Value) Value {
+    if (args.len > 0) {
+        if (args[0] == .null_val) return Value{ .boolean = true };
+        if (args[0] == .string)
+            return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0 };
+    }
+    return Value{ .boolean = true };
+}
+
+fn handle_string_is_not_blank(args: []const Value) Value {
+    if (args.len > 0) {
+        if (args[0] == .null_val) return Value{ .boolean = false };
+        if (args[0] == .string)
+            return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0 };
+    }
+    return Value{ .boolean = false };
+}
+
+fn handle_string_is_empty(args: []const Value) Value {
+    if (args.len > 0) {
+        if (args[0] == .null_val) return Value{ .boolean = true };
+        if (args[0] == .string) return Value{ .boolean = args[0].string.len == 0 };
+    }
+    return Value{ .boolean = true };
+}
+
+fn handle_string_is_not_empty(args: []const Value) Value {
+    if (args.len > 0) {
+        if (args[0] == .null_val) return Value{ .boolean = false };
+        if (args[0] == .string) return Value{ .boolean = args[0].string.len > 0 };
+    }
+    return Value{ .boolean = false };
 }
 
 fn is_salesforce_id_string(value: []const u8) bool {
