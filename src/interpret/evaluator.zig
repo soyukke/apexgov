@@ -7928,94 +7928,137 @@ pub const Evaluator = struct {
     ) !void {
         var parent_iter = self.field_metadata.iterator();
         while (parent_iter.next()) |parent_entry| {
-            const parent_type = parent_entry.key_ptr.*;
-            const type_meta = parent_entry.value_ptr.*;
+            try self.apply_rollup_for_parent_type(
+                parent_entry.key_ptr.*,
+                parent_entry.value_ptr.*,
+                child_type,
+                new_records,
+                old_records,
+            );
+        }
+    }
 
-            var impacted_ids: std.StringArrayHashMapUnmanaged(void) = .empty;
-            var has_matching_rollups = false;
+    /// For one parent SObject type: collect the set of parent Ids impacted by
+    /// the child delta, recompute every rollup summary field for those parents,
+    /// and emit a single bulk update when anything changed.
+    fn apply_rollup_for_parent_type(
+        self: *Evaluator,
+        parent_type: []const u8,
+        type_meta: std.StringArrayHashMapUnmanaged(FieldMetadata),
+        child_type: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        var impacted_ids: std.StringArrayHashMapUnmanaged(void) = .empty;
+        if (!(try self.collect_rollup_impacted_ids(
+            type_meta,
+            child_type,
+            new_records,
+            old_records,
+            &impacted_ids,
+        ))) return;
+        if (impacted_ids.count() == 0) return;
 
-            var field_iter = type_meta.iterator();
-            while (field_iter.next()) |field_entry| {
-                const metadata = field_entry.value_ptr.*;
-                const summary_fk = metadata.summary_foreign_key orelse continue;
-                const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
-                if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+        const parent_updates = try self.arena.create(types.ListValue);
+        parent_updates.* = .{};
+        var parent_old_records: std.ArrayListUnmanaged(Value) = .empty;
+        var impacted_iter = impacted_ids.iterator();
+        while (impacted_iter.next()) |impacted_entry| {
+            try self.recompute_rollup_for_parent(
+                parent_type,
+                type_meta,
+                child_type,
+                impacted_entry.key_ptr.*,
+                new_records,
+                old_records,
+                parent_updates,
+                &parent_old_records,
+            );
+        }
+        if (parent_updates.items.items.len > 0) {
+            try self.execute_dml_with_external_id_internal(
+                .update,
+                Value{ .list = parent_updates },
+                null,
+                false,
+                parent_old_records,
+            );
+        }
+    }
 
-                has_matching_rollups = true;
-                const fk_field = summary_fk[dot_idx + 1 ..];
+    /// Walk `type_meta` for rollup-summary fields pointing at `child_type`,
+    /// recording impacted parent Ids from both new and old child records.
+    /// Returns whether any matching rollup exists for this parent type.
+    fn collect_rollup_impacted_ids(
+        self: *Evaluator,
+        type_meta: std.StringArrayHashMapUnmanaged(FieldMetadata),
+        child_type: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+        impacted_ids: *std.StringArrayHashMapUnmanaged(void),
+    ) !bool {
+        var has_matching_rollups = false;
+        var field_iter = type_meta.iterator();
+        while (field_iter.next()) |field_entry| {
+            const metadata = field_entry.value_ptr.*;
+            const summary_fk = metadata.summary_foreign_key orelse continue;
+            const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
+            if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+            has_matching_rollups = true;
+            const fk_field = summary_fk[dot_idx + 1 ..];
+            try self.collect_summary_impact_ids_from_records(impacted_ids, new_records, fk_field);
+            if (old_records) |previous_records| {
                 try self.collect_summary_impact_ids_from_records(
-                    &impacted_ids,
-                    new_records,
+                    impacted_ids,
+                    previous_records.items,
                     fk_field,
-                );
-                if (old_records) |previous_records| {
-                    try self.collect_summary_impact_ids_from_records(
-                        &impacted_ids,
-                        previous_records.items,
-                        fk_field,
-                    );
-                }
-            }
-
-            if (!has_matching_rollups or impacted_ids.count() == 0) continue;
-
-            const parent_updates = try self.arena.create(types.ListValue);
-            parent_updates.* = .{};
-            var parent_old_records: std.ArrayListUnmanaged(Value) = .empty;
-
-            var impacted_iter = impacted_ids.iterator();
-            while (impacted_iter.next()) |impacted_entry| {
-                const parent_id = impacted_entry.key_ptr.*;
-                const parent_record = self.find_record_by_id(
-                    parent_type,
-                    parent_id,
-                ) orelse continue;
-                if (parent_record != .sobject) continue;
-
-                const updated_parent = try self.clone_s_object(parent_record.sobject);
-                const old_parent = try self.clone_s_object(parent_record.sobject);
-                var changed = false;
-
-                var summary_iter = type_meta.iterator();
-                while (summary_iter.next()) |summary_entry| {
-                    const field_name = summary_entry.key_ptr.*;
-                    const metadata = summary_entry.value_ptr.*;
-                    const summary_fk = metadata.summary_foreign_key orelse continue;
-                    const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
-                    if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
-
-                    const new_value = self.compute_summary_field_value(
-                        updated_parent,
-                        metadata,
-                    ) orelse Value.null_val;
-                    const old_value = self.compute_summary_field_value_before_delta(
-                        parent_record.sobject,
-                        metadata,
-                        new_records,
-                        old_records,
-                    ) orelse Value.null_val;
-                    try old_parent.fields.put(self.arena, field_name, old_value);
-                    try updated_parent.fields.put(self.arena, field_name, new_value);
-                    if (utils.value_eql(old_value, new_value)) continue;
-
-                    changed = true;
-                }
-
-                if (!changed) continue;
-                try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
-                try parent_old_records.append(self.arena, Value{ .sobject = old_parent });
-            }
-
-            if (parent_updates.items.items.len > 0) {
-                try self.execute_dml_with_external_id_internal(
-                    .update,
-                    Value{ .list = parent_updates },
-                    null,
-                    false,
-                    parent_old_records,
                 );
             }
         }
+        return has_matching_rollups;
+    }
+
+    /// Recompute every rollup-summary field on a single parent. When any value
+    /// actually changes, append the updated + pre-delta snapshots to the
+    /// caller's update/old lists.
+    fn recompute_rollup_for_parent(
+        self: *Evaluator,
+        parent_type: []const u8,
+        type_meta: std.StringArrayHashMapUnmanaged(FieldMetadata),
+        child_type: []const u8,
+        parent_id: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+        parent_updates: *types.ListValue,
+        parent_old_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const parent_record = self.find_record_by_id(parent_type, parent_id) orelse return;
+        if (parent_record != .sobject) return;
+        const updated_parent = try self.clone_s_object(parent_record.sobject);
+        const old_parent = try self.clone_s_object(parent_record.sobject);
+        var changed = false;
+        var summary_iter = type_meta.iterator();
+        while (summary_iter.next()) |summary_entry| {
+            const field_name = summary_entry.key_ptr.*;
+            const metadata = summary_entry.value_ptr.*;
+            const summary_fk = metadata.summary_foreign_key orelse continue;
+            const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
+            if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+            const new_value = self.compute_summary_field_value(updated_parent, metadata) orelse
+                Value.null_val;
+            const old_value = self.compute_summary_field_value_before_delta(
+                parent_record.sobject,
+                metadata,
+                new_records,
+                old_records,
+            ) orelse Value.null_val;
+            try old_parent.fields.put(self.arena, field_name, old_value);
+            try updated_parent.fields.put(self.arena, field_name, new_value);
+            if (!utils.value_eql(old_value, new_value)) changed = true;
+        }
+        if (!changed) return;
+        try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
+        try parent_old_records.append(self.arena, Value{ .sobject = old_parent });
     }
 
     fn normalize_summary_field_path(
