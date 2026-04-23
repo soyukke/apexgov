@@ -12345,138 +12345,191 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     fn eval_new_expr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
-        // Strip "System." and "Schema." prefixes for type resolution
         const raw_type_name = ne.type_name.name;
-        const is_platform_qualified = std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
-            std.ascii.startsWithIgnoreCase(raw_type_name, "Schema.");
-        const type_name = if (std.ascii.startsWithIgnoreCase(raw_type_name, "System."))
-            raw_type_name[7..]
-        else if (std.ascii.startsWithIgnoreCase(raw_type_name, "Schema."))
-            raw_type_name[7..]
-        else
-            raw_type_name;
+        const is_platform_qualified = is_platform_qualified_new_type(raw_type_name);
+        const type_name = normalized_new_type_name(raw_type_name);
 
-        // Type literal: List<T>.class, Map<K,V>.class, Type[].class → return Type object
-        if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(u8, type_name, "[]")) and ne.args.len == 0) {
-            const type_obj = try self.arena.create(types.ObjectInstance);
-            type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-            return Value{ .object = type_obj };
+        if (try self.new_type_literal_value(ne, type_name)) |result| return result;
+        if (try self.new_collection_value(ne, type_name, current_env)) |result| return result;
+        if (try self.new_builtin_object_value(ne, type_name, current_env)) |result| return result;
+
+        const obj = try self.new_sobject_from_assignments(ne, type_name, current_env);
+        if (try self.new_user_class_value(ne, type_name, is_platform_qualified, current_env)) |result| {
+            return result;
         }
+        if (try self.new_fallback_exception_value(ne, type_name, current_env)) |result| return result;
+        return Value{ .sobject = obj };
+    }
 
-        // new List<T>() / new List<T>{...}
+    fn is_platform_qualified_new_type(raw_type_name: []const u8) bool {
+        return std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
+            std.ascii.startsWithIgnoreCase(raw_type_name, "Schema.");
+    }
+
+    fn normalized_new_type_name(raw_type_name: []const u8) []const u8 {
+        if (std.ascii.startsWithIgnoreCase(raw_type_name, "System.")) return raw_type_name[7..];
+        if (std.ascii.startsWithIgnoreCase(raw_type_name, "Schema.")) return raw_type_name[7..];
+        return raw_type_name;
+    }
+
+    fn new_type_literal_value(self: *Evaluator, ne: *ast.NewExpr, type_name: []const u8) !?Value {
+        if ((std.mem.indexOf(u8, type_name, "<") == null and !std.mem.endsWith(u8, type_name, "[]")) or
+            ne.args.len != 0)
+        {
+            return null;
+        }
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = type_obj };
+    }
+
+    fn new_collection_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(type_name, "List")) {
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            if (ne.type_name.params.len > 0) {
-                const rendered = strip_type_namespace(self.render_type_ref(ne.type_name.params[0]));
-                list.element_type = rendered;
-                // Mark truly-generic explicit constructions. Real Apex returns
-                // null from `getSObjectType()` on a list that the user built
-                // with `new List<SObject>()` and populated by hand, even when
-                // every element is the same concrete SObjectType. Lists that
-                // inherit `element_type = "SObject"` later (via parameter
-                // annotation, etc.) keep `explicitly_generic = false`.
-                const rendered_base = type_base_name(rendered);
-                if (std.ascii.eqlIgnoreCase(rendered_base, "SObject") or
-                    std.ascii.eqlIgnoreCase(rendered_base, "Object"))
-                {
-                    list.explicitly_generic = true;
-                }
+            return try self.new_list_value(ne, current_env);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "Map")) {
+            return try self.new_map_value(ne, current_env);
+        }
+        if (std.ascii.startsWithIgnoreCase(type_name, "DataWeaveScriptResource")) {
+            return try self.new_dataweave_script_value(type_name);
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "Set")) {
+            return try self.new_set_value(ne, current_env);
+        }
+        return null;
+    }
+
+    fn new_list_value(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        if (ne.type_name.params.len > 0) {
+            const rendered = strip_type_namespace(self.render_type_ref(ne.type_name.params[0]));
+            list.element_type = rendered;
+            const rendered_base = type_base_name(rendered);
+            if (std.ascii.eqlIgnoreCase(rendered_base, "SObject") or
+                std.ascii.eqlIgnoreCase(rendered_base, "Object"))
+            {
+                list.explicitly_generic = true;
             }
-            // Single arg that is a Set → convert to list
-            if (ne.args.len == 1 and !ne.is_brace_initializer) {
-                var arg_copy = ne.args[0];
-                const arg_val = try self.eval_expr(&arg_copy, current_env);
-                if (arg_val == .set) {
-                    for (arg_val.set.entries.values()) |item| {
-                        try list.items.append(self.arena, item);
-                    }
-                    return Value{ .list = list };
-                }
-                if (arg_val == .list) {
-                    // Copy list
-                    for (arg_val.list.items.items) |item| {
-                        try list.items.append(self.arena, item);
-                    }
-                    return Value{ .list = list };
-                }
-                // Single non-collection arg → add to list
-                try list.items.append(self.arena, arg_val);
-                return Value{ .list = list };
-            }
-            for (ne.args) |*arg| {
-                try list.items.append(self.arena, try self.eval_expr(arg, current_env));
-            }
+        }
+        if (ne.args.len == 1 and !ne.is_brace_initializer) {
+            var arg_copy = ne.args[0];
+            const arg_val = try self.eval_expr(&arg_copy, current_env);
+            try self.populate_new_list_from_single_arg(list, arg_val);
             return Value{ .list = list };
         }
-
-        // new Map<K,V>()
-        if (std.ascii.eqlIgnoreCase(type_name, "Map")) {
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            for (ne.args) |*arg| {
-                if (arg.* == .assignment) {
-                    // Map literal: key => value
-                    const asgn = arg.assignment;
-                    const key_val = try self.eval_expr(asgn.target, current_env);
-                    const val_val = try self.eval_expr(asgn.value, current_env);
-                    const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(key_val, self.arena);
-                    try map.entries.put(self.arena, key_str, val_val);
-                    try map.key_values.put(self.arena, key_str, key_val);
-                }
-            }
-            // If single non-assignment arg is a list, construct map from SObject list
-            if (ne.args.len == 1 and ne.args[0] != .assignment) {
-                var arg_copy = ne.args[0];
-                const arg_val = try self.eval_expr(&arg_copy, current_env);
-                if (arg_val == .list) {
-                    for (arg_val.list.items.items) |item| {
-                        if (item == .sobject and item.sobject.id != null) {
-                            try map.entries.put(self.arena, item.sobject.id.?, item);
-                            try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
-                        }
-                    }
-                }
-            }
-            return Value{ .map = map };
+        for (ne.args) |*arg| {
+            try list.items.append(self.arena, try self.eval_expr(arg, current_env));
         }
+        return Value{ .list = list };
+    }
 
-        // DataWeaveScriptResource.* → create DataWeave.Script stub
-        if (std.ascii.startsWithIgnoreCase(type_name, "DataWeaveScriptResource")) {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = "DataWeave.Script" };
-            // Extract script name from the type (e.g., "DataWeaveScriptResource.helloWorld" → "helloWorld")
-            const dot_pos = std.mem.lastIndexOfScalar(u8, type_name, '.');
-            const script_name = if (dot_pos) |dp| type_name[dp + 1 ..] else type_name;
-            try instance.fields.put(self.arena, "scriptName", Value{ .string = script_name });
-            return Value{ .object = instance };
+    fn populate_new_list_from_single_arg(self: *Evaluator, list: *types.ListValue, arg_val: Value) !void {
+        if (arg_val == .set) {
+            for (arg_val.set.entries.values()) |item| try list.items.append(self.arena, item);
+            return;
         }
+        if (arg_val == .list) {
+            for (arg_val.list.items.items) |item| try list.items.append(self.arena, item);
+            return;
+        }
+        try list.items.append(self.arena, arg_val);
+    }
 
-        // new Set<T>() or new Set<T>(collection)
-        if (std.ascii.eqlIgnoreCase(type_name, "Set")) {
-            const set = try self.arena.create(types.SetValue);
-            set.* = .{};
-            for (ne.args) |*arg| {
-                const v = try self.eval_expr(arg, current_env);
-                // If argument is a list or set, add each element individually
-                if (v == .list) {
-                    for (v.list.items.items) |item| {
-                        const key = try self.set_entry_key(item);
-                        try set.entries.put(self.arena, key, item);
-                    }
-                } else if (v == .set) {
-                    for (v.set.entries.keys(), v.set.entries.values()) |k, item| {
-                        try set.entries.put(self.arena, k, item);
-                    }
-                } else {
-                    const key = try self.set_entry_key(v);
-                    try set.entries.put(self.arena, key, v);
-                }
+    fn new_map_value(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (ne.args) |*arg| {
+            if (arg.* != .assignment) continue;
+            const asgn = arg.assignment;
+            const key_val = try self.eval_expr(asgn.target, current_env);
+            const val_val = try self.eval_expr(asgn.value, current_env);
+            const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(key_val, self.arena);
+            try map.entries.put(self.arena, key_str, val_val);
+            try map.key_values.put(self.arena, key_str, key_val);
+        }
+        try self.populate_new_map_from_single_arg(map, ne, current_env);
+        return Value{ .map = map };
+    }
+
+    fn populate_new_map_from_single_arg(
+        self: *Evaluator,
+        map: *types.MapValue,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        if (ne.args.len != 1 or ne.args[0] == .assignment) return;
+        var arg_copy = ne.args[0];
+        const arg_val = try self.eval_expr(&arg_copy, current_env);
+        if (arg_val != .list) return;
+        for (arg_val.list.items.items) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                try map.entries.put(self.arena, item.sobject.id.?, item);
+                try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
             }
-            return Value{ .set = set };
         }
+    }
 
+    fn new_dataweave_script_value(self: *Evaluator, type_name: []const u8) !Value {
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = "DataWeave.Script" };
+        const dot_pos = std.mem.lastIndexOfScalar(u8, type_name, '.');
+        const script_name = if (dot_pos) |dp| type_name[dp + 1 ..] else type_name;
+        try instance.fields.put(self.arena, "scriptName", Value{ .string = script_name });
+        return Value{ .object = instance };
+    }
+
+    fn new_set_value(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
+        const set = try self.arena.create(types.SetValue);
+        set.* = .{};
+        for (ne.args) |*arg| {
+            const v = try self.eval_expr(arg, current_env);
+            try self.append_new_set_value(set, v);
+        }
+        return Value{ .set = set };
+    }
+
+    fn append_new_set_value(self: *Evaluator, set: *types.SetValue, value: Value) !void {
+        if (value == .list) {
+            for (value.list.items.items) |item| {
+                const key = try self.set_entry_key(item);
+                try set.entries.put(self.arena, key, item);
+            }
+            return;
+        }
+        if (value == .set) {
+            for (value.set.entries.keys(), value.set.entries.values()) |k, item| {
+                try set.entries.put(self.arena, k, item);
+            }
+            return;
+        }
+        const key = try self.set_entry_key(value);
+        try set.entries.put(self.arena, key, value);
+    }
+
+    fn new_builtin_object_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        if (try self.new_builtin_exception_value(ne, type_name, current_env)) |result| return result;
+        if (try self.new_standard_controller_value(ne, type_name, current_env)) |result| return result;
+        return try self.new_known_non_sobject_value(ne, type_name, current_env);
+    }
+
+    fn new_builtin_exception_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
         const builtin_exception_types = [_][]const u8{
             "Exception",
             "DMLException",
@@ -12517,8 +12570,15 @@ pub const Evaluator = struct {
                 return Value{ .object = instance };
             }
         }
+        return null;
+    }
 
-        // ApexPages.StandardController constructor
+    fn new_standard_controller_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardController") or
             std.ascii.eqlIgnoreCase(type_name, "StandardController"))
         {
@@ -12531,8 +12591,6 @@ pub const Evaluator = struct {
             }
             return Value{ .object = instance };
         }
-
-        // ApexPages.StandardSetController constructor
         if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardSetController") or
             std.ascii.eqlIgnoreCase(type_name, "StandardSetController"))
         {
@@ -12543,178 +12601,279 @@ pub const Evaluator = struct {
                 const records = try self.eval_expr(&arg_copy, current_env);
                 try instance.fields.put(self.arena, "records", records);
             }
-            try instance.fields.put(self.arena, "pageSize", Value{ .integer = 20 }); // default page size
+            try instance.fields.put(self.arena, "pageSize", Value{ .integer = 20 });
             return Value{ .object = instance };
         }
+        return null;
+    }
 
-        // Known non-SObject types: create ObjectInstance instead
+    fn new_known_non_sobject_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
         const non_sobject_types = [_][]const u8{
-            "RestRequest",            "RestResponse",        "HttpRequest",                      "HttpResponse",
-            "Http",                   "PageReference",       "SelectOption",                     "Messaging.SingleEmailMessage",
-            "Messaging.InboundEmail", "QueryException",      "DmlException",                     "AuraHandledException",
-            "CalloutException",       "Database.DmlOptions", "DmlOptions",                       "ApexPages.Message",
-            "VisualEditor.DataRow",   "DataRow",             "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
+            "RestRequest",
+            "RestResponse",
+            "HttpRequest",
+            "HttpResponse",
+            "Http",
+            "PageReference",
+            "SelectOption",
+            "Messaging.SingleEmailMessage",
+            "Messaging.InboundEmail",
+            "QueryException",
+            "DmlException",
+            "AuraHandledException",
+            "CalloutException",
+            "Database.DmlOptions",
+            "DmlOptions",
+            "ApexPages.Message",
+            "VisualEditor.DataRow",
+            "DataRow",
+            "VisualEditor.DynamicPickListRows",
+            "DynamicPickListRows",
         };
         for (non_sobject_types) |nst| {
-            if (std.ascii.eqlIgnoreCase(type_name, nst)) {
-                const instance = try self.arena.create(types.ObjectInstance);
-                instance.* = .{ .class_name = type_name };
-
-                // SelectOption constructor: (value, label) or (value, label, disabled)
-                if (std.ascii.eqlIgnoreCase(type_name, "SelectOption")) {
-                    if (ne.args.len >= 2) {
-                        var arg0_copy = ne.args[0];
-                        var arg1_copy = ne.args[1];
-                        const val = try self.eval_expr(&arg0_copy, current_env);
-                        const label = try self.eval_expr(&arg1_copy, current_env);
-                        const val_str = try utils.coerce_to_string(val, self.arena);
-                        const label_str = try utils.coerce_to_string(label, self.arena);
-                        try instance.fields.put(self.arena, "value", Value{ .string = val_str });
-                        try instance.fields.put(self.arena, "label", Value{ .string = label_str });
-                        if (ne.args.len >= 3) {
-                            var arg2_copy = ne.args[2];
-                            const disabled = try self.eval_expr(&arg2_copy, current_env);
-                            try instance.fields.put(self.arena, "disabled", disabled);
-                        } else {
-                            try instance.fields.put(self.arena, "disabled", Value{ .boolean = false });
-                        }
-                    }
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DataRow") or
-                    std.ascii.eqlIgnoreCase(type_name, "DataRow"))
-                {
-                    if (ne.args.len >= 2) {
-                        var arg0_copy = ne.args[0];
-                        var arg1_copy = ne.args[1];
-                        const label = try self.eval_expr(&arg0_copy, current_env);
-                        const value = try self.eval_expr(&arg1_copy, current_env);
-                        try instance.fields.put(self.arena, "label", label);
-                        try instance.fields.put(self.arena, "value", value);
-                    }
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DynamicPickListRows") or
-                    std.ascii.eqlIgnoreCase(type_name, "DynamicPickListRows"))
-                {
-                    const data_rows = try self.arena.create(types.ListValue);
-                    data_rows.* = .{};
-                    try instance.fields.put(self.arena, "dataRows", Value{ .list = data_rows });
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.Message")) {
-                    const severity = if (ne.args.len >= 1) blk: {
-                        var arg0_copy = ne.args[0];
-                        const severity_val = try self.eval_expr(&arg0_copy, current_env);
-                        break :blk try utils.coerce_to_string(severity_val, self.arena);
-                    } else "ERROR";
-                    const summary = if (ne.args.len >= 2) blk: {
-                        var arg1_copy = ne.args[1];
-                        const summary_val = try self.eval_expr(&arg1_copy, current_env);
-                        break :blk try utils.coerce_to_string(summary_val, self.arena);
-                    } else "";
-                    const detail = if (ne.args.len >= 3) blk: {
-                        var arg2_copy = ne.args[2];
-                        const detail_val = try self.eval_expr(&arg2_copy, current_env);
-                        break :blk try utils.coerce_to_string(detail_val, self.arena);
-                    } else summary;
-                    try instance.fields.put(self.arena, "severity", Value{ .string = severity });
-                    try instance.fields.put(self.arena, "summary", Value{ .string = summary });
-                    try instance.fields.put(self.arena, "detail", Value{ .string = detail });
-                    try instance.fields.put(self.arena, "message", Value{ .string = summary });
-                    return Value{ .object = instance };
-                }
-
-                if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
-                    if (ne.args.len > 0) {
-                        var arg0_copy = ne.args[0];
-                        const url_val = try self.eval_expr(&arg0_copy, current_env);
-                        if (url_val == .string) {
-                            try instance.fields.put(self.arena, "url", url_val);
-                        } else {
-                            try instance.fields.put(self.arena, "url", Value{ .string = try utils.coerce_to_string(url_val, self.arena) });
-                        }
-                    } else {
-                        try instance.fields.put(self.arena, "url", Value{ .string = "" });
-                    }
-                    const params = try self.arena.create(types.MapValue);
-                    params.* = .{};
-                    try instance.fields.put(self.arena, "parameters", Value{ .map = params });
-                    return Value{ .object = instance };
-                }
-
-                // RestRequest: initialize params map
-                if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
-                    const params = try self.arena.create(types.MapValue);
-                    params.* = .{};
-                    try instance.fields.put(self.arena, "params", Value{ .map = params });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value.null_val);
-                    try instance.fields.put(self.arena, "requestBody", Value{ .object = blob });
-                    return Value{ .object = instance };
-                }
-                // RestResponse: initialize responseBody as Blob
-                if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
-                    try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try instance.fields.put(self.arena, "headers", Value{ .map = headers });
-                    return Value{ .object = instance };
-                }
-
-                // If args contain a message (exception pattern)
-                if (ne.args.len > 0) {
-                    var arg_copy = ne.args[0];
-                    const arg_val = try self.eval_expr(&arg_copy, current_env);
-                    if (std.mem.endsWith(u8, type_name, "Exception")) {
-                        // AuraHandledException always returns "Script-thrown exception" from getMessage()
-                        if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
-                            try instance.fields.put(self.arena, "message", Value{ .string = "Script-thrown exception" });
-                        } else {
-                            try instance.fields.put(self.arena, "message", arg_val);
-                        }
-                    }
-                }
-                return Value{ .object = instance };
-            }
+            if (!std.ascii.eqlIgnoreCase(type_name, nst)) continue;
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = type_name };
+            try self.populate_new_known_non_sobject(instance, ne, type_name, current_env);
+            return Value{ .object = instance };
         }
+        return null;
+    }
 
-        // SObject with named params: new Account(Name = 'Test', ...)
-        // Strip "Schema." prefix for SObject type names (e.g. Schema.User → User)
-        const sob_type_name = if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) type_name[7..] else type_name;
+    fn populate_new_known_non_sobject(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !void {
+        if (try self.populate_new_known_non_sobject_special(instance, ne, type_name, current_env)) return;
+        if (ne.args.len == 0 or !std.mem.endsWith(u8, type_name, "Exception")) return;
+
+        var arg_copy = ne.args[0];
+        const arg_val = try self.eval_expr(&arg_copy, current_env);
+        if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
+            try instance.fields.put(self.arena, "message", Value{ .string = "Script-thrown exception" });
+            return;
+        }
+        try instance.fields.put(self.arena, "message", arg_val);
+    }
+
+    fn populate_new_known_non_sobject_special(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !bool {
+        if (std.ascii.eqlIgnoreCase(type_name, "SelectOption")) {
+            try self.populate_new_select_option(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DataRow") or
+            std.ascii.eqlIgnoreCase(type_name, "DataRow"))
+        {
+            try self.populate_new_data_row(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "VisualEditor.DynamicPickListRows") or
+            std.ascii.eqlIgnoreCase(type_name, "DynamicPickListRows"))
+        {
+            try self.populate_new_dynamic_picklist_rows(instance);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.Message")) {
+            try self.populate_new_apex_pages_message(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
+            try self.populate_new_page_reference(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
+            try self.populate_new_rest_request(instance);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
+            try self.populate_new_rest_response(instance);
+            return true;
+        }
+        return false;
+    }
+
+    fn populate_new_select_option(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        if (ne.args.len < 2) return;
+        var arg0_copy = ne.args[0];
+        var arg1_copy = ne.args[1];
+        const val = try self.eval_expr(&arg0_copy, current_env);
+        const label = try self.eval_expr(&arg1_copy, current_env);
+        const val_str = try utils.coerce_to_string(val, self.arena);
+        const label_str = try utils.coerce_to_string(label, self.arena);
+        try instance.fields.put(self.arena, "value", Value{ .string = val_str });
+        try instance.fields.put(self.arena, "label", Value{ .string = label_str });
+        if (ne.args.len >= 3) {
+            var arg2_copy = ne.args[2];
+            const disabled = try self.eval_expr(&arg2_copy, current_env);
+            try instance.fields.put(self.arena, "disabled", disabled);
+        } else {
+            try instance.fields.put(self.arena, "disabled", Value{ .boolean = false });
+        }
+    }
+
+    fn populate_new_data_row(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        if (ne.args.len < 2) return;
+        var arg0_copy = ne.args[0];
+        var arg1_copy = ne.args[1];
+        const label = try self.eval_expr(&arg0_copy, current_env);
+        const value = try self.eval_expr(&arg1_copy, current_env);
+        try instance.fields.put(self.arena, "label", label);
+        try instance.fields.put(self.arena, "value", value);
+    }
+
+    fn populate_new_dynamic_picklist_rows(self: *Evaluator, instance: *types.ObjectInstance) !void {
+        const data_rows = try self.arena.create(types.ListValue);
+        data_rows.* = .{};
+        try instance.fields.put(self.arena, "dataRows", Value{ .list = data_rows });
+    }
+
+    fn populate_new_apex_pages_message(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        const severity = try self.new_message_arg_string(ne, current_env, 0, "ERROR");
+        const summary = try self.new_message_arg_string(ne, current_env, 1, "");
+        const detail = try self.new_message_arg_string(ne, current_env, 2, summary);
+        try instance.fields.put(self.arena, "severity", Value{ .string = severity });
+        try instance.fields.put(self.arena, "summary", Value{ .string = summary });
+        try instance.fields.put(self.arena, "detail", Value{ .string = detail });
+        try instance.fields.put(self.arena, "message", Value{ .string = summary });
+    }
+
+    fn new_message_arg_string(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        index: usize,
+        fallback: []const u8,
+    ) ![]const u8 {
+        if (ne.args.len <= index) return fallback;
+        var arg_copy = ne.args[index];
+        const arg_val = try self.eval_expr(&arg_copy, current_env);
+        return try utils.coerce_to_string(arg_val, self.arena);
+    }
+
+    fn populate_new_page_reference(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        if (ne.args.len > 0) {
+            var arg0_copy = ne.args[0];
+            const url_val = try self.eval_expr(&arg0_copy, current_env);
+            if (url_val == .string) {
+                try instance.fields.put(self.arena, "url", url_val);
+            } else {
+                try instance.fields.put(
+                    self.arena,
+                    "url",
+                    Value{ .string = try utils.coerce_to_string(url_val, self.arena) },
+                );
+            }
+        } else {
+            try instance.fields.put(self.arena, "url", Value{ .string = "" });
+        }
+        const params = try self.arena.create(types.MapValue);
+        params.* = .{};
+        try instance.fields.put(self.arena, "parameters", Value{ .map = params });
+    }
+
+    fn populate_new_rest_request(self: *Evaluator, instance: *types.ObjectInstance) !void {
+        const params = try self.arena.create(types.MapValue);
+        params.* = .{};
+        try instance.fields.put(self.arena, "params", Value{ .map = params });
+        const headers = try self.arena.create(types.MapValue);
+        headers.* = .{};
+        try instance.fields.put(self.arena, "headers", Value{ .map = headers });
+        const blob = try self.arena.create(types.ObjectInstance);
+        blob.* = .{ .class_name = "Blob" };
+        try blob.fields.put(self.arena, "value", Value.null_val);
+        try instance.fields.put(self.arena, "requestBody", Value{ .object = blob });
+    }
+
+    fn populate_new_rest_response(self: *Evaluator, instance: *types.ObjectInstance) !void {
+        const blob = try self.arena.create(types.ObjectInstance);
+        blob.* = .{ .class_name = "Blob" };
+        try blob.fields.put(self.arena, "value", Value{ .string = "" });
+        try instance.fields.put(self.arena, "responseBody", Value{ .object = blob });
+        const headers = try self.arena.create(types.MapValue);
+        headers.* = .{};
+        try instance.fields.put(self.arena, "headers", Value{ .map = headers });
+    }
+
+    fn new_sobject_from_assignments(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !*types.SObject {
+        const sob_type_name = if (std.ascii.startsWithIgnoreCase(type_name, "Schema."))
+            type_name[7..]
+        else
+            type_name;
         const obj = try self.arena.create(types.SObject);
         obj.* = .{ .type_name = sob_type_name };
-        // Parse named params: args should be Assignment expressions
         for (ne.args) |*arg| {
-            if (arg.* == .assignment) {
-                const asgn = arg.assignment;
-                if (asgn.target.* == .identifier) {
-                    const field_name = asgn.target.identifier.name;
-                    const field_val = try self.eval_expr(asgn.value, current_env);
-                    try obj.fields.put(self.arena, field_name, field_val);
-                    // Sync internal id field when Id is set via constructor
-                    if (std.ascii.eqlIgnoreCase(field_name, "Id") and field_val == .string) {
-                        obj.id = field_val.string;
-                    }
-                }
+            if (arg.* != .assignment) continue;
+            const asgn = arg.assignment;
+            if (asgn.target.* != .identifier) continue;
+            const field_name = asgn.target.identifier.name;
+            const field_val = try self.eval_expr(asgn.value, current_env);
+            try obj.fields.put(self.arena, field_name, field_val);
+            if (std.ascii.eqlIgnoreCase(field_name, "Id") and field_val == .string) {
+                obj.id = field_val.string;
             }
         }
+        return obj;
+    }
 
-        // Check if it's a user-defined class or exception.
-        // Resolve simple names against the current lexical scope first so
-        // nested inner classes instantiate sibling inner classes from the
-        // correct outer class instead of drifting to an unrelated duplicate.
-        const simple_name = if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |di| type_name[di + 1 ..] else type_name;
+    fn new_user_class_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        is_platform_qualified: bool,
+        current_env: *Env,
+    ) !?Value {
+        const resolved_class_name = self.resolve_new_user_class_name(type_name, is_platform_qualified, current_env);
+        const class_name = resolved_class_name orelse return null;
+        const class_decl = self.find_class(class_name) orelse return null;
+        return try self.instantiate_new_user_class(class_name, class_decl, ne, type_name, current_env);
+    }
+
+    fn resolve_new_user_class_name(
+        self: *Evaluator,
+        type_name: []const u8,
+        is_platform_qualified: bool,
+        current_env: *Env,
+    ) ?[]const u8 {
+        const simple_name = simple_type_name(type_name);
         const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
             (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
                 (std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, type_name }) catch null)
@@ -12722,155 +12881,173 @@ pub const Evaluator = struct {
                 null)
         else
             null;
-        const allow_simple_name_fallback = !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
-        const resolved_class_name: ?[]const u8 = blk: {
-            if (!is_platform_qualified) {
-                if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
-                    if (self.resolve_visible_user_class_in_scope(current_env, type_name)) |visible_class| break :blk visible_class;
+        const allow_simple_name_fallback =
+            !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
+        if (!is_platform_qualified) {
+            if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
+                if (self.resolve_visible_user_class_in_scope(current_env, type_name)) |visible_class| {
+                    return visible_class;
                 }
-                if (fq_inner_name) |fqn| {
-                    if (self.find_class(fqn) != null) break :blk fqn;
-                }
-                if (self.find_class(type_name) != null) break :blk type_name;
             }
-            if (allow_simple_name_fallback and self.find_class(simple_name) != null) {
-                // Look up whether simple_name is an inner class of some outer — prefer FQ if unique
-                if (self.find_outer_class_name(simple_name)) |outer| {
-                    break :blk std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, simple_name }) catch simple_name;
-                }
-                break :blk simple_name;
+            if (fq_inner_name) |fqn| {
+                if (self.find_class(fqn) != null) return fqn;
+            }
+            if (self.find_class(type_name) != null) return type_name;
+        }
+        if (allow_simple_name_fallback and self.find_class(simple_name) != null) {
+            if (self.find_outer_class_name(simple_name)) |outer| {
+                return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, simple_name }) catch simple_name;
+            }
+            return simple_name;
+        }
+        return null;
+    }
+
+    const ConstructorEvalResult = struct {
+        args: std.ArrayListUnmanaged(Value),
+        hints: std.ArrayListUnmanaged(?[]const u8),
+        has_enum_hint: bool,
+    };
+
+    fn instantiate_new_user_class(
+        self: *Evaluator,
+        class_name: []const u8,
+        class_decl: *ast.ClassDecl,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !Value {
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = class_name };
+        self.ensure_static_init(class_decl.name);
+        if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
+
+        if (try self.new_user_exception_without_constructor(class_decl, type_name, instance, ne, current_env)) |result| {
+            return result;
+        }
+        try self.init_new_user_class_fields(class_decl, instance);
+
+        const ctor_eval = try self.evaluate_new_constructor_args(ne, current_env);
+        const prev_ctor_hints = self.cast_type_hints;
+        if (ctor_eval.has_enum_hint) self.cast_type_hints = ctor_eval.hints.items;
+        defer if (ctor_eval.has_enum_hint) {
+            self.cast_type_hints = prev_ctor_hints;
+        };
+
+        try self.run_implicit_parent_constructor(class_decl, instance, ctor_eval.args.items);
+        try self.run_constructor(class_decl, instance, ctor_eval.args.items);
+        return Value{ .object = instance };
+    }
+
+    fn new_user_exception_without_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        type_name: []const u8,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !?Value {
+        const is_exc = if (class_decl.super_class) |sc|
+            std.mem.endsWith(u8, sc.name, "Exception")
+        else
+            std.mem.endsWith(u8, type_name, "Exception");
+        if (!is_exc or class_decl_has_constructor(class_decl)) return null;
+        if (ne.args.len > 0) {
+            var arg_copy = ne.args[0];
+            const msg_val = try self.eval_expr(&arg_copy, current_env);
+            try instance.fields.put(self.arena, "message", msg_val);
+        }
+        return Value{ .object = instance };
+    }
+
+    fn class_decl_has_constructor(class_decl: *ast.ClassDecl) bool {
+        for (class_decl.members) |member| {
+            switch (member) {
+                .constructor_decl => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn init_new_user_class_fields(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance) !void {
+        var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+        defer chain.deinit(self.arena);
+
+        var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc| self.find_class(sc.name) else null;
+        while (cursor) |cd_cursor| {
+            try chain.append(self.arena, cd_cursor);
+            cursor = if (cd_cursor.super_class) |sc| self.find_class(sc.name) else null;
+        }
+        var i: usize = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            self.init_instance_fields(chain.items[i], instance) catch {};
+        }
+        self.init_instance_fields(class_decl, instance) catch {};
+    }
+
+    fn evaluate_new_constructor_args(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !ConstructorEvalResult {
+        var eval_args: std.ArrayListUnmanaged(Value) = .empty;
+        var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
+        var any_enum_hint = false;
+        for (ne.args) |*arg| {
+            const enum_hint = self.new_constructor_enum_hint(arg, current_env);
+            if (enum_hint != null) any_enum_hint = true;
+            try ctor_type_hints.append(self.arena, enum_hint);
+            try eval_args.append(self.arena, try self.eval_expr(arg, current_env));
+        }
+        return .{
+            .args = eval_args,
+            .hints = ctor_type_hints,
+            .has_enum_hint = any_enum_hint,
+        };
+    }
+
+    fn new_constructor_enum_hint(self: *Evaluator, arg: *ast.Expr, current_env: *Env) ?[]const u8 {
+        return self.enum_access_type_name(arg) orelse blk: {
+            if (arg.* != .identifier) break :blk null;
+            if (self.resolve_assignment_target_type(arg, current_env)) |t| {
+                const base = type_base_name(strip_type_namespace(t));
+                if (is_system_enum_type_name(base)) break :blk base;
+                if (self.find_visible_enum_decl(base) != null) break :blk base;
             }
             break :blk null;
         };
-        if (if (resolved_class_name) |rn| self.find_class(rn) else null) |class_decl| {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = resolved_class_name.? };
+    }
 
-            // Lazy static init for this class and parent hierarchy
-            // (so static field initializers like `static final Integer X = 5;`
-            // are evaluated before the constructor body references them)
-            self.ensure_static_init(class_decl.name);
-            if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
-
-            // Check if it's an exception class (extends Exception)
-            // If the class has its own constructor, fall through to run it
-            // (user-defined exceptions like RestRouteError.RestException may set extra fields)
-            {
-                const is_exc = if (class_decl.super_class) |sc| std.mem.endsWith(u8, sc.name, "Exception") else std.mem.endsWith(u8, type_name, "Exception");
-                if (is_exc) {
-                    // Check if class has a user-defined constructor
-                    var has_constructor = false;
-                    for (class_decl.members) |member| {
-                        switch (member) {
-                            .constructor_decl => {
-                                has_constructor = true;
-                                break;
-                            },
-                            else => {},
-                        }
-                    }
-                    if (!has_constructor) {
-                        // No constructor: use simple message extraction
-                        if (ne.args.len > 0) {
-                            var arg_copy = ne.args[0];
-                            const msg_val = try self.eval_expr(&arg_copy, current_env);
-                            try instance.fields.put(self.arena, "message", msg_val);
-                        }
-                        return Value{ .object = instance };
-                    }
-                    // Has constructor: fall through to normal constructor logic below
+    fn run_implicit_parent_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        eval_args: []const Value,
+    ) !void {
+        if (class_decl.super_class) |sc| {
+            if (self.find_class(sc.name)) |parent_decl| {
+                const child_chosen = self.find_matching_constructor(class_decl, eval_args);
+                const child_explicit = if (child_chosen) |cc| ctor_starts_with_super_or_this(cc) else false;
+                if (!child_explicit and class_has_no_arg_ctor(parent_decl)) {
+                    try self.run_constructor(parent_decl, instance, &.{});
                 }
             }
-
-            // Initialize ancestor fields top-down (grandparents before parent) so child
-            // field declarations can shadow, and every inherited field with an
-            // initializer actually runs.
-            {
-                var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
-                defer chain.deinit(self.arena);
-
-                var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc| self.find_class(sc.name) else null;
-                while (cursor) |cd_cursor| {
-                    try chain.append(self.arena, cd_cursor);
-                    cursor = if (cd_cursor.super_class) |sc| self.find_class(sc.name) else null;
-                }
-                var i: usize = chain.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    self.init_instance_fields(chain.items[i], instance) catch {};
-                }
-            }
-
-            // Initialize instance fields from class (non-static) — after ancestors
-            self.init_instance_fields(class_decl, instance) catch {};
-
-            // Evaluate constructor args. Capture enum-only type hints so
-            // overload resolution can distinguish `(String, Enum, Boolean)`
-            // from `(String, String, Enum)` when a typed variable or enum
-            // literal appears in the middle position. We intentionally stay
-            // narrower than method-call hinting (enumAccessTypeName plus
-            // declared enum-typed locals) because broader hinting regresses
-            // overloads that rely on raw argument-shape scoring.
-            var eval_args: std.ArrayListUnmanaged(Value) = .empty;
-            var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
-            var any_enum_hint = false;
-            for (ne.args) |*arg| {
-                const enum_hint = self.enum_access_type_name(arg) orelse blk: {
-                    // Also surface declared enum-typed local variables like
-                    // `Mode direction = Mode.A; new Ordering(name, direction, flag)`.
-                    if (arg.* != .identifier) break :blk null;
-                    if (self.resolve_assignment_target_type(arg, current_env)) |t| {
-                        const base = type_base_name(strip_type_namespace(t));
-                        if (is_system_enum_type_name(base)) break :blk base;
-                        if (self.find_visible_enum_decl(base) != null) break :blk base;
-                    }
-                    break :blk null;
-                };
-                if (enum_hint != null) any_enum_hint = true;
-                try ctor_type_hints.append(self.arena, enum_hint);
-                try eval_args.append(self.arena, try self.eval_expr(arg, current_env));
-            }
-            const prev_ctor_hints = self.cast_type_hints;
-            if (any_enum_hint) self.cast_type_hints = ctor_type_hints.items;
-            defer if (any_enum_hint) {
-                self.cast_type_hints = prev_ctor_hints;
-            };
-
-            // Execute parent constructor first (if has super_class and parent has constructor).
-            // Skip the implicit parent call if the child's chosen constructor explicitly
-            // invokes super(...) or this(...). Also skip if the parent only declares
-            // non-zero-arg constructors (the child must then call super(...) explicitly,
-            // which we evaluate inside its body instead).
-            if (class_decl.super_class) |sc| {
-                if (self.find_class(sc.name)) |parent_decl| {
-                    const child_chosen = self.find_matching_constructor(class_decl, eval_args.items);
-                    const child_explicit = if (child_chosen) |cc| ctor_starts_with_super_or_this(cc) else false;
-                    if (!child_explicit and class_has_no_arg_ctor(parent_decl)) {
-                        try self.run_constructor(parent_decl, instance, &.{});
-                    }
-                }
-            }
-
-            // Execute own constructor
-            try self.run_constructor(class_decl, instance, eval_args.items);
-
-            return Value{ .object = instance };
         }
+    }
 
-        // Any type ending with "Exception" that wasn't found as a user class
-        // should still be an ObjectInstance (not SObject)
-        if (std.mem.endsWith(u8, type_name, "Exception")) {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = type_name };
-            if (ne.args.len > 0) {
-                var arg_copy = ne.args[0];
-                const msg_val = try self.eval_expr(&arg_copy, current_env);
-                try instance.fields.put(self.arena, "message", msg_val);
-            }
-            return Value{ .object = instance };
+    fn new_fallback_exception_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        if (!std.mem.endsWith(u8, type_name, "Exception")) return null;
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = type_name };
+        if (ne.args.len > 0) {
+            var arg_copy = ne.args[0];
+            const msg_val = try self.eval_expr(&arg_copy, current_env);
+            try instance.fields.put(self.arena, "message", msg_val);
         }
-
-        return Value{ .sobject = obj };
+        return Value{ .object = instance };
     }
 
     // -----------------------------------------------------------------------
