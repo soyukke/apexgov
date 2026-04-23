@@ -230,53 +230,55 @@ pub fn coerce_to_string(v: Value, arena: std.mem.Allocator) ![]const u8 {
             break :blk buf.items;
         },
         .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
-        .object => |obj| blk: {
-            // Schema.SObjectType → return the "name" field (e.g. "Account")
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
-                if (obj.fields.get("name")) |n| {
-                    if (n == .string) break :blk n.string;
-                }
-            }
-            // SObjectField → return the "name" field
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-                std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
-            {
-                if (obj.fields.get("name")) |n| {
-                    if (n == .string) break :blk n.string;
-                }
-            }
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
-                if (obj.fields.get("fieldName")) |n| {
-                    if (n == .string) break :blk n.string;
-                }
-                if (obj.fields.get("name")) |n| {
-                    if (n == .string) break :blk n.string;
-                }
-            }
-            // Date/Datetime/Blob → return the stored value string
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
-                std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
-            {
-                if (obj.fields.get("value")) |bv| {
-                    if (bv == .string) break :blk bv.string;
-                }
-            }
-            // Type (from SomeClass.class) → return the resolved class name so that
-            // Map<Type, X> keys don't collapse to a single "Type:[instance]" slot.
-            if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
-                std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
-            {
-                if (obj.fields.get("name")) |n| {
-                    if (n == .string) break :blk n.string;
-                }
-            }
-            // Use simple name (after last dot) like Apex does
-            const cn = obj.class_name;
-            const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
-            break :blk try std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
-        },
+        .object => |obj| try coerce_object_to_string(obj, arena),
     };
+}
+
+fn coerce_object_to_string(obj: *types.ObjectInstance, arena: std.mem.Allocator) ![]const u8 {
+    // Schema.SObjectType -> return the "name" field (e.g. "Account")
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
+    }
+    // SObjectField -> return the "name" field
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+    {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
+    }
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
+        if (obj.fields.get("fieldName")) |n| {
+            if (n == .string) return n.string;
+        }
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
+    }
+    // Date/Datetime/Blob -> return the stored value string
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+    {
+        if (obj.fields.get("value")) |bv| {
+            if (bv == .string) return bv.string;
+        }
+    }
+    // Type (from SomeClass.class) -> return the resolved class name so that
+    // Map<Type, X> keys don't collapse to a single "Type:[instance]" slot.
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
+    {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
+    }
+    // Use simple name (after last dot) like Apex does
+    const cn = obj.class_name;
+    const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
+    return std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
 }
 
 /// Value を JSON 文字列に変換する。

@@ -1441,36 +1441,49 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
 
     if (has_admin_permission_set) return Value{ .boolean = true };
 
-    if (ctx.eval.store.get("SetupEntityAccess")) |sea_records| {
-        for (sea_records.items) |sea| {
-            if (sea != .sobject) continue;
-            const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
-            const setup_entity_id = utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
-            if (parent_id != .string or setup_entity_id != .string) continue;
-
-            var parent_matches = false;
-            for (assigned_permission_set_ids[0..assigned_permission_set_count]) |assigned_id| {
-                if (std.ascii.eqlIgnoreCase(parent_id.string, assigned_id)) {
-                    parent_matches = true;
-                    break;
-                }
-            }
-            if (!parent_matches) continue;
-
-            if (ctx.eval.store.get("CustomPermission")) |cp_records| {
-                for (cp_records.items) |cp| {
-                    if (cp != .sobject or cp.sobject.id == null) continue;
-                    if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
-                    const developer_name = utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
-                    if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
-                        return Value{ .boolean = true };
-                    }
-                }
-            }
-        }
+    if (has_setup_entity_custom_permission(
+        ctx,
+        assigned_permission_set_ids[0..assigned_permission_set_count],
+        permission_name,
+    )) {
+        return Value{ .boolean = true };
     }
 
     return Value{ .boolean = false };
+}
+
+fn has_setup_entity_custom_permission(
+    ctx: *BuiltinContext,
+    assigned_permission_set_ids: []const []const u8,
+    permission_name: []const u8,
+) bool {
+    const sea_records = ctx.eval.store.get("SetupEntityAccess") orelse return false;
+    for (sea_records.items) |sea| {
+        if (sea != .sobject) continue;
+        const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
+        const setup_entity_id = utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
+        if (parent_id != .string or setup_entity_id != .string) continue;
+
+        var parent_matches = false;
+        for (assigned_permission_set_ids) |assigned_id| {
+            if (std.ascii.eqlIgnoreCase(parent_id.string, assigned_id)) {
+                parent_matches = true;
+                break;
+            }
+        }
+        if (!parent_matches) continue;
+
+        const cp_records = ctx.eval.store.get("CustomPermission") orelse continue;
+        for (cp_records.items) |cp| {
+            if (cp != .sobject or cp.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
+            const developer_name = utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
+            if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 fn dispatch_static_logging_level(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -1621,87 +1634,125 @@ fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: [
 
 fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "stripInaccessible")) {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "SObjectAccessDecision" };
-        const rm_map = try ctx.arena.create(types.MapValue);
-        rm_map.* = .{};
-        const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
-        const has_permset = has_assigned_permission_set(ctx.eval);
-        const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
-        const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
-
-        if (input_records == .list) {
-            for (input_records.list.items.items) |item| {
-                if (item != .sobject) continue;
-                const object_access_operation = if (!enforce_crud)
-                    ""
-                else if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                    "read"
-                else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                    "create"
-                else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
-                    "edit"
-                else
-                    "create";
-                if (object_access_operation.len > 0 and !resolve_object_crud_permission(ctx.eval, item.sobject.type_name, object_access_operation)) {
-                    return ctx.throw_exception("System.NoAccessException", "No access to entity");
-                }
-            }
-        } else if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
-            return ctx.throw_exception("System.NoAccessException", "No access to entity");
-        }
-
-        if (input_records == .list) {
-            for (input_records.list.items.items) |item| {
-                if (item != .sobject) continue;
-                for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
-                    if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
-                    const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                        resolve_field_read_permission(ctx.eval, item.sobject.type_name, field_name)
-                    else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                        resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "create")
-                    else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
-                        resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "edit")
-                    else
-                        true;
-                    const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                        !should_keep
-                    else
-                        !should_keep and field_value != .null_val;
-                    if (should_record_removed_field) {
-                        try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
-                    }
-                }
-            }
-        }
-
-        if (rm_map.entries.count() > 0 and input_records == .list) {
-            const stripped = try ctx.arena.create(types.ListValue);
-            stripped.* = .{};
-            for (input_records.list.items.items) |item| {
-                if (item == .sobject) {
-                    const clone = try ctx.arena.create(types.SObject);
-                    clone.* = .{ .type_name = item.sobject.type_name };
-                    clone.id = item.sobject.id;
-                    clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
-                    for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
-                        if (rm_map.entries.get(field_name) == null) try clone.fields.put(ctx.arena, field_name, field_value);
-                    }
-                    try stripped.items.append(ctx.arena, Value{ .sobject = clone });
-                } else {
-                    try stripped.items.append(ctx.arena, item);
-                }
-            }
-            try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
-        } else if (args.len >= 2) {
-            try obj.fields.put(ctx.arena, "records", args[1]);
-        } else if (args.len >= 1 and args[0] == .list) {
-            try obj.fields.put(ctx.arena, "records", args[0]);
-        }
-        try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
-        return Value{ .object = obj };
+        return try dispatch_static_security_strip_inaccessible(ctx, args);
     }
     return Value.null_val;
+}
+
+fn dispatch_static_security_strip_inaccessible(ctx: *BuiltinContext, args: []const Value) !?Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "SObjectAccessDecision" };
+    const rm_map = try ctx.arena.create(types.MapValue);
+    rm_map.* = .{};
+    const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+    const has_permset = has_assigned_permission_set(ctx.eval);
+    const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
+    const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
+
+    try validate_strip_inaccessible_crud(ctx, input_records, access_type, enforce_crud, has_permset);
+    try collect_removed_inaccessible_fields(ctx, input_records, access_type, rm_map);
+    try put_strip_inaccessible_records(ctx, args, input_records, access_type, rm_map, obj);
+    try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
+    return Value{ .object = obj };
+}
+
+fn validate_strip_inaccessible_crud(
+    ctx: *BuiltinContext,
+    input_records: Value,
+    access_type: []const u8,
+    enforce_crud: bool,
+    has_permset: bool,
+) !void {
+    if (input_records == .list) {
+        for (input_records.list.items.items) |item| {
+            if (item != .sobject) continue;
+            const object_access_operation = if (!enforce_crud)
+                ""
+            else if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                "read"
+            else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
+                "create"
+            else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+                std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                "edit"
+            else
+                "create";
+            if (object_access_operation.len > 0 and
+                !resolve_object_crud_permission(ctx.eval, item.sobject.type_name, object_access_operation))
+            {
+                _ = try ctx.throw_exception("System.NoAccessException", "No access to entity");
+            }
+        }
+    } else if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
+        _ = try ctx.throw_exception("System.NoAccessException", "No access to entity");
+    }
+}
+
+fn collect_removed_inaccessible_fields(
+    ctx: *BuiltinContext,
+    input_records: Value,
+    access_type: []const u8,
+    rm_map: *types.MapValue,
+) !void {
+    if (input_records != .list) return;
+
+    for (input_records.list.items.items) |item| {
+        if (item != .sobject) continue;
+        for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+            if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
+            const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                resolve_field_read_permission(ctx.eval, item.sobject.type_name, field_name)
+            else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
+                resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "create")
+            else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+                std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "edit")
+            else
+                true;
+            const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                !should_keep
+            else
+                !should_keep and field_value != .null_val;
+            if (should_record_removed_field) {
+                try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
+            }
+        }
+    }
+}
+
+fn put_strip_inaccessible_records(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    input_records: Value,
+    access_type: []const u8,
+    rm_map: *types.MapValue,
+    obj: *types.ObjectInstance,
+) !void {
+    if (rm_map.entries.count() > 0 and input_records == .list) {
+        const stripped = try ctx.arena.create(types.ListValue);
+        stripped.* = .{};
+        for (input_records.list.items.items) |item| {
+            if (item == .sobject) {
+                const clone = try ctx.arena.create(types.SObject);
+                clone.* = .{ .type_name = item.sobject.type_name };
+                clone.id = item.sobject.id;
+                clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
+                for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                    if (rm_map.entries.get(field_name) == null) {
+                        try clone.fields.put(ctx.arena, field_name, field_value);
+                    }
+                }
+                try stripped.items.append(ctx.arena, Value{ .sobject = clone });
+            } else {
+                try stripped.items.append(ctx.arena, item);
+            }
+        }
+        try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
+    } else if (args.len >= 2) {
+        try obj.fields.put(ctx.arena, "records", args[1]);
+    } else if (args.len >= 1 and args[0] == .list) {
+        try obj.fields.put(ctx.arena, "records", args[0]);
+    }
 }
 
 fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
@@ -3633,46 +3684,7 @@ fn dispatch_string_instance(ctx: *BuiltinContext, s: []const u8, method_name: []
 fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u8, args: []const Value) !?Value {
     // setScale(scale) / setScale(scale, RoundingMode) — 小数点以下桁数を丸める (Decimal)
     if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
-        if (args.len > 0) {
-            const scale: i64 = switch (args[0]) {
-                .integer => |i| i,
-                .long => |i| i,
-                .double => |dv| @intFromFloat(dv),
-                else => 0,
-            };
-            const mode: []const u8 = if (args.len > 1) switch (args[1]) {
-                .string => |s| s,
-                else => "HALF_UP",
-            } else "HALF_UP";
-            if (scale >= 0 and scale <= 18) {
-                const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
-                const scaled = d * factor;
-                const adjusted: f64 = if (std.ascii.eqlIgnoreCase(mode, "DOWN"))
-                    @trunc(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "UP"))
-                    (if (scaled >= 0) @ceil(scaled) else @floor(scaled))
-                else if (std.ascii.eqlIgnoreCase(mode, "FLOOR"))
-                    @floor(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "CEILING"))
-                    @ceil(scaled)
-                else if (std.ascii.eqlIgnoreCase(mode, "HALF_DOWN")) blk: {
-                    const f = @floor(scaled);
-                    const frac = scaled - f;
-                    break :blk if (frac > 0.5) @ceil(scaled) else f;
-                } else if (std.ascii.eqlIgnoreCase(mode, "HALF_EVEN")) blk: {
-                    const rounded = @round(scaled);
-                    // Ties go to even
-                    const f = @floor(scaled);
-                    const frac = scaled - f;
-                    if (frac == 0.5 or frac == -0.5) {
-                        if (@mod(rounded, 2.0) != 0) break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
-                    }
-                    break :blk rounded;
-                } else @round(scaled);
-                return Value{ .double = adjusted / factor };
-            }
-        }
-        return Value{ .double = d };
+        return dispatch_double_set_scale(d, args);
     }
     // doubleValue()
     if (std.ascii.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
@@ -3713,6 +3725,50 @@ fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u
         return Value{ .integer = 0 };
     }
     return null;
+}
+
+fn dispatch_double_set_scale(d: f64, args: []const Value) Value {
+    if (args.len == 0) return Value{ .double = d };
+
+    const scale: i64 = switch (args[0]) {
+        .integer => |i| i,
+        .long => |i| i,
+        .double => |dv| @intFromFloat(dv),
+        else => 0,
+    };
+    const mode: []const u8 = if (args.len > 1) switch (args[1]) {
+        .string => |s| s,
+        else => "HALF_UP",
+    } else "HALF_UP";
+    if (scale < 0 or scale > 18) return Value{ .double = d };
+
+    const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
+    const scaled = d * factor;
+    const adjusted: f64 = if (std.ascii.eqlIgnoreCase(mode, "DOWN"))
+        @trunc(scaled)
+    else if (std.ascii.eqlIgnoreCase(mode, "UP"))
+        (if (scaled >= 0) @ceil(scaled) else @floor(scaled))
+    else if (std.ascii.eqlIgnoreCase(mode, "FLOOR"))
+        @floor(scaled)
+    else if (std.ascii.eqlIgnoreCase(mode, "CEILING"))
+        @ceil(scaled)
+    else if (std.ascii.eqlIgnoreCase(mode, "HALF_DOWN")) blk: {
+        const f = @floor(scaled);
+        const frac = scaled - f;
+        break :blk if (frac > 0.5) @ceil(scaled) else f;
+    } else if (std.ascii.eqlIgnoreCase(mode, "HALF_EVEN")) blk: {
+        const rounded = @round(scaled);
+        // Ties go to even
+        const f = @floor(scaled);
+        const frac = scaled - f;
+        if (frac == 0.5 or frac == -0.5) {
+            if (@mod(rounded, 2.0) != 0) {
+                break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
+            }
+        }
+        break :blk rounded;
+    } else @round(scaled);
+    return Value{ .double = adjusted / factor };
 }
 
 /// List メソッドは evaluator.evalListMethod (完全版) で処理されるため、ここでは null を返す。
