@@ -67,8 +67,23 @@ pub const FieldSetMetadata = struct {
     members: []const FieldSetMemberMetadata = &.{},
 };
 
-const invalid_sobject_type_fmt = "sObject type '{s}' is not supported. " ++
-    "If you are attempting to use a custom object, be sure to append the '__c' after the entity name.";
+const invalid_sobject_type_fmt =
+    "sObject type '{s}' is not supported. " ++
+    "If you are attempting to use a custom object, be sure to append the '__c' " ++
+    "after the entity name.";
+
+const new_known_non_sobject_types = [_][]const u8{
+    "RestRequest",                      "RestResponse",
+    "HttpRequest",                      "HttpResponse",
+    "Http",                             "PageReference",
+    "SelectOption",                     "Messaging.SingleEmailMessage",
+    "Messaging.InboundEmail",           "QueryException",
+    "DmlException",                     "AuraHandledException",
+    "CalloutException",                 "Database.DmlOptions",
+    "DmlOptions",                       "ApexPages.Message",
+    "VisualEditor.DataRow",             "DataRow",
+    "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
+};
 
 pub const Evaluator = struct {
     arena: std.mem.Allocator,
@@ -1725,7 +1740,8 @@ pub const Evaluator = struct {
             if (any_publish_success) {
                 // Platform event triggers run in a separate transaction in Salesforce,
                 // so save/restore DML/SOQL limits to avoid counting trigger DML in caller's limits.
-                const event_type = if (successful_items.items.items.len > 0 and successful_items.items.items[0] == .sobject)
+                const event_type = if (successful_items.items.items.len > 0 and
+                    successful_items.items.items[0] == .sobject)
                     successful_items.items.items[0].sobject.type_name
                 else
                     null;
@@ -6288,7 +6304,10 @@ pub const Evaluator = struct {
         var pos: usize = 0;
         while (pos + field_name.len <= clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or is_soql_whitespace(clause[pos - 1]) or clause[pos - 1] == '(')) continue;
+            if (pos != 0) {
+                const prev = clause[pos - 1];
+                if (!is_soql_whitespace(prev) and prev != '(') continue;
+            }
             var j = pos + field_name.len;
             while (j < clause.len and is_soql_whitespace(clause[j])) j += 1;
             if (j >= clause.len or clause[j] != '=') continue;
@@ -8650,7 +8669,13 @@ pub const Evaluator = struct {
                     const expected = std.fmt.parseFloat(f64, filter.value) catch break :blk false;
                     break :blk field_val.?.double == expected;
                 },
-                .boolean => if (std.ascii.eqlIgnoreCase(filter.value, "true")) field_val.?.boolean else if (std.ascii.eqlIgnoreCase(filter.value, "false")) !field_val.?.boolean else false,
+                .boolean => blk: {
+                    if (std.ascii.eqlIgnoreCase(filter.value, "true"))
+                        break :blk field_val.?.boolean;
+                    if (std.ascii.eqlIgnoreCase(filter.value, "false"))
+                        break :blk !field_val.?.boolean;
+                    break :blk false;
+                },
                 .null_val => std.ascii.eqlIgnoreCase(filter.value, "null"),
                 else => {
                     const actual = utils.coerce_to_string(
@@ -9344,10 +9369,12 @@ pub const Evaluator = struct {
     }
 
     fn resolve_inner_type_identifier(self: *Evaluator, name: []const u8, current_env: *Env) ?Value {
-        const check_classes = [_]?[]const u8{
-            if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
-            self.current_class,
+        const this_class: ?[]const u8 = blk: {
+            const tv = current_env.get("this") orelse break :blk null;
+            if (tv != .object) break :blk null;
+            break :blk tv.object.class_name;
         };
+        const check_classes = [_]?[]const u8{ this_class, self.current_class };
         for (check_classes) |cc_opt| {
             var cur_class: ?[]const u8 = cc_opt;
             while (cur_class) |ccn| {
@@ -9692,8 +9719,15 @@ pub const Evaluator = struct {
             return val;
         }
         if (std.ascii.eqlIgnoreCase(src_name, target)) return null;
-        const normalized_target =
-            if (std.ascii.eqlIgnoreCase(target, "DateTime")) "Datetime" else if (std.ascii.eqlIgnoreCase(target, "Date")) "Date" else if (std.ascii.eqlIgnoreCase(target, "Time")) "Time" else target;
+        const normalized_target: []const u8 =
+            if (std.ascii.eqlIgnoreCase(target, "DateTime"))
+                "Datetime"
+            else if (std.ascii.eqlIgnoreCase(target, "Date"))
+                "Date"
+            else if (std.ascii.eqlIgnoreCase(target, "Time"))
+                "Time"
+            else
+                target;
         try self.raise_type_exception(src_name, normalized_target);
         return error.ApexException;
     }
@@ -10118,7 +10152,8 @@ pub const Evaluator = struct {
         _ = self;
         if (list.element_type) |element_type| return strip_type_namespace(element_type);
         if (arg_hint) |hint| {
-            if (extract_collection_element_type_name(hint)) |element_type| return strip_type_namespace(element_type);
+            if (extract_collection_element_type_name(hint)) |element_type|
+                return strip_type_namespace(element_type);
         }
         if (list.items.items.len == 0) return null;
 
@@ -15308,15 +15343,8 @@ pub const Evaluator = struct {
         type_name: []const u8,
         current_env: *Env,
     ) !?Value {
-        const non_sobject_types = [_][]const u8{
-            "RestRequest",            "RestResponse",        "HttpRequest",                      "HttpResponse",
-            "Http",                   "PageReference",       "SelectOption",                     "Messaging.SingleEmailMessage",
-            "Messaging.InboundEmail", "QueryException",      "DmlException",                     "AuraHandledException",
-            "CalloutException",       "Database.DmlOptions", "DmlOptions",                       "ApexPages.Message",
-            "VisualEditor.DataRow",   "DataRow",             "VisualEditor.DynamicPickListRows", "DynamicPickListRows",
-        };
         var matched = false;
-        for (non_sobject_types) |nst| {
+        for (new_known_non_sobject_types) |nst| {
             if (std.ascii.eqlIgnoreCase(type_name, nst)) {
                 matched = true;
                 break;
