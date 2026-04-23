@@ -967,39 +967,7 @@ fn collect_field_sets(
             }
         }
 
-        var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
-            const block_start = block_start_idx + "<displayedFields>".len;
-            const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
-            const block = content[block_start..block_end];
-
-            const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
-                search_start = block_end + "</displayedFields>".len;
-                continue;
-            };
-            const field_start = field_start_idx + "<field>".len;
-            const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
-                search_start = block_end + "</displayedFields>".len;
-                continue;
-            };
-            const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
-
-            var is_required = false;
-            if (std.mem.indexOf(u8, block, "<isRequired>")) |req_idx| {
-                const req_start = req_idx + "<isRequired>".len;
-                if (std.mem.indexOfPos(u8, block, req_start, "</isRequired>")) |req_end| {
-                    const value = std.mem.trim(u8, block[req_start..req_end], " \t\r\n");
-                    is_required = std.ascii.eqlIgnoreCase(value, "true");
-                }
-            }
-
-            try members.append(alloc, .{
-                .field_path = try alloc.dupe(u8, field_path),
-                .is_required = is_required,
-            });
-            search_start = block_end + "</displayedFields>".len;
-        }
+        const members = try collect_field_set_members(alloc, content);
 
         const names = split_namespaced_metadata_name(full_name);
         const type_key = alloc.dupe(u8, type_name) catch continue;
@@ -1014,6 +982,46 @@ fn collect_field_sets(
             .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch continue,
         }) catch {};
     }
+}
+
+fn collect_field_set_members(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+) !std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata) {
+    var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+        const block_start = block_start_idx + "<displayedFields>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
+        const block = content[block_start..block_end];
+
+        const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
+            search_start = block_end + "</displayedFields>".len;
+            continue;
+        };
+        const field_start = field_start_idx + "<field>".len;
+        const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
+            search_start = block_end + "</displayedFields>".len;
+            continue;
+        };
+        const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
+
+        var is_required = false;
+        if (std.mem.indexOf(u8, block, "<isRequired>")) |req_idx| {
+            const req_start = req_idx + "<isRequired>".len;
+            if (std.mem.indexOfPos(u8, block, req_start, "</isRequired>")) |req_end| {
+                const value = std.mem.trim(u8, block[req_start..req_end], " \t\r\n");
+                is_required = std.ascii.eqlIgnoreCase(value, "true");
+            }
+        }
+
+        try members.append(alloc, .{
+            .field_path = try alloc.dupe(u8, field_path),
+            .is_required = is_required,
+        });
+        search_start = block_end + "</displayedFields>".len;
+    }
+    return members;
 }
 
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。

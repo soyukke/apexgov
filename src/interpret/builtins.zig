@@ -3562,72 +3562,88 @@ pub fn normalize_s_object_field_assignment(ctx: *BuiltinContext, sob: *types.SOb
     }
 
     if (std.ascii.eqlIgnoreCase(display_type, "BOOLEAN")) {
-        return switch (value) {
-            .boolean => value,
-            .string => |s| blk: {
-                if (std.ascii.eqlIgnoreCase(s, "true")) break :blk Value{ .boolean = true };
-                if (std.ascii.eqlIgnoreCase(s, "false")) break :blk Value{ .boolean = false };
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
-                return error.ApexException;
-            },
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
-                return error.ApexException;
-            },
-        };
+        return try normalize_boolean_field_assignment(ctx, value);
     }
 
     if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or std.ascii.eqlIgnoreCase(display_type, "LONG")) {
-        return switch (value) {
-            .integer => value,
-            .double => |d| Value{ .integer = @intFromFloat(d) },
-            .string => |s| blk: {
-                const parsed = std.fmt.parseInt(i64, s, 10) catch {
-                    _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
-                    return error.ApexException;
-                };
-                break :blk Value{ .integer = parsed };
-            },
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
-                return error.ApexException;
-            },
-        };
+        return try normalize_integer_field_assignment(ctx, value);
     }
 
     if (std.ascii.eqlIgnoreCase(display_type, "DOUBLE") or
         std.ascii.eqlIgnoreCase(display_type, "CURRENCY") or
         std.ascii.eqlIgnoreCase(display_type, "PERCENT"))
     {
-        return switch (value) {
-            .integer => |i| Value{ .double = @floatFromInt(i) },
-            .double => value,
-            .string => |s| blk: {
-                const parsed = std.fmt.parseFloat(f64, s) catch {
-                    _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
-                    return error.ApexException;
-                };
-                break :blk Value{ .double = parsed };
-            },
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
-                return error.ApexException;
-            },
-        };
+        return try normalize_decimal_field_assignment(ctx, value);
     }
 
     if (std.ascii.eqlIgnoreCase(display_type, "ID") or std.ascii.eqlIgnoreCase(display_type, "REFERENCE")) {
-        return switch (value) {
-            .string => value,
-            .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
-            else => {
-                _ = try ctx.throw_exception("System.SObjectException", "Invalid Id value");
-                return error.ApexException;
-            },
-        };
+        return try normalize_id_field_assignment(ctx, value);
     }
 
     return value;
+}
+
+fn normalize_boolean_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .boolean => value,
+        .string => |s| blk: {
+            if (std.ascii.eqlIgnoreCase(s, "true")) break :blk Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(s, "false")) break :blk Value{ .boolean = false };
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
+            return error.ApexException;
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Boolean value");
+            return error.ApexException;
+        },
+    };
+}
+
+fn normalize_integer_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .integer => value,
+        .double => |d| Value{ .integer = @intFromFloat(d) },
+        .string => |s| blk: {
+            const parsed = std.fmt.parseInt(i64, s, 10) catch {
+                _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
+                return error.ApexException;
+            };
+            break :blk Value{ .integer = parsed };
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Integer value");
+            return error.ApexException;
+        },
+    };
+}
+
+fn normalize_decimal_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .integer => |i| Value{ .double = @floatFromInt(i) },
+        .double => value,
+        .string => |s| blk: {
+            const parsed = std.fmt.parseFloat(f64, s) catch {
+                _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
+                return error.ApexException;
+            };
+            break :blk Value{ .double = parsed };
+        },
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Decimal value");
+            return error.ApexException;
+        },
+    };
+}
+
+fn normalize_id_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
+    return switch (value) {
+        .string => value,
+        .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
+        else => {
+            _ = try ctx.throw_exception("System.SObjectException", "Invalid Id value");
+            return error.ApexException;
+        },
+    };
 }
 
 fn dispatch_database(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -4487,24 +4503,7 @@ fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectIn
         return Value{ .object = obj };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        if (object_type != null and field_name.len > 0) {
-            if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
-                for (metadata.picklist_values) |picklist_value| {
-                    try append_picklist_entry(ctx, list, picklist_value.label, picklist_value.value);
-                }
-            }
-            if (list.items.items.len == 0) {
-                _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
-            }
-            try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
-        }
-        // Ensure at least one entry so that get(0) doesn't fail
-        if (list.items.items.len == 0) {
-            try append_picklist_entry(ctx, list, "Default", "Default");
-        }
-        return Value{ .list = list };
+        return try dispatch_describe_field_picklist_values(ctx, object_type, field_name);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isFilterable")) {
         return Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
@@ -4546,19 +4545,52 @@ fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectIn
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula")) {
-        // Field-meta.xml <defaultValue> round-trip not wired yet; resolve
-        // well-known standard-field defaults so that utility classes using
-        // `(String) Task.Status.getDescribe().getDefaultValue()` style code
-        // get sensible values instead of null.
-        if (object_type) |obj_name| {
-            if (standard_field_default(obj_name, field_name)) |default_str| {
-                return Value{ .string = default_str };
-            }
-        }
-        if (obj.fields.get("defaultValue")) |dv| return dv;
-        return Value.null_val;
+        return describe_field_default_value(obj, object_type, field_name);
     }
     return null;
+}
+
+fn dispatch_describe_field_picklist_values(
+    ctx: *BuiltinContext,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    if (object_type != null and field_name.len > 0) {
+        if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
+            for (metadata.picklist_values) |picklist_value| {
+                try append_picklist_entry(ctx, list, picklist_value.label, picklist_value.value);
+            }
+        }
+        if (list.items.items.len == 0) {
+            _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
+        }
+        try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
+    }
+    // Ensure at least one entry so that get(0) doesn't fail
+    if (list.items.items.len == 0) {
+        try append_picklist_entry(ctx, list, "Default", "Default");
+    }
+    return Value{ .list = list };
+}
+
+fn describe_field_default_value(
+    obj: *types.ObjectInstance,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) Value {
+    // Field-meta.xml <defaultValue> round-trip not wired yet; resolve
+    // well-known standard-field defaults so that utility classes using
+    // `(String) Task.Status.getDescribe().getDefaultValue()` style code
+    // get sensible values instead of null.
+    if (object_type) |obj_name| {
+        if (standard_field_default(obj_name, field_name)) |default_str| {
+            return Value{ .string = default_str };
+        }
+    }
+    if (obj.fields.get("defaultValue")) |dv| return dv;
+    return Value.null_val;
 }
 
 /// Known default values for a handful of standard-object fields that are

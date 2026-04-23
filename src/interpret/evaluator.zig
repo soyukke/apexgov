@@ -16106,40 +16106,7 @@ pub const Evaluator = struct {
             return err;
         };
 
-        var all_records: std.ArrayListUnmanaged(Value) = .empty;
-        if (start_scope == .object) {
-            if (start_scope.object.fields.get("query")) |query_val| {
-                if (query_val == .string) {
-                    const batch_env = try self.global_env.child();
-                    const query_result = self.execute_soql(query_val.string, batch_env) catch Value.null_val;
-                    if (query_result == .list) {
-                        for (query_result.list.items.items) |item| {
-                            try all_records.append(self.arena, item);
-                        }
-                    }
-                }
-            } else if (start_scope.object.fields.get("records")) |records_val| {
-                if (records_val == .list) {
-                    for (records_val.list.items.items) |item| {
-                        try all_records.append(self.arena, item);
-                    }
-                }
-            } else {
-                var store_iter = self.store.iterator();
-                while (store_iter.next()) |entry| {
-                    for (entry.value_ptr.items) |item| {
-                        try all_records.append(self.arena, item);
-                    }
-                }
-            }
-        } else {
-            var store_iter = self.store.iterator();
-            while (store_iter.next()) |entry| {
-                for (entry.value_ptr.items) |item| {
-                    try all_records.append(self.arena, item);
-                }
-            }
-        }
+        const all_records = try self.collect_batch_scope_records(start_scope);
 
         const record_list = try self.arena.create(types.ListValue);
         record_list.* = .{ .items = all_records };
@@ -16159,6 +16126,48 @@ pub const Evaluator = struct {
         };
 
         self.update_async_apex_job(batch_job_id, "Completed", 0);
+    }
+
+    fn collect_batch_scope_records(self: *Evaluator, start_scope: Value) !std.ArrayListUnmanaged(Value) {
+        var all_records: std.ArrayListUnmanaged(Value) = .empty;
+        if (start_scope != .object) {
+            try self.append_stored_records(&all_records);
+            return all_records;
+        }
+
+        if (start_scope.object.fields.get("query")) |query_val| {
+            if (query_val == .string) {
+                const batch_env = try self.global_env.child();
+                const query_result = self.execute_soql(query_val.string, batch_env) catch Value.null_val;
+                if (query_result == .list) {
+                    for (query_result.list.items.items) |item| {
+                        try all_records.append(self.arena, item);
+                    }
+                }
+            }
+            return all_records;
+        }
+
+        if (start_scope.object.fields.get("records")) |records_val| {
+            if (records_val == .list) {
+                for (records_val.list.items.items) |item| {
+                    try all_records.append(self.arena, item);
+                }
+            }
+            return all_records;
+        }
+
+        try self.append_stored_records(&all_records);
+        return all_records;
+    }
+
+    fn append_stored_records(self: *Evaluator, records: *std.ArrayListUnmanaged(Value)) !void {
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            for (entry.value_ptr.items) |item| {
+                try records.append(self.arena, item);
+            }
+        }
     }
 
     fn enqueue_job(self: *Evaluator, job_obj: *types.ObjectInstance) !Value {
