@@ -1079,7 +1079,8 @@ fn collect_field_sets(
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
         const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(128 * 1024)) catch continue;
 
-        var full_name: []const u8 = entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
+        var full_name: []const u8 =
+            entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
         if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
             const start = start_idx + "<fullName>".len;
             if (std.mem.indexOfPos(u8, content, start, "</fullName>")) |end_idx| {

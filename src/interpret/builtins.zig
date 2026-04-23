@@ -877,7 +877,8 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
         if (args.len >= 2) {
             const a = if (args[0] == .double) args[0].double else if (args[0] == .integer) @as(f64, @floatFromInt(args[0].integer)) else 0.0;
             const b = if (args[1] == .double) args[1].double else if (args[1] == .integer) @as(f64, @floatFromInt(args[1].integer)) else 0.0;
-            const result = if (std.ascii.eqlIgnoreCase(method_name, "max")) @max(a, b) else @min(a, b);
+            const result =
+                if (std.ascii.eqlIgnoreCase(method_name, "max")) @max(a, b) else @min(a, b);
             if (args[0] == .integer and args[1] == .integer)
                 return Value{ .integer = @intFromFloat(result) };
             return Value{ .double = result };
@@ -1211,7 +1212,8 @@ fn dispatch_static_json(
                                                 " \t\r\n",
                                             );
                                             if (seg_trimmed.len > 0) {
-                                                const seg_args = [_]Value{Value{ .string = seg_trimmed }};
+                                                const seg_args =
+                                                    [_]Value{Value{ .string = seg_trimmed }};
                                                 if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
                                                     try list.items.append(ctx.arena, v);
                                                 }
@@ -1226,7 +1228,8 @@ fn dispatch_static_json(
                                             " \t\r\n",
                                         );
                                         if (seg_trimmed.len > 0) {
-                                            const seg_args = [_]Value{Value{ .string = seg_trimmed }};
+                                            const seg_args =
+                                                [_]Value{Value{ .string = seg_trimmed }};
                                             if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
                                                 try list.items.append(ctx.arena, v);
                                             }
@@ -1924,10 +1927,11 @@ fn dispatch_static_security(
                         )
                     else
                         true;
-                    const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                        !should_keep
-                    else
-                        !should_keep and field_value != .null_val;
+                    const should_record_removed_field =
+                        if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                            !should_keep
+                        else
+                            !should_keep and field_value != .null_val;
                     if (should_record_removed_field) {
                         try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
                     }
@@ -2124,9 +2128,12 @@ fn parse_date_time_to_epoch_millis(s: []const u8) ?i64 {
     const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
     const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
     const d = std.fmt.parseInt(u8, s[8..10], 10) catch return null;
-    const h: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[11..13], 10) catch 0 else 0;
-    const mi: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[14..16], 10) catch 0 else 0;
-    const sec: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[17..19], 10) catch 0 else 0;
+    const h: i64 =
+        if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[11..13], 10) catch 0 else 0;
+    const mi: i64 =
+        if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[14..16], 10) catch 0 else 0;
+    const sec: i64 =
+        if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[17..19], 10) catch 0 else 0;
     const cumulative = [_]i64{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
     const doy = cumulative[m - 1] + d;
     const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) 1 else 0;
@@ -2226,8 +2233,10 @@ fn dispatch_static_type(
             try obj.fields.put(ctx.arena, "name", args[0]);
             return Value{ .object = obj };
         }
-        const lookup_name = if (std.mem.indexOf(u8, requested, ".")) |dot| requested[0..dot] else requested;
-        const inner_name = if (std.mem.indexOf(u8, requested, ".")) |dot| requested[dot + 1 ..] else "";
+        const lookup_name =
+            if (std.mem.indexOf(u8, requested, ".")) |dot| requested[0..dot] else requested;
+        const inner_name =
+            if (std.mem.indexOf(u8, requested, ".")) |dot| requested[dot + 1 ..] else "";
         if (inner_name.len > 0) {
             const cd_opt: ?*ast.ClassDecl = blk: {
                 if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
@@ -2363,7 +2372,8 @@ fn dispatch_static_crypto(
     {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Blob" };
-        const data_arg_idx: usize = if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
+        const data_arg_idx: usize =
+            if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
             std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
         const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and args[data_arg_idx].object.fields.get("value") != null)
             args[data_arg_idx].object.fields.get("value").?
@@ -3312,10 +3322,11 @@ pub fn create_field_set_collection_value(
             for (field_set_meta.members) |member_meta| {
                 const member = try arena.create(types.ObjectInstance);
                 member.* = .{ .class_name = "Schema.FieldSetMember" };
-                const member_label = if (lookup_eval_field_metadata(eval, obj_name, member_meta.field_path)) |meta|
-                    meta.label orelse default_field_label(member_meta.field_path)
-                else
-                    default_field_label(member_meta.field_path);
+                const member_label =
+                    if (lookup_eval_field_metadata(eval, obj_name, member_meta.field_path)) |meta|
+                        meta.label orelse default_field_label(member_meta.field_path)
+                    else
+                        default_field_label(member_meta.field_path);
                 try member.fields.put(
                     arena,
                     "fieldPath",
@@ -4355,7 +4366,8 @@ fn dispatch_object_instance(
         const items_val = obj.fields.get("__items__") orelse return Value.null_val;
         if (items_val != .list) return Value.null_val;
         const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
-        const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+        const pos: usize =
+            if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
         if (ci.eqlIgnoreCase(method_name, "hasNext")) {
             return Value{ .boolean = pos < items_val.list.items.items.len };
         }
@@ -4608,7 +4620,8 @@ fn dispatch_object_instance(
             const list = try ctx.arena.create(types.ListValue);
             list.* = .{};
             const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
-            const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
+            const count: usize =
+                if (invocations_val == .list) invocations_val.list.items.items.len else 0;
             // An action marked non-existent (set by createCustomAction when the
             // target cannot be resolved) yields a failure result per invocation.
             const exists: bool = blk: {
@@ -4907,7 +4920,8 @@ fn dispatch_obj_pattern(
         // matches actually captured — Apex/Java semantics. Counting from the pattern keeps
         // it available even before `find()` is called and regardless of match success.
         const pattern_value = obj.fields.get("pattern") orelse Value{ .string = "" };
-        const group_count: i64 = if (pattern_value == .string) count_capturing_groups(pattern_value.string) else 0;
+        const group_count: i64 =
+            if (pattern_value == .string) count_capturing_groups(pattern_value.string) else 0;
         try matcher.fields.put(ctx.arena, "group_count", Value{ .integer = group_count });
         return Value{ .object = matcher };
     }
@@ -4947,7 +4961,8 @@ fn dispatch_obj_matcher(
         const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
         if (matches != .list) return Value{ .boolean = false };
         const pos_val = obj.fields.get("pos") orelse Value{ .integer = 0 };
-        const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+        const pos: usize =
+            if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
         if (pos < matches.list.items.items.len) {
             try obj.fields.put(ctx.arena, "pos", Value{ .integer = @intCast(pos + 1) });
             try obj.fields.put(ctx.arena, "currentMatch", matches.list.items.items[pos]);
@@ -4977,7 +4992,8 @@ fn dispatch_obj_matcher(
         const current = obj.fields.get("currentMatch") orelse return Value.null_val;
         const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
         if (current == .object) {
-            const key = if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
+            const key =
+                if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
             if (current.object.fields.get(key)) |values| {
                 if (values == .list and idx < values.list.items.items.len)
                     return values.list.items.items[idx];
@@ -5060,7 +5076,8 @@ fn dispatch_obj_data_weave_script(
     args: []const Value,
 ) !?Value {
     if (!std.ascii.eqlIgnoreCase(method_name, "execute")) return null;
-    const script_name = if (obj.fields.get("scriptName")) |sn| (if (sn == .string) sn.string else "") else "";
+    const script_name =
+        if (obj.fields.get("scriptName")) |sn| (if (sn == .string) sn.string else "") else "";
     if (std.ascii.indexOfIgnoreCase(script_name, "excelOutput") != null) {
         return ctx.throw_exception(
             "DataWeaveScriptException",
@@ -5592,10 +5609,11 @@ fn dispatch_obj_cache_partition(
                     var class_iter = ctx.eval.classes.iterator();
                     while (class_iter.next()) |entry| {
                         if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
-                        const simple_name = if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
-                            entry.key_ptr.*[dot_idx + 1 ..]
-                        else
-                            entry.key_ptr.*;
+                        const simple_name =
+                            if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
+                                entry.key_ptr.*[dot_idx + 1 ..]
+                            else
+                                entry.key_ptr.*;
                         if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
                         const fallback_cache_key = try std.fmt.allocPrint(
                             ctx.arena,
@@ -5679,7 +5697,8 @@ fn dispatch_obj_flow_interview(
     args: []const Value,
 ) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "start")) {
-        const flow_name = if (obj.fields.get("flowName")) |fv| if (fv == .string) fv.string else "" else "";
+        const flow_name =
+            if (obj.fields.get("flowName")) |fv| if (fv == .string) fv.string else "" else "";
         if (std.ascii.eqlIgnoreCase(flow_name, "MockLoggerSObjectHandlerPlugin") or
             std.ascii.eqlIgnoreCase(flow_name, "MockLogBatchPurgerPlugin"))
         {
@@ -6087,7 +6106,8 @@ fn dispatch_s_object_instance(
         // Deep clone preserves id; clone with no args may not
         if (std.ascii.eqlIgnoreCase(method_name, "clone")) {
             // clone(preserveId, isDeepClone, preserveReadonlyTimestamps, preserveAutonumber)
-            const preserve_id = if (args.len > 0 and args[0] == .boolean) args[0].boolean else false;
+            const preserve_id =
+                if (args.len > 0 and args[0] == .boolean) args[0].boolean else false;
             if (!preserve_id) {
                 _ = new_sob.fields.orderedRemove("Id");
                 new_sob.id = null;
@@ -7355,7 +7375,8 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
                         const second = raw_date[17..19];
                         const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
                         const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
-                        const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+                        const hour12: u8 =
+                            if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
                         const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
                         break :blk try std.fmt.allocPrint(
                             ctx.arena,
