@@ -13475,80 +13475,103 @@ pub const Evaluator = struct {
         };
     }
 
+    fn format_iso_datetime(
+        arena: std.mem.Allocator,
+        y: u32,
+        m: u8,
+        d: u8,
+        h: u8,
+        mi: u8,
+        sec: u8,
+    ) ![]const u8 {
+        return std.fmt.allocPrint(
+            arena,
+            "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+            .{ y, m, d, h, mi, sec },
+        );
+    }
+
+    fn eval_string_method_add_hours(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+        const dt = parse_iso_date(s) orelse return Value{ .string = s };
+        const delta = coerce_i32_arg(args);
+        var h: i32 = @as(i32, dt.h) + delta;
+        var day_offset: i32 = 0;
+        while (h >= 24) {
+            h -= 24;
+            day_offset += 1;
+        }
+        while (h < 0) {
+            h += 24;
+            day_offset -= 1;
+        }
+        const y = @as(u32, @intCast(dt.y));
+        if (day_offset != 0) {
+            const base = try format_iso_datetime(self.arena, y, dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec);
+            return try self.date_time_add(base, "addDays", &.{Value{ .integer = day_offset }});
+        }
+        return Value{ .string = try format_iso_datetime(self.arena, y, dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec) };
+    }
+
+    fn eval_string_method_add_minutes(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+        const dt = parse_iso_date(s) orelse return Value{ .string = s };
+        const delta = coerce_i32_arg(args);
+        var mi: i32 = @as(i32, dt.mi) + delta;
+        var hour_offset: i32 = 0;
+        while (mi >= 60) {
+            mi -= 60;
+            hour_offset += 1;
+        }
+        while (mi < 0) {
+            mi += 60;
+            hour_offset -= 1;
+        }
+        const base = try format_iso_datetime(
+            self.arena,
+            @as(u32, @intCast(dt.y)),
+            dt.m,
+            dt.d,
+            dt.h,
+            @as(u8, @intCast(mi)),
+            dt.sec,
+        );
+        if (hour_offset != 0) {
+            return try self.eval_string_method(base, "addHours", &.{Value{ .integer = hour_offset }});
+        }
+        return Value{ .string = base };
+    }
+
+    fn eval_string_method_add_seconds(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+        const dt = parse_iso_date(s) orelse return Value{ .string = s };
+        const delta = coerce_i32_arg(args);
+        var sec: i32 = @as(i32, dt.sec) + delta;
+        var min_offset: i32 = 0;
+        while (sec >= 60) {
+            sec -= 60;
+            min_offset += 1;
+        }
+        while (sec < 0) {
+            sec += 60;
+            min_offset -= 1;
+        }
+        const base = try format_iso_datetime(
+            self.arena,
+            @as(u32, @intCast(dt.y)),
+            dt.m,
+            dt.d,
+            dt.h,
+            dt.mi,
+            @as(u8, @intCast(sec)),
+        );
+        if (min_offset != 0) {
+            return try self.eval_string_method(base, "addMinutes", &.{Value{ .integer = min_offset }});
+        }
+        return Value{ .string = base };
+    }
+
     fn eval_string_method_add_hms(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) anyerror!?Value {
-        if (std.ascii.eqlIgnoreCase(method, "addHours")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta = coerce_i32_arg(args);
-            var h: i32 = @as(i32, dt.h) + delta;
-            var day_offset: i32 = 0;
-            while (h >= 24) {
-                h -= 24;
-                day_offset += 1;
-            }
-            while (h < 0) {
-                h += 24;
-                day_offset -= 1;
-            }
-            if (day_offset != 0) {
-                const base = try std.fmt.allocPrint(
-                    self.arena,
-                    "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-                    .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec },
-                );
-                return try self.date_time_add(base, "addDays", &.{Value{ .integer = day_offset }});
-            }
-            return Value{ .string = try std.fmt.allocPrint(
-                self.arena,
-                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec },
-            ) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta = coerce_i32_arg(args);
-            var mi: i32 = @as(i32, dt.mi) + delta;
-            var hour_offset: i32 = 0;
-            while (mi >= 60) {
-                mi -= 60;
-                hour_offset += 1;
-            }
-            while (mi < 0) {
-                mi += 60;
-                hour_offset -= 1;
-            }
-            const base = try std.fmt.allocPrint(
-                self.arena,
-                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, @as(u8, @intCast(mi)), dt.sec },
-            );
-            if (hour_offset != 0) {
-                return try self.eval_string_method(base, "addHours", &.{Value{ .integer = hour_offset }});
-            }
-            return Value{ .string = base };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta = coerce_i32_arg(args);
-            var sec: i32 = @as(i32, dt.sec) + delta;
-            var min_offset: i32 = 0;
-            while (sec >= 60) {
-                sec -= 60;
-                min_offset += 1;
-            }
-            while (sec < 0) {
-                sec += 60;
-                min_offset -= 1;
-            }
-            const base = try std.fmt.allocPrint(
-                self.arena,
-                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, dt.mi, @as(u8, @intCast(sec)) },
-            );
-            if (min_offset != 0) {
-                return try self.eval_string_method(base, "addMinutes", &.{Value{ .integer = min_offset }});
-            }
-            return Value{ .string = base };
-        }
+        if (std.ascii.eqlIgnoreCase(method, "addHours")) return try self.eval_string_method_add_hours(s, args);
+        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) return try self.eval_string_method_add_minutes(s, args);
+        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) return try self.eval_string_method_add_seconds(s, args);
         return null;
     }
 
@@ -13967,19 +13990,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method(
-        self: *Evaluator,
-        s: []const u8,
-        method: []const u8,
-        args: []const Value,
-    ) !Value {
-        if (try self.eval_string_method_basic(s, method, args)) |v| return v;
-        if (try self.eval_string_method_search(s, method, args)) |v| return v;
+    fn eval_string_method_replace_equals(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "substring")) {
-            return (try eval_string_method_substring(s, args)).?;
+            return try eval_string_method_substring(s, args);
         }
         if (std.ascii.eqlIgnoreCase(method, "split") and args.len > 0 and args[0] == .string) {
-            return self.eval_string_method_split(s, args);
+            return try self.eval_string_method_split(s, args);
         }
         if (std.ascii.eqlIgnoreCase(method, "replace") and
             args.len >= 2 and args[0] == .string and args[1] == .string)
@@ -13996,9 +14012,11 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "replace_all") and
             args.len >= 2 and args[0] == .string and args[1] == .string)
         {
-            return self.eval_string_method_replace_all(s, args);
+            return try self.eval_string_method_replace_all(s, args);
         }
-        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "equals") and
+            args.len > 0 and args[0] == .string)
+        {
             return Value{ .boolean = std.mem.eql(u8, s, args[0].string) };
         }
         if (std.ascii.eqlIgnoreCase(method, "equalsIgnoreCase") and
@@ -14006,25 +14024,25 @@ pub const Evaluator = struct {
         {
             return Value{ .boolean = std.ascii.eqlIgnoreCase(s, args[0].string) };
         }
-        if (try self.eval_string_method_pad_abbrev(s, method, args)) |v| return v;
-        if (eval_string_method_predicates(s, method)) |v| return v;
-        if (try self.eval_string_method_char_class(s, method)) |v| return v;
-        if (std.ascii.eqlIgnoreCase(method, "lastIndexOf") and
-            args.len > 0 and args[0] == .string)
-        {
-            const target = args[0].string;
-            if (target.len == 0 or s.len == 0) return Value{ .integer = -1 };
-            var last: i64 = -1;
-            var k: usize = 0;
-            while (k + target.len <= s.len) : (k += 1) {
-                if (std.mem.eql(u8, s[k .. k + target.len], target)) last = @intCast(k);
-            }
-            return Value{ .integer = last };
+        return null;
+    }
+
+    fn eval_string_method_last_index_of(s: []const u8, method: []const u8, args: []const Value) ?Value {
+        if (!std.ascii.eqlIgnoreCase(method, "lastIndexOf")) return null;
+        if (args.len == 0 or args[0] != .string) return null;
+        const target = args[0].string;
+        if (target.len == 0 or s.len == 0) return Value{ .integer = -1 };
+        var last: i64 = -1;
+        var k: usize = 0;
+        while (k + target.len <= s.len) : (k += 1) {
+            if (std.mem.eql(u8, s[k .. k + target.len], target)) last = @intCast(k);
         }
-        if (eval_string_method_remove(s, method, args)) |v| return v;
-        if (try self.eval_string_method_unescape(s, method)) |v| return v;
+        return Value{ .integer = last };
+    }
+
+    fn eval_string_method_date_ops(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "format")) {
-            return self.eval_string_method_format(s, args);
+            return try self.eval_string_method_format(s, args);
         }
         if (try self.eval_string_method_date_accessor(s, method)) |v| return v;
         if (try self.eval_string_method_add_hms(s, method, args)) |v| return v;
@@ -14033,14 +14051,33 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(method, "addMonths") or
             std.ascii.eqlIgnoreCase(method, "addDays"))
         {
-            return self.date_time_add(s, method, args);
+            return try self.date_time_add(s, method, args);
         }
         if (eval_string_method_date_diff(s, method, args)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "formatGMT") or
             std.ascii.eqlIgnoreCase(method, "formatGmt"))
         {
-            return self.eval_string_method_format_gmt(s, args);
+            return try self.eval_string_method_format_gmt(s, args);
         }
+        return null;
+    }
+
+    fn eval_string_method(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (try self.eval_string_method_basic(s, method, args)) |v| return v;
+        if (try self.eval_string_method_search(s, method, args)) |v| return v;
+        if (try self.eval_string_method_replace_equals(s, method, args)) |v| return v;
+        if (try self.eval_string_method_pad_abbrev(s, method, args)) |v| return v;
+        if (eval_string_method_predicates(s, method)) |v| return v;
+        if (try self.eval_string_method_char_class(s, method)) |v| return v;
+        if (eval_string_method_last_index_of(s, method, args)) |v| return v;
+        if (eval_string_method_remove(s, method, args)) |v| return v;
+        if (try self.eval_string_method_unescape(s, method)) |v| return v;
+        if (try self.eval_string_method_date_ops(s, method, args)) |v| return v;
         if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0) {
             return self.eval_string_method_enum_value_of(s, args);
         }
