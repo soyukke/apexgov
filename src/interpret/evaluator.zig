@@ -8592,6 +8592,174 @@ pub const Evaluator = struct {
     // 式の評価
     // -----------------------------------------------------------------------
 
+    fn resolve_schema_dotted_identifier(self: *Evaluator, name: []const u8) !?Value {
+        if (std.mem.startsWith(u8, name, "SObjectType.") and
+            std.mem.indexOfScalar(u8, name["SObjectType.".len..], '.') == null)
+        {
+            const object_name = name["SObjectType.".len..];
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = object_name });
+            return Value{ .object = sot };
+        }
+        if (!std.mem.startsWith(u8, name, "Schema.")) return null;
+        const suffix = name["Schema.".len..];
+        const dot_idx = std.mem.lastIndexOfScalar(u8, suffix, '.') orelse return null;
+        const owner_name = suffix[0..dot_idx];
+        const member_name = suffix[dot_idx + 1 ..];
+        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = member_name });
+            return Value{ .object = sot };
+        }
+        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
+            return Value{ .object = sot };
+        }
+        if (!std.ascii.eqlIgnoreCase(member_name, "class")) {
+            return try self.make_s_object_field_token(owner_name, member_name);
+        }
+        return null;
+    }
+
+    fn resolve_instance_field_live(self: *Evaluator, name: []const u8, current_env: *Env) ?Value {
+        const this_live = current_env.get("this") orelse return null;
+        if (this_live != .object) return null;
+        const live = utils.sobject_get(&this_live.object.fields, name) orelse return null;
+        if (live == .null_val) return null;
+        const live_cd = self.find_class(this_live.object.class_name) orelse return null;
+        if (!(self.is_instance_field(live_cd, name) or self.is_parent_instance_field(live_cd, name))) {
+            return null;
+        }
+        if (current_env.get_declared_type(name) != null) return null;
+        return live;
+    }
+
+    fn invoke_instance_getter(self: *Evaluator, name: []const u8, current_env: *Env) !?Value {
+        const this_expr_node = try self.arena.create(ast.Expr);
+        this_expr_node.* = .this_expr;
+        const fa_node = try self.arena.create(ast.FieldAccess);
+        fa_node.* = .{ .object = this_expr_node, .field = name, .null_safe = false };
+        const fa_expr = try self.arena.create(ast.Expr);
+        fa_expr.* = .{ .field_access = fa_node };
+        return try self.eval_expr(fa_expr, current_env);
+    }
+
+    fn read_backing_field_in_getter(self: *Evaluator, this_check: Value, name: []const u8) Value {
+        if (self.find_field_decl_with_owner(this_check.object.class_name, name)) |lookup| {
+            if (lookup.field_decl.modifiers.is_static) {
+                return self.read_static_backing_value(lookup.owner_name, name);
+            }
+        }
+        if (this_check.object.fields.get(name)) |fv| return fv;
+        for (this_check.object.fields.keys(), this_check.object.fields.values()) |fk, fv| {
+            if (std.ascii.eqlIgnoreCase(fk, name)) return fv;
+        }
+        return .null_val;
+    }
+
+    fn resolve_this_getter_or_backing(self: *Evaluator, name: []const u8, current_env: *Env) !?Value {
+        const this_check = current_env.get("this") orelse return null;
+        if (this_check != .object) return null;
+        const already_in_instance_getter = if (self.evaluating_getter) |eg|
+            std.ascii.eqlIgnoreCase(eg, name)
+        else
+            false;
+        const shadowed_by_typed_local = current_env.get_declared_type(name) != null;
+        if (!already_in_instance_getter and !shadowed_by_typed_local) {
+            const this_cd = self.find_class(this_check.object.class_name) orelse return null;
+            var scan_cd: ?*ast.ClassDecl = this_cd;
+            while (scan_cd) |scd| {
+                for (scd.members) |m| {
+                    if (m != .field_decl) continue;
+                    const pfd = m.field_decl;
+                    if (std.ascii.eqlIgnoreCase(pfd.name, name) and pfd.getter_body != null) {
+                        return try self.invoke_instance_getter(name, current_env);
+                    }
+                }
+                scan_cd = if (scd.super_class) |sc| self.find_class(sc.name) else null;
+            }
+            return null;
+        }
+        if (already_in_instance_getter) {
+            return self.read_backing_field_in_getter(this_check, name);
+        }
+        return null;
+    }
+
+    fn resolve_class_static_field_from_this(self: *Evaluator, name: []const u8, current_env: *Env) ?Value {
+        const this_val = current_env.get("this") orelse return null;
+        if (this_val != .object) return null;
+        const this_cn = this_val.object.class_name;
+        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, name }) catch
+            return .null_val;
+        if (self.global_env.get(key)) |val| return val;
+        if (self.find_class(this_cn)) |cd| {
+            if (cd.super_class) |sc| {
+                self.ensure_static_init(sc.name);
+                const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, name }) catch
+                    return .null_val;
+                if (self.global_env.get(pkey)) |val| return val;
+            }
+        }
+        if (self.resolve_outer_static_field(this_cn, name)) |val| return val;
+        return null;
+    }
+
+    fn resolve_current_class_static_field(self: *Evaluator, name: []const u8) ?Value {
+        const cc = self.current_class orelse return null;
+        if (self.resolve_static_field_value_on_class(cc, name)) |val| return val;
+        if (self.find_class(cc)) |cd| {
+            if (cd.super_class) |sc| {
+                if (self.resolve_static_field_value_on_class(sc.name, name)) |val| return val;
+            }
+        }
+        if (self.resolve_outer_static_field(cc, name)) |val| return val;
+        return null;
+    }
+
+    fn resolve_inner_type_identifier(self: *Evaluator, name: []const u8, current_env: *Env) ?Value {
+        const check_classes = [_]?[]const u8{
+            if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
+            self.current_class,
+        };
+        for (check_classes) |cc_opt| {
+            var cur_class: ?[]const u8 = cc_opt;
+            while (cur_class) |ccn| {
+                const ccd = self.find_class(ccn) orelse break;
+                for (ccd.members) |member| {
+                    switch (member) {
+                        .enum_decl => |ed| {
+                            if (std.ascii.eqlIgnoreCase(ed.name, name)) return Value{ .string = name };
+                        },
+                        .class_decl => |inner_cd| {
+                            if (std.ascii.eqlIgnoreCase(inner_cd.name, name)) return Value{ .string = name };
+                        },
+                        else => {},
+                    }
+                }
+                cur_class = if (ccd.super_class) |sc| sc.name else null;
+            }
+        }
+        return null;
+    }
+
+    fn eval_identifier_expr(self: *Evaluator, name: []const u8, current_env: *Env) anyerror!Value {
+        if (current_env.get(name)) |val| {
+            if (val != .null_val) return val;
+        }
+        if (self.resolve_instance_field_live(name, current_env)) |val| return val;
+        if (try self.resolve_schema_dotted_identifier(name)) |val| return val;
+        if (try self.resolve_this_getter_or_backing(name, current_env)) |val| return val;
+        if (self.resolve_class_static_field_from_this(name, current_env)) |val| return val;
+        if (self.resolve_current_class_static_field(name)) |val| return val;
+        if (self.resolve_inner_type_identifier(name, current_env)) |val| return val;
+        return .null_val;
+    }
+
     pub fn eval_expr(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
@@ -8612,216 +8780,7 @@ pub const Evaluator = struct {
                 return current_env.get("this") orelse .null_val;
             },
 
-            .identifier => |id| {
-                if (current_env.get(id.name)) |val| {
-                    // If value is null_val, still check for instance getter (property may override)
-                    if (val != .null_val) return val;
-                }
-                // Fallback: run_constructor pre-loads instance fields into the
-                // ctor env as snapshots, but after `super()` (or any peer
-                // mutation) the snapshot goes stale. When the env binding was
-                // a snapshot (no declared_type attached — params/locals from
-                // define_typed DO carry one), and the live instance.fields
-                // entry is non-null, prefer the instance value. Params set to
-                // null intentionally stay null because they carry a declared
-                // type and therefore bypass this fallback.
-                if (current_env.get("this")) |this_live| {
-                    if (this_live == .object) {
-                        if (utils.sobject_get(&this_live.object.fields, id.name)) |live| {
-                            if (live != .null_val) {
-                                if (self.find_class(this_live.object.class_name)) |live_cd| {
-                                    if (self.is_instance_field(live_cd, id.name) or
-                                        self.is_parent_instance_field(live_cd, id.name))
-                                    {
-                                        // Only refresh when the env entry is an untyped
-                                        // ctor pre-load. A typed binding (parameter /
-                                        // declared local) is authoritative.
-                                        if (current_env.get_declared_type(id.name) == null) {
-                                            return live;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // SObjectType.X (without Schema. prefix) → Schema.SObjectType token for X
-                if (std.mem.startsWith(u8, id.name, "SObjectType.") and
-                    std.mem.indexOfScalar(u8, id.name["SObjectType.".len..], '.') == null)
-                {
-                    const object_name = id.name["SObjectType.".len..];
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = object_name });
-                    return Value{ .object = sot };
-                }
-                if (std.mem.startsWith(u8, id.name, "Schema.")) {
-                    const suffix = id.name["Schema.".len..];
-                    if (std.mem.lastIndexOfScalar(u8, suffix, '.')) |dot_idx| {
-                        const owner_name = suffix[0..dot_idx];
-                        const member_name = suffix[dot_idx + 1 ..];
-                        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = member_name });
-                            return Value{ .object = sot };
-                        }
-                        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
-                            return Value{ .object = sot };
-                        }
-                        if (!std.ascii.eqlIgnoreCase(member_name, "class")) {
-                            return try self.make_s_object_field_token(owner_name, member_name);
-                        }
-                    }
-                }
-                // Check if this is a property with a getter on `this`
-                // (bare identifier in getter body referencing another property)
-                // Skip if we're already inside this property's getter to avoid infinite recursion
-                // (self-referencing getter pattern: backing field access, not getter re-invocation)
-                // ALSO skip when the identifier is a typed local / parameter binding — a
-                // parameter with a nullable value (e.g. passed null from a caller) must
-                // not be silently promoted to the property getter's result. Distinguish
-                // by checking `get_declared_type`: parameters/declared locals carry one,
-                // ctor-env instance-field pre-loads do not.
-                if (current_env.get("this")) |this_check| {
-                    if (this_check == .object) {
-                        const already_in_instance_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
-                        const shadowed_by_typed_local = current_env.get_declared_type(
-                            id.name,
-                        ) != null;
-                        if (!already_in_instance_getter and !shadowed_by_typed_local) {
-                            if (self.find_class(this_check.object.class_name)) |this_cd| {
-                                var scan_cd: ?*ast.ClassDecl = this_cd;
-                                while (scan_cd) |scd| {
-                                    for (scd.members) |m| {
-                                        switch (m) {
-                                            .field_decl => |pfd| {
-                                                if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and
-                                                    pfd.getter_body != null)
-                                                {
-                                                    // Evaluate as this.propertyName → triggers
-                                                    // getter
-                                                    const this_expr_node = try self.arena.create(
-                                                        ast.Expr,
-                                                    );
-                                                    this_expr_node.* = .this_expr;
-                                                    const fa_node = try self.arena.create(
-                                                        ast.FieldAccess,
-                                                    );
-                                                    fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
-                                                    const fa_expr = try self.arena.create(ast.Expr);
-                                                    fa_expr.* = .{ .field_access = fa_node };
-                                                    return self.eval_expr(fa_expr, current_env);
-                                                }
-                                            },
-                                            else => {},
-                                        }
-                                    }
-                                    scan_cd = if (scd.super_class) |sc| self.find_class(sc.name) else null;
-                                }
-                            }
-                        } else if (already_in_instance_getter) {
-                            // Inside own getter: return backing field value directly
-                            if (self.find_field_decl_with_owner(
-                                this_check.object.class_name,
-                                id.name,
-                            )) |lookup| {
-                                if (lookup.field_decl.modifiers.is_static) {
-                                    return self.read_static_backing_value(
-                                        lookup.owner_name,
-                                        id.name,
-                                    );
-                                }
-                            }
-                            if (this_check.object.fields.get(id.name)) |fv| return fv;
-                            // Case-insensitive fallback
-                            for (
-                                this_check.object.fields.keys(),
-                                this_check.object.fields.values(),
-                            ) |fk, fv| {
-                                if (std.ascii.eqlIgnoreCase(fk, id.name)) return fv;
-                            }
-                            return .null_val;
-                        }
-                    }
-                }
-                // Check static fields in enclosing class context
-                // When `this` is available, check ClassName.fieldName and parent class
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        const this_cn = this_val.object.class_name;
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ this_cn, id.name },
-                        ) catch return .null_val;
-                        if (self.global_env.get(key)) |val| return val;
-                        // Check parent class static fields
-                        if (self.find_class(this_cn)) |cd| {
-                            if (cd.super_class) |sc| {
-                                self.ensure_static_init(sc.name);
-                                const pkey = std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}.{s}",
-                                    .{ sc.name, id.name },
-                                ) catch return .null_val;
-                                if (self.global_env.get(pkey)) |val| return val;
-                            }
-                        }
-                        // Check outer class static fields/getters (for inner classes)
-                        if (self.resolve_outer_static_field(this_cn, id.name)) |val| return val;
-                    }
-                }
-                // Check current_class static fields (for static methods)
-                if (self.current_class) |cc| {
-                    if (self.resolve_static_field_value_on_class(cc, id.name)) |val| return val;
-                    if (self.find_class(cc)) |cd| {
-                        if (cd.super_class) |sc| {
-                            if (self.resolve_static_field_value_on_class(
-                                sc.name,
-                                id.name,
-                            )) |val| return val;
-                        }
-                    }
-                    // Check outer class static fields/getters when current_class is an inner class
-                    if (self.resolve_outer_static_field(cc, id.name)) |val| return val;
-                }
-                // Check if identifier is an inner enum/class of enclosing class or parent
-                // (e.g., HttpVerb inside RestClient → used as HttpVerb.GET)
-                {
-                    const check_classes = [_]?[]const u8{
-                        if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
-                        self.current_class,
-                    };
-                    for (check_classes) |cc_opt| {
-                        var cur_class: ?[]const u8 = cc_opt;
-                        while (cur_class) |ccn| {
-                            if (self.find_class(ccn)) |ccd| {
-                                for (ccd.members) |member| {
-                                    switch (member) {
-                                        .enum_decl => |ed| {
-                                            if (std.ascii.eqlIgnoreCase(ed.name, id.name)) {
-                                                return Value{ .string = id.name };
-                                            }
-                                        },
-                                        .class_decl => |inner_cd| {
-                                            if (std.ascii.eqlIgnoreCase(inner_cd.name, id.name)) {
-                                                return Value{ .string = id.name };
-                                            }
-                                        },
-                                        else => {},
-                                    }
-                                }
-                                cur_class = if (ccd.super_class) |sc| sc.name else null;
-                            } else break;
-                        }
-                    }
-                }
-                return .null_val;
-            },
+            .identifier => |id| return self.eval_identifier_expr(id.name, current_env),
 
             .binary => |bin| {
                 const left = try self.eval_expr(bin.left, current_env);
