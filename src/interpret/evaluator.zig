@@ -14979,6 +14979,542 @@ pub const Evaluator = struct {
         return null;
     }
 
+    /// Resolve `staticBase.identifier.X` where `staticBase` is a static field
+    /// of the current class (or its outer class). Returns null when no
+    /// matching chain resolves.
+    fn fa_try_null_with_static_base(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (obj != .null_val) return null;
+        if (fa.object.* != .identifier) return null;
+        const base_name = fa.object.identifier.name;
+        const cc = self.current_class orelse return null;
+        if (self.resolve_static_field_value_on_class(cc, base_name)) |base| {
+            if (base != .null_val) return try self.eval_field_access_on_resolved_value(
+                base,
+                fa.field,
+                current_env,
+            );
+        }
+        if (self.find_outer_class_name(cc)) |outer| {
+            if (self.resolve_static_field_value_on_class(outer, base_name)) |base| {
+                if (base != .null_val) return try self.eval_field_access_on_resolved_value(
+                    base,
+                    fa.field,
+                    current_env,
+                );
+            }
+        }
+        return null;
+    }
+
+    /// Static field access of the form `ClassName.field`. Handles Schema
+    /// prefixes, Date.today(), enum-like singletons (AccessLevel/AccessType),
+    /// RestContext, SObjectType / .class, Trigger context, and user-defined
+    /// class/enum lookups.
+    fn fa_try_static_class_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) anyerror!?Value {
+        if (fa.object.* != .identifier) return null;
+        const class_name = fa.object.identifier.name;
+        self.ensure_static_init(class_name);
+
+        if (try self.fa_try_schema_qualified_static(class_name, fa.field)) |v| return v;
+        if (try self.fa_try_date_today_static(class_name, fa.field)) |v| return v;
+        if (fa_try_access_level_enum_static(class_name, fa.field)) |v| return v;
+        if (try self.fa_try_rest_context_static(class_name, fa.field)) |v| return v;
+        if (try self.fa_try_sobject_type_literal(class_name, fa.field)) |v| return v;
+        if (try self.fa_try_class_literal_from_identifier(class_name, fa.field)) |v| return v;
+        if (self.is_s_object_type_name(class_name)) {
+            return try self.make_s_object_field_token(class_name, fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "Trigger")) {
+            return try self.fa_trigger_context_field(fa.field);
+        }
+        if (try self.fa_try_global_enum_match(class_name, fa.field)) |v| return v;
+        if (try self.fa_try_class_member_static(class_name, fa.field)) |v| return v;
+
+        // General enum value pattern — any ClassName.CONSTANT_NAME
+        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
+        if (self.global_env.get(key)) |v| return v;
+
+        // If it looks like an enum constant (all upper case or known pattern), return as string.
+        return Value{ .string = fa.field };
+    }
+
+    fn fa_try_schema_qualified_static(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        if (!std.mem.startsWith(u8, class_name, "Schema.")) return null;
+        const schema_name = class_name["Schema.".len..];
+        if (is_known_schema_enum_type(schema_name)) {
+            return Value{ .string = field_name };
+        }
+        if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+            return try self.make_sobject_type_token(field_name);
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "SObjectType")) {
+            return try self.make_sobject_type_token(schema_name);
+        }
+        if (!std.ascii.eqlIgnoreCase(field_name, "class")) {
+            return try self.make_s_object_field_token(schema_name, field_name);
+        }
+        return null;
+    }
+
+    fn fa_try_date_today_static(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "Date")) return null;
+        if (!std.ascii.eqlIgnoreCase(field_name, "today")) return null;
+        return try builtins.make_date_value(
+            self.arena,
+            try builtins.current_date_string(self.arena),
+        );
+    }
+
+    fn fa_try_access_level_enum_static(class_name: []const u8, field_name: []const u8) ?Value {
+        if (std.ascii.eqlIgnoreCase(class_name, "AccessLevel") or
+            std.ascii.eqlIgnoreCase(class_name, "AccessType") or
+            std.ascii.eqlIgnoreCase(class_name, "ApexPages.Severity"))
+        {
+            return Value{ .string = field_name };
+        }
+        return null;
+    }
+
+    fn fa_try_rest_context_static(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "RestContext")) return null;
+        if (std.ascii.eqlIgnoreCase(field_name, "request")) {
+            const key = try std.fmt.allocPrint(self.arena, "RestContext.request", .{});
+            if (self.global_env.get(key)) |existing| return existing;
+            const req = try self.arena.create(types.ObjectInstance);
+            req.* = .{ .class_name = "RestRequest" };
+            try req.fields.put(
+                self.arena,
+                "requestURI",
+                Value{ .string = "/services/apexrest/test" },
+            );
+            try req.fields.put(self.arena, "httpMethod", Value{ .string = "GET" });
+            const blob = try self.arena.create(types.ObjectInstance);
+            blob.* = .{ .class_name = "Blob" };
+            try blob.fields.put(self.arena, "value", Value.null_val);
+            try req.fields.put(self.arena, "requestBody", Value{ .object = blob });
+            const params = try self.arena.create(types.MapValue);
+            params.* = .{};
+            try req.fields.put(self.arena, "params", Value{ .map = params });
+            const headers = try self.arena.create(types.MapValue);
+            headers.* = .{};
+            try req.fields.put(self.arena, "headers", Value{ .map = headers });
+            const value = Value{ .object = req };
+            try self.global_env.define(key, value);
+            return value;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "response")) {
+            const key = try std.fmt.allocPrint(self.arena, "RestContext.response", .{});
+            if (self.global_env.get(key)) |existing| return existing;
+            const resp = try self.arena.create(types.ObjectInstance);
+            resp.* = .{ .class_name = "RestResponse" };
+            const blob = try self.arena.create(types.ObjectInstance);
+            blob.* = .{ .class_name = "Blob" };
+            try blob.fields.put(self.arena, "value", Value{ .string = "" });
+            try resp.fields.put(self.arena, "responseBody", Value{ .object = blob });
+            const headers = try self.arena.create(types.MapValue);
+            headers.* = .{};
+            try resp.fields.put(self.arena, "headers", Value{ .map = headers });
+            const value = Value{ .object = resp };
+            try self.global_env.define(key, value);
+            return value;
+        }
+        return null;
+    }
+
+    fn fa_try_sobject_type_literal(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        if (!std.ascii.eqlIgnoreCase(field_name, "SObjectType")) return null;
+        if (std.ascii.eqlIgnoreCase(class_name, "Schema")) {
+            const ns = try self.arena.create(types.ObjectInstance);
+            ns.* = .{ .class_name = "Schema.SObjectTypeNamespace" };
+            return Value{ .object = ns };
+        }
+        return try self.make_sobject_type_token(class_name);
+    }
+
+    fn fa_try_class_literal_from_identifier(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        if (!std.ascii.eqlIgnoreCase(field_name, "class")) return null;
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        // For inner classes, return the FQ name (e.g., "OuterClass.InnerClass").
+        // Prefer current_class as the outer qualifier when the inner class exists
+        // there (avoids picking a same-named inner from a different outer class).
+        const fq_name: []const u8 = if (self.current_class) |cc| blk: {
+            if (std.mem.indexOfScalar(u8, class_name, '.') == null) {
+                const fq = std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ cc, class_name },
+                ) catch class_name;
+                if (self.find_class(fq) != null) break :blk fq;
+            }
+            break :blk self.resolve_full_class_name(class_name);
+        } else self.resolve_full_class_name(class_name);
+        try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
+        return Value{ .object = type_obj };
+    }
+
+    fn fa_trigger_context_field(self: *Evaluator, field_name: []const u8) anyerror!Value {
+        if (self.trigger_context) |tc| {
+            if (std.ascii.eqlIgnoreCase(field_name, "new"))
+                return tc.new_list orelse Value.null_val;
+            if (std.ascii.eqlIgnoreCase(field_name, "old"))
+                return tc.old_list orelse Value.null_val;
+            if (std.ascii.eqlIgnoreCase(field_name, "newMap"))
+                return tc.new_map orelse Value.null_val;
+            if (std.ascii.eqlIgnoreCase(field_name, "oldMap"))
+                return tc.old_map orelse Value.null_val;
+            if (std.ascii.eqlIgnoreCase(field_name, "isBefore"))
+                return Value{ .boolean = tc.is_before };
+            if (std.ascii.eqlIgnoreCase(field_name, "isAfter"))
+                return Value{ .boolean = tc.is_after };
+            if (std.ascii.eqlIgnoreCase(field_name, "isInsert"))
+                return Value{ .boolean = tc.is_insert };
+            if (std.ascii.eqlIgnoreCase(field_name, "isUpdate"))
+                return Value{ .boolean = tc.is_update };
+            if (std.ascii.eqlIgnoreCase(field_name, "isDelete"))
+                return Value{ .boolean = tc.is_delete };
+            if (std.ascii.eqlIgnoreCase(field_name, "isUndelete"))
+                return Value{ .boolean = tc.is_undelete };
+            if (std.ascii.eqlIgnoreCase(field_name, "isExecuting"))
+                return Value{ .boolean = tc.is_executing };
+            if (std.ascii.eqlIgnoreCase(field_name, "size"))
+                return Value{ .integer = tc.size };
+            if (std.ascii.eqlIgnoreCase(field_name, "operationType")) {
+                return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
+            }
+            return Value.null_val;
+        }
+        // No active trigger: defer to globally-set values / defaults.
+        if (std.ascii.eqlIgnoreCase(field_name, "new") or
+            std.ascii.eqlIgnoreCase(field_name, "old") or
+            std.ascii.eqlIgnoreCase(field_name, "newMap") or
+            std.ascii.eqlIgnoreCase(field_name, "oldMap"))
+        {
+            const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{field_name});
+            if (self.global_env.get(key)) |v| return v;
+            return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isBefore") or
+            std.ascii.eqlIgnoreCase(field_name, "isAfter") or
+            std.ascii.eqlIgnoreCase(field_name, "isInsert") or
+            std.ascii.eqlIgnoreCase(field_name, "isUpdate") or
+            std.ascii.eqlIgnoreCase(field_name, "isDelete") or
+            std.ascii.eqlIgnoreCase(field_name, "isUndelete") or
+            std.ascii.eqlIgnoreCase(field_name, "isExecuting"))
+        {
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "size")) return Value{ .integer = 0 };
+        return Value.null_val;
+    }
+
+    /// Enum class match scan: if any loaded class declares an enum whose name
+    /// matches `class_name`, the access returns the enum value string.
+    fn fa_try_global_enum_match(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .enum_decl => |ed| {
+                        if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
+                            return Value{ .string = field_name };
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Static members lookup on a specific class: enum/static field/inner
+    /// class/inner interface.
+    fn fa_try_class_member_static(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!?Value {
+        const cd = self.find_class(class_name) orelse return null;
+        for (cd.members) |member| {
+            switch (member) {
+                .enum_decl => |ed| {
+                    if (std.ascii.eqlIgnoreCase(ed.name, field_name)) {
+                        // Return the enum name as a string; ClassName.EnumName.VALUE
+                        // patterns are resolved by a subsequent field_access matching
+                        // the enum name through fa_try_global_enum_match.
+                        return Value{ .string = field_name };
+                    }
+                },
+                .field_decl => |fd| {
+                    if (!std.ascii.eqlIgnoreCase(fd.name, field_name)) continue;
+                    if (!fd.modifiers.is_static) continue;
+                    return try self.fa_read_static_field(class_name, fd, field_name);
+                },
+                .class_decl => |inner_cd| {
+                    if (std.ascii.eqlIgnoreCase(inner_cd.name, field_name)) {
+                        return Value{ .string = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ class_name, inner_cd.name },
+                        ) };
+                    }
+                },
+                .interface_decl => |inner_iface| {
+                    if (std.ascii.eqlIgnoreCase(inner_iface.name, field_name)) {
+                        return Value{ .string = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ class_name, inner_iface.name },
+                        ) };
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Read a static field value: run the getter body if present (and not
+    /// already inside it), otherwise fall back to the global static store.
+    fn fa_read_static_field(
+        self: *Evaluator,
+        class_name: []const u8,
+        fd: *ast.FieldDecl,
+        field_name: []const u8,
+    ) anyerror!Value {
+        if (fd.getter_body) |getter_body| {
+            const already_in = if (self.evaluating_getter) |eg|
+                std.ascii.eqlIgnoreCase(eg, field_name)
+            else
+                false;
+            if (!already_in) {
+                const getter_env = self.global_env.child() catch return Value.null_val;
+                const saved_class = self.current_class;
+                const saved_getter = self.evaluating_getter;
+                self.current_class = class_name;
+                self.evaluating_getter = field_name;
+                defer {
+                    self.current_class = saved_class;
+                    self.evaluating_getter = saved_getter;
+                }
+
+                const result = self.exec_block(getter_body, getter_env) catch
+                    return Value.null_val;
+                return switch (result) {
+                    .return_val => |v| v,
+                    else => self.return_value,
+                };
+            }
+        }
+        const skey = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ class_name, field_name },
+        ) catch return Value.null_val;
+        return self.global_env.get(skey) orelse Value.null_val;
+    }
+
+    /// Nested static access chain: `Outer.Inner.X` where the object operand
+    /// is itself a `field_access`. Handles inner enums/classes/interfaces,
+    /// common System.* pseudo-enums, and Schema.* variants.
+    fn fa_try_nested_static_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) anyerror!?Value {
+        if (fa.object.* != .field_access) return null;
+        const inner_fa = fa.object.field_access;
+        if (inner_fa.object.* != .identifier) return null;
+        const outer_name = inner_fa.object.identifier.name;
+        const inner_name = inner_fa.field;
+
+        if (try self.fa_nested_in_user_class(fa, outer_name, inner_name)) |v| return v;
+        if (try self.fa_nested_in_system_or_schema(fa, outer_name, inner_name)) |v| return v;
+        return null;
+    }
+
+    /// Handle the `Outer.Inner.X` chain where `Outer` resolves to a user class.
+    fn fa_nested_in_user_class(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        outer_name: []const u8,
+        inner_name: []const u8,
+    ) anyerror!?Value {
+        const cd = self.find_class(outer_name) orelse return null;
+        for (cd.members) |member| {
+            switch (member) {
+                .enum_decl => |ed| {
+                    if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
+                        return Value{ .string = fa.field };
+                    }
+                },
+                .class_decl => |inner_cd| {
+                    if (!std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) continue;
+                    if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                        return try self.fa_make_type_object_fq(outer_name, inner_cd.name);
+                    }
+                    const fq_inner_name = try std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ outer_name, inner_cd.name },
+                    );
+                    const static_key = try std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ fq_inner_name, fa.field },
+                    );
+                    if (self.global_env.get(static_key)) |v| return v;
+                    return Value{ .string = fa.field };
+                },
+                .interface_decl => |inner_iface| {
+                    if (std.ascii.eqlIgnoreCase(inner_iface.name, inner_name) and
+                        std.ascii.eqlIgnoreCase(fa.field, "class"))
+                    {
+                        return try self.fa_make_type_object_fq(outer_name, inner_iface.name);
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Handle `System.<Enum>.X` and `Schema.<X>.Y` shortcuts.
+    fn fa_nested_in_system_or_schema(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        outer_name: []const u8,
+        inner_name: []const u8,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(outer_name, "System") and
+            (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
+                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "Quiddity") or
+                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation") or
+                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "StatusCode")))
+        {
+            return Value{ .string = fa.field };
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "class") and
+            std.ascii.eqlIgnoreCase(outer_name, "System"))
+        {
+            return try self.fa_make_type_object_fq("System", inner_name);
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            std.ascii.eqlIgnoreCase(inner_name, "SObjectType"))
+        {
+            return try self.make_sobject_type_token(fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            is_known_schema_enum_type(inner_name))
+        {
+            return Value{ .string = fa.field };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema")) {
+            return try self.make_s_object_field_token(inner_name, fa.field);
+        }
+        return null;
+    }
+
+    fn fa_make_type_object_fq(
+        self: *Evaluator,
+        outer: []const u8,
+        inner: []const u8,
+    ) anyerror!Value {
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        const fq_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, inner });
+        try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
+        return Value{ .object = type_obj };
+    }
+
+    /// `.class` literal variants: multi-level dotted chain (A.B.C.class),
+    /// single-identifier (ClassName.class), and string-named outer
+    /// (OuterClass.InnerClass.class produced via a string value).
+    fn fa_try_class_literal(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(fa.field, "class") and fa.object.* == .field_access) {
+            if (self.collect_dotted_identifier_chain(fa.object)) |chain| {
+                const display_name: []const u8 = blk: {
+                    if (std.ascii.startsWithIgnoreCase(chain, "Flow.Interview.")) {
+                        const leaf = chain["Flow.Interview.".len..];
+                        if (leaf.len > 0 and std.mem.indexOfScalar(u8, leaf, '.') == null) {
+                            if (self.find_class(leaf) == null) break :blk "Flow.Interview";
+                        }
+                    }
+                    break :blk chain;
+                };
+                const type_obj = try self.arena.create(types.ObjectInstance);
+                type_obj.* = .{ .class_name = "Type" };
+                try type_obj.fields.put(self.arena, "name", Value{ .string = display_name });
+                return Value{ .object = type_obj };
+            }
+        }
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.fa_class_literal_from_simple(fa.object.identifier.name);
+        }
+        if (obj == .string and std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.fa_class_literal_from_simple(obj.string);
+        }
+        return null;
+    }
+
+    fn fa_class_literal_from_simple(
+        self: *Evaluator,
+        simple_name: []const u8,
+    ) anyerror!Value {
+        const type_name: []const u8 = if (self.current_class) |cc| blk: {
+            const fq = std.fmt.allocPrint(
+                self.arena,
+                "{s}.{s}",
+                .{ cc, simple_name },
+            ) catch simple_name;
+            break :blk if (self.find_class(fq) != null)
+                fq
+            else
+                self.resolve_full_class_name(simple_name);
+        } else self.resolve_full_class_name(simple_name);
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = type_obj };
+    }
+
     fn eval_field_access(
         self: *Evaluator,
         fa: *ast.FieldAccess,
@@ -14996,512 +15532,10 @@ pub const Evaluator = struct {
         if (obj == .string) {
             if (try self.fa_string_access(fa, obj.string)) |v| return v;
         }
-
-        if (obj == .null_val and fa.object.* == .identifier) {
-            const base_name = fa.object.identifier.name;
-            if (self.current_class) |cc| {
-                if (self.resolve_static_field_value_on_class(cc, base_name)) |base| {
-                    if (base != .null_val) return self.eval_field_access_on_resolved_value(
-                        base,
-                        fa.field,
-                        current_env,
-                    );
-                }
-                if (self.find_outer_class_name(cc)) |outer| {
-                    if (self.resolve_static_field_value_on_class(outer, base_name)) |base| {
-                        if (base != .null_val) return self.eval_field_access_on_resolved_value(
-                            base,
-                            fa.field,
-                            current_env,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Static field: ClassName.fieldName
-        if (fa.object.* == .identifier) {
-            const class_name = fa.object.identifier.name;
-
-            // Lazy static init: ensure the class's static fields/blocks are initialized
-            self.ensure_static_init(class_name);
-
-            if (std.mem.startsWith(u8, class_name, "Schema.")) {
-                const schema_name = class_name["Schema.".len..];
-                if (is_known_schema_enum_type(schema_name)) {
-                    return Value{ .string = fa.field };
-                }
-                if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                    return Value{ .object = sot };
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                    return Value{ .object = sot };
-                }
-                if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                    return try self.make_s_object_field_token(schema_name, fa.field);
-                }
-            }
-
-            // Date.today()
-            if (std.ascii.eqlIgnoreCase(class_name, "Date") and
-                std.ascii.eqlIgnoreCase(fa.field, "today"))
-            {
-                return try builtins.make_date_value(
-                    self.arena,
-                    try builtins.current_date_string(self.arena),
-                );
-            }
-
-            // AccessLevel / AccessType enum
-            if (std.ascii.eqlIgnoreCase(class_name, "AccessLevel") or
-                std.ascii.eqlIgnoreCase(class_name, "AccessType") or
-                std.ascii.eqlIgnoreCase(class_name, "ApexPages.Severity"))
-            {
-                return Value{ .string = fa.field };
-            }
-
-            // RestContext.request / RestContext.response
-            if (std.ascii.eqlIgnoreCase(class_name, "RestContext")) {
-                if (std.ascii.eqlIgnoreCase(fa.field, "request")) {
-                    const key = try std.fmt.allocPrint(self.arena, "RestContext.request", .{});
-                    if (self.global_env.get(key)) |existing| return existing;
-                    const req = try self.arena.create(types.ObjectInstance);
-                    req.* = .{ .class_name = "RestRequest" };
-                    try req.fields.put(
-                        self.arena,
-                        "requestURI",
-                        Value{ .string = "/services/apexrest/test" },
-                    );
-                    try req.fields.put(self.arena, "httpMethod", Value{ .string = "GET" });
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value.null_val);
-                    try req.fields.put(self.arena, "requestBody", Value{ .object = blob });
-                    const params = try self.arena.create(types.MapValue);
-                    params.* = .{};
-                    try req.fields.put(self.arena, "params", Value{ .map = params });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try req.fields.put(self.arena, "headers", Value{ .map = headers });
-                    const value = Value{ .object = req };
-                    try self.global_env.define(key, value);
-                    return value;
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "response")) {
-                    const key = try std.fmt.allocPrint(self.arena, "RestContext.response", .{});
-                    if (self.global_env.get(key)) |existing| return existing;
-                    const resp = try self.arena.create(types.ObjectInstance);
-                    resp.* = .{ .class_name = "RestResponse" };
-                    const blob = try self.arena.create(types.ObjectInstance);
-                    blob.* = .{ .class_name = "Blob" };
-                    try blob.fields.put(self.arena, "value", Value{ .string = "" });
-                    try resp.fields.put(self.arena, "responseBody", Value{ .object = blob });
-                    const headers = try self.arena.create(types.MapValue);
-                    headers.* = .{};
-                    try resp.fields.put(self.arena, "headers", Value{ .map = headers });
-                    const value = Value{ .object = resp };
-                    try self.global_env.define(key, value);
-                    return value;
-                }
-            }
-
-            // SObject.SObjectType
-            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                // Schema.sObjectType → return namespace proxy (fields resolve to per-object
-                // SObjectType)
-                if (std.ascii.eqlIgnoreCase(class_name, "Schema")) {
-                    const ns = try self.arena.create(types.ObjectInstance);
-                    ns.* = .{ .class_name = "Schema.SObjectTypeNamespace" };
-                    return Value{ .object = ns };
-                }
-                // e.g., Account.SObjectType
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = class_name });
-                return Value{ .object = sot };
-            }
-
-            // SObject.class
-            if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                const type_obj = try self.arena.create(types.ObjectInstance);
-                type_obj.* = .{ .class_name = "Type" };
-                // For inner classes, return the FQ name (e.g., "OuterClass.InnerClass").
-                // Prefer current_class as the outer qualifier when the inner class exists
-                // there (avoids picking a same-named inner from a different outer class).
-                const fq_name: []const u8 = if (self.current_class) |cc| blk: {
-                    if (std.mem.indexOfScalar(u8, class_name, '.') == null) {
-                        const fq = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cc, class_name },
-                        ) catch class_name;
-                        if (self.find_class(fq) != null) break :blk fq;
-                    }
-                    break :blk self.resolve_full_class_name(class_name);
-                } else self.resolve_full_class_name(class_name);
-                try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
-                return Value{ .object = type_obj };
-            }
-
-            if (self.is_s_object_type_name(class_name)) {
-                return try self.make_s_object_field_token(class_name, fa.field);
-            }
-
-            // Trigger context
-            if (std.ascii.eqlIgnoreCase(class_name, "Trigger")) {
-                if (self.trigger_context) |tc| {
-                    if (std.ascii.eqlIgnoreCase(fa.field, "new"))
-                        return tc.new_list orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "old"))
-                        return tc.old_list orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap"))
-                        return tc.new_map orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "oldMap"))
-                        return tc.old_map orelse Value.null_val;
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore"))
-                        return Value{ .boolean = tc.is_before };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isAfter"))
-                        return Value{ .boolean = tc.is_after };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isInsert"))
-                        return Value{ .boolean = tc.is_insert };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isUpdate"))
-                        return Value{ .boolean = tc.is_update };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isDelete"))
-                        return Value{ .boolean = tc.is_delete };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isUndelete"))
-                        return Value{ .boolean = tc.is_undelete };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isExecuting"))
-                        return Value{ .boolean = tc.is_executing };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "size"))
-                        return Value{ .integer = tc.size };
-                    if (std.ascii.eqlIgnoreCase(
-                        fa.field,
-                        "operationType",
-                    )) return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
-                } else {
-                    if (std.ascii.eqlIgnoreCase(fa.field, "new") or
-                        std.ascii.eqlIgnoreCase(fa.field, "old"))
-                    {
-                        // Check if Trigger.new/old has been explicitly set
-                        const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
-                        if (self.global_env.get(key)) |v| return v;
-                        return Value.null_val;
-                    }
-                    if (std.ascii.eqlIgnoreCase(
-                        fa.field,
-                        "isBefore",
-                    ) or std.ascii.eqlIgnoreCase(fa.field, "isAfter") or
-                        std.ascii.eqlIgnoreCase(
-                            fa.field,
-                            "isInsert",
-                        ) or std.ascii.eqlIgnoreCase(fa.field, "isUpdate") or
-                        std.ascii.eqlIgnoreCase(
-                            fa.field,
-                            "isDelete",
-                        ) or std.ascii.eqlIgnoreCase(fa.field, "isUndelete") or
-                        std.ascii.eqlIgnoreCase(fa.field, "isExecuting"))
-                    {
-                        return Value{ .boolean = false };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "newMap") or
-                        std.ascii.eqlIgnoreCase(fa.field, "oldMap"))
-                    {
-                        const key = try std.fmt.allocPrint(self.arena, "Trigger.{s}", .{fa.field});
-                        if (self.global_env.get(key)) |v| return v;
-                        return Value.null_val;
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
-                        return Value{ .integer = 0 };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "operationType")) {
-                        return Value.null_val;
-                    }
-                }
-            }
-
-            // Check if it's an enum class
-            var class_iter = self.classes.iterator();
-            while (class_iter.next()) |entry| {
-                const cd = entry.value_ptr.*;
-                for (cd.members) |member| {
-                    switch (member) {
-                        .enum_decl => |ed| {
-                            if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
-                                // Return enum value as string
-                                return Value{ .string = fa.field };
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-            // Also check top-level enums
-            if (self.find_class(class_name)) |cd| {
-                // It might be a class with the enum as inner
-                for (cd.members) |member| {
-                    switch (member) {
-                        .enum_decl => |ed| {
-                            if (std.ascii.eqlIgnoreCase(ed.name, fa.field)) {
-                                // Return the enum name as a string - when used in
-                                // ClassName.EnumName.VALUE patterns, the next field_access
-                                // will match the enum name in the enum check above (line 4767)
-                                return Value{ .string = fa.field };
-                            }
-                        },
-                        .field_decl => |fd| {
-                            if (std.ascii.eqlIgnoreCase(fd.name, fa.field) and
-                                fd.modifiers.is_static)
-                            {
-                                // If property has a getter, execute it (unless we're already inside
-                                // it)
-                                if (fd.getter_body != null) {
-                                    const already_in = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, fa.field) else false;
-                                    if (!already_in) {
-                                        const getter_env =
-                                            self.global_env.child() catch return Value.null_val;
-                                        const saved_class = self.current_class;
-                                        const saved_getter = self.evaluating_getter;
-                                        self.current_class = class_name;
-                                        self.evaluating_getter = fa.field;
-                                        defer {
-                                            self.current_class = saved_class;
-                                            self.evaluating_getter = saved_getter;
-                                        }
-
-                                        const result = self.exec_block(
-                                            fd.getter_body.?,
-                                            getter_env,
-                                        ) catch return Value.null_val;
-
-                                        return switch (result) {
-                                            .return_val => |v| v,
-                                            else => self.return_value,
-                                        };
-                                    }
-                                }
-                                const skey = std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}.{s}",
-                                    .{ class_name, fa.field },
-                                ) catch return Value.null_val;
-                                return self.global_env.get(skey) orelse Value.null_val;
-                            }
-                        },
-                        .class_decl => |inner_cd| {
-                            if (std.ascii.eqlIgnoreCase(inner_cd.name, fa.field)) {
-                                return Value{ .string = try std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}.{s}",
-                                    .{ class_name, inner_cd.name },
-                                ) };
-                            }
-                        },
-                        .interface_decl => |inner_iface| {
-                            if (std.ascii.eqlIgnoreCase(inner_iface.name, fa.field)) {
-                                return Value{ .string = try std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}.{s}",
-                                    .{ class_name, inner_iface.name },
-                                ) };
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-
-            // General enum value pattern — any ClassName.CONSTANT_NAME
-            const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
-            if (self.global_env.get(key)) |v| return v;
-
-            // If it looks like an enum constant (all upper case or known pattern), return as string
-            return Value{ .string = fa.field };
-        }
-
-        // Nested static: ClassName.InnerClass.field → already resolved as field_access chain
-        if (fa.object.* == .field_access) {
-            const inner_fa = fa.object.field_access;
-            if (inner_fa.object.* == .identifier) {
-                const outer_name = inner_fa.object.identifier.name;
-                const inner_name = inner_fa.field;
-                // Check for nested enum or class constant
-                if (self.find_class(outer_name)) |cd| {
-                    for (cd.members) |member| {
-                        switch (member) {
-                            .enum_decl => |ed| {
-                                if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
-                                    return Value{ .string = fa.field };
-                                }
-                            },
-                            .class_decl => |inner_cd| {
-                                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
-                                    if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                                        const type_obj = try self.arena.create(
-                                            types.ObjectInstance,
-                                        );
-                                        type_obj.* = .{ .class_name = "Type" };
-                                        const fq_name = try std.fmt.allocPrint(
-                                            self.arena,
-                                            "{s}.{s}",
-                                            .{ outer_name, inner_cd.name },
-                                        );
-                                        try type_obj.fields.put(
-                                            self.arena,
-                                            "name",
-                                            Value{ .string = fq_name },
-                                        );
-                                        return Value{ .object = type_obj };
-                                    }
-                                    const fq_inner_name = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "{s}.{s}",
-                                        .{ outer_name, inner_cd.name },
-                                    );
-                                    const static_key = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "{s}.{s}",
-                                        .{ fq_inner_name, fa.field },
-                                    );
-                                    if (self.global_env.get(static_key)) |v| return v;
-                                    return Value{ .string = fa.field };
-                                }
-                            },
-                            .interface_decl => |inner_iface| {
-                                if (std.ascii.eqlIgnoreCase(inner_iface.name, inner_name) and
-                                    std.ascii.eqlIgnoreCase(fa.field, "class"))
-                                {
-                                    const type_obj = try self.arena.create(types.ObjectInstance);
-                                    type_obj.* = .{ .class_name = "Type" };
-                                    const fq_name = try std.fmt.allocPrint(
-                                        self.arena,
-                                        "{s}.{s}",
-                                        .{ outer_name, inner_iface.name },
-                                    );
-                                    try type_obj.fields.put(
-                                        self.arena,
-                                        "name",
-                                        Value{ .string = fq_name },
-                                    );
-                                    return Value{ .object = type_obj };
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-                // System.AccessType.CREATABLE / System.AccessLevel.SYSTEM_MODE / System.Quiddity.*
-                // etc.
-                if (std.ascii.eqlIgnoreCase(outer_name, "System") and
-                    (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                        std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
-                        std.ascii.eqlIgnoreCase(inner_name, "Quiddity") or
-                        std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation") or
-                        std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
-                        std.ascii.eqlIgnoreCase(inner_name, "StatusCode")))
-                {
-                    return Value{ .string = fa.field };
-                }
-
-                // System.ExceptionType.class → Type object with "System.ExceptionType" name
-                if (std.ascii.eqlIgnoreCase(fa.field, "class") and
-                    std.ascii.eqlIgnoreCase(outer_name, "System"))
-                {
-                    const type_obj = try self.arena.create(types.ObjectInstance);
-                    type_obj.* = .{ .class_name = "Type" };
-                    const fq_name = try std.fmt.allocPrint(self.arena, "System.{s}", .{inner_name});
-                    try type_obj.fields.put(self.arena, "name", Value{ .string = fq_name });
-                    return Value{ .object = type_obj };
-                }
-
-                // Schema.SObjectType.Account etc.
-                if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                    std.ascii.eqlIgnoreCase(inner_name, "SObjectType"))
-                {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                    return Value{ .object = sot };
-                }
-                if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                    is_known_schema_enum_type(inner_name))
-                {
-                    return Value{ .string = fa.field };
-                }
-                // Schema.Account.Name / Schema.Custom__c.UniqueId__c
-                if (std.ascii.eqlIgnoreCase(outer_name, "Schema")) {
-                    return try self.make_s_object_field_token(inner_name, fa.field);
-                }
-            }
-        }
-
-        // Multi-level dotted class literal: A.B.C.class (chain of identifiers).
-        // Used for things like `Flow.Interview.MyFlow.class` where we cannot
-        // resolve the chain to a real class but still need a non-null Type.
-        if (std.ascii.eqlIgnoreCase(fa.field, "class") and fa.object.* == .field_access) {
-            if (self.collect_dotted_identifier_chain(fa.object)) |chain| {
-                // Flow.Interview.<FlowName>.class mirrors real-platform semantics:
-                // when the flow metadata does not exist, Apex's Type literal still
-                // evaluates but getName() returns just "Flow.Interview" so that
-                // framework utilities can throw a "flow not found" error.  We have
-                // no flow metadata, so use the heuristic "is there a user class
-                // with this leaf name?" to decide whether to keep the full path.
-                const display_name: []const u8 = blk: {
-                    if (std.ascii.startsWithIgnoreCase(chain, "Flow.Interview.")) {
-                        const leaf = chain["Flow.Interview.".len..];
-                        if (leaf.len > 0 and std.mem.indexOfScalar(u8, leaf, '.') == null) {
-                            if (self.find_class(leaf) == null) break :blk "Flow.Interview";
-                        }
-                    }
-                    break :blk chain;
-                };
-                const type_obj = try self.arena.create(types.ObjectInstance);
-                type_obj.* = .{ .class_name = "Type" };
-                try type_obj.fields.put(self.arena, "name", Value{ .string = display_name });
-                return Value{ .object = type_obj };
-            }
-        }
-
-        // ClassName.class → Type object
-        // Use fully-qualified name when the class is an inner class of current_class
-        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.field, "class")) {
-            const simple_name = fa.object.identifier.name;
-            // Check if this is an inner class of the current class → use FQ name
-            const type_name: []const u8 = if (self.current_class) |cc| blk: {
-                const fq = std.fmt.allocPrint(
-                    self.arena,
-                    "{s}.{s}",
-                    .{ cc, simple_name },
-                ) catch simple_name;
-                break :blk if (self.find_class(fq) != null) fq else self.resolve_full_class_name(simple_name);
-            } else self.resolve_full_class_name(simple_name);
-            const type_obj = try self.arena.create(types.ObjectInstance);
-            type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-            return Value{ .object = type_obj };
-        }
-
-        // OuterClass.InnerClass.class → Type object (when obj is string class name)
-        if (obj == .string and std.ascii.eqlIgnoreCase(fa.field, "class")) {
-            const type_name: []const u8 = if (self.current_class) |cc| blk: {
-                const fq = std.fmt.allocPrint(
-                    self.arena,
-                    "{s}.{s}",
-                    .{ cc, obj.string },
-                ) catch obj.string;
-                break :blk if (self.find_class(fq) != null) fq else self.resolve_full_class_name(obj.string);
-            } else self.resolve_full_class_name(obj.string);
-            const type_obj = try self.arena.create(types.ObjectInstance);
-            type_obj.* = .{ .class_name = "Type" };
-            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-            return Value{ .object = type_obj };
-        }
-
+        if (try self.fa_try_null_with_static_base(fa, obj, current_env)) |v| return v;
+        if (try self.fa_try_static_class_access(fa)) |v| return v;
+        if (try self.fa_try_nested_static_access(fa)) |v| return v;
+        if (try self.fa_try_class_literal(fa, obj)) |v| return v;
         return Value.null_val;
     }
 
