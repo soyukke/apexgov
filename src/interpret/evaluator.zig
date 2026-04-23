@@ -8747,6 +8747,120 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn try_schema_prefix_field_access(
+        self: *Evaluator,
+        schema_name: []const u8,
+        field: []const u8,
+    ) !?Value {
+        if (is_known_schema_enum_type(schema_name)) return Value{ .string = field };
+        if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = field });
+            return Value{ .object = sot };
+        }
+        if (std.ascii.eqlIgnoreCase(field, "SObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
+            return Value{ .object = sot };
+        }
+        if (self.is_s_object_type_name(schema_name) and !std.ascii.eqlIgnoreCase(field, "class")) {
+            return try self.make_s_object_field_token(schema_name, field);
+        }
+        return null;
+    }
+
+    fn try_three_level_enum_constant(
+        self: *Evaluator,
+        outer_name: []const u8,
+        inner_name: []const u8,
+        field: []const u8,
+    ) !?Value {
+        self.ensure_static_init(outer_name);
+        const inner_fq = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_name });
+        self.ensure_static_init(inner_fq);
+        const fq_key = try std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}.{s}",
+            .{ outer_name, inner_name, field },
+        );
+        if (self.global_env.get(fq_key)) |v| return v;
+        if (self.find_class(outer_name)) |cd| {
+            for (cd.members) |member| {
+                if (member == .enum_decl and
+                    std.ascii.eqlIgnoreCase(member.enum_decl.name, inner_name))
+                {
+                    return Value{ .string = field };
+                }
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "System") and
+            (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
+                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation")))
+        {
+            return Value{ .string = field };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and is_known_schema_enum_type(inner_name)) {
+            return Value{ .string = field };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
+            !std.ascii.eqlIgnoreCase(inner_name, "SObjectType") and
+            self.is_s_object_type_name(inner_name))
+        {
+            if (std.ascii.eqlIgnoreCase(field, "SObjectType")) {
+                const sot = try self.arena.create(types.ObjectInstance);
+                sot.* = .{ .class_name = "Schema.SObjectType" };
+                try sot.fields.put(self.arena, "name", Value{ .string = inner_name });
+                return Value{ .object = sot };
+            }
+            if (!std.ascii.eqlIgnoreCase(field, "class")) {
+                return try self.make_s_object_field_token(inner_name, field);
+            }
+        }
+        return null;
+    }
+
+    fn eval_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess, current_env: *Env) anyerror!Value {
+        if (fa.object.* == .identifier and
+            std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+        {
+            const schema_name = fa.object.identifier.name["Schema.".len..];
+            if (try self.try_schema_prefix_field_access(schema_name, fa.field)) |v| return v;
+        }
+        if (fa.object.* == .field_access) {
+            const inner_fa = fa.object.field_access;
+            if (inner_fa.object.* == .identifier) {
+                const outer_name = inner_fa.object.identifier.name;
+                const inner_name = inner_fa.field;
+                if (try self.try_three_level_enum_constant(outer_name, inner_name, fa.field)) |v| {
+                    return v;
+                }
+            }
+        }
+        if (fa.null_safe) {
+            const obj = self.eval_expr(fa.object, current_env) catch |err| {
+                if (err == error.ApexException and self.pending_exception != null) {
+                    if (self.pending_exception.? == .object) {
+                        const cn = self.pending_exception.?.object.class_name;
+                        if (std.ascii.indexOfIgnoreCase(cn, "NullPointer") != null) {
+                            self.pending_exception = null;
+                            return Value.null_val;
+                        }
+                    }
+                }
+                return err;
+            };
+            if (obj == .null_val) return Value.null_val;
+            return self.eval_field_access(fa, obj, current_env);
+        }
+        const obj = try self.eval_expr(fa.object, current_env);
+        return self.eval_field_access(fa, obj, current_env);
+    }
+
     fn instanceof_sobject(val: Value, type_name: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(type_name, "SObject") or
             std.ascii.eqlIgnoreCase(type_name, "Sobject") or
@@ -9194,123 +9308,7 @@ pub const Evaluator = struct {
 
             .method_call => |mc| return self.eval_method_call(mc, current_env),
 
-            .field_access => |fa| {
-                if (fa.object.* == .identifier and
-                    std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
-                {
-                    const schema_name = fa.object.identifier.name["Schema.".len..];
-                    if (is_known_schema_enum_type(schema_name)) {
-                        return Value{ .string = fa.field };
-                    }
-                    if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                        return Value{ .object = sot };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                        return Value{ .object = sot };
-                    }
-                    if (self.is_s_object_type_name(schema_name) and
-                        !std.ascii.eqlIgnoreCase(fa.field, "class"))
-                    {
-                        return self.make_s_object_field_token(schema_name, fa.field);
-                    }
-                }
-                // Pre-check: three-level ClassName.Inner.Field pattern for enums/constants
-                // Must be done BEFORE evaluating the inner object to avoid misresolution
-                if (fa.object.* == .field_access) {
-                    const inner_fa = fa.object.field_access;
-                    if (inner_fa.object.* == .identifier) {
-                        const outer_name = inner_fa.object.identifier.name;
-                        const inner_name = inner_fa.field;
-                        // Try global_env key: OuterClass.Inner.Field
-                        self.ensure_static_init(outer_name);
-                        const inner_fq = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ outer_name, inner_name },
-                        );
-                        self.ensure_static_init(inner_fq);
-                        const fq_key = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}.{s}",
-                            .{ outer_name, inner_name, fa.field },
-                        );
-                        if (self.global_env.get(fq_key)) |v| return v;
-                        // Try as enum in class
-                        if (self.find_class(outer_name)) |cd| {
-                            for (cd.members) |member| {
-                                switch (member) {
-                                    .enum_decl => |ed| {
-                                        if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
-                                            return Value{ .string = fa.field };
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-                        }
-                        // System.AccessType/AccessLevel/LoggingLevel/TriggerOperation
-                        if (std.ascii.eqlIgnoreCase(outer_name, "System") and
-                            (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
-                                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
-                                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation")))
-                        {
-                            return Value{ .string = fa.field };
-                        }
-                        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                            is_known_schema_enum_type(inner_name))
-                        {
-                            return Value{ .string = fa.field };
-                        }
-                        // Schema.<SObjectType>.FieldName / Schema.<SObjectType>.SObjectType
-                        // must resolve directly without rewriting to unqualified identifiers,
-                        // otherwise a local variable like `User user` can shadow `Schema.User`.
-                        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                            !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
-                            !std.ascii.eqlIgnoreCase(inner_name, "SObjectType") and
-                            self.is_s_object_type_name(inner_name))
-                        {
-                            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                                const sot = try self.arena.create(types.ObjectInstance);
-                                sot.* = .{ .class_name = "Schema.SObjectType" };
-                                try sot.fields.put(
-                                    self.arena,
-                                    "name",
-                                    Value{ .string = inner_name },
-                                );
-                                return Value{ .object = sot };
-                            }
-                            if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                                return self.make_s_object_field_token(inner_name, fa.field);
-                            }
-                        }
-                    }
-                }
-                if (fa.null_safe) {
-                    const obj = self.eval_expr(fa.object, current_env) catch |err| {
-                        if (err == error.ApexException and self.pending_exception != null) {
-                            if (self.pending_exception.? == .object) {
-                                const cn = self.pending_exception.?.object.class_name;
-                                if (std.ascii.indexOfIgnoreCase(cn, "NullPointer") != null) {
-                                    self.pending_exception = null;
-                                    return Value.null_val;
-                                }
-                            }
-                        }
-                        return err;
-                    };
-                    if (obj == .null_val) return Value.null_val;
-                    return self.eval_field_access(fa, obj, current_env);
-                }
-                const obj = try self.eval_expr(fa.object, current_env);
-                return self.eval_field_access(fa, obj, current_env);
-            },
+            .field_access => |fa| return self.eval_field_access_expr(fa, current_env),
 
             .index_access => |ia| {
                 const obj = try self.eval_expr(ia.object, current_env);
