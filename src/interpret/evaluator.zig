@@ -11359,81 +11359,112 @@ pub const Evaluator = struct {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         for (output_segments.items.items) |segment| {
             if (segment != .object) continue;
-            const class_name = segment.object.class_name;
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.TextSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "text")) |text| {
-                    if (text == .string) try buf.appendSlice(self.arena, text.string);
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.LinkSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "url")) |url| {
-                    if (url == .string) try buf.appendSlice(self.arena, url.string);
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.HashtagSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "tag")) |tag| {
-                    if (tag == .string) {
-                        try buf.append(self.arena, '#');
-                        try buf.appendSlice(self.arena, tag.string);
-                    }
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MentionSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "record")) |record| {
-                    if (record == .object) {
-                        if (utils.sobject_get(&record.object.fields, "id")) |record_id| {
-                            if (record_id == .string) {
-                                try buf.append(self.arena, '{');
-                                try buf.appendSlice(self.arena, record_id.string);
-                                try buf.append(self.arena, '}');
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment") or
-                std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupEndSegment"))
-            {
-                const markup_type = utils.sobject_get(
-                    &segment.object.fields,
-                    "markupType",
-                ) orelse Value.null_val;
-                const tag_name = connect_api_markup_tag(markup_type) orelse continue;
-                if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment")) {
-                    try buf.appendSlice(self.arena, "<");
-                    try buf.appendSlice(self.arena, tag_name);
-                    try buf.appendSlice(self.arena, ">");
-                } else {
-                    try buf.appendSlice(self.arena, "</");
-                    try buf.appendSlice(self.arena, tag_name);
-                    try buf.appendSlice(self.arena, ">");
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.InlineImageSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "thumbnails")) |thumbs| {
-                    if (thumbs == .object) {
-                        if (utils.sobject_get(&thumbs.object.fields, "fileId")) |file_id| {
-                            if (file_id == .string) {
-                                try buf.appendSlice(self.arena, "image: ");
-                                try buf.appendSlice(self.arena, file_id.string);
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.EntityLinkSegment")) {
-                if (utils.sobject_get(&segment.object.fields, "text")) |text| {
-                    if (text == .string) try buf.appendSlice(self.arena, text.string);
-                }
-            }
+            try self.connect_api_render_segment(segment.object, &buf);
         }
         return buf.items;
+    }
+
+    fn connect_api_render_segment(
+        self: *Evaluator,
+        segment: *types.ObjectInstance,
+        buf: *std.ArrayListUnmanaged(u8),
+    ) !void {
+        const class_name = segment.class_name;
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.TextSegment") or
+            std.ascii.eqlIgnoreCase(class_name, "ConnectApi.EntityLinkSegment"))
+        {
+            try self.connect_api_append_field_string(buf, segment, "text");
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.LinkSegment")) {
+            try self.connect_api_append_field_string(buf, segment, "url");
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.HashtagSegment")) {
+            try self.connect_api_append_hashtag(buf, segment);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MentionSegment")) {
+            try self.connect_api_append_mention(buf, segment);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment") or
+            std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupEndSegment"))
+        {
+            try self.connect_api_append_markup_tag(buf, segment, class_name);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.InlineImageSegment")) {
+            try self.connect_api_append_inline_image(buf, segment);
+            return;
+        }
+    }
+
+    fn connect_api_append_field_string(
+        self: *Evaluator,
+        buf: *std.ArrayListUnmanaged(u8),
+        segment: *types.ObjectInstance,
+        field_name: []const u8,
+    ) !void {
+        const value = utils.sobject_get(&segment.fields, field_name) orelse return;
+        if (value != .string) return;
+        try buf.appendSlice(self.arena, value.string);
+    }
+
+    fn connect_api_append_hashtag(
+        self: *Evaluator,
+        buf: *std.ArrayListUnmanaged(u8),
+        segment: *types.ObjectInstance,
+    ) !void {
+        const tag = utils.sobject_get(&segment.fields, "tag") orelse return;
+        if (tag != .string) return;
+        try buf.append(self.arena, '#');
+        try buf.appendSlice(self.arena, tag.string);
+    }
+
+    fn connect_api_append_mention(
+        self: *Evaluator,
+        buf: *std.ArrayListUnmanaged(u8),
+        segment: *types.ObjectInstance,
+    ) !void {
+        const record = utils.sobject_get(&segment.fields, "record") orelse return;
+        if (record != .object) return;
+        const record_id = utils.sobject_get(&record.object.fields, "id") orelse return;
+        if (record_id != .string) return;
+        try buf.append(self.arena, '{');
+        try buf.appendSlice(self.arena, record_id.string);
+        try buf.append(self.arena, '}');
+    }
+
+    fn connect_api_append_markup_tag(
+        self: *Evaluator,
+        buf: *std.ArrayListUnmanaged(u8),
+        segment: *types.ObjectInstance,
+        class_name: []const u8,
+    ) !void {
+        const markup_type = utils.sobject_get(&segment.fields, "markupType") orelse
+            Value.null_val;
+        const tag_name = connect_api_markup_tag(markup_type) orelse return;
+        if (std.ascii.eqlIgnoreCase(class_name, "ConnectApi.MarkupBeginSegment")) {
+            try buf.appendSlice(self.arena, "<");
+        } else {
+            try buf.appendSlice(self.arena, "</");
+        }
+        try buf.appendSlice(self.arena, tag_name);
+        try buf.appendSlice(self.arena, ">");
+    }
+
+    fn connect_api_append_inline_image(
+        self: *Evaluator,
+        buf: *std.ArrayListUnmanaged(u8),
+        segment: *types.ObjectInstance,
+    ) !void {
+        const thumbs = utils.sobject_get(&segment.fields, "thumbnails") orelse return;
+        if (thumbs != .object) return;
+        const file_id = utils.sobject_get(&thumbs.object.fields, "fileId") orelse return;
+        if (file_id != .string) return;
+        try buf.appendSlice(self.arena, "image: ");
+        try buf.appendSlice(self.arena, file_id.string);
     }
 
     fn connect_api_extract_message_segments(self: *Evaluator, value: Value, depth: u8) ?Value {
