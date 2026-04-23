@@ -23663,7 +23663,8 @@ test "List.add with explicit index inserts the provided value" {
         \\        List<Object> values = new List<Object>();
         \\        values.add('tail');
         \\        values.add(0, 'head');
-        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + values.size();
+        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' +
+        \\ values.size();
         \\    }
         \\}
     ;

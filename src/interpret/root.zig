@@ -1710,7 +1710,8 @@ test "E2E: Pattern.compile with digit and word patterns" {
         \\        String user = '';
         \\        String host = '';
         \\        if (m2.find()) { user = m2.group(1); host = m2.group(2); }
-        \\        return nums.size() + ':' + nums.get(0) + ':' + nums.get(1) + ':' + user + ':' + host;
+        \\        return nums.size() + ':' + nums.get(0) + ':' + nums.get(1) + ':' + user + ':' +
+        \\ host;
         \\    }
         \\}
     ;
@@ -1830,7 +1831,8 @@ test "E2E: Contact describe fields expose LastName token at runtime" {
         \\        String fieldName = String.valueOf(Contact.LastName);
         \\        Schema.SObjectField lastNameField = fields.get(fieldName);
         \\        Schema.DescribeFieldResult describe = lastNameField.getDescribe();
-        \\        return String.valueOf(lastNameField != null) + ':' + String.valueOf(lastNameField) + ':' + describe.getName();
+        \\        return String.valueOf(lastNameField != null) + ':' +
+        \\ String.valueOf(lastNameField) + ':' + describe.getName();
         \\    }
         \\}
     ;
@@ -2358,7 +2360,8 @@ test "E2E: cached Organization accessor works through an inner CacheBuilder" {
         \\        Cache.OrgPartition partition = Cache.Org.getPartition('local.default');
         \\        partition.remove(CachedLoader.class, 'requiredButNotUsed');
         \\        CachedOrgAccessor accessor = new CachedOrgAccessor();
-        \\        return String.valueOf(accessor.isSandbox) + ':' + String.valueOf(partition.getNumKeys());
+        \\        return String.valueOf(accessor.isSandbox) + ':' +
+        \\ String.valueOf(partition.getNumKeys());
         \\    }
         \\}
     ;
@@ -2377,7 +2380,8 @@ test "E2E: Cache.Partition isAvailable returns true for existing org partition" 
         \\    public static String test() {
         \\        Cache.OrgPartition p = Cache.Org.getPartition('LoggerCache');
         \\        p.put('myKey', 'myValue');
-        \\        return String.valueOf(p.isAvailable()) + ':' + String.valueOf(p.contains('myKey'));
+        \\        return String.valueOf(p.isAvailable()) + ':' +
+        \\ String.valueOf(p.contains('myKey'));
         \\    }
         \\}
     ;
@@ -2465,7 +2469,8 @@ test "E2E: FlowDefinitionView stub query works through helper method reuse" {
         \\            WHERE ApiName IN :flowApiNames AND IsActive = TRUE
         \\        ];
         \\        List<Schema.FlowDefinitionView> helperResults = FlowSelector.getDefs(flowApiNames);
-        \\        return String.valueOf(directResults.size()) + ':' + String.valueOf(helperResults.size());
+        \\        return String.valueOf(directResults.size()) + ':' +
+        \\ String.valueOf(helperResults.size());
         \\    }
         \\}
     ;
@@ -2643,7 +2648,8 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
         \\        String innerSearch = '%' + currentProfile.Name.left(4) + '%';
         \\        String wrappedSearch = '%' + innerSearch + '%';
         \\        List<Profile> matches = [SELECT Id, Name, UserLicense.Name FROM Profile WHERE Name LIKE :wrappedSearch];
-        \\        return String.valueOf(noMatches.size()) + ':' + matches.get(0).Name + ':' + matches.get(0).UserLicense.Name;
+        \\        return String.valueOf(noMatches.size()) + ':' + matches.get(0).Name + ':' +
+        \\ matches.get(0).UserLicense.Name;
         \\    }
         \\}
     ;
@@ -2709,7 +2715,8 @@ test "E2E: inserted users are queryable by CommunityNickname" {
         \\            FROM User
         \\            WHERE CommunityNickname = 'fixture-nick'
         \\        ];
-        \\        return String.valueOf(rows.size()) + ':' + rows[0].CommunityNickname + ':' + String.valueOf(u.Id != null);
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].CommunityNickname + ':' +
+        \\ String.valueOf(u.Id != null);
         \\    }
         \\}
     ;
@@ -3322,7 +3329,8 @@ test "E2E: UserInfo getters reflect the current runAs user" {
         \\        insert u;
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = UserInfo.getUsername() + ':' + UserInfo.getFirstName() + ':' + UserInfo.getLastName() + ':' + UserInfo.getTimeZone().getId();
+        \\            result = UserInfo.getUsername() + ':' + UserInfo.getFirstName() + ':' +
+        \\ UserInfo.getLastName() + ':' + UserInfo.getTimeZone().getId();
         \\        }
         \\        return result;
         \\    }
@@ -3552,7 +3560,8 @@ test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date an
         \\        String enc = EncodingUtil.urlEncode('Hello World');
         \\        Time t = Time.newInstance(0, 0, 0, 0);
         \\        Datetime dt = Datetime.newInstance(d1, t);
-        \\        return String.valueOf(between) + '|' + String.valueOf(pow) + '|' + enc + '|' + String.valueOf(dt);
+        \\        return String.valueOf(between) + '|' + String.valueOf(pow) + '|' + enc + '|' +
+        \\ String.valueOf(dt);
         \\    }
         \\}
     ;
@@ -3574,7 +3583,8 @@ test "E2E: Type literals from distinct classes are not collapsed as map keys" {
         \\        Map<Type, String> byType = new Map<Type, String>();
         \\        byType.put(Alpha.class, 'alpha');
         \\        byType.put(Beta.class, 'beta');
-        \\        return byType.get(Alpha.class) + ',' + byType.get(Beta.class) + ',' + String.valueOf(byType.size());
+        \\        return byType.get(Alpha.class) + ',' + byType.get(Beta.class) + ',' +
+        \\ String.valueOf(byType.size());
         \\    }
         \\}
     ;
@@ -3614,7 +3624,8 @@ test "E2E: String indexOf honours the optional fromIndex argument" {
         \\        Integer b = s.indexOf('ab', 1);
         \\        Integer c = s.indexOf('ab', 5);
         \\        Integer d = s.lastIndexOf('ab');
-        \\        return String.valueOf(a) + ':' + String.valueOf(b) + ':' + String.valueOf(c) + ':' + String.valueOf(d);
+        \\        return String.valueOf(a) + ':' + String.valueOf(b) + ':' + String.valueOf(c) +
+        \\ ':' + String.valueOf(d);
         \\    }
         \\}
     ;
@@ -3683,7 +3694,8 @@ test "E2E: addError on a detached SObject records the error without throwing" {
         \\        Account a = new Account();
         \\        a.addError('shouldnt throw');
         \\        if (!a.hasErrors()) return 'missed';
-        \\        return 'attached:' + String.valueOf(a.getErrors().size()) + ':' + a.getErrors()[0].getMessage();
+        \\        return 'attached:' + String.valueOf(a.getErrors().size()) + ':' +
+        \\ a.getErrors()[0].getMessage();
         \\    }
         \\}
     ;
@@ -3912,7 +3924,8 @@ test "E2E: queueable finalizer sees unhandled exception result" {
         \\            System.enqueue_job(new FailingQueueable());
         \\            return 'no-error';
         \\        } catch (System.Exception ex) {
-        \\            return ProbeFinalizer.resultName + ':' + ProbeFinalizer.exceptionMessage + ':' + ex.getMessage();
+        \\            return ProbeFinalizer.resultName + ':' + ProbeFinalizer.exceptionMessage +
+        \\ ':' + ex.getMessage();
         \\        }
         \\    }
         \\}
@@ -3966,7 +3979,8 @@ test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
         \\    public static String test() {
         \\        Account row = new Account(Name = 'Created via Id token');
         \\        Database.UpsertResult saveResult = Database.upsert(row, Schema.Account.Id);
-        \\        return String.valueOf(saveResult.isSuccess()) + ':' + String.valueOf(saveResult.isCreated()) + ':' + String.valueOf(row.Id != null);
+        \\        return String.valueOf(saveResult.isSuccess()) + ':' +
+        \\ String.valueOf(saveResult.isCreated()) + ':' + String.valueOf(row.Id != null);
         \\    }
         \\}
     ;
@@ -3993,7 +4007,9 @@ test "E2E: custom share objects are queryable" {
         \\        insert shareRow;
         \\        List<Thing__Share> rows = [SELECT ParentId, UserOrGroupId, AccessLevel FROM Thing__Share WHERE ParentId = :parentRecord.Id];
         \\        Thing__Share savedRow = rows[0];
-        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(savedRow.ParentId == parentRecord.Id) + ':' + String.valueOf(savedRow.UserOrGroupId == UserInfo.getUserId());
+        \\        return String.valueOf(rows.size()) + ':' +
+        \\ String.valueOf(savedRow.ParentId == parentRecord.Id) + ':' +
+        \\ String.valueOf(savedRow.UserOrGroupId == UserInfo.getUserId());
         \\    }
         \\}
     ;
@@ -4918,7 +4934,8 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
         \\    public static String test() {
         \\        Datetime dt = Datetime.valueOf('2006-5-4 3:2:1');
         \\        return String.valueOf(dt.year()) + '-' + String.valueOf(dt.month()) + '-' + String.valueOf(dt.day()) +
-        \\            ' ' + String.valueOf(dt.hour()) + ':' + String.valueOf(dt.minute()) + ':' + String.valueOf(dt.second());
+        \\            ' ' + String.valueOf(dt.hour()) + ':' + String.valueOf(dt.minute()) + ':' +
+        \\ String.valueOf(dt.second());
         \\    }
         \\}
     ;
@@ -4943,7 +4960,8 @@ test "E2E: bitwise operators on integers return integer results" {
         \\        Integer andR = 30 & 15;
         \\        Integer orR = 30 | 64;
         \\        Integer xorR = 30 ^ 15;
-        \\        return String.valueOf(andR) + ',' + String.valueOf(orR) + ',' + String.valueOf(xorR);
+        \\        return String.valueOf(andR) + ',' + String.valueOf(orR) + ',' +
+        \\ String.valueOf(xorR);
         \\    }
         \\}
     ;
@@ -5019,7 +5037,8 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
         \\        User target = new User(FirstName = 'Bob', LastName = 'Smith', Email = 'bob@example.com', LanguageLocaleKey = 'en_US');
         \\        String result = '';
         \\        System.runAs(target) {
-        \\            result = UserInfo.getFirstName() + '|' + UserInfo.getLastName() + '|' + UserInfo.getUserEmail() + '|' + UserInfo.getLanguage();
+        \\            result = UserInfo.getFirstName() + '|' + UserInfo.getLastName() + '|' +
+        \\ UserInfo.getUserEmail() + '|' + UserInfo.getLanguage();
         \\        }
         \\        return result;
         \\    }
@@ -5259,7 +5278,8 @@ test "E2E: fflib_IDGenerator.generate provides a fake id when class source is ab
         \\        Id b = fflib_IDGenerator.generate(Schema.Account.SObjectType);
         \\        if (a == null || b == null) return 'null-id';
         \\        if (a == b) return 'duplicate-id';
-        \\        if (!String.valueOf(a).startsWith('001')) return 'bad-prefix:' + String.valueOf(a);
+        \\        if (!String.valueOf(a).startsWith('001')) return 'bad-prefix:' +
+        \\ String.valueOf(a);
         \\        return 'ok';
         \\    }
         \\}
@@ -5343,7 +5363,8 @@ test "E2E: Matcher.group_count reflects the pattern and matches() populates curr
         \\    public static String test() {
         \\        Pattern p = Pattern.compile('SELECT (.*) FROM (.+)');
         \\        Matcher m = p.matcher('SELECT Id, Name FROM Account');
-        \\        if (m.group_count() != 2) return 'bad-group_count:' + String.valueOf(m.group_count());
+        \\        if (m.group_count() != 2) return 'bad-group_count:' +
+        \\ String.valueOf(m.group_count());
         \\        if (!m.matches()) return 'no-match';
         \\        return m.group(1) + '|' + m.group(2);
         \\    }
@@ -5391,9 +5412,11 @@ test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.g
         \\        Map<String,
         \\ Schema.SObjectField> viaDescribe = Account.SObjectType.getDescribe().fields.getMap();
         \\        if (viaSchemaShortcut.size() != viaDescribe.size()) {
-        \\            return 'mismatch:' + String.valueOf(viaSchemaShortcut.size()) + '-vs-' + String.valueOf(viaDescribe.size());
+        \\            return 'mismatch:' + String.valueOf(viaSchemaShortcut.size()) + '-vs-' +
+        \\ String.valueOf(viaDescribe.size());
         \\        }
-        \\        if (viaSchemaShortcut.size() < 5) return 'too-small:' + String.valueOf(viaSchemaShortcut.size());
+        \\        if (viaSchemaShortcut.size() < 5) return 'too-small:' +
+        \\ String.valueOf(viaSchemaShortcut.size());
         \\        return 'ok';
         \\    }
         \\}
@@ -5443,7 +5466,8 @@ test "E2E: Pattern.matches static and nested capture groups round-trip" {
         \\        Pattern p = Pattern.compile('(([a-z]+) ([a-z]+))');
         \\        Matcher m = p.matcher('foo bar');
         \\        if (!m.find()) return 'no-match';
-        \\        return String.valueOf(ok) + '|' + m.group(1) + '|' + m.group(2) + '|' + m.group(3);
+        \\        return String.valueOf(ok) + '|' + m.group(1) + '|' + m.group(2) + '|' +
+        \\ m.group(3);
         \\    }
         \\}
     ;
@@ -5601,7 +5625,8 @@ test "E2E: Integer and Long valueOf preserve null inputs" {
         \\        String missingValue = null;
         \\        Integer integerValue = Integer.valueOf(missingValue);
         \\        Long longValue = Long.valueOf(missingValue);
-        \\        return String.valueOf(integerValue == null) + ':' + String.valueOf(longValue == null);
+        \\        return String.valueOf(integerValue == null) + ':' +
+        \\ String.valueOf(longValue == null);
         \\    }
         \\}
     ;
@@ -6157,7 +6182,8 @@ test "E2E: trigger old snapshot preserves pre-rollup summary values" {
         \\trigger ParentOldSnapshotTrigger on Parent__c (before update) {
         \\    Parent__c oldRecord = Trigger.old[0];
         \\    Parent__c newRecord = Trigger.new[0];
-        \\    RollupOldSnapshotProbe.seen = String.valueOf(oldRecord.ErrorChildren__c) + ':' + String.valueOf(newRecord.ErrorChildren__c);
+        \\    RollupOldSnapshotProbe.seen = String.valueOf(oldRecord.ErrorChildren__c) + ':' +
+        \\ String.valueOf(newRecord.ErrorChildren__c);
         \\}
         \\public class RollupOldSnapshotTest {
         \\    public static String test() {
@@ -6719,7 +6745,8 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
         \\            Schema.ApexClass.LastModifiedDate => Datetime.newInstance(2026, 4, 1, 0, 0, 0)
         \\        };
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
-        \\            return sobjectField.toString() + ':' + String.valueOf(changesToFields.get(sobjectField));
+        \\            return sobjectField.toString() + ':' +
+        \\ String.valueOf(changesToFields.get(sobjectField));
         \\        }
         \\        return 'empty';
         \\    }
@@ -6890,7 +6917,8 @@ test "E2E: qualified inner class literals preserve outer class names" {
         \\}
         \\public class QualifiedInnerNameTest {
         \\    public static String test() {
-        \\        return OuterNameHost.getInnerNameFromInside() + '|' + OuterNameHost.InnerNameTarget.class.getName();
+        \\        return OuterNameHost.getInnerNameFromInside() + '|' +
+        \\ OuterNameHost.InnerNameTarget.class.getName();
         \\    }
         \\}
     ;
@@ -7021,7 +7049,8 @@ test "E2E: postfix increment updates static field through bare identifier" {
         \\    public static String run() {
         \\        Integer first = nextValue();
         \\        Integer second = nextValue();
-        \\        return String.valueOf(first) + ':' + String.valueOf(second) + ':' + String.valueOf(counter);
+        \\        return String.valueOf(first) + ':' + String.valueOf(second) + ':' +
+        \\ String.valueOf(counter);
         \\    }
         \\}
     ;
@@ -7107,7 +7136,8 @@ test "E2E: parent constructors can read overridden type getters before child ini
         \\public class ParentCtorTypeFactoryTest {
         \\    public static String test() {
         \\        ParentCtorTypeHost child = (ParentCtorTypeHost) Type.forName(ParentCtorTypeFactory.EventChild.class.getName()).newInstance();
-        \\        return ParentCtorTypeHost.getReading('duringParentCtor') + '|' + String.valueOf(child.getSObjectType());
+        \\        return ParentCtorTypeHost.getReading('duringParentCtor') + '|' +
+        \\ String.valueOf(child.getSObjectType());
         \\    }
         \\}
     ;
@@ -7162,7 +7192,8 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
         \\            List<SObject> results = Database.query(
         \\                String.format('SELECT Username FROM {0} WHERE Id IN :recordIds', new List<Object>{ sobjectType })
         \\            );
-        \\            return sobjectType.getDescribe().getName() + ':' + (String) results.get(0).get('Username');
+        \\            return sobjectType.getDescribe().getName() + ':' +
+        \\ (String) results.get(0).get('Username');
         \\        }
         \\        return 'empty';
         \\    }
@@ -7419,7 +7450,8 @@ test "E2E: Object-wrapped primitive values support null-safe toString" {
         \\        Object boolValue = true;
         \\        Object intValue = 1;
         \\        Object doubleValue = 1.5;
-        \\        return boolValue?.toString() + '|' + intValue?.toString() + '|' + doubleValue?.toString();
+        \\        return boolValue?.toString() + '|' + intValue?.toString() + '|' +
+        \\ doubleValue?.toString();
         \\    }
         \\}
     ;
@@ -8955,7 +8987,8 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         \\            schema.localApiName = fieldDescribe.getLocalName();
         \\            fields.put(fieldDescribe.getLocalName(), schema);
         \\        }
-        \\        return String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName + ':' + String.valueOf(fields.containsKey('Username'));
+        \\        return String.valueOf(fields.containsKey('Name')) + ':' +
+        \\ fields.get('Name').localApiName + ':' + String.valueOf(fields.containsKey('Username'));
         \\    }
         \\}
     ;
@@ -8974,7 +9007,8 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
         \\    public static String test() {
         \\        Map<String,
         \\ Schema.SObjectField> fields = Schema.User.SObjectType.getDescribe().fields.getMap();
-        \\        return String.valueOf(fields.containsKey('Username')) + ':' + fields.get('Username').getDescribe().getName();
+        \\        return String.valueOf(fields.containsKey('Username')) + ':' +
+        \\ fields.get('Username').getDescribe().getName();
         \\    }
         \\}
     ;
@@ -8992,7 +9026,8 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
         \\public class EmailMessageDescribeFieldTest {
         \\    public static String test() {
         \\        Map<String, Schema.SObjectField> fields = Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
-        \\        return String.valueOf(fields.containsKey('Subject')) + ':' + String.valueOf(Schema.EmailMessage.Subject.getDescribe().isNameField());
+        \\        return String.valueOf(fields.containsKey('Subject')) + ':' +
+        \\ String.valueOf(Schema.EmailMessage.Subject.getDescribe().isNameField());
         \\    }
         \\}
     ;
@@ -9020,7 +9055,8 @@ test "E2E: implicit standard Name fields are treated as required" {
         \\                }
         \\            }
         \\        }
-        \\        return String.valueOf(requiredFields.contains('Name')) + ':' + System.JSON.serializePretty(record);
+        \\        return String.valueOf(requiredFields.contains('Name')) + ':' +
+        \\ System.JSON.serializePretty(record);
         \\    }
         \\}
     ;
@@ -9198,7 +9234,8 @@ test "E2E: Search.query honors fixed search results and stripInaccessible return
         \\        List<Thing__c> stripped = (List<Thing__c>) System.Security
         \\            .stripInaccessible(System.AccessType.READABLE, matches)
         \\            .getRecords();
-        \\        return String.valueOf(matches.size()) + ':' + String.valueOf(stripped.size()) + ':' + String.valueOf(stripped.get(0).Id == row.Id);
+        \\        return String.valueOf(matches.size()) + ':' + String.valueOf(stripped.size()) +
+        \\ ':' + String.valueOf(stripped.get(0).Id == row.Id);
         \\    }
         \\}
     ;
@@ -9245,7 +9282,8 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
         \\        Integer inlineMaxLength = Schema.Thing__c.ShortText__c.getDescribe().getLength();
         \\        Integer tokenMaxLength = getFieldLength(Schema.Thing__c.ShortText__c);
         \\        String truncatedValue = truncateFieldValue(Schema.Thing__c.ShortText__c, 'abcdef');
-        \\        return String.valueOf(inlineMaxLength) + ':' + String.valueOf(tokenMaxLength) + ':' + truncatedValue;
+        \\        return String.valueOf(inlineMaxLength) + ':' + String.valueOf(tokenMaxLength) +
+        \\ ':' + truncatedValue;
         \\    }
         \\}
     ;
@@ -9285,7 +9323,8 @@ test "E2E: direct field token describe uses metadata-backed soap type" {
         \\public class FieldTokenSoapTypeMetadataTest {
         \\    public static String test() {
         \\        return String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getSoapType()) +
-        \\            ':' + String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getLength());
+        \\            ':' +
+        \\ String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getLength());
         \\    }
         \\}
     ;
@@ -9384,7 +9423,8 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
         \\        ThingPicklist picklist = new ThingPicklist();
         \\        VisualEditor.DataRow row = picklist.getDefaultValue();
         \\        List<VisualEditor.DataRow> rows = picklist.getValues().getDataRows();
-        \\        return (String) row.getLabel() + ':' + String.valueOf(rows.size()) + ':' + (String) rows.get(0).getValue();
+        \\        return (String) row.getLabel() + ':' + String.valueOf(rows.size()) + ':' +
+        \\ (String) rows.get(0).getValue();
         \\    }
         \\}
     ;
@@ -9473,7 +9513,8 @@ test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
         \\        insert record;
         \\        Account queried = [SELECT Name, Type FROM Account WHERE Id = :record.Id];
         \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
-        \\        return String.valueOf(populated.containsKey('Type')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\        return String.valueOf(populated.containsKey('Type')) + ':' +
+        \\ String.valueOf(populated.containsKey('Name'));
         \\    }
         \\}
     ;
@@ -9553,10 +9594,12 @@ test "E2E: field set queries do not mark null summary fields as populated" {
         \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
-        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Thing__c WHERE Id = :thing.Id';
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
+        \\ ' FROM Thing__c WHERE Id = :thing.Id';
         \\        Thing__c queried = ((List<Thing__c>) Database.query(query)).get(0);
         \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
-        \\        return String.valueOf(populated.containsKey('MaxChildScore__c')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\        return String.valueOf(populated.containsKey('MaxChildScore__c')) + ':' +
+        \\ String.valueOf(populated.containsKey('Name'));
         \\    }
         \\}
     ;
@@ -9607,7 +9650,8 @@ test "E2E: field set queries materialize formula fields built from rollup counts
         \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
-        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Parent__c WHERE Id = :parentRecord.Id';
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
+        \\ ' FROM Parent__c WHERE Id = :parentRecord.Id';
         \\        Parent__c queried = ((List<Parent__c>) Database.query(query)).get(0);
         \\        return String.valueOf(queried.get('TotalChildren__c'));
         \\    }
@@ -10294,7 +10338,8 @@ test "E2E: inner enum valueOf resolves declared enum members" {
         \\}
         \\public class InnerEnumValueOfTest {
         \\    public static String test() {
-        \\        return String.valueOf(EnumContainer.Kind.valueOf('Alpha')) + ':' + String.valueOf(EnumContainer.Kind.values().size());
+        \\        return String.valueOf(EnumContainer.Kind.valueOf('Alpha')) + ':' +
+        \\ String.valueOf(EnumContainer.Kind.values().size());
         \\    }
         \\}
     ;
@@ -10330,7 +10375,8 @@ test "E2E: switch on inner enum values matches valueOf results" {
         \\}
         \\public class InnerEnumSwitchTest {
         \\    public static String test() {
-        \\        return EnumSwitchContainer.choose('Alpha') + ':' + EnumSwitchContainer.choose('Beta');
+        \\        return EnumSwitchContainer.choose('Alpha') + ':' +
+        \\ EnumSwitchContainer.choose('Beta');
         \\    }
         \\}
     ;
@@ -10421,7 +10467,8 @@ test "E2E: RestContext request and response share assigned objects" {
         \\        RestContext.Response = new RestResponse();
         \\        RestContext.request.requestURI = '/services/apexrest/demo';
         \\        RestContext.response.statusCode = 204;
-        \\        return RestContext.Request.requestURI + ':' + String.valueOf(RestContext.Response.statusCode);
+        \\        return RestContext.Request.requestURI + ':' +
+        \\ String.valueOf(RestContext.Response.statusCode);
         \\    }
         \\}
     ;
@@ -10724,7 +10771,8 @@ test "E2E: Salesforce-style id strings satisfy instanceof Id" {
         \\    public static String test() {
         \\        String userId = '005000000000000';
         \\        String queueId = '00G000000000000005';
-        \\        return String.valueOf(userId instanceof Id) + ':' + String.valueOf(queueId instanceof Id);
+        \\        return String.valueOf(userId instanceof Id) + ':' +
+        \\ String.valueOf(queueId instanceof Id);
         \\    }
         \\}
     ;
@@ -10766,7 +10814,8 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
         \\public class ApexPagesMessageSummaryTest {
         \\    public static String test() {
         \\        ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR, 'Denied'));
-        \\        return ApexPages.getMessages().get(0).getSummary() + ':' + ApexPages.getMessages().get(0).getSeverity();
+        \\        return ApexPages.getMessages().get(0).getSummary() + ':' +
+        \\ ApexPages.getMessages().get(0).getSeverity();
         \\    }
         \\}
     ;
@@ -11072,7 +11121,8 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new WrappedHardDeleteBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' +
+        \\ String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
         \\    }
         \\}
     ;
@@ -11235,7 +11285,8 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
         \\                customCount = (Integer) row.get('RecordCount');
         \\            }
         \\        }
-        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(deleteCount) + ':' + String.valueOf(customCount);
+        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(deleteCount) + ':' +
+        \\ String.valueOf(customCount);
         \\    }
         \\}
     ;
@@ -11271,7 +11322,8 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\            WHERE Id = :jobId AND ApexClass.NamespacePrefix = :namespacePrefix AND ApexClass.Name = :apexClassName
         \\        ];
         \\        AsyncApexJob job = jobs.get(0);
-        \\        return String.valueOf(jobs.size()) + ':' + job.JobType + ':' + job.Status + ':' + job.CreatedBy.Name;
+        \\        return String.valueOf(jobs.size()) + ':' + job.JobType + ':' + job.Status + ':' +
+        \\ job.CreatedBy.Name;
         \\    }
         \\}
     ;
@@ -11430,7 +11482,8 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new SingletonCleanupBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' +
+        \\ String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
         \\    }
         \\}
     ;
@@ -11553,7 +11606,8 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new DirectCleanupBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' +
+        \\ String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
         \\    }
         \\}
     ;
@@ -11888,7 +11942,8 @@ test "E2E: qualified system exception constructors are catchable" {
         \\        } catch (System.IllegalArgumentException ex) {
         \\            thrownException = ex;
         \\        }
-        \\        return thrownException == null ? 'missing' : thrownException.getTypeName() + ':' + thrownException.getMessage();
+        \\        return thrownException == null ? 'missing' : thrownException.getTypeName() + ':' +
+        \\ thrownException.getMessage();
         \\    }
         \\}
     ;
@@ -12292,7 +12347,8 @@ test "E2E: List.sort keeps strings before numbers for mixed Object values" {
         \\    public static String test() {
         \\        List<Object> values = new List<Object>{ 'some-tag', 'another-tag', 1 };
         \\        values.sort();
-        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + String.valueOf(values.get(2));
+        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' +
+        \\ String.valueOf(values.get(2));
         \\    }
         \\}
     ;
@@ -12393,7 +12449,9 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
         \\ String>();
         \\        valuesByField.put(describeFields.get('Name'), 'name');
         \\        valuesByField.put(describeFields.get('OwnerId'), 'owner');
-        \\        return valuesByField.size() + ':' + valuesByField.get(describeFields.get('Name')) + ':' + valuesByField.get(describeFields.get('OwnerId'));
+        \\        return valuesByField.size() + ':' +
+        \\ valuesByField.get(describeFields.get('Name')) + ':' +
+        \\ valuesByField.get(describeFields.get('OwnerId'));
         \\    }
         \\}
     ;
@@ -12418,7 +12476,8 @@ test "E2E: UserRecordAccess delete query returns only deletable records" {
         \\            FROM UserRecordAccess
         \\            WHERE UserId = :System.UserInfo.getUserId() AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
         \\        ];
-        \\        return String.valueOf(accessRows.size()) + ':' + String.valueOf(accessRows.get(0).RecordId == account.Id);
+        \\        return String.valueOf(accessRows.size()) + ':' +
+        \\ String.valueOf(accessRows.get(0).RecordId == account.Id);
         \\    }
         \\}
     ;
@@ -12499,7 +12558,8 @@ test "E2E: Database partial DML with null list returns empty results" {
         \\        Database.DmlOptions options = new Database.DmlOptions();
         \\        options.OptAllOrNone = false;
         \\        List<Database.SaveResult> results = Database.insert(rows, options);
-        \\        return String.valueOf(results.size()) + ':' + String.valueOf(Limits.getDmlStatements());
+        \\        return String.valueOf(results.size()) + ':' +
+        \\ String.valueOf(Limits.getDmlStatements());
         \\    }
         \\}
     ;
@@ -12521,7 +12581,8 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
         \\            Database.SaveResult.class
         \\        );
         \\        Database.Error errorRow = result.getErrors().get(0);
-        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() + ':' + String.join(errorRow.get_fields(), ',');
+        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() +
+        \\ ':' + String.join(errorRow.get_fields(), ',');
         \\    }
         \\}
     ;
@@ -12545,7 +12606,8 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
         \\            Database.SaveResult.class
         \\        );
-        \\        return result.errors.get(0).getMessage() + ':' + String.join(result.errors.get(0).get_fields(), ',');
+        \\        return result.errors.get(0).getMessage() + ':' +
+        \\ String.join(result.errors.get(0).get_fields(), ',');
         \\    }
         \\}
     ;
@@ -12622,7 +12684,8 @@ test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws wh
         \\            Messaging.SingleEmailMessage message = new Messaging.SingleEmailMessage();
         \\            message.setHtmlBody('hello');
         \\            Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ message });
-        \\            return String.valueOf(reservedValue == limitValue - 1) + ':' + message.getHtmlBody() + ':' + String.valueOf(Limits.getEmailInvocations());
+        \\            return String.valueOf(reservedValue == limitValue - 1) + ':' +
+        \\ message.getHtmlBody() + ':' + String.valueOf(Limits.getEmailInvocations());
         \\        }
         \\    }
         \\}
@@ -12829,7 +12892,8 @@ test "E2E: custom object query by Name IN set finds existing record" {
         \\        insert new Thing__c(Name = 'Some tag!', UniqueId__c = 'Some tag!');
         \\        Set<String> names = new Set<String>{ 'Some tag!' };
         \\        List<Thing__c> rows = [SELECT Id, Name FROM Thing__c WHERE Name IN :names];
-        \\        return String.valueOf(rows.size()) + ':' + (rows.isEmpty() ? '' : rows.get(0).Name);
+        \\        return String.valueOf(rows.size()) + ':' +
+        \\ (rows.isEmpty() ? '' : rows.get(0).Name);
         \\    }
         \\}
     ;
@@ -13029,7 +13093,8 @@ test "E2E: custom object upsert by external id inserts queryable row" {
         \\        };
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
         \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'created-1'];
-        \\        return String.valueOf(saved.size()) + ':' + String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
+        \\        return String.valueOf(saved.size()) + ':' +
+        \\ String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
         \\    }
         \\}
     ;
@@ -13695,7 +13760,8 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
         \\        MyEvent__e eventRecord = new MyEvent__e();
         \\        eventRecord.put('Message__c', 'hello');
         \\        EventBus.publish(eventRecord);
-        \\        return String.valueOf(eventRecord.Id == null) + ':' + String.valueOf(eventRecord.get('Id') == null);
+        \\        return String.valueOf(eventRecord.Id == null) + ':' +
+        \\ String.valueOf(eventRecord.get('Id') == null);
         \\    }
         \\}
     ;
@@ -13713,7 +13779,8 @@ test "E2E: synthetic AppMenuItem query exposes app order entries" {
         \\public class AppMenuItemQueryTest {
         \\    public static String test() {
         \\        List<AppMenuItem> items = [SELECT ApplicationId, Name FROM AppMenuItem];
-        \\        return String.valueOf(items.size()) + ':' + items[0].Name + ':' + String.valueOf(items[0].ApplicationId != null);
+        \\        return String.valueOf(items.size()) + ':' + items[0].Name + ':' +
+        \\ String.valueOf(items[0].ApplicationId != null);
         \\    }
         \\}
     ;
@@ -14353,7 +14420,8 @@ test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe cov
         \\        String caseCommentFound = Schema.getGlobalDescribe().get('casecomment') != null ? 'Y' : 'N';
         \\        String contractFound = Schema.getGlobalDescribe().get('contract') != null ? 'Y' : 'N';
         \\        String assetFound = Schema.getGlobalDescribe().get('asset') != null ? 'Y' : 'N';
-        \\        return 'tabs=' + tabCount + '|cc=' + caseCommentFound + '|co=' + contractFound + '|as=' + assetFound;
+        \\        return 'tabs=' + tabCount + '|cc=' + caseCommentFound + '|co=' + contractFound +
+        \\ '|as=' + assetFound;
         \\    }
         \\}
     ;
