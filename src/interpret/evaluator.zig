@@ -6586,16 +6586,40 @@ pub const Evaluator = struct {
 
     fn composite_permission_field_components(field_name: []const u8) ?[]const []const u8 {
         if (std.ascii.eqlIgnoreCase(field_name, "BillingAddress")) {
-            return &.{ "BillingStreet", "BillingCity", "BillingState", "BillingPostalCode", "BillingCountry" };
+            return &.{
+                "BillingStreet",
+                "BillingCity",
+                "BillingState",
+                "BillingPostalCode",
+                "BillingCountry",
+            };
         }
         if (std.ascii.eqlIgnoreCase(field_name, "ShippingAddress")) {
-            return &.{ "ShippingStreet", "ShippingCity", "ShippingState", "ShippingPostalCode", "ShippingCountry" };
+            return &.{
+                "ShippingStreet",
+                "ShippingCity",
+                "ShippingState",
+                "ShippingPostalCode",
+                "ShippingCountry",
+            };
         }
         if (std.ascii.eqlIgnoreCase(field_name, "MailingAddress")) {
-            return &.{ "MailingStreet", "MailingCity", "MailingState", "MailingPostalCode", "MailingCountry" };
+            return &.{
+                "MailingStreet",
+                "MailingCity",
+                "MailingState",
+                "MailingPostalCode",
+                "MailingCountry",
+            };
         }
         if (std.ascii.eqlIgnoreCase(field_name, "OtherAddress")) {
-            return &.{ "OtherStreet", "OtherCity", "OtherState", "OtherPostalCode", "OtherCountry" };
+            return &.{
+                "OtherStreet",
+                "OtherCity",
+                "OtherState",
+                "OtherPostalCode",
+                "OtherCountry",
+            };
         }
         return null;
     }
