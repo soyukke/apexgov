@@ -1151,6 +1151,7 @@ pub const Evaluator = struct {
         const saved_class = self.current_class;
         self.current_class = cd.name;
         defer self.current_class = saved_class;
+
         for (cd.members) |member| {
             switch (member) {
                 .static_init => |body| {
@@ -1308,6 +1309,7 @@ pub const Evaluator = struct {
     pub fn callMethod(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
+
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
@@ -2071,6 +2073,7 @@ pub const Evaluator = struct {
                 defer self.is_standard_user = prev_standard;
                 defer self.current_user_id = prev_user_id;
                 defer self.current_profile_id = prev_profile_id;
+
                 const result = self.execBlock(ras.body, current_env);
                 if (result) |r| return r else |e| return e;
             },
@@ -5005,8 +5008,10 @@ pub const Evaluator = struct {
     fn findStaticResourceInDir(self: *Evaluator, base_path: []const u8, name: []const u8, extensions: []const []const u8) ?[]const u8 {
         var dir = std.Io.Dir.cwd().openDir(self.io, base_path, .{ .iterate = true }) catch return null;
         defer dir.close(self.io);
+
         var walker = dir.walk(self.arena) catch return null;
         defer walker.deinit();
+
         while (walker.next(self.io) catch null) |entry| {
             if (entry.kind != .file) continue;
             // Check if the file is in a "staticresources" directory and matches name
@@ -5034,8 +5039,10 @@ pub const Evaluator = struct {
         for (self.source_paths) |base_path| {
             var dir = std.Io.Dir.cwd().openDir(self.io, base_path, .{ .iterate = true }) catch continue;
             defer dir.close(self.io);
+
             var walker = dir.walk(self.arena) catch continue;
             defer walker.deinit();
+
             while (walker.next(self.io) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (std.mem.endsWith(u8, entry.path, suffix)) return true;
@@ -5057,8 +5064,10 @@ pub const Evaluator = struct {
         for (self.source_paths) |sp| {
             var dir = std.Io.Dir.cwd().openDir(self.io, sp, .{ .iterate = true }) catch continue;
             defer dir.close(self.io);
+
             var walker = dir.walk(self.arena) catch continue;
             defer walker.deinit();
+
             while (walker.next(self.io) catch null) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.path, ".md-meta.xml")) continue;
@@ -7132,6 +7141,7 @@ pub const Evaluator = struct {
     pub fn evalExpr(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
+
         if (self.call_depth > self.max_call_depth) {
             // error を返すと error return trace の記録でスタックを消費し
             // OS スタックオーバーフローを引き起こす場合があるため null を返す
@@ -8867,6 +8877,7 @@ pub const Evaluator = struct {
                                                 self.current_class = saved_class2;
                                                 self.evaluating_getter = saved_getter2;
                                             }
+
                                             const result2 = self.execBlock(fd.getter_body.?, getter_env2) catch break :blk Value.null_val;
                                             break :blk switch (result2) {
                                                 .return_val => |v| v,
@@ -12001,6 +12012,7 @@ pub const Evaluator = struct {
             {
                 var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
                 defer chain.deinit(self.arena);
+
                 var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc| self.findClass(sc.name) else null;
                 while (cursor) |cd_cursor| {
                     try chain.append(self.arena, cd_cursor);
@@ -12263,6 +12275,7 @@ pub const Evaluator = struct {
                                             self.current_class = saved_class;
                                             self.evaluating_getter = saved_getter;
                                         }
+
                                         const result = self.execBlock(getter, getter_env) catch |err| {
                                             if (err == error.StackOverflow) return Value.null_val;
                                             return err;
@@ -12608,6 +12621,7 @@ pub const Evaluator = struct {
                                             self.current_class = saved_class;
                                             self.evaluating_getter = saved_getter;
                                         }
+
                                         const result = self.execBlock(fd.getter_body.?, getter_env) catch return Value.null_val;
                                         return switch (result) {
                                             .return_val => |v| v,
@@ -12793,6 +12807,7 @@ pub const Evaluator = struct {
     fn collectDottedIdentifierChain(self: *Evaluator, expr: *const ast.Expr) ?[]const u8 {
         var parts: std.ArrayListUnmanaged([]const u8) = .empty;
         defer parts.deinit(self.arena);
+
         var cur: *const ast.Expr = expr;
         while (true) {
             switch (cur.*) {
@@ -13948,6 +13963,7 @@ pub const Evaluator = struct {
                 self.limits_publish_immediate = sb_pub;
                 self.limits_callouts = sb_call;
             }
+
             if (args.len > 0 and args[0] == .object) {
                 if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
                     const job_id = try self.createAsyncApexJob("BatchApex", args[0].object.class_name, "execute");
@@ -14720,6 +14736,7 @@ pub const Evaluator = struct {
     fn callInstanceMethodResolved(self: *Evaluator, class_decl: *ast.ClassDecl, actual_class: ?*ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
+
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
@@ -14749,6 +14766,7 @@ pub const Evaluator = struct {
             };
             try self.call_stack.append(self.arena, .{ .class_name = frame_class_name, .method_name = method_name, .line = frame_line });
             defer _ = self.call_stack.pop();
+
             const method_env = try self.global_env.child();
             try method_env.define("this", Value{ .object = instance });
             // Define instance fields as local variables FIRST
@@ -14771,12 +14789,14 @@ pub const Evaluator = struct {
             const saved_class = self.current_class;
             self.current_class = owner_decl.name;
             defer self.current_class = saved_class;
+
             const batch_lifecycle = self.isBatchLifecycleMethod(owner_decl.name, method_name) or
                 self.isBatchLifecycleMethod(instance.class_name, method_name);
             if (batch_lifecycle) self.batch_lifecycle_depth += 1;
             defer {
                 if (batch_lifecycle) self.batch_lifecycle_depth -= 1;
             }
+
             const result = try self.execBlock(method.body, method_env);
             // Sync back fields modified via `this.field = value`
             const this_val = method_env.get("this");
@@ -15374,6 +15394,7 @@ pub const Evaluator = struct {
         const saved_class = self.current_class;
         self.current_class = class_decl.name;
         defer self.current_class = saved_class;
+
         const init_env = try self.global_env.child();
         try init_env.define("this", Value{ .object = instance });
 
@@ -15595,6 +15616,7 @@ pub const Evaluator = struct {
             const saved_class = self.current_class;
             self.current_class = class_decl.name;
             defer self.current_class = saved_class;
+
             _ = try self.execBlock(cd.body, ctor_env);
         }
     }
@@ -16086,6 +16108,7 @@ pub const Evaluator = struct {
                                 self.current_class = saved_class;
                                 self.evaluating_getter = saved_getter;
                             }
+
                             const result = self.execBlock(fd.getter_body.?, getter_env) catch return null;
                             return switch (result) {
                                 .return_val => |v| v,
@@ -17650,6 +17673,7 @@ test "evaluate class method returning string" {
     ;
     var r = try evalSource(source, "Hello", "greet");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("world", r.value.string);
 }
 
@@ -17665,6 +17689,7 @@ test "evaluate class method with arithmetic" {
     ;
     var r = try evalSource(source, "Calc", "add");
     defer r.deinit();
+
     try std.testing.expectEqual(@as(i64, 30), r.value.integer);
 }
 
@@ -17678,6 +17703,7 @@ test "evaluate System.debug" {
     ;
     var r = try evalSource(source, "Debug", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("hello\n", r.stdout);
 }
 
@@ -17696,6 +17722,7 @@ test "evaluate if-else" {
     ;
     var r = try evalSource(source, "Branch", "check");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("yes", r.value.string);
 }
 
@@ -17713,6 +17740,7 @@ test "evaluate for loop" {
     ;
     var r = try evalSource(source, "Loop", "sum");
     defer r.deinit();
+
     try std.testing.expectEqual(@as(i64, 10), r.value.integer);
 }
 
@@ -17726,6 +17754,7 @@ test "evaluate string concatenation" {
     ;
     var r = try evalSource(source, "Concat", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("Hello World", r.value.string);
 }
 
@@ -17740,6 +17769,7 @@ test "evaluate ternary expression" {
     ;
     var r = try evalSource(source, "Ternary", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("no", r.value.string);
 }
 
@@ -17760,6 +17790,7 @@ test "inner class accesses outer class static field" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("outer-value", r.value.string);
 }
 
@@ -17788,6 +17819,7 @@ test "inner class accesses outer class static property getter" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("lazy-init", r.value.string);
 }
 
@@ -17808,6 +17840,7 @@ test "inner class accesses outer class static field via method call" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("val1", r.value.string);
 }
 
@@ -17824,6 +17857,7 @@ test "SOQL assignment unwraps for previously declared SObject variable" {
     ;
     var r = try evalSource(source, "SoqlAssign", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("Acme", r.value.string);
 }
 
@@ -17849,6 +17883,7 @@ test "static property returns inner class field initializer value" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqual(@as(i64, 300), r.value.integer);
 }
 
@@ -17876,6 +17911,7 @@ test "static property with dotted type resolves getter value" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqual(@as(i64, 7), r.value.integer);
 }
 
@@ -17899,6 +17935,7 @@ test "static property returning sobject resolves getter value" {
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("Acme", r.value.string);
 }
 
@@ -17924,6 +17961,7 @@ test "instance method reads static property getter without losing backing value"
     ;
     var r = try evalSource(source, "Outer", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("lazy-init", r.value.string);
 }
 
@@ -17975,6 +18013,7 @@ test "mock singleton override feeds static lazy getter" {
     ;
     var r = try evalSource(source, "Runner", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("mocked", r.value.string);
 }
 
@@ -18026,6 +18065,7 @@ test "mock singleton override feeds static lazy sobject getter" {
     ;
     var r = try evalSource(source, "Runner", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("001000000000001", r.value.string);
 }
 
@@ -18092,6 +18132,7 @@ test "mock singleton override feeds nested inner-class getter" {
     ;
     var r = try evalSource(source, "Runner", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("Application", r.value.string);
 }
 
@@ -18112,6 +18153,7 @@ test "typed null identifier prefers sobject overload over id overload" {
     ;
     var r = try evalSource(source, "OverloadProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("sobject", r.value.string);
 }
 
@@ -18132,6 +18174,7 @@ test "typed null identifier prefers iterable overload over object overload" {
     ;
     var r = try evalSource(source, "IterableProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("iterable", r.value.string);
 }
 
@@ -18156,6 +18199,7 @@ test "null-returning helper method preserves declared return type for overload h
     ;
     var r = try evalSource(source, "MatchLikeProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("string", r.value.string);
 }
 
@@ -18190,6 +18234,7 @@ test "createStub forwards declared param types for typed null helper arguments" 
     ;
     var r = try evalSource(source, "StubProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("String", r.value.string);
 }
 
@@ -18219,6 +18264,7 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
     ;
     var r = try evalSource(source, "StubStringProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("StubStringTarget__sfdc_ApexStub:[instance]", r.value.string);
 }
 
@@ -18235,6 +18281,7 @@ test "List.add with explicit index inserts the provided value" {
     ;
     var r = try evalSource(source, "IndexedListInsertProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("head|tail|2", r.value.string);
 }
 
@@ -18257,5 +18304,6 @@ test "instanceof supports Apex collection and schema token semantics" {
     ;
     var r = try evalSource(source, "InstanceofProbe", "run");
     defer r.deinit();
+
     try std.testing.expectEqualStrings("true|true|true|true|true", r.value.string);
 }

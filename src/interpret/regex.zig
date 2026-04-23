@@ -721,6 +721,7 @@ fn matchQuantifiedGroup(
 test "digit pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "\\d+", "abc 123 def 456");
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("123", result[0].groupSlice(0, "abc 123 def 456").?);
@@ -731,6 +732,7 @@ test "capture groups" {
     const input = "user@host";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "(\\w+)@(\\w+)", input);
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("user@host", result[0].groupSlice(0, input).?);
@@ -744,6 +746,7 @@ test "nested capture groups number correctly" {
     // sub-pattern. Patterns like `((A) (B))` need group(1)=outer, group(2)=A, group(3)=B.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     const input = "foo bar";
     const r = try findAll(a, "(([a-z]+) ([a-z]+))", input);
@@ -761,6 +764,7 @@ test "greedy capture group backtracks to let the tail match" {
     // another chance.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     try std.testing.expect(try matches(a, "a(.*)c", "abc"));
     try std.testing.expect(try matches(a, "a(.*)c", "abbc"));
@@ -776,6 +780,7 @@ test "three-level nested captures preserve numbering" {
     // (operand) (op) (operand) inside an outer group.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     const input = "AAA ___ BBB";
     const r = try findAll(a, "(([A-Z]+) (_+) ([A-Z]+))", input);
@@ -789,6 +794,7 @@ test "three-level nested captures preserve numbering" {
 test "character class" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "[a-z]+", "Hello World");
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("ello", result[0].groupSlice(0, "Hello World").?);
@@ -798,6 +804,7 @@ test "character class" {
 test "quantifier {n}" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "\\d{3}", "12 345 6789");
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("345", result[0].groupSlice(0, "12 345 6789").?);
@@ -807,6 +814,7 @@ test "quantifier {n}" {
 test "alternation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "(cat|dog)", "I have a cat and a dog");
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("cat", result[0].groupSlice(1, "I have a cat and a dog").?);
@@ -816,6 +824,7 @@ test "alternation" {
 test "matches full string" {
     var arena_m = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_m.deinit();
+
     const a = arena_m.allocator();
     try std.testing.expect(try matches(a, "\\d+", "12345"));
     try std.testing.expect(!try matches(a, "\\d+", "abc"));
@@ -825,6 +834,7 @@ test "matches full string" {
 test "anchors ^ and $" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // ^ and $ anchored pattern: match full string of parenthesized alphanumeric_
     const pat = "^\\([0-9A-Za-z_ ]+\\)$";
@@ -841,6 +851,7 @@ test "anchors ^ and $" {
 test "replaceAll with backreferences" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Simple replacement without backreferences
     try std.testing.expectEqualStrings("hello planet", try replaceAll(a, "world", "hello world", "planet"));
@@ -855,6 +866,7 @@ test "replaceAll with backreferences" {
 test "replaceAll supports non-greedy quantifiers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     try std.testing.expectEqualStrings("x<>b<>c", try replaceAll(a, "a.+?z", "xa123zba456zc", "<>"));
     try std.testing.expectEqualStrings(
@@ -872,6 +884,7 @@ test "javadoc @see pattern" {
     const input = " * @see RestClient\n * @see ApiModel\n";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try findAll(arena.allocator(), "\\*\\s+@see\\s+(.*)", input);
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("RestClient", result[0].groupSlice(1, input).?);
@@ -881,6 +894,7 @@ test "javadoc @see pattern" {
 test "positive lookahead (?=...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Match digits followed by a non-digit (without consuming the non-digit)
     const r1 = try findAll(a, "\\d+(?=[^0-9]|$)", "123abc");
@@ -891,6 +905,7 @@ test "positive lookahead (?=...)" {
 test "negative lookahead (?!...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Match digits NOT followed by more digits
     const r1 = try findAll(a, "\\d(?!\\d)", "1234a5b");
@@ -902,6 +917,7 @@ test "negative lookahead (?!...)" {
 test "backreference \\1 in pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Match word repeated with same separator: "ab-cd-ef" where separators must be same
     const r1 = try findAll(a, "(\\d{4})([- ]?)\\d{4}\\2(\\d{4})", "1234-5678-9012");
@@ -915,6 +931,7 @@ test "backreference \\1 in pattern" {
 test "SSN regex replaceAll" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     const ssn_pat = "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)";
     // Basic SSN: 123-45-6789 → XXX-XX-6789
@@ -930,6 +947,7 @@ test "SSN regex replaceAll" {
 test "negative lookbehind (?<!...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Match digits NOT preceded by another digit (similar to (?<!\d)\d+)
     const r1 = try findAll(a, "(?<!\\d)\\d+", "abc123def");
@@ -940,6 +958,7 @@ test "negative lookbehind (?<!...)" {
 test "positive lookbehind (?<=...)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     // Match a word preceded by "Mr "
     const r1 = try findAll(a, "(?<=Mr )\\w+", "Hello Mr Smith");
@@ -950,6 +969,7 @@ test "positive lookbehind (?<=...)" {
 test "NebulaLogger SSN pattern (?<!\\d)...(?!\\d)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const a = arena.allocator();
     const ssn_pat = "(?<!\\d)(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?!\\d)";
     // Matches space-separated SSN
