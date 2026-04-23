@@ -2718,7 +2718,20 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn fire_trigger(self: *Evaluator, obj_type: []const u8, event: ast.TriggerEvent, new_records: *std.ArrayListUnmanaged(Value), old_records: ?std.ArrayListUnmanaged(Value)) anyerror!void {
+    const TriggerContextValues = struct {
+        new_list: *types.ListValue,
+        old_list: ?*types.ListValue,
+        new_map: ?Value,
+        old_map: ?Value,
+    };
+
+    fn fire_trigger(
+        self: *Evaluator,
+        obj_type: []const u8,
+        event: ast.TriggerEvent,
+        new_records: *std.ArrayListUnmanaged(Value),
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) anyerror!void {
         // Trigger recursion guard — limit to 8 levels (Salesforce allows deep trigger chains)
         if (self.trigger_depth >= 8) return;
         self.trigger_depth += 1;
@@ -2730,128 +2743,141 @@ pub const Evaluator = struct {
         const trigger_list = self.triggers.get(obj_lower) orelse return;
 
         for (trigger_list.items) |td| {
-            // Check if this trigger handles the event
-            var handles_event = false;
-            for (td.events) |e| {
-                if (e == event) {
-                    handles_event = true;
-                    break;
-                }
-            }
-            if (!handles_event) continue;
-
-            // Build Trigger context
-            const new_list_val = try self.arena.create(types.ListValue);
-            new_list_val.* = .{};
-            for (new_records.items) |item| {
-                try new_list_val.items.append(self.arena, item);
-            }
-
-            var old_list_val: ?*types.ListValue = null;
-            if (old_records) |ors| {
-                const olv = try self.arena.create(types.ListValue);
-                olv.* = .{};
-                for (ors.items) |item| {
-                    try olv.items.append(self.arena, item);
-                }
-                old_list_val = olv;
-            }
-
-            // Build newMap/oldMap as MapValue (Id → SObject)
-            var new_map_val: ?Value = null;
-            if (event != .before_insert) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (new_records.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                    }
-                }
-                new_map_val = Value{ .map = map };
-            }
-
-            var old_map_val: ?Value = null;
-            if (old_records) |ors| {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (ors.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                    }
-                }
-                old_map_val = Value{ .map = map };
-            }
-
-            const is_before = (event == .before_insert or event == .before_update or event == .before_delete);
-            const is_after = !is_before;
-            const is_insert = (event == .before_insert or event == .after_insert);
-            const is_update = (event == .before_update or event == .after_update);
-            const is_delete = (event == .before_delete or event == .after_delete);
-            const is_undelete = (event == .after_undelete);
-
-            const operation_type: []const u8 = switch (event) {
-                .before_insert => "BEFORE_INSERT",
-                .before_update => "BEFORE_UPDATE",
-                .before_delete => "BEFORE_DELETE",
-                .after_insert => "AFTER_INSERT",
-                .after_update => "AFTER_UPDATE",
-                .after_delete => "AFTER_DELETE",
-                .after_undelete => "AFTER_UNDELETE",
-            };
-
-            // Save and set trigger context
+            if (!trigger_handles_event(td, event)) continue;
             const prev_context = self.trigger_context;
-            self.trigger_context = .{
-                .is_executing = true,
-                .is_insert = is_insert,
-                .is_update = is_update,
-                .is_delete = is_delete,
-                .is_undelete = is_undelete,
-                .is_before = is_before,
-                .is_after = is_after,
-                .new_list = if (is_delete and is_before) (if (old_list_val) |olv| Value{ .list = olv } else null) else Value{ .list = new_list_val },
-                .old_list = if (old_list_val) |olv| Value{ .list = olv } else null,
-                .new_map = new_map_val,
-                .old_map = old_map_val,
-                .size = @intCast(new_records.items.len),
-                .operation_type = operation_type,
-            };
-            // For delete triggers, Trigger.new is null and Trigger.old has the records
-            if (is_delete) {
-                self.trigger_context.?.new_list = if (is_after) null else null;
-                self.trigger_context.?.old_list = if (old_list_val) |olv| Value{ .list = olv } else Value{ .list = new_list_val };
-                if (is_before) {
-                    self.trigger_context.?.new_list = null;
-                }
-            }
-
+            try self.install_trigger_context(event, new_records, old_records);
             defer self.trigger_context = prev_context;
 
-            // Execute trigger body
-            const trigger_env = try self.global_env.child();
-            _ = self.exec_block(td.body, trigger_env) catch |err| {
-                // If trigger throws an exception, wrap it in DmlException
-                if (err == error.ApexException) {
-                    if (self.pending_exception) |pe| {
-                        if (pe == .object) {
-                            const class_name_str = pe.object.class_name;
-                            // If it's already a DmlException, just propagate it
-                            if (std.ascii.indexOfIgnoreCase(class_name_str, "DmlException") != null) {
-                                return err;
-                            }
-                            // Wrap non-DML exceptions in DmlException
-                            const msg = if (pe.object.fields.get("message")) |m| (if (m == .string) m.string else "Trigger exception") else "Trigger exception";
-                            const dml_exc = try self.arena.create(types.ObjectInstance);
-                            dml_exc.* = .{ .class_name = "DmlException" };
-                            try dml_exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = dml_exc };
-                        }
-                    }
-                    return err;
-                }
-                return err;
-            };
+            try self.execute_trigger_body(td);
         }
+    }
+
+    fn trigger_handles_event(td: *ast.TriggerDecl, event: ast.TriggerEvent) bool {
+        for (td.events) |e| {
+            if (e == event) return true;
+        }
+        return false;
+    }
+
+    fn install_trigger_context(
+        self: *Evaluator,
+        event: ast.TriggerEvent,
+        new_records: *std.ArrayListUnmanaged(Value),
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        const values = try self.build_trigger_context_values(event, new_records, old_records);
+        const is_before = trigger_event_is_before(event);
+        const is_delete = event == .before_delete or event == .after_delete;
+        self.trigger_context = .{
+            .is_executing = true,
+            .is_insert = event == .before_insert or event == .after_insert,
+            .is_update = event == .before_update or event == .after_update,
+            .is_delete = is_delete,
+            .is_undelete = event == .after_undelete,
+            .is_before = is_before,
+            .is_after = !is_before,
+            .new_list = if (is_delete) null else Value{ .list = values.new_list },
+            .old_list = trigger_old_list_value(is_delete, values.new_list, values.old_list),
+            .new_map = values.new_map,
+            .old_map = values.old_map,
+            .size = @intCast(new_records.items.len),
+            .operation_type = trigger_operation_type(event),
+        };
+    }
+
+    fn build_trigger_context_values(
+        self: *Evaluator,
+        event: ast.TriggerEvent,
+        new_records: *std.ArrayListUnmanaged(Value),
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !TriggerContextValues {
+        const new_list = try self.list_from_records(new_records.items);
+        const old_list = if (old_records) |ors| try self.list_from_records(ors.items) else null;
+        const new_map = if (event != .before_insert)
+            Value{ .map = try self.map_from_record_ids(new_records.items) }
+        else
+            null;
+        const old_map = if (old_records) |ors|
+            Value{ .map = try self.map_from_record_ids(ors.items) }
+        else
+            null;
+        return .{
+            .new_list = new_list,
+            .old_list = old_list,
+            .new_map = new_map,
+            .old_map = old_map,
+        };
+    }
+
+    fn list_from_records(self: *Evaluator, records: []const Value) !*types.ListValue {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        for (records) |item| {
+            try list.items.append(self.arena, item);
+        }
+        return list;
+    }
+
+    fn map_from_record_ids(self: *Evaluator, records: []const Value) !*types.MapValue {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (records) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                try map.entries.put(self.arena, item.sobject.id.?, item);
+            }
+        }
+        return map;
+    }
+
+    fn trigger_event_is_before(event: ast.TriggerEvent) bool {
+        return event == .before_insert or event == .before_update or event == .before_delete;
+    }
+
+    fn trigger_old_list_value(
+        is_delete: bool,
+        new_list: *types.ListValue,
+        old_list: ?*types.ListValue,
+    ) ?Value {
+        if (old_list) |olv| return Value{ .list = olv };
+        if (is_delete) return Value{ .list = new_list };
+        return null;
+    }
+
+    fn trigger_operation_type(event: ast.TriggerEvent) []const u8 {
+        return switch (event) {
+            .before_insert => "BEFORE_INSERT",
+            .before_update => "BEFORE_UPDATE",
+            .before_delete => "BEFORE_DELETE",
+            .after_insert => "AFTER_INSERT",
+            .after_update => "AFTER_UPDATE",
+            .after_delete => "AFTER_DELETE",
+            .after_undelete => "AFTER_UNDELETE",
+        };
+    }
+
+    fn execute_trigger_body(self: *Evaluator, td: *ast.TriggerDecl) anyerror!void {
+        const trigger_env = try self.global_env.child();
+        _ = self.exec_block(td.body, trigger_env) catch |err| {
+            return self.wrap_trigger_exception(err);
+        };
+    }
+
+    fn wrap_trigger_exception(self: *Evaluator, err: anyerror) anyerror!void {
+        if (err != error.ApexException) return err;
+        const pe = self.pending_exception orelse return err;
+        if (pe != .object) return err;
+        if (std.ascii.indexOfIgnoreCase(pe.object.class_name, "DmlException") != null) {
+            return err;
+        }
+        const msg = if (pe.object.fields.get("message")) |m|
+            (if (m == .string) m.string else "Trigger exception")
+        else
+            "Trigger exception";
+        const dml_exc = try self.arena.create(types.ObjectInstance);
+        dml_exc.* = .{ .class_name = "DmlException" };
+        try dml_exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = dml_exc };
+        return err;
     }
 
     fn insert_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
@@ -5487,74 +5513,118 @@ pub const Evaluator = struct {
 
     /// Execute an aggregate SOQL query (with SUM/AVG/MIN/MAX/COUNT and optional GROUP BY).
     /// Returns List<AggregateResult>.
+    const AggregateItem = struct {
+        fn_name: ?[]const u8,
+        field: []const u8,
+        alias: []const u8,
+    };
+
+    const AggregateItemList = struct {
+        items: [16]AggregateItem = undefined,
+        count: usize = 0,
+    };
+
+    const GroupByFieldList = struct {
+        fields: [8][]const u8 = undefined,
+        count: usize = 0,
+    };
+
     fn execute_aggregate_query(self: *Evaluator, soql: []const u8, current_env: *Env, include_all_rows: bool) !Value {
         const from_type_agg = extract_from_type(soql) orelse return self.make_empty_list();
         const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else 0;
         const from_start = std.ascii.indexOfIgnoreCase(soql, "FROM") orelse soql.len;
         const select_clause = std.mem.trim(u8, soql[select_start..from_start], " \t\n\r");
 
-        // Parse GROUP BY field(s)
+        const group_by = parse_aggregate_group_by_fields(soql);
+        const agg_items = try self.parse_aggregate_items(select_clause);
+        const matched = try self.collect_aggregate_records(
+            from_type_agg,
+            soql,
+            current_env,
+            include_all_rows,
+        );
+
+        if (group_by.count == 0) {
+            return try self.build_single_aggregate_result(
+                agg_items.items[0..agg_items.count],
+                matched.items,
+            );
+        }
+        return try self.build_grouped_aggregate_results(
+            agg_items.items[0..agg_items.count],
+            group_by.fields[0..group_by.count],
+            matched.items,
+        );
+    }
+
+    fn parse_aggregate_group_by_fields(soql: []const u8) GroupByFieldList {
+        var result: GroupByFieldList = .{};
         const group_by_idx = std.ascii.indexOfIgnoreCase(soql, "group by");
-        var group_by_fields: [8][]const u8 = undefined;
-        var group_by_count: usize = 0;
         if (group_by_idx) |gbi| {
             const gb_clause = std.mem.trim(u8, soql[gbi + 8 ..], " \t\n\r");
             var gb_iter = std.mem.splitScalar(u8, gb_clause, ',');
             while (gb_iter.next()) |raw_f| {
                 const f = std.mem.trim(u8, raw_f, " \t\n\r");
                 if (f.len == 0) continue;
-                if (group_by_count < group_by_fields.len) {
-                    group_by_fields[group_by_count] = f;
-                    group_by_count += 1;
+                if (result.count < result.fields.len) {
+                    result.fields[result.count] = f;
+                    result.count += 1;
                 }
             }
         }
+        return result;
+    }
 
-        // Parse aggregate functions from SELECT clause
-        // e.g., "LogPurgeAction__c LogPurgeAction__c, count(id)"
-        // Each item is either a plain field (with optional alias) or FUNC(field) alias
-        const AggItem = struct {
-            fn_name: ?[]const u8, // null = plain field, "COUNT"/"SUM"/etc.
-            field: []const u8,
-            alias: []const u8,
-        };
-        var agg_items: [16]AggItem = undefined;
-        var agg_count: usize = 0;
-        {
-            var expr_idx: usize = 0;
-            var sel_iter = std.mem.splitScalar(u8, select_clause, ',');
-            while (sel_iter.next()) |raw_item| {
-                const item = std.mem.trim(u8, raw_item, " \t\n\r");
-                if (item.len == 0) continue;
-                if (agg_count >= agg_items.len) break;
-                if (std.mem.indexOf(u8, item, "(")) |paren_start| {
-                    // Aggregate function: FUNC(field) [alias]
-                    const fn_name = std.mem.trim(u8, item[0..paren_start], " \t\n\r");
-                    if (std.mem.indexOf(u8, item[paren_start..], ")")) |paren_end_rel| {
-                        const paren_end = paren_start + paren_end_rel;
-                        const field = std.mem.trim(u8, item[paren_start + 1 .. paren_end], " \t\n\r");
-                        const after = std.mem.trim(u8, item[paren_end + 1 ..], " \t\n\r");
-                        const alias = if (after.len > 0) after else try std.fmt.allocPrint(self.arena, "expr{d}", .{expr_idx});
-                        agg_items[agg_count] = .{ .fn_name = fn_name, .field = field, .alias = alias };
-                        agg_count += 1;
-                        expr_idx += 1;
-                    }
-                } else {
-                    // Plain field [alias] — e.g., "LogPurgeAction__c LogPurgeAction__c"
-                    var parts = std.mem.splitScalar(u8, item, ' ');
-                    const field = parts.next() orelse item;
-                    const alias = parts.next() orelse field;
-                    agg_items[agg_count] = .{ .fn_name = null, .field = field, .alias = alias };
-                    agg_count += 1;
-                }
+    fn parse_aggregate_items(self: *Evaluator, select_clause: []const u8) !AggregateItemList {
+        var result: AggregateItemList = .{};
+        var expr_idx: usize = 0;
+        var sel_iter = std.mem.splitScalar(u8, select_clause, ',');
+        while (sel_iter.next()) |raw_item| {
+            const item = std.mem.trim(u8, raw_item, " \t\n\r");
+            if (item.len == 0) continue;
+            if (result.count >= result.items.len) break;
+            result.items[result.count] = try self.parse_aggregate_item(item, &expr_idx);
+            result.count += 1;
+        }
+        return result;
+    }
+
+    fn parse_aggregate_item(
+        self: *Evaluator,
+        item: []const u8,
+        expr_idx: *usize,
+    ) !AggregateItem {
+        if (std.mem.indexOf(u8, item, "(")) |paren_start| {
+            const fn_name = std.mem.trim(u8, item[0..paren_start], " \t\n\r");
+            if (std.mem.indexOf(u8, item[paren_start..], ")")) |paren_end_rel| {
+                const paren_end = paren_start + paren_end_rel;
+                const field = std.mem.trim(u8, item[paren_start + 1 .. paren_end], " \t\n\r");
+                const after = std.mem.trim(u8, item[paren_end + 1 ..], " \t\n\r");
+                const alias = if (after.len > 0)
+                    after
+                else
+                    try std.fmt.allocPrint(self.arena, "expr{d}", .{expr_idx.*});
+                expr_idx.* += 1;
+                return .{ .fn_name = fn_name, .field = field, .alias = alias };
             }
         }
+        var parts = std.mem.splitScalar(u8, item, ' ');
+        const field = parts.next() orelse item;
+        const alias = parts.next() orelse field;
+        return .{ .fn_name = null, .field = field, .alias = alias };
+    }
 
-        // Collect matching records
+    fn collect_aggregate_records(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        include_all_rows: bool,
+    ) !std.ArrayListUnmanaged(Value) {
         var matched: std.ArrayListUnmanaged(Value) = .empty;
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type_agg)) {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
                 for (entry.value_ptr.items) |record| {
                     if (self.matches_where(record, soql, current_env))
                         try matched.append(self.arena, record);
@@ -5562,13 +5632,10 @@ pub const Evaluator = struct {
                 break;
             }
         }
-        // Include trashed records when ALL ROWS was present on the aggregate query
-        // (the outer executeSoql strips the keyword before delegating here, so we
-        // receive the decision as an explicit parameter instead of re-parsing).
         if (include_all_rows) {
             var trash_iter = self.trash.iterator();
             while (trash_iter.next()) |entry| {
-                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type_agg)) {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
                     for (entry.value_ptr.items) |record| {
                         if (self.matches_where(record, soql, current_env))
                             try matched.append(self.arena, record);
@@ -5577,79 +5644,99 @@ pub const Evaluator = struct {
                 }
             }
         }
+        return matched;
+    }
 
-        if (group_by_count == 0) {
-            // No GROUP BY — single aggregate result over all matched records
-            const agg = try self.arena.create(types.SObject);
-            agg.* = .{ .type_name = "AggregateResult" };
-            for (agg_items[0..agg_count]) |ai| {
-                if (ai.fn_name) |fn_name| {
-                    try agg.fields.put(self.arena, ai.alias, self.compute_aggregate(fn_name, ai.field, matched.items));
-                }
-            }
-            const result_list = try self.arena.create(types.ListValue);
-            result_list.* = .{};
-            try result_list.items.append(self.arena, Value{ .sobject = agg });
-            return Value{ .list = result_list };
-        }
+    fn build_single_aggregate_result(
+        self: *Evaluator,
+        agg_items: []const AggregateItem,
+        matched: []const Value,
+    ) !Value {
+        const agg = try self.arena.create(types.SObject);
+        agg.* = .{ .type_name = "AggregateResult" };
+        try self.append_aggregate_result_fields(agg, agg_items, matched, false);
+        const result_list = try self.arena.create(types.ListValue);
+        result_list.* = .{};
+        try result_list.items.append(self.arena, Value{ .sobject = agg });
+        return Value{ .list = result_list };
+    }
 
-        // GROUP BY: bucket records by group key(s)
-        // Use string key for grouping (concatenation of field values)
+    fn build_grouped_aggregate_results(
+        self: *Evaluator,
+        agg_items: []const AggregateItem,
+        group_by_fields: []const []const u8,
+        matched: []const Value,
+    ) !Value {
         var group_keys: std.ArrayListUnmanaged([]const u8) = .empty;
         var group_records: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)) = .empty;
+        try self.collect_aggregate_groups(&group_keys, &group_records, matched, group_by_fields);
+        const result_list = try self.arena.create(types.ListValue);
+        result_list.* = .{};
+        for (group_records.items) |group| {
+            const agg = try self.arena.create(types.SObject);
+            agg.* = .{ .type_name = "AggregateResult" };
+            try self.append_aggregate_result_fields(agg, agg_items, group.items, true);
+            try result_list.items.append(self.arena, Value{ .sobject = agg });
+        }
+        return Value{ .list = result_list };
+    }
 
-        for (matched.items) |record| {
-            // Build group key from GROUP BY fields
-            var key_buf: std.ArrayListUnmanaged(u8) = .empty;
-            for (group_by_fields[0..group_by_count]) |gb_field| {
-                if (key_buf.items.len > 0) try key_buf.append(self.arena, '|');
-                const fv = self.resolve_field_path(record, gb_field);
-                const fv_str = if (fv != null and fv.? != .null_val)
-                    (utils.coerce_to_string(fv.?, self.arena) catch "")
-                else
-                    "";
-                try key_buf.appendSlice(self.arena, fv_str);
-            }
-            const key = key_buf.items;
-
-            // Find or create group
-            var found = false;
+    fn collect_aggregate_groups(
+        self: *Evaluator,
+        group_keys: *std.ArrayListUnmanaged([]const u8),
+        group_records: *std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)),
+        matched: []const Value,
+        group_by_fields: []const []const u8,
+    ) !void {
+        for (matched) |record| {
+            const key = try self.aggregate_group_key(record, group_by_fields);
             for (group_keys.items, 0..) |gk, idx| {
                 if (std.mem.eql(u8, gk, key)) {
                     try group_records.items[idx].append(self.arena, record);
-                    found = true;
                     break;
                 }
-            }
-            if (!found) {
+            } else {
                 try group_keys.append(self.arena, key);
                 var new_group: std.ArrayListUnmanaged(Value) = .empty;
                 try new_group.append(self.arena, record);
                 try group_records.append(self.arena, new_group);
             }
         }
+    }
 
-        // Build AggregateResult per group
-        const result_list = try self.arena.create(types.ListValue);
-        result_list.* = .{};
-        for (group_records.items, 0..) |group, gi| {
-            _ = gi;
-            const agg = try self.arena.create(types.SObject);
-            agg.* = .{ .type_name = "AggregateResult" };
-            for (agg_items[0..agg_count]) |ai| {
-                if (ai.fn_name) |fn_name| {
-                    try agg.fields.put(self.arena, ai.alias, self.compute_aggregate(fn_name, ai.field, group.items));
-                } else {
-                    // Plain field: take from first record in group, resolving dotted paths
-                    if (group.items.len > 0) {
-                        const fv = self.resolve_field_path(group.items[0], ai.field) orelse Value.null_val;
-                        try agg.fields.put(self.arena, ai.alias, fv);
-                    }
-                }
-            }
-            try result_list.items.append(self.arena, Value{ .sobject = agg });
+    fn aggregate_group_key(
+        self: *Evaluator,
+        record: Value,
+        group_by_fields: []const []const u8,
+    ) ![]const u8 {
+        var key_buf: std.ArrayListUnmanaged(u8) = .empty;
+        for (group_by_fields) |gb_field| {
+            if (key_buf.items.len > 0) try key_buf.append(self.arena, '|');
+            const fv = self.resolve_field_path(record, gb_field);
+            const fv_str = if (fv != null and fv.? != .null_val)
+                (utils.coerce_to_string(fv.?, self.arena) catch "")
+            else
+                "";
+            try key_buf.appendSlice(self.arena, fv_str);
         }
-        return Value{ .list = result_list };
+        return key_buf.items;
+    }
+
+    fn append_aggregate_result_fields(
+        self: *Evaluator,
+        agg: *types.SObject,
+        agg_items: []const AggregateItem,
+        records: []const Value,
+        include_plain_fields: bool,
+    ) !void {
+        for (agg_items) |ai| {
+            if (ai.fn_name) |fn_name| {
+                try agg.fields.put(self.arena, ai.alias, self.compute_aggregate(fn_name, ai.field, records));
+            } else if (include_plain_fields and records.len > 0) {
+                const fv = self.resolve_field_path(records[0], ai.field) orelse Value.null_val;
+                try agg.fields.put(self.arena, ai.alias, fv);
+            }
+        }
     }
 
     /// Compute a single aggregate value (COUNT/SUM/AVG/MIN/MAX) over a set of records.

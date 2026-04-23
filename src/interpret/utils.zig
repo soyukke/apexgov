@@ -49,40 +49,7 @@ pub fn value_eql(a: Value, b: Value) bool {
     if (a_tag == .null_val or b_tag == .null_val) return false;
 
     if (a_tag != b_tag) {
-        // Numeric cross-comparison
-        if (numeric_as_f64(a)) |af| {
-            if (numeric_as_f64(b)) |bf| {
-                return af == bf;
-            }
-        }
-        // Date/DateTime object vs string cross-comparison
-        if (a_tag == .object and b_tag == .string) {
-            if (std.ascii.eqlIgnoreCase(a.object.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(a.object.class_name, "Datetime"))
-            {
-                if (a.object.fields.get("value")) |v| {
-                    if (v == .string) {
-                        const a_norm = normalize_date_time_str(v.string);
-                        const b_norm = normalize_date_time_str(b.string);
-                        return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-                    }
-                }
-            }
-        }
-        if (a_tag == .string and b_tag == .object) {
-            if (std.ascii.eqlIgnoreCase(b.object.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(b.object.class_name, "Datetime"))
-            {
-                if (b.object.fields.get("value")) |v| {
-                    if (v == .string) {
-                        const a_norm = normalize_date_time_str(a.string);
-                        const b_norm = normalize_date_time_str(v.string);
-                        return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-                    }
-                }
-            }
-        }
-        return false;
+        return value_eql_cross_type(a, b, a_tag, b_tag);
     }
 
     return switch (a) {
@@ -99,100 +66,137 @@ pub fn value_eql(a: Value, b: Value) bool {
         },
         .void_val => true,
         .null_val => true,
-        .sobject => |av| {
-            // Compare by Id if both have one
-            if (av.id != null and b.sobject.id != null) return std.ascii.eqlIgnoreCase(av.id.?, b.sobject.id.?);
-            // Pointer equality first
-            if (av == b.sobject) return true;
-            // Deep equality: same type
-            if (!std.ascii.eqlIgnoreCase(av.type_name, b.sobject.type_name)) return false;
-            // Compare all fields from both sides — missing fields treated as null
-            for (av.fields.keys(), av.fields.values()) |k, v| {
-                const bv = sobject_get(&b.sobject.fields, k) orelse Value.null_val;
-                if (!value_eql(v, bv)) return false;
-            }
-            // Check fields in b that are not in a
-            for (b.sobject.fields.keys(), b.sobject.fields.values()) |k, v| {
-                if (sobject_get(&av.fields, k) == null) {
-                    if (!value_eql(v, Value.null_val)) return false;
-                }
-            }
-            return true;
-        },
-        .list => |av| {
-            if (av == b.list) return true;
-            // Deep equality: compare items
-            if (av.items.items.len != b.list.items.items.len) return false;
-            for (av.items.items, b.list.items.items) |a_item, b_item| {
-                if (!value_eql(a_item, b_item)) return false;
-            }
-            return true;
-        },
-        .map => |av| {
-            if (av == b.map) return true;
-            // Deep equality: compare entries
-            if (av.entries.count() != b.map.entries.count()) return false;
-            for (av.entries.keys(), av.entries.values()) |k, v| {
-                const bv = b.map.entries.get(k) orelse return false;
-                if (!value_eql(v, bv)) return false;
-            }
-            return true;
-        },
-        .set => |av| {
-            if (av == b.set) return true;
-            // Deep equality: compare entries
-            if (av.entries.count() != b.set.entries.count()) return false;
-            for (av.entries.keys()) |k| {
-                if (!b.set.entries.contains(k)) return false;
-            }
-            return true;
-        },
-        .object => |av| {
-            if (av == b.object) return true;
-            // Compare Schema.SObjectType and Type objects by name field
-            if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType") and
-                std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectType")) or
-                (std.ascii.eqlIgnoreCase(av.class_name, "Type") and
-                    std.ascii.eqlIgnoreCase(b.object.class_name, "Type")))
-            {
-                const a_name = av.fields.get("name") orelse return false;
-                const b_name = b.object.fields.get("name") orelse return false;
-                if (a_name == .string and b_name == .string) return std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
-            }
-            // Compare Date/DateTime objects by their inner value string
-            if ((std.ascii.eqlIgnoreCase(av.class_name, "Date") or std.ascii.eqlIgnoreCase(av.class_name, "Datetime")) and
-                (std.ascii.eqlIgnoreCase(b.object.class_name, "Date") or std.ascii.eqlIgnoreCase(b.object.class_name, "Datetime")))
-            {
-                const a_val = av.fields.get("value") orelse return false;
-                const b_val = b.object.fields.get("value") orelse return false;
-                if (a_val == .string and b_val == .string) {
-                    const a_norm = normalize_date_time_str(a_val.string);
-                    const b_norm = normalize_date_time_str(b_val.string);
-                    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-                }
-            }
-            if ((std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectField") or
-                std.ascii.eqlIgnoreCase(av.class_name, "SObjectField")) and
-                (std.ascii.eqlIgnoreCase(b.object.class_name, "Schema.SObjectField") or
-                    std.ascii.eqlIgnoreCase(b.object.class_name, "SObjectField")))
-            {
-                const a_name = av.fields.get("fieldName") orelse av.fields.get("name") orelse return false;
-                const b_name = b.object.fields.get("fieldName") orelse b.object.fields.get("name") orelse return false;
-                if (a_name != .string or b_name != .string) return false;
-
-                const same_object_type = blk: {
-                    const a_object_type = av.fields.get("objectType");
-                    const b_object_type = b.object.fields.get("objectType");
-                    if (a_object_type == null or b_object_type == null) break :blk true;
-                    if (a_object_type.? != .string or b_object_type.? != .string) break :blk false;
-                    break :blk std.ascii.eqlIgnoreCase(a_object_type.?.string, b_object_type.?.string);
-                };
-
-                return same_object_type and std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
-            }
-            return false;
-        },
+        .sobject => |av| value_eql_sobject(av, b.sobject),
+        .list => |av| value_eql_list(av, b.list),
+        .map => |av| value_eql_map(av, b.map),
+        .set => |av| value_eql_set(av, b.set),
+        .object => |av| value_eql_object(av, b.object),
     };
+}
+
+fn value_eql_cross_type(a: Value, b: Value, a_tag: anytype, b_tag: anytype) bool {
+    if (numeric_as_f64(a)) |af| {
+        if (numeric_as_f64(b)) |bf| return af == bf;
+    }
+    if (a_tag == .object and b_tag == .string) {
+        return value_eql_date_object_string(a.object, b.string);
+    }
+    if (a_tag == .string and b_tag == .object) {
+        return value_eql_date_object_string(b.object, a.string);
+    }
+    return false;
+}
+
+fn value_eql_date_object_string(obj: *types.ObjectInstance, s: []const u8) bool {
+    if (!is_date_like_object(obj)) return false;
+    const v = obj.fields.get("value") orelse return false;
+    if (v != .string) return false;
+    const a_norm = normalize_date_time_str(v.string);
+    const b_norm = normalize_date_time_str(s);
+    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+}
+
+fn value_eql_sobject(a: *types.SObject, b: *types.SObject) bool {
+    if (a.id != null and b.id != null) return std.ascii.eqlIgnoreCase(a.id.?, b.id.?);
+    if (a == b) return true;
+    if (!std.ascii.eqlIgnoreCase(a.type_name, b.type_name)) return false;
+    for (a.fields.keys(), a.fields.values()) |k, v| {
+        const bv = sobject_get(&b.fields, k) orelse Value.null_val;
+        if (!value_eql(v, bv)) return false;
+    }
+    for (b.fields.keys(), b.fields.values()) |k, v| {
+        if (sobject_get(&a.fields, k) == null and !value_eql(v, Value.null_val)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn value_eql_list(a: *types.ListValue, b: *types.ListValue) bool {
+    if (a == b) return true;
+    if (a.items.items.len != b.items.items.len) return false;
+    for (a.items.items, b.items.items) |a_item, b_item| {
+        if (!value_eql(a_item, b_item)) return false;
+    }
+    return true;
+}
+
+fn value_eql_map(a: *types.MapValue, b: *types.MapValue) bool {
+    if (a == b) return true;
+    if (a.entries.count() != b.entries.count()) return false;
+    for (a.entries.keys(), a.entries.values()) |k, v| {
+        const bv = b.entries.get(k) orelse return false;
+        if (!value_eql(v, bv)) return false;
+    }
+    return true;
+}
+
+fn value_eql_set(a: *types.SetValue, b: *types.SetValue) bool {
+    if (a == b) return true;
+    if (a.entries.count() != b.entries.count()) return false;
+    for (a.entries.keys()) |k| {
+        if (!b.entries.contains(k)) return false;
+    }
+    return true;
+}
+
+fn value_eql_object(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    if (a == b) return true;
+    if (is_named_type_object(a, b)) return object_name_fields_eql(a, b);
+    if (is_date_like_object(a) and is_date_like_object(b)) return date_object_values_eql(a, b);
+    if (is_s_object_field_object(a) and is_s_object_field_object(b)) {
+        return s_object_field_objects_eql(a, b);
+    }
+    return false;
+}
+
+fn is_named_type_object(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    return (std.ascii.eqlIgnoreCase(a.class_name, "Schema.SObjectType") and
+        std.ascii.eqlIgnoreCase(b.class_name, "Schema.SObjectType")) or
+        (std.ascii.eqlIgnoreCase(a.class_name, "Type") and
+            std.ascii.eqlIgnoreCase(b.class_name, "Type"));
+}
+
+fn object_name_fields_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_name = a.fields.get("name") orelse return false;
+    const b_name = b.fields.get("name") orelse return false;
+    return a_name == .string and b_name == .string and
+        std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+}
+
+fn is_date_like_object(obj: *types.ObjectInstance) bool {
+    return std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime");
+}
+
+fn date_object_values_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_val = a.fields.get("value") orelse return false;
+    const b_val = b.fields.get("value") orelse return false;
+    if (a_val != .string or b_val != .string) return false;
+    const a_norm = normalize_date_time_str(a_val.string);
+    const b_norm = normalize_date_time_str(b_val.string);
+    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+}
+
+fn is_s_object_field_object(obj: *types.ObjectInstance) bool {
+    return std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField");
+}
+
+fn s_object_field_objects_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_name = a.fields.get("fieldName") orelse a.fields.get("name") orelse return false;
+    const b_name = b.fields.get("fieldName") orelse b.fields.get("name") orelse return false;
+    if (a_name != .string or b_name != .string) return false;
+    return s_object_field_object_types_eql(a, b) and
+        std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+}
+
+fn s_object_field_object_types_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_object_type = a.fields.get("objectType");
+    const b_object_type = b.fields.get("objectType");
+    if (a_object_type == null or b_object_type == null) return true;
+    if (a_object_type.? != .string or b_object_type.? != .string) return false;
+    return std.ascii.eqlIgnoreCase(a_object_type.?.string, b_object_type.?.string);
 }
 
 /// Value を文字列に変換する。

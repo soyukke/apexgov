@@ -9,11 +9,10 @@
 src/interpret/builtins.zig	line_too_long	601
 src/interpret/builtins.zig	function_too_long	2
 src/interpret/env.zig	line_too_long	1
-src/interpret/evaluator.zig	line_too_long	1332
-src/interpret/evaluator.zig	function_too_long	20
+src/interpret/evaluator.zig	line_too_long	1321
+src/interpret/evaluator.zig	function_too_long	18
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/root.zig	line_too_long	292
 src/interpret/root.zig	function_too_long	2
-src/interpret/utils.zig	line_too_long	14
-src/interpret/utils.zig	function_too_long	1
+src/interpret/utils.zig	line_too_long	7
