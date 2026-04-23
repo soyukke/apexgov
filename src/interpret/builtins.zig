@@ -6550,35 +6550,79 @@ fn dispatch_obj_describe_s_object(
     obj: *types.ObjectInstance,
     method_name: []const u8,
 ) !?Value {
+    const ci = std.ascii;
     const desc_name = if (obj.fields.get("name")) |n| n.string else "";
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return obj.fields.get("isAccessible") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "read") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "create") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "edit") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return obj.fields.get("isDeletable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isUndeletable")) {
+    if (try dsobj_crud_methods(ctx, obj, method_name, desc_name)) |v| return v;
+    if (try dsobj_label_methods(ctx, obj, method_name)) |v| return v;
+    if (ci.eqlIgnoreCase(method_name, "isCustom"))
+        return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "isCustomSetting"))
+        return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "getChildRelationships")) {
+        if (obj.fields.get("childRelationships")) |existing| return existing;
+        const relationships = try create_child_relationships_value(ctx, desc_name);
+        try obj.fields.put(ctx.arena, "childRelationships", relationships);
+        return relationships;
+    }
+    if (ci.eqlIgnoreCase(method_name, "getKeyPrefix")) {
+        const name = if (obj.fields.get("name")) |n| n.string else "000";
+        const prefix = evaluator_mod.Evaluator.sobject_key_prefix(name);
+        return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
+    }
+    if (try dsobj_record_type_info_methods(ctx, obj, method_name)) |v| return v;
+    return null;
+}
+
+fn dsobj_crud_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    desc_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "isAccessible"))
+        return obj.fields.get("isAccessible") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "read") };
+    if (ci.eqlIgnoreCase(method_name, "isCreateable"))
+        return obj.fields.get("isCreateable") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "create") };
+    if (ci.eqlIgnoreCase(method_name, "isUpdateable"))
+        return obj.fields.get("isUpdateable") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "edit") };
+    if (ci.eqlIgnoreCase(method_name, "isDeletable"))
+        return obj.fields.get("isDeletable") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+    if (ci.eqlIgnoreCase(method_name, "isUndeletable")) {
         // Undelete requires delete-equivalent CRUD on standard objects; mirror
         // Apex's behaviour by returning the same result as isDeletable so that
         // domain frameworks (fflib_SObjectDomain etc.) gate handleAfterUndelete
         // correctly.
-        return obj.fields.get(
-            "isUndeletable",
-        ) orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+        return obj.fields.get("isUndeletable") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isMergeable")) {
-        return obj.fields.get(
-            "isMergeable",
-        ) orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+    if (ci.eqlIgnoreCase(method_name, "isMergeable")) {
+        return obj.fields.get("isMergeable") orelse
+            Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName"))
+    if (ci.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
+    if (ci.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
+    return null;
+}
+
+fn dsobj_label_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getName"))
         return obj.fields.get("name") orelse Value{ .string = "Object" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+    if (ci.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+    if (ci.eqlIgnoreCase(method_name, "getSObjectType")) {
         const sot = try ctx.arena.create(types.ObjectInstance);
         sot.* = .{ .class_name = "Schema.SObjectType" };
         try sot.fields.put(
@@ -6588,39 +6632,31 @@ fn dispatch_obj_describe_s_object(
         );
         return Value{ .object = sot };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabelPlural")) return obj.fields.get("labelPlural") orelse obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Objects" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getChildRelationships")) {
-        if (obj.fields.get("childRelationships")) |existing| return existing;
-        const relationships = try create_child_relationships_value(ctx, desc_name);
-        try obj.fields.put(ctx.arena, "childRelationships", relationships);
-        return relationships;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustom"))
-        return obj.fields.get("isCustom") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting"))
-        return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "000";
-        const prefix = evaluator_mod.Evaluator.sobject_key_prefix(name);
-        return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getLabel"))
+        return obj.fields.get("label") orelse
+            obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (ci.eqlIgnoreCase(method_name, "getLabelPlural"))
+        return obj.fields.get("labelPlural") orelse
+            obj.fields.get("label") orelse
+            obj.fields.get("name") orelse Value{ .string = "Objects" };
+    return null;
+}
+
+fn dsobj_record_type_info_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getRecordTypeInfos"))
         return (try build_record_type_info_artifacts(ctx, name)).list;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getRecordTypeInfosById"))
         return (try build_record_type_info_artifacts(ctx, name)).by_id;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getRecordTypeInfosByName"))
         return (try build_record_type_info_artifacts(ctx, name)).by_name;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (ci.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
         return (try build_record_type_info_artifacts(ctx, name)).by_dev_name;
-    }
     return null;
 }
 
