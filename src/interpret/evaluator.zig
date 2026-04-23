@@ -11241,115 +11241,150 @@ pub const Evaluator = struct {
         const output = try self.arena.create(types.ListValue);
         output.* = .{};
         if (message_segments != .list) return output;
-
         for (message_segments.list.items.items) |segment_input| {
             if (segment_input != .object) continue;
-            const class_name = segment_input.object.class_name;
-
-            if (connect_api_class_name_equals(class_name, "TextSegmentInput")) {
-                const text = utils.sobject_get(
-                    &segment_input.object.fields,
-                    "text",
-                ) orelse Value.null_val;
-                if (text == .string) try self.connect_api_append_parsed_text(output, text.string);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "MentionSegmentInput")) {
-                const mention_id = utils.sobject_get(
-                    &segment_input.object.fields,
-                    "id",
-                ) orelse Value.null_val;
-                if (mention_id == .string) {
-                    if (!self.is_connect_api_mention_id(mention_id.string)) {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "ConnectApi.ConnectApiException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = "Only user and group IDs may be used in inline mentions." });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    const mention = try self.connect_api_create_object("ConnectApi.MentionSegment");
-                    try mention.fields.put(
-                        self.arena,
-                        "record",
-                        try self.connect_api_create_record_ref(mention_id.string),
-                    );
-                    try self.connect_api_append_output_segment(output, mention);
-                }
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "LinkSegmentInput")) {
-                const url = utils.sobject_get(
-                    &segment_input.object.fields,
-                    "url",
-                ) orelse Value.null_val;
-                if (url == .string) {
-                    const link = try self.connect_api_create_object("ConnectApi.LinkSegment");
-                    try link.fields.put(self.arena, "url", url);
-                    try self.connect_api_append_output_segment(output, link);
-                }
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "HashtagSegmentInput")) {
-                const tag = utils.sobject_get(
-                    &segment_input.object.fields,
-                    "tag",
-                ) orelse Value.null_val;
-                if (tag == .string) {
-                    const hashtag = try self.connect_api_create_object("ConnectApi.HashtagSegment");
-                    try hashtag.fields.put(self.arena, "tag", tag);
-                    try self.connect_api_append_output_segment(output, hashtag);
-                }
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "MarkupBeginSegmentInput")) {
-                const markup = try self.connect_api_create_object("ConnectApi.MarkupBeginSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "markupType")) |markup_type| {
-                    try markup.fields.put(self.arena, "markupType", markup_type);
-                }
-                try self.connect_api_append_output_segment(output, markup);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "MarkupEndSegmentInput")) {
-                const markup = try self.connect_api_create_object("ConnectApi.MarkupEndSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "markupType")) |markup_type| {
-                    try markup.fields.put(self.arena, "markupType", markup_type);
-                }
-                try self.connect_api_append_output_segment(output, markup);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "EntityLinkSegmentInput")) {
-                const entity = try self.connect_api_create_object("ConnectApi.EntityLinkSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "entityId")) |entity_id| {
-                    try entity.fields.put(self.arena, "record", entity_id);
-                }
-                try self.connect_api_append_output_segment(output, entity);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
-                const image = try self.connect_api_create_object("ConnectApi.InlineImageSegment");
-                const thumbnails = try self.connect_api_create_object(
-                    "ConnectApi.InlineImageThumbnails",
-                );
-                if (utils.sobject_get(&segment_input.object.fields, "fileId")) |file_id| {
-                    try thumbnails.fields.put(self.arena, "fileId", file_id);
-                }
-                try image.fields.put(self.arena, "thumbnails", Value{ .object = thumbnails });
-                if (utils.sobject_get(&segment_input.object.fields, "altText")) |alt_text| {
-                    try image.fields.put(self.arena, "altText", alt_text);
-                }
-                try self.connect_api_append_output_segment(output, image);
-                continue;
-            }
+            try self.connect_api_append_input_segment(output, segment_input.object);
         }
-
         return output;
+    }
+
+    fn connect_api_append_input_segment(
+        self: *Evaluator,
+        output: *types.ListValue,
+        segment_input: *types.ObjectInstance,
+    ) !void {
+        const class_name = segment_input.class_name;
+        if (connect_api_class_name_equals(class_name, "TextSegmentInput")) {
+            const text = utils.sobject_get(&segment_input.fields, "text") orelse Value.null_val;
+            if (text == .string) try self.connect_api_append_parsed_text(output, text.string);
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "MentionSegmentInput")) {
+            try self.connect_api_append_mention_input(output, segment_input);
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "LinkSegmentInput")) {
+            try self.connect_api_copy_field_segment(
+                output,
+                segment_input,
+                "url",
+                "ConnectApi.LinkSegment",
+                "url",
+            );
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "HashtagSegmentInput")) {
+            try self.connect_api_copy_field_segment(
+                output,
+                segment_input,
+                "tag",
+                "ConnectApi.HashtagSegment",
+                "tag",
+            );
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "MarkupBeginSegmentInput")) {
+            try self.connect_api_append_markup_segment(
+                output,
+                segment_input,
+                "ConnectApi.MarkupBeginSegment",
+            );
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "MarkupEndSegmentInput")) {
+            try self.connect_api_append_markup_segment(
+                output,
+                segment_input,
+                "ConnectApi.MarkupEndSegment",
+            );
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "EntityLinkSegmentInput")) {
+            const entity = try self.connect_api_create_object("ConnectApi.EntityLinkSegment");
+            if (utils.sobject_get(&segment_input.fields, "entityId")) |entity_id| {
+                try entity.fields.put(self.arena, "record", entity_id);
+            }
+            try self.connect_api_append_output_segment(output, entity);
+            return;
+        }
+        if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
+            try self.connect_api_append_inline_image_input(output, segment_input);
+            return;
+        }
+    }
+
+    fn connect_api_append_mention_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        segment_input: *types.ObjectInstance,
+    ) !void {
+        const mention_id = utils.sobject_get(&segment_input.fields, "id") orelse Value.null_val;
+        if (mention_id != .string) return;
+        if (!self.is_connect_api_mention_id(mention_id.string)) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "ConnectApi.ConnectApiException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "Only user and group IDs may be used in inline mentions." },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        const mention = try self.connect_api_create_object("ConnectApi.MentionSegment");
+        try mention.fields.put(
+            self.arena,
+            "record",
+            try self.connect_api_create_record_ref(mention_id.string),
+        );
+        try self.connect_api_append_output_segment(output, mention);
+    }
+
+    /// Copy a single string field from the input segment into a freshly-allocated
+    /// output segment of class `out_class`, under the `out_field` name.
+    fn connect_api_copy_field_segment(
+        self: *Evaluator,
+        output: *types.ListValue,
+        segment_input: *types.ObjectInstance,
+        in_field: []const u8,
+        out_class: []const u8,
+        out_field: []const u8,
+    ) !void {
+        const value = utils.sobject_get(&segment_input.fields, in_field) orelse return;
+        if (value != .string) return;
+        const out = try self.connect_api_create_object(out_class);
+        try out.fields.put(self.arena, out_field, value);
+        try self.connect_api_append_output_segment(output, out);
+    }
+
+    fn connect_api_append_markup_segment(
+        self: *Evaluator,
+        output: *types.ListValue,
+        segment_input: *types.ObjectInstance,
+        out_class: []const u8,
+    ) !void {
+        const markup = try self.connect_api_create_object(out_class);
+        if (utils.sobject_get(&segment_input.fields, "markupType")) |markup_type| {
+            try markup.fields.put(self.arena, "markupType", markup_type);
+        }
+        try self.connect_api_append_output_segment(output, markup);
+    }
+
+    fn connect_api_append_inline_image_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        segment_input: *types.ObjectInstance,
+    ) !void {
+        const image = try self.connect_api_create_object("ConnectApi.InlineImageSegment");
+        const thumbnails = try self.connect_api_create_object("ConnectApi.InlineImageThumbnails");
+        if (utils.sobject_get(&segment_input.fields, "fileId")) |file_id| {
+            try thumbnails.fields.put(self.arena, "fileId", file_id);
+        }
+        try image.fields.put(self.arena, "thumbnails", Value{ .object = thumbnails });
+        if (utils.sobject_get(&segment_input.fields, "altText")) |alt_text| {
+            try image.fields.put(self.arena, "altText", alt_text);
+        }
+        try self.connect_api_append_output_segment(output, image);
     }
 
     fn connect_api_render_body_text(
