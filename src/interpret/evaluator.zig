@@ -6403,16 +6403,10 @@ pub const Evaluator = struct {
             defer walker.deinit();
 
             while (walker.next(self.io) catch null) |entry| {
-                if (entry.kind != .file) continue;
-                if (std.mem.indexOf(u8, entry.path, "permissionsets/") == null) continue;
-                if (!std.mem.endsWith(u8, entry.path, ".permissionset-meta.xml")) continue;
-
-                const file_name = std.fs.path.basename(entry.path);
+                if (!permission_set_entry_matches(entry, requested_name)) continue;
                 const suffix = ".permissionset-meta.xml";
-                if (file_name.len <= suffix.len) continue;
+                const file_name = std.fs.path.basename(entry.path);
                 const permission_set_name = file_name[0 .. file_name.len - suffix.len];
-                if (!std.ascii.eqlIgnoreCase(permission_set_name, requested_name)) continue;
-
                 const full_path = std.fmt.allocPrint(
                     self.arena,
                     "{s}/{s}",
@@ -6425,131 +6419,194 @@ pub const Evaluator = struct {
                     .limited(1024 * 1024),
                 ) catch continue;
                 if (self.find_permission_set_record_by_name(permission_set_name) != null) return;
-
-                const permission_set = try self.arena.create(types.SObject);
-                const permission_set_id = try self.alloc_id();
-                permission_set.* = .{ .type_name = "PermissionSet", .id = permission_set_id };
-                try permission_set.fields.put(
-                    self.arena,
-                    "Id",
-                    Value{ .string = permission_set_id },
+                const permission_set_id = try self.create_permission_set_record(
+                    permission_set_name,
+                    xml,
                 );
-                try permission_set.fields.put(
-                    self.arena,
-                    "Name",
-                    Value{ .string = try self.arena.dupe(u8, permission_set_name) },
-                );
-                try permission_set.fields.put(
-                    self.arena,
-                    "Label",
-                    Value{ .string = try self.arena.dupe(
-                        u8,
-                        self.xml_tag_value(xml, "label") orelse permission_set_name,
-                    ) },
-                );
-                try self.append_store_record("PermissionSet", permission_set);
-
-                var object_pos: usize = 0;
-                while (object_pos < xml.len) {
-                    const block_start = std.mem.indexOfPos(
-                        u8,
-                        xml,
-                        object_pos,
-                        "<objectPermissions>",
-                    ) orelse break;
-                    const block_content_start = block_start + "<objectPermissions>".len;
-                    const block_end = std.mem.indexOfPos(
-                        u8,
-                        xml,
-                        block_content_start,
-                        "</objectPermissions>",
-                    ) orelse break;
-                    const block = xml[block_content_start..block_end];
-
-                    const object_name = self.xml_tag_value(block, "object") orelse {
-                        object_pos = block_end + "</objectPermissions>".len;
-                        continue;
-                    };
-
-                    const object_permission = try self.arena.create(types.SObject);
-                    object_permission.* = .{ .type_name = "ObjectPermissions", .id = try self.alloc_id() };
-                    try object_permission.fields.put(
-                        self.arena,
-                        "Id",
-                        Value{ .string = object_permission.id.? },
-                    );
-                    try object_permission.fields.put(
-                        self.arena,
-                        "ParentId",
-                        Value{ .string = permission_set_id },
-                    );
-                    try object_permission.fields.put(
-                        self.arena,
-                        "SobjectType",
-                        Value{ .string = try self.arena.dupe(u8, object_name) },
-                    );
-                    try object_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsDelete", Value{ .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false });
-                    try self.append_store_record("ObjectPermissions", object_permission);
-
-                    object_pos = block_end + "</objectPermissions>".len;
-                }
-
-                var field_pos: usize = 0;
-                while (field_pos < xml.len) {
-                    const block_start = std.mem.indexOfPos(
-                        u8,
-                        xml,
-                        field_pos,
-                        "<fieldPermissions>",
-                    ) orelse break;
-                    const block_content_start = block_start + "<fieldPermissions>".len;
-                    const block_end = std.mem.indexOfPos(
-                        u8,
-                        xml,
-                        block_content_start,
-                        "</fieldPermissions>",
-                    ) orelse break;
-                    const block = xml[block_content_start..block_end];
-
-                    const full_field_name = self.xml_tag_value(block, "field") orelse {
-                        field_pos = block_end + "</fieldPermissions>".len;
-                        continue;
-                    };
-
-                    var expanded_fields: std.ArrayListUnmanaged([]const u8) = .empty;
-                    try self.append_expanded_permission_fields(&expanded_fields, full_field_name);
-                    for (expanded_fields.items) |expanded_field_name| {
-                        const field_permission = try self.arena.create(types.SObject);
-                        field_permission.* = .{ .type_name = "FieldPermissions", .id = try self.alloc_id() };
-                        try field_permission.fields.put(
-                            self.arena,
-                            "Id",
-                            Value{ .string = field_permission.id.? },
-                        );
-                        try field_permission.fields.put(
-                            self.arena,
-                            "ParentId",
-                            Value{ .string = permission_set_id },
-                        );
-                        try field_permission.fields.put(
-                            self.arena,
-                            "Field",
-                            Value{ .string = try self.arena.dupe(u8, expanded_field_name) },
-                        );
-                        try field_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "readable") orelse false });
-                        try field_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
-                        try field_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
-                        try self.append_store_record("FieldPermissions", field_permission);
-                    }
-
-                    field_pos = block_end + "</fieldPermissions>".len;
-                }
-
+                try self.load_object_permissions(xml, permission_set_id);
+                try self.load_field_permissions(xml, permission_set_id);
                 return;
             }
+        }
+    }
+
+    fn permission_set_entry_matches(entry: anytype, requested_name: []const u8) bool {
+        if (entry.kind != .file) return false;
+        if (std.mem.indexOf(u8, entry.path, "permissionsets/") == null) return false;
+        if (!std.mem.endsWith(u8, entry.path, ".permissionset-meta.xml")) return false;
+        const suffix = ".permissionset-meta.xml";
+        const file_name = std.fs.path.basename(entry.path);
+        if (file_name.len <= suffix.len) return false;
+        const permission_set_name = file_name[0 .. file_name.len - suffix.len];
+        return std.ascii.eqlIgnoreCase(permission_set_name, requested_name);
+    }
+
+    fn create_permission_set_record(
+        self: *Evaluator,
+        permission_set_name: []const u8,
+        xml: []const u8,
+    ) ![]const u8 {
+        const permission_set = try self.arena.create(types.SObject);
+        const permission_set_id = try self.alloc_id();
+        permission_set.* = .{ .type_name = "PermissionSet", .id = permission_set_id };
+        try permission_set.fields.put(self.arena, "Id", Value{ .string = permission_set_id });
+        try permission_set.fields.put(
+            self.arena,
+            "Name",
+            Value{ .string = try self.arena.dupe(u8, permission_set_name) },
+        );
+        try permission_set.fields.put(
+            self.arena,
+            "Label",
+            Value{ .string = try self.arena.dupe(
+                u8,
+                self.xml_tag_value(xml, "label") orelse permission_set_name,
+            ) },
+        );
+        try self.append_store_record("PermissionSet", permission_set);
+        return permission_set_id;
+    }
+
+    fn load_object_permissions(
+        self: *Evaluator,
+        xml: []const u8,
+        permission_set_id: []const u8,
+    ) !void {
+        var object_pos: usize = 0;
+        while (object_pos < xml.len) {
+            const block_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                object_pos,
+                "<objectPermissions>",
+            ) orelse break;
+            const block_content_start = block_start + "<objectPermissions>".len;
+            const block_end = std.mem.indexOfPos(
+                u8,
+                xml,
+                block_content_start,
+                "</objectPermissions>",
+            ) orelse break;
+            const block = xml[block_content_start..block_end];
+            if (self.xml_tag_value(block, "object")) |object_name| {
+                try self.append_object_permission(block, object_name, permission_set_id);
+            }
+            object_pos = block_end + "</objectPermissions>".len;
+        }
+    }
+
+    fn append_object_permission(
+        self: *Evaluator,
+        block: []const u8,
+        object_name: []const u8,
+        permission_set_id: []const u8,
+    ) !void {
+        const object_permission = try self.arena.create(types.SObject);
+        object_permission.* = .{
+            .type_name = "ObjectPermissions",
+            .id = try self.alloc_id(),
+        };
+        try object_permission.fields.put(
+            self.arena,
+            "Id",
+            Value{ .string = object_permission.id.? },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "ParentId",
+            Value{ .string = permission_set_id },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "SobjectType",
+            Value{ .string = try self.arena.dupe(u8, object_name) },
+        );
+        try object_permission.fields.put(self.arena, "PermissionsRead", Value{
+            .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false,
+        });
+        try object_permission.fields.put(self.arena, "PermissionsCreate", Value{
+            .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false,
+        });
+        try object_permission.fields.put(self.arena, "PermissionsEdit", Value{
+            .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false,
+        });
+        try object_permission.fields.put(self.arena, "PermissionsDelete", Value{
+            .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false,
+        });
+        try self.append_store_record("ObjectPermissions", object_permission);
+    }
+
+    fn load_field_permissions(
+        self: *Evaluator,
+        xml: []const u8,
+        permission_set_id: []const u8,
+    ) !void {
+        var field_pos: usize = 0;
+        while (field_pos < xml.len) {
+            const block_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                field_pos,
+                "<fieldPermissions>",
+            ) orelse break;
+            const block_content_start = block_start + "<fieldPermissions>".len;
+            const block_end = std.mem.indexOfPos(
+                u8,
+                xml,
+                block_content_start,
+                "</fieldPermissions>",
+            ) orelse break;
+            const block = xml[block_content_start..block_end];
+            if (self.xml_tag_value(block, "field")) |full_field_name| {
+                try self.append_expanded_field_permissions(
+                    block,
+                    full_field_name,
+                    permission_set_id,
+                );
+            }
+            field_pos = block_end + "</fieldPermissions>".len;
+        }
+    }
+
+    fn append_expanded_field_permissions(
+        self: *Evaluator,
+        block: []const u8,
+        full_field_name: []const u8,
+        permission_set_id: []const u8,
+    ) !void {
+        var expanded_fields: std.ArrayListUnmanaged([]const u8) = .empty;
+        try self.append_expanded_permission_fields(&expanded_fields, full_field_name);
+        for (expanded_fields.items) |expanded_field_name| {
+            const field_permission = try self.arena.create(types.SObject);
+            field_permission.* = .{
+                .type_name = "FieldPermissions",
+                .id = try self.alloc_id(),
+            };
+            try field_permission.fields.put(
+                self.arena,
+                "Id",
+                Value{ .string = field_permission.id.? },
+            );
+            try field_permission.fields.put(
+                self.arena,
+                "ParentId",
+                Value{ .string = permission_set_id },
+            );
+            try field_permission.fields.put(
+                self.arena,
+                "Field",
+                Value{ .string = try self.arena.dupe(u8, expanded_field_name) },
+            );
+            try field_permission.fields.put(self.arena, "PermissionsRead", Value{
+                .boolean = self.xml_tag_bool_value(block, "readable") orelse false,
+            });
+            try field_permission.fields.put(self.arena, "PermissionsCreate", Value{
+                .boolean = self.xml_tag_bool_value(block, "editable") orelse false,
+            });
+            try field_permission.fields.put(self.arena, "PermissionsEdit", Value{
+                .boolean = self.xml_tag_bool_value(block, "editable") orelse false,
+            });
+            try self.append_store_record("FieldPermissions", field_permission);
         }
     }
 
