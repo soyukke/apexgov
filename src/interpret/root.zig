@@ -2131,7 +2131,15 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("[{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\",\"NumberOfEmployees\":\"7\",\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"},{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]", result.value.string);
+    const expected_rebuilt_contacts =
+        "[{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\"," ++
+        "\"Name\":\"Acme\",\"NumberOfEmployees\":\"7\"," ++
+        "\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[" ++
+        "{\"attributes\":{\"type\":\"Contact\"}," ++
+        "\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"}," ++
+        "{\"attributes\":{\"type\":\"Contact\"}," ++
+        "\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]";
+    try std.testing.expectEqualStrings(expected_rebuilt_contacts, result.value.string);
 }
 
 test "E2E: custom property setters can delegate writes" {
@@ -3406,7 +3414,7 @@ test "E2E: User query by UserInfo username resolves the current user when other 
     try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
 }
 
-test "E2E: User query by UserInfo username resolves the current user before any User records exist" {
+test "E2E: User query by UserInfo username resolves current user before any User records exist" {
     const source =
         \\public class SeededCurrentUserUsernameQueryTest {
         \\    public static String test() {
@@ -7207,7 +7215,7 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
-test "E2E: parent constructors can read overridden type getters before child initialization without losing child state" {
+test "E2E: parent ctors read overridden type getters before child init without losing child state" {
     const source =
         \\public abstract class ParentCtorTypeHost {
         \\    private static Map<String, String> readings = new Map<String, String>();
@@ -7659,7 +7667,7 @@ test "E2E: direct property access resolves unsaved relationship records assigned
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
-test "E2E: member-held direct property access resolves unsaved relationship records assigned via __r" {
+test "E2E: member direct property access resolves unsaved relationship records via __r" {
     const source =
         \\public class MemberHeldUnsavedParentTest {
         \\    private Session__c sessionRecord;
@@ -7685,7 +7693,7 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
-test "E2E: member-held direct property access resolves custom fields on unsaved relationship records" {
+test "E2E: member property access resolves custom fields on unsaved relationship records" {
     const source =
         \\public class MemberHeldUnsavedCustomFieldTest {
         \\    private Session__c sessionRecord;
@@ -7696,7 +7704,8 @@ test "E2E: member-held direct property access resolves custom fields on unsaved 
         \\        return this.sessionRecord.Experience__r.Type__c;
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        Experience__c ex = new Experience__c(Name = 'Hiking', Type__c = 'Adventure');
+        \\        Session__c sessionRecord = new Session__c(Experience__r = ex);
         \\        return new MemberHeldUnsavedCustomFieldTest(sessionRecord).getType();
         \\    }
         \\}
@@ -7721,7 +7730,8 @@ test "E2E: SObject initializer can read custom fields from member-held relations
         \\        return new Account(Name = this.sessionRecord.Experience__r.Type__c);
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        Experience__c ex = new Experience__c(Name = 'Hiking', Type__c = 'Adventure');
+        \\        Session__c sessionRecord = new Session__c(Experience__r = ex);
         \\        return new RelatedInitializerReadTest(sessionRecord).build().Name;
         \\    }
         \\}
@@ -8500,8 +8510,11 @@ test "run_test_suite keeps repo-root metadata loading scoped to the requested re
         \\</CustomObject>
         ,
     });
+    const required_text_path =
+        "repos/app-b/force-app/main/default/objects/Widget__c/fields/" ++
+        "Required_Text__c.field-meta.xml";
     try tmp_dir.dir.writeFile(std.testing.io, .{
-        .sub_path = "repos/app-b/force-app/main/default/objects/Widget__c/fields/Required_Text__c.field-meta.xml",
+        .sub_path = required_text_path,
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
