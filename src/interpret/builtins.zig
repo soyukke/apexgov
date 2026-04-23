@@ -228,66 +228,15 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
         return dispatch_static_logging_level(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
-    if (ci.eqlIgnoreCase(class_name, "UUID")) {
-        if (ci.eqlIgnoreCase(method_name, "randomUUID")) {
-            // Generate a deterministic pseudo-UUID based on a counter
-            const id = ctx.eval.next_id;
-            ctx.eval.next_id += 1;
-            const uuid_str = try std.fmt.allocPrint(
-                ctx.arena,
-                "{x:0>8}-0000-4000-8000-{x:0>12}",
-                .{ id, id },
-            );
-            const uuid_obj = try ctx.arena.create(types.ObjectInstance);
-            uuid_obj.* = .{ .class_name = "UUID" };
-            try uuid_obj.fields.put(ctx.arena, "value", Value{ .string = uuid_str });
-            return Value{ .object = uuid_obj };
-        }
-        return null;
-    }
-    if (ci.eqlIgnoreCase(class_name, "OrgLimits")) {
-        if (ci.eqlIgnoreCase(method_name, "getMap")) {
-            const map = try ctx.arena.create(types.MapValue);
-            map.* = .{};
-            // Seed known org limits with plausible defaults so that
-            // callers like `OrgLimits.getMap().get('SingleEmail').getValue()` work.
-            const known = [_]struct { name: []const u8, value: i64, limit: i64 }{
-                .{ .name = "SingleEmail", .value = 0, .limit = 5000 },
-                .{ .name = "MassEmail", .value = 0, .limit = 10 },
-                .{ .name = "DailyApiRequests", .value = 0, .limit = 100000 },
-                .{ .name = "DailyAsyncApexExecutions", .value = 0, .limit = 250000 },
-                .{ .name = "DailyBulkApiBatches", .value = 0, .limit = 15000 },
-                .{ .name = "HourlyAsyncReportRuns", .value = 0, .limit = 1200 },
-                .{ .name = "DailyDurableGenericStreamingApiEvents", .value = 0, .limit = 1000000 },
-                .{ .name = "DailyDurableStreamingApiEvents", .value = 0, .limit = 1000000 },
-                .{ .name = "DailyStreamingApiEvents", .value = 0, .limit = 1000000 },
-            };
-            for (known) |k| {
-                const ol = try ctx.arena.create(types.ObjectInstance);
-                ol.* = .{ .class_name = "System.OrgLimit" };
-                try ol.fields.put(ctx.arena, "name", Value{ .string = k.name });
-                const current_value: i64 = if (std.ascii.eqlIgnoreCase(k.name, "SingleEmail"))
-                    ctx.eval.reserved_single_email_capacity
-                else
-                    k.value;
-                try ol.fields.put(ctx.arena, "value", Value{ .integer = current_value });
-                try ol.fields.put(ctx.arena, "limit", Value{ .integer = k.limit });
-                try map.entries.put(ctx.arena, k.name, Value{ .object = ol });
-            }
-            return Value{ .map = map };
-        }
-        return null;
-    }
+    if (ci.eqlIgnoreCase(class_name, "UUID")) return dispatch_static_uuid(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "OrgLimits"))
+        return dispatch_static_org_limits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Database")) return dispatch_database(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "RestContext"))
         return dispatch_static_rest_context(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "HttpResponse") or
         ci.eqlIgnoreCase(class_name, "HttpRequest"))
-    {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = class_name };
-        return Value{ .object = obj };
-    }
+        return dispatch_static_http_instance(ctx, class_name);
     if (ci.eqlIgnoreCase(class_name, "Schema"))
         return dispatch_static_schema(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Security"))
@@ -295,13 +244,7 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or
         ci.eqlIgnoreCase(class_name, "ConnectApi"))
-    {
-        if (ctx.see_all_data) return Value.null_val;
-        return ctx.throw_exception(
-            "UnsupportedOperationException",
-            "ConnectApi is not supported in data-siloed tests",
-        );
-    }
+        return dispatch_static_connect_api(ctx);
     if (ci.eqlIgnoreCase(class_name, "FeatureManagement"))
         return dispatch_static_feature_management(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
@@ -315,11 +258,7 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "Pattern"))
         return dispatch_static_pattern(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Type")) return dispatch_static_type(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Request")) {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Request" };
-        return Value{ .object = obj };
-    }
+    if (ci.eqlIgnoreCase(class_name, "Request")) return dispatch_static_request(ctx);
     if (ci.eqlIgnoreCase(class_name, "Crypto"))
         return dispatch_static_crypto(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Blob")) return dispatch_static_blob(ctx, method_name, args);
@@ -329,70 +268,13 @@ pub fn dispatch_static(
         return dispatch_static_messaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatch_static_event_bus(method_name);
     if (ci.eqlIgnoreCase(class_name, "Invocable.Action")) {
-        if (ci.eqlIgnoreCase(method_name, "createCustomAction") and args.len >= 2) {
-            // Return an Invocable.Action instance carrying the action type
-            // ("Flow"/"ApexAction"/...) and the named callable. setInvocations()
-            // later attaches the input list, and invoke() synthesizes a
-            // single-successful-result list per invocation.
-            const action = try ctx.arena.create(types.ObjectInstance);
-            action.* = .{ .class_name = "Invocable.Action" };
-            try action.fields.put(ctx.arena, "actionType", args[0]);
-            try action.fields.put(ctx.arena, "name", args[1]);
-            // When the caller asks for a flow but we do not have the flow
-            // metadata loaded, mark the action as "not existent" so that
-            // invoke() emits failure results rather than pretending to
-            // succeed.
-            var exists: bool = true;
-            if (args[0] == .string and args[1] == .string) {
-                if (std.ascii.eqlIgnoreCase(args[0].string, "Flow")) {
-                    if (ctx.eval.classes.get(args[1].string) == null) {
-                        exists = false;
-                    }
-                }
-            }
-            try action.fields.put(ctx.arena, "exists", Value{ .boolean = exists });
-            return Value{ .object = action };
-        }
+        if (try dispatch_static_invocable_action(ctx, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(class_name, "Test")) return dispatch_static_test(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Location") or
         ci.eqlIgnoreCase(class_name, "System.Location"))
     {
-        if (ci.eqlIgnoreCase(method_name, "newInstance") and args.len >= 2) {
-            const loc = try ctx.arena.create(types.ObjectInstance);
-            loc.* = .{ .class_name = "System.Location" };
-            try loc.fields.put(ctx.arena, "latitude", args[0]);
-            try loc.fields.put(ctx.arena, "longitude", args[1]);
-            return Value{ .object = loc };
-        }
-        if (ci.eqlIgnoreCase(method_name, "getDistance") and args.len >= 3) {
-            // Haversine distance between two locations. Unit is "mi" or "km".
-            const get_coord = struct {
-                fn get(val: Value, field: []const u8) f64 {
-                    if (val != .object) return 0;
-                    const v = val.object.fields.get(field) orelse return 0;
-                    return switch (v) {
-                        .double => |d| d,
-                        .integer => |i| @floatFromInt(i),
-                        .long => |i| @floatFromInt(i),
-                        else => 0,
-                    };
-                }
-            };
-            const lat1 = get_coord.get(args[0], "latitude");
-            const lon1 = get_coord.get(args[0], "longitude");
-            const lat2 = get_coord.get(args[1], "latitude");
-            const lon2 = get_coord.get(args[1], "longitude");
-            const unit_str: []const u8 = if (args[2] == .string) args[2].string else "km";
-            const radius: f64 = if (std.ascii.eqlIgnoreCase(unit_str, "mi")) 3958.8 else 6371.0;
-            const to_rad: f64 = std.math.pi / 180.0;
-            const dlat = (lat2 - lat1) * to_rad;
-            const dlon = (lon2 - lon1) * to_rad;
-            const a = @sin(dlat / 2) * @sin(dlat / 2) +
-                @cos(lat1 * to_rad) * @cos(lat2 * to_rad) * @sin(dlon / 2) * @sin(dlon / 2);
-            const c = 2 * std.math.atan2(@sqrt(a), @sqrt(1 - a));
-            return Value{ .double = radius * c };
-        }
+        if (try dispatch_static_location(ctx, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(class_name, "Formula"))
         return dispatch_static_formula(ctx, method_name, args);
@@ -414,25 +296,172 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
         ctx.eval.classes.get("fflib_IDGenerator") == null)
     {
-        if (ci.eqlIgnoreCase(method_name, "generate") and args.len > 0) {
-            const sobj_name: []const u8 = if (args[0] == .object and
-                (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
-                    ci.eqlIgnoreCase(args[0].object.class_name, "SObjectType")))
-            blk: {
-                if (args[0].object.fields.get("name")) |n| if (n == .string) break :blk n.string;
-                break :blk "SObject";
-            } else if (args[0] == .string) args[0].string else "SObject";
-            const prefix = builtins_key_prefix_for_name(sobj_name);
-            ctx.eval.next_id += 1;
-            const id_str = try std.fmt.allocPrint(
-                ctx.arena,
-                "{s}{x:0>12}",
-                .{ prefix, ctx.eval.next_id },
-            );
-            return Value{ .string = id_str };
-        }
+        if (try dispatch_static_fflib_id_generator(ctx, method_name, args)) |v| return v;
     }
     return null;
+}
+
+fn dispatch_static_uuid(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+    if (!std.ascii.eqlIgnoreCase(method_name, "randomUUID")) return null;
+    // Generate a deterministic pseudo-UUID based on a counter
+    const id = ctx.eval.next_id;
+    ctx.eval.next_id += 1;
+    const uuid_str = try std.fmt.allocPrint(
+        ctx.arena,
+        "{x:0>8}-0000-4000-8000-{x:0>12}",
+        .{ id, id },
+    );
+    const uuid_obj = try ctx.arena.create(types.ObjectInstance);
+    uuid_obj.* = .{ .class_name = "UUID" };
+    try uuid_obj.fields.put(ctx.arena, "value", Value{ .string = uuid_str });
+    return Value{ .object = uuid_obj };
+}
+
+fn dispatch_static_org_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
+    if (!std.ascii.eqlIgnoreCase(method_name, "getMap")) return null;
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    // Seed known org limits with plausible defaults so that
+    // callers like `OrgLimits.getMap().get('SingleEmail').getValue()` work.
+    const known = [_]struct { name: []const u8, value: i64, limit: i64 }{
+        .{ .name = "SingleEmail", .value = 0, .limit = 5000 },
+        .{ .name = "MassEmail", .value = 0, .limit = 10 },
+        .{ .name = "DailyApiRequests", .value = 0, .limit = 100000 },
+        .{ .name = "DailyAsyncApexExecutions", .value = 0, .limit = 250000 },
+        .{ .name = "DailyBulkApiBatches", .value = 0, .limit = 15000 },
+        .{ .name = "HourlyAsyncReportRuns", .value = 0, .limit = 1200 },
+        .{ .name = "DailyDurableGenericStreamingApiEvents", .value = 0, .limit = 1000000 },
+        .{ .name = "DailyDurableStreamingApiEvents", .value = 0, .limit = 1000000 },
+        .{ .name = "DailyStreamingApiEvents", .value = 0, .limit = 1000000 },
+    };
+    for (known) |k| {
+        const ol = try ctx.arena.create(types.ObjectInstance);
+        ol.* = .{ .class_name = "System.OrgLimit" };
+        try ol.fields.put(ctx.arena, "name", Value{ .string = k.name });
+        const current_value: i64 = if (std.ascii.eqlIgnoreCase(k.name, "SingleEmail"))
+            ctx.eval.reserved_single_email_capacity
+        else
+            k.value;
+        try ol.fields.put(ctx.arena, "value", Value{ .integer = current_value });
+        try ol.fields.put(ctx.arena, "limit", Value{ .integer = k.limit });
+        try map.entries.put(ctx.arena, k.name, Value{ .object = ol });
+    }
+    return Value{ .map = map };
+}
+
+fn dispatch_static_http_instance(ctx: *BuiltinContext, class_name: []const u8) !?Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = class_name };
+    return Value{ .object = obj };
+}
+
+fn dispatch_static_connect_api(ctx: *BuiltinContext) !?Value {
+    if (ctx.see_all_data) return Value.null_val;
+    return ctx.throw_exception(
+        "UnsupportedOperationException",
+        "ConnectApi is not supported in data-siloed tests",
+    );
+}
+
+fn dispatch_static_request(ctx: *BuiltinContext) !?Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Request" };
+    return Value{ .object = obj };
+}
+
+fn dispatch_static_invocable_action(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (!std.ascii.eqlIgnoreCase(method_name, "createCustomAction")) return null;
+    if (args.len < 2) return null;
+    // Return an Invocable.Action instance carrying the action type
+    // ("Flow"/"ApexAction"/...) and the named callable. setInvocations()
+    // later attaches the input list, and invoke() synthesizes a
+    // single-successful-result list per invocation.
+    const action = try ctx.arena.create(types.ObjectInstance);
+    action.* = .{ .class_name = "Invocable.Action" };
+    try action.fields.put(ctx.arena, "actionType", args[0]);
+    try action.fields.put(ctx.arena, "name", args[1]);
+    // When the caller asks for a flow but we do not have the flow
+    // metadata loaded, mark the action as "not existent" so that
+    // invoke() emits failure results rather than pretending to succeed.
+    var exists: bool = true;
+    if (args[0] == .string and args[1] == .string) {
+        if (std.ascii.eqlIgnoreCase(args[0].string, "Flow")) {
+            if (ctx.eval.classes.get(args[1].string) == null) {
+                exists = false;
+            }
+        }
+    }
+    try action.fields.put(ctx.arena, "exists", Value{ .boolean = exists });
+    return Value{ .object = action };
+}
+
+fn dispatch_static_location(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "newInstance") and args.len >= 2) {
+        const loc = try ctx.arena.create(types.ObjectInstance);
+        loc.* = .{ .class_name = "System.Location" };
+        try loc.fields.put(ctx.arena, "latitude", args[0]);
+        try loc.fields.put(ctx.arena, "longitude", args[1]);
+        return Value{ .object = loc };
+    }
+    if (!ci.eqlIgnoreCase(method_name, "getDistance") or args.len < 3) return null;
+    // Haversine distance between two locations. Unit is "mi" or "km".
+    const lat1 = location_coord_field(args[0], "latitude");
+    const lon1 = location_coord_field(args[0], "longitude");
+    const lat2 = location_coord_field(args[1], "latitude");
+    const lon2 = location_coord_field(args[1], "longitude");
+    const unit_str: []const u8 = if (args[2] == .string) args[2].string else "km";
+    const radius: f64 = if (ci.eqlIgnoreCase(unit_str, "mi")) 3958.8 else 6371.0;
+    const to_rad: f64 = std.math.pi / 180.0;
+    const dlat = (lat2 - lat1) * to_rad;
+    const dlon = (lon2 - lon1) * to_rad;
+    const a = @sin(dlat / 2) * @sin(dlat / 2) +
+        @cos(lat1 * to_rad) * @cos(lat2 * to_rad) * @sin(dlon / 2) * @sin(dlon / 2);
+    const c = 2 * std.math.atan2(@sqrt(a), @sqrt(1 - a));
+    return Value{ .double = radius * c };
+}
+
+fn location_coord_field(val: Value, field: []const u8) f64 {
+    if (val != .object) return 0;
+    const v = val.object.fields.get(field) orelse return 0;
+    return switch (v) {
+        .double => |d| d,
+        .integer => |i| @floatFromInt(i),
+        .long => |i| @floatFromInt(i),
+        else => 0,
+    };
+}
+
+fn dispatch_static_fflib_id_generator(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const ci = std.ascii;
+    if (!ci.eqlIgnoreCase(method_name, "generate") or args.len == 0) return null;
+    const sobj_name: []const u8 = if (args[0] == .object and
+        (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
+            ci.eqlIgnoreCase(args[0].object.class_name, "SObjectType")))
+    blk: {
+        if (args[0].object.fields.get("name")) |n| if (n == .string) break :blk n.string;
+        break :blk "SObject";
+    } else if (args[0] == .string) args[0].string else "SObject";
+    const prefix = builtins_key_prefix_for_name(sobj_name);
+    ctx.eval.next_id += 1;
+    const id_str = try std.fmt.allocPrint(
+        ctx.arena,
+        "{s}{x:0>12}",
+        .{ prefix, ctx.eval.next_id },
+    );
+    return Value{ .string = id_str };
 }
 
 /// Quick keyPrefix lookup used by builtin-stubbed id generators. Returns `000` for
