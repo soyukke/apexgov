@@ -8747,6 +8747,165 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn eval_call_super(self: *Evaluator, current_env: *Env, args: []const Value) !void {
+        const this_val = current_env.get("this") orelse return;
+        if (this_val != .object) return;
+        const ctor_class = if (self.current_constructor_class) |cc|
+            self.find_class(cc)
+        else
+            self.find_class(this_val.object.class_name);
+        const cd = ctor_class orelse return;
+        const sc = cd.super_class orelse return;
+        const parent_decl = self.find_class(sc.name) orelse return;
+        try self.run_constructor(parent_decl, this_val.object, args);
+    }
+
+    fn eval_call_this_delegate(self: *Evaluator, current_env: *Env, args: []const Value) !void {
+        const this_val = current_env.get("this") orelse return;
+        if (this_val != .object) return;
+        const ctor_class_name = if (self.current_constructor_class) |cc|
+            cc
+        else
+            this_val.object.class_name;
+        const cd = self.find_class(ctor_class_name) orelse return;
+        try self.run_constructor(cd, this_val.object, args);
+    }
+
+    fn sync_fields_back_to_env(
+        pre_fields: []const Value,
+        this_obj: *types.ObjectInstance,
+        current_env: *Env,
+    ) void {
+        for (this_obj.fields.keys(), this_obj.fields.values(), 0..) |fk, fv, fi| {
+            if (fi < pre_fields.len) {
+                const pre = pre_fields[fi];
+                const changed = switch (fv) {
+                    .null_val => pre != .null_val,
+                    .string => |s| if (pre == .string)
+                        s.ptr != pre.string.ptr or s.len != pre.string.len
+                    else
+                        true,
+                    .integer => |i| if (pre == .integer) i != pre.integer else true,
+                    .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
+                    else => true,
+                };
+                if (changed) current_env.set(fk, fv) catch {};
+            } else {
+                current_env.set(fk, fv) catch {};
+            }
+        }
+    }
+
+    fn try_call_as_instance_method(
+        self: *Evaluator,
+        callee: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) !?Value {
+        const this_val = current_env.get("this") orelse return null;
+        if (this_val != .object) return null;
+        const actual_decl = self.find_class(this_val.object.class_name);
+        const dispatch_decl = blk: {
+            if (self.current_class) |current_class_name| {
+                if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
+            }
+            break :blk actual_decl orelse return Value.null_val;
+        };
+        const md = self.find_method_in_hierarchy(actual_decl, dispatch_decl, callee, args.len);
+        if (md == null) return null;
+
+        var pre_fields: [16]Value = undefined;
+        const field_keys = this_val.object.fields.keys();
+        const n_snap = @min(field_keys.len, pre_fields.len);
+        for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
+            pre_fields[fi] = v;
+        }
+        const result = try self.call_instance_method(
+            dispatch_decl,
+            this_val.object,
+            callee,
+            args,
+        );
+        sync_fields_back_to_env(pre_fields[0..n_snap], this_val.object, current_env);
+        return result;
+    }
+
+    fn try_call_static_in_current_class(
+        self: *Evaluator,
+        callee: []const u8,
+        args: []const Value,
+    ) !?Value {
+        const cc = self.current_class orelse return null;
+        if (self.find_class(cc)) |cd| {
+            if (self.find_best_method_in_class_filtered(cd, callee, args, true) != null) {
+                return try self.call_method(cc, callee, args);
+            }
+        }
+        if (self.resolve_outer_static_method_owner(cc, callee, args)) |outer_owner| {
+            return try self.call_method(outer_owner, callee, args);
+        }
+        return null;
+    }
+
+    fn try_call_any_loaded_class(
+        self: *Evaluator,
+        callee: []const u8,
+        args: []const Value,
+    ) !?Value {
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                if (member != .method_decl) continue;
+                const md = member.method_decl;
+                if (std.ascii.eqlIgnoreCase(md.name, callee)) {
+                    return try self.call_method(entry.key_ptr.*, callee, args);
+                }
+            }
+        }
+        return null;
+    }
+
+    fn eval_call_expr(self: *Evaluator, call: *ast.CallExpr, current_env: *Env) anyerror!Value {
+        if (call.loc.line > 0) {
+            self.current_call_line = call.loc.line;
+            if (self.call_stack.items.len > 0) {
+                self.call_stack.items[self.call_stack.items.len - 1].line = call.loc.line;
+            }
+        }
+        var args: std.ArrayListUnmanaged(Value) = .empty;
+        var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
+        for (call.args) |*arg| {
+            var arg_value = try self.eval_expr(arg, current_env);
+            arg_value = try self.maybe_coerce_schema_expr_value(arg, arg_value);
+            try args.append(self.arena, arg_value);
+            const hint = self.extract_expr_type_hint(arg, current_env);
+            try call_type_hints.append(self.arena, hint);
+        }
+        const prev_hints = self.cast_type_hints;
+        self.cast_type_hints = call_type_hints.items;
+        defer self.cast_type_hints = prev_hints;
+
+        if (std.mem.eql(u8, call.callee, "super")) {
+            try self.eval_call_super(current_env, args.items);
+            return Value.void_val;
+        }
+        if (std.mem.eql(u8, call.callee, "this")) {
+            try self.eval_call_this_delegate(current_env, args.items);
+            return Value.void_val;
+        }
+        if (try self.try_call_as_instance_method(call.callee, args.items, current_env)) |v| return v;
+        if (try self.try_call_static_in_current_class(call.callee, args.items)) |v| return v;
+        if (try self.try_call_any_loaded_class(call.callee, args.items)) |v| return v;
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object or this_val == .sobject or this_val == .string or
+                this_val == .list or this_val == .map or this_val == .set)
+            {
+                return self.eval_instance_method(this_val, call.callee, args.items, current_env);
+            }
+        }
+        return Value.null_val;
+    }
+
     fn eval_identifier_expr(self: *Evaluator, name: []const u8, current_env: *Env) anyerror!Value {
         if (current_env.get(name)) |val| {
             if (val != .null_val) return val;
@@ -8817,184 +8976,7 @@ pub const Evaluator = struct {
                 return self.eval_assignment(asgn, val, current_env);
             },
 
-            .call => |call| {
-                // Set call-site line for stack trace generation, and update parent frame's line
-                if (call.loc.line > 0) {
-                    self.current_call_line = call.loc.line;
-                    if (self.call_stack.items.len > 0)
-                        self.call_stack.items[self.call_stack.items.len - 1].line = call.loc.line;
-                }
-                var args: std.ArrayListUnmanaged(Value) = .empty;
-                var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
-                for (call.args) |*arg| {
-                    var arg_value = try self.eval_expr(arg, current_env);
-                    arg_value = try self.maybe_coerce_schema_expr_value(arg, arg_value);
-                    try args.append(self.arena, arg_value);
-                    const hint = self.extract_expr_type_hint(arg, current_env);
-                    try call_type_hints.append(self.arena, hint);
-                }
-                const prev_hints = self.cast_type_hints;
-                self.cast_type_hints = call_type_hints.items;
-                defer self.cast_type_hints = prev_hints;
-                // super(args) → call parent class constructor
-                if (std.mem.eql(u8, call.callee, "super")) {
-                    if (current_env.get("this")) |this_val| {
-                        if (this_val == .object) {
-                            // Use current_constructor_class to find the correct parent
-                            // (not the instance's actual class, which may be a child)
-                            const ctor_class = if (self.current_constructor_class) |cc|
-                                self.find_class(cc)
-                            else
-                                self.find_class(this_val.object.class_name);
-                            if (ctor_class) |cd| {
-                                if (cd.super_class) |sc| {
-                                    if (self.find_class(sc.name)) |parent_decl| {
-                                        try self.run_constructor(
-                                            parent_decl,
-                                            this_val.object,
-                                            args.items,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Value.void_val;
-                }
-                // this(args) → constructor delegation to another constructor in the same class
-                if (std.mem.eql(u8, call.callee, "this")) {
-                    if (current_env.get("this")) |this_val| {
-                        if (this_val == .object) {
-                            const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
-                            if (self.find_class(ctor_class_name)) |cd| {
-                                try self.run_constructor(cd, this_val.object, args.items);
-                            }
-                        }
-                    }
-                    return Value.void_val;
-                }
-                // Try as instance method on `this` first
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        const actual_decl: ?*ast.ClassDecl = self.find_class(
-                            this_val.object.class_name,
-                        );
-                        const dispatch_decl = blk: {
-                            if (self.current_class) |current_class_name| {
-                                if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
-                            }
-                            break :blk actual_decl orelse return Value.null_val;
-                        };
-                        {
-                            // Virtual dispatch: start at the runtime (child) class and walk up.
-                            // Without this, an inherited method calling another method of the
-                            // same receiver (e.g. parent.getStringValue() → toString()) would
-                            // miss the child's override because it would search only from the
-                            // defining (parent) class upward.
-                            const md = self.find_method_in_hierarchy(
-                                actual_decl,
-                                dispatch_decl,
-                                call.callee,
-                                args.items.len,
-                            );
-                            if (md != null) {
-                                // Snapshot field values before the call
-                                var pre_fields: [16]Value = undefined;
-                                const field_keys = this_val.object.fields.keys();
-                                const n_snap = @min(field_keys.len, pre_fields.len);
-                                for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
-                                    pre_fields[fi] = v;
-                                }
-                                const result = try self.call_instance_method(
-                                    dispatch_decl,
-                                    this_val.object,
-                                    call.callee,
-                                    args.items,
-                                );
-                                // Sync back only fields that were MODIFIED by the called method
-                                for (
-                                    this_val.object.fields.keys(),
-                                    this_val.object.fields.values(),
-                                    0..,
-                                ) |fk, fv, fi| {
-                                    if (fi < n_snap) {
-                                        // Compare by identity: if value changed, sync it
-                                        const pre = pre_fields[fi];
-                                        const changed = switch (fv) {
-                                            .null_val => pre != .null_val,
-                                            .string => |s| if (pre == .string) s.ptr != pre.string.ptr or s.len != pre.string.len else true,
-                                            .integer => |i| if (pre == .integer) i != pre.integer else true,
-                                            .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
-                                            else => true,
-                                        };
-                                        if (changed) {
-                                            current_env.set(fk, fv) catch {};
-                                        }
-                                    } else {
-                                        // New field added during call, sync it
-                                        current_env.set(fk, fv) catch {};
-                                    }
-                                }
-                                return result;
-                            }
-                        }
-                    }
-                }
-                // Try as static method in current class first
-                if (self.current_class) |cc| {
-                    if (self.find_class(cc)) |cd| {
-                        if (self.find_best_method_in_class_filtered(
-                            cd,
-                            call.callee,
-                            args.items,
-                            true,
-                        ) != null) {
-                            return self.call_method(cc, call.callee, args.items);
-                        }
-                    }
-                    if (self.resolve_outer_static_method_owner(
-                        cc,
-                        call.callee,
-                        args.items,
-                    )) |outer_owner| {
-                        return self.call_method(outer_owner, call.callee, args.items);
-                    }
-                }
-                // Search all loaded classes for matching method
-                var class_iter = self.classes.iterator();
-                while (class_iter.next()) |entry| {
-                    for (entry.value_ptr.*.members) |member| {
-                        switch (member) {
-                            .method_decl => |md| {
-                                if (std.ascii.eqlIgnoreCase(md.name, call.callee)) {
-                                    return self.call_method(
-                                        entry.key_ptr.*,
-                                        call.callee,
-                                        args.items,
-                                    );
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-                // Last resort: dispatch as `this.callee(args)` on the current receiver so
-                // that inherited builtin methods (e.g. `Exception.setMessage`) still fire
-                // when a user subclass calls them without an explicit `this.` qualifier.
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object or this_val == .sobject or this_val == .string or
-                        this_val == .list or this_val == .map or this_val == .set)
-                    {
-                        return self.eval_instance_method(
-                            this_val,
-                            call.callee,
-                            args.items,
-                            current_env,
-                        );
-                    }
-                }
-                return Value.null_val;
-            },
+            .call => |call| return self.eval_call_expr(call, current_env),
 
             .method_call => |mc| return self.eval_method_call(mc, current_env),
 
