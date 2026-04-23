@@ -12779,21 +12779,23 @@ pub const Evaluator = struct {
         return utils.coerce_to_string(key_value, self.arena);
     }
 
-    fn eval_map_method(
+    /// Map primitives: put/get/containsKey/size/isEmpty, plus the rarely-used
+    /// equals/hashCode overrides that user code may delegate through.
+    fn eval_map_basic_method(
         self: *Evaluator,
         map: *types.MapValue,
         method: []const u8,
         args: []const Value,
-    ) !Value {
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
             const key = try self.map_storage_key(map, args[0]);
             try map.entries.put(self.arena, key, args[1]);
             try map.key_values.put(self.arena, key, args[0]);
             return .void_val;
         }
-        // Apex's Map.equals(Object) compares entries pairwise. Used by user classes
-        // that override `equals` and delegate to their internal Map (e.g. apex-expression's
-        // Environment). Missing this returned null and silently broke equality checks.
+        // Apex's Map.equals(Object) compares entries pairwise. Missing this
+        // returned null and silently broke equality checks for user classes
+        // that override equals() and delegate to an internal Map.
         if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
             return Value{ .boolean = self.values_equal(Value{ .map = map }, args[0]) };
         }
@@ -12809,10 +12811,22 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "containsKey") and args.len > 0) {
             return Value{ .boolean = self.find_map_entry_key(map, args[0]) != null };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size"))
+        if (std.ascii.eqlIgnoreCase(method, "size")) {
             return Value{ .integer = @intCast(map.entries.count()) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) {
             return Value{ .boolean = map.entries.count() == 0 };
+        }
+        return null;
+    }
+
+    /// Projection methods: keySet, values.
+    fn eval_map_projection_method(
+        self: *Evaluator,
+        map: *types.MapValue,
+        method: []const u8,
+        _: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "keySet")) {
             const set = try self.arena.create(types.SetValue);
             set.* = .{};
@@ -12825,11 +12839,19 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "values")) {
             const list = try self.arena.create(types.ListValue);
             list.* = .{};
-            for (map.entries.values()) |val| {
-                try list.items.append(self.arena, val);
-            }
+            for (map.entries.values()) |val| try list.items.append(self.arena, val);
             return Value{ .list = list };
         }
+        return null;
+    }
+
+    /// Bulk / mutation methods: remove / putAll / clear / clone / deepClone.
+    fn eval_map_bulk_method(
+        self: *Evaluator,
+        map: *types.MapValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0) {
             if (self.find_map_entry_key(map, args[0])) |key| {
                 const val = map.entries.get(key) orelse return Value.null_val;
@@ -12840,25 +12862,7 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "putAll") and args.len > 0) {
-            if (args[0] == .map) {
-                for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-                    try map.entries.put(self.arena, k, v);
-                    const original_key = args[0].map.key_values.get(k) orelse Value{ .string = k };
-                    try map.key_values.put(self.arena, k, original_key);
-                }
-            } else if (args[0] == .list) {
-                // putAll from list of SObjects: key=Id, value=record
-                for (args[0].list.items.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                        try map.key_values.put(
-                            self.arena,
-                            item.sobject.id.?,
-                            Value{ .string = item.sobject.id.? },
-                        );
-                    }
-                }
-            }
+            try self.eval_map_put_all(map, args[0]);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clear")) {
@@ -12869,20 +12873,68 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "clone") or
             std.ascii.eqlIgnoreCase(method, "deepClone"))
         {
-            const new_map = try self.arena.create(types.MapValue);
-            new_map.* = .{};
-            for (map.entries.keys(), map.entries.values()) |k, v| {
-                const cloned_val =
-                    if (std.ascii.eqlIgnoreCase(method, "deepClone") and v == .sobject) blk: {
-                        const clone = try self.clone_s_object(v.sobject);
-                        break :blk Value{ .sobject = clone };
-                    } else v;
-                try new_map.entries.put(self.arena, k, cloned_val);
-                const original_key = map.key_values.get(k) orelse Value{ .string = k };
-                try new_map.key_values.put(self.arena, k, original_key);
-            }
-            return Value{ .map = new_map };
+            return try self.eval_map_clone(map, method);
         }
+        return null;
+    }
+
+    fn eval_map_put_all(
+        self: *Evaluator,
+        map: *types.MapValue,
+        source: Value,
+    ) !void {
+        if (source == .map) {
+            for (source.map.entries.keys(), source.map.entries.values()) |k, v| {
+                try map.entries.put(self.arena, k, v);
+                const original_key = source.map.key_values.get(k) orelse Value{ .string = k };
+                try map.key_values.put(self.arena, k, original_key);
+            }
+            return;
+        }
+        if (source != .list) return;
+        // putAll from list of SObjects: key=Id, value=record.
+        for (source.list.items.items) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                try map.entries.put(self.arena, item.sobject.id.?, item);
+                try map.key_values.put(
+                    self.arena,
+                    item.sobject.id.?,
+                    Value{ .string = item.sobject.id.? },
+                );
+            }
+        }
+    }
+
+    fn eval_map_clone(
+        self: *Evaluator,
+        map: *types.MapValue,
+        method: []const u8,
+    ) !Value {
+        const new_map = try self.arena.create(types.MapValue);
+        new_map.* = .{};
+        const deep = std.ascii.eqlIgnoreCase(method, "deepClone");
+        for (map.entries.keys(), map.entries.values()) |k, v| {
+            const cloned_val = if (deep and v == .sobject) blk: {
+                const clone = try self.clone_s_object(v.sobject);
+                break :blk Value{ .sobject = clone };
+            } else v;
+            try new_map.entries.put(self.arena, k, cloned_val);
+            const original_key = map.key_values.get(k) orelse Value{ .string = k };
+            try new_map.key_values.put(self.arena, k, original_key);
+        }
+        return Value{ .map = new_map };
+    }
+
+    fn eval_map_method(
+        self: *Evaluator,
+        map: *types.MapValue,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (try self.eval_map_basic_method(map, method, args)) |v| return v;
+        if (try self.eval_map_projection_method(map, method, args)) |v| return v;
+        if (try self.eval_map_bulk_method(map, method, args)) |v| return v;
+        // Implicit `getFieldName()` accessor for map entries (dot-get).
         if (args.len == 0 and std.mem.startsWith(u8, method, "get") and method.len > 3) {
             const field_name = method[3..];
             for (map.entries.keys(), map.entries.values()) |k, v| {
