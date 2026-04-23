@@ -12505,6 +12505,27 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !Value {
+        if (try self.eval_list_introspection(list, method, args)) |v| return v;
+        if (try self.eval_list_mutation(list, method, args)) |v| return v;
+        if (try self.eval_list_copy(list, method, args)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(method, "sort")) {
+            try self.eval_list_sort(list, args);
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
+            return try self.eval_list_get_sobject_type(list);
+        }
+        return Value.null_val;
+    }
+
+    /// Pure-query methods: iterator, toString, hashCode, equals, size, isEmpty,
+    /// get, contains, indexOf.
+    fn eval_list_introspection(
+        self: *Evaluator,
+        list: *types.ListValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "iterator")) {
             const iter = try self.arena.create(types.ObjectInstance);
             iter.* = .{ .class_name = "System.Iterator" };
@@ -12516,18 +12537,6 @@ pub const Evaluator = struct {
             try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
             try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
             return Value{ .object = iter };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "add")) {
-            if (args.len >= 2 and args[0] == .integer) {
-                if (args[0].integer < 0) return .void_val;
-                const i: usize = @intCast(args[0].integer);
-                if (i <= list.items.items.len) {
-                    try list.items.insert(self.arena, i, args[1]);
-                }
-                return .void_val;
-            }
-            if (args.len > 0) try list.items.append(self.arena, args[0]);
-            return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "toString")) {
             var buffer = std.ArrayListUnmanaged(u8).empty;
@@ -12546,15 +12555,51 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0) {
             return Value{ .boolean = self.values_equal(Value{ .list = list }, args[0]) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "size"))
+        if (std.ascii.eqlIgnoreCase(method, "size")) {
             return Value{ .integer = @intCast(list.items.items.len) };
-        if (std.ascii.eqlIgnoreCase(method, "isEmpty"))
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isEmpty")) {
             return Value{ .boolean = list.items.items.len == 0 };
+        }
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0 and args[0] == .integer) {
             if (args[0].integer < 0) return Value.null_val;
             const i: usize = @intCast(args[0].integer);
             if (i < list.items.items.len) return list.items.items[i];
             return Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
+            for (list.items.items) |item| {
+                if (self.values_equal(item, args[0])) return Value{ .boolean = true };
+            }
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
+            for (list.items.items, 0..) |item, idx| {
+                if (self.values_equal(item, args[0])) return Value{ .integer = @intCast(idx) };
+            }
+            return Value{ .integer = -1 };
+        }
+        return null;
+    }
+
+    /// In-place mutating methods: add, set, clear, remove, addAll.
+    fn eval_list_mutation(
+        self: *Evaluator,
+        list: *types.ListValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "add")) {
+            if (args.len >= 2 and args[0] == .integer) {
+                if (args[0].integer < 0) return .void_val;
+                const i: usize = @intCast(args[0].integer);
+                if (i <= list.items.items.len) {
+                    try list.items.insert(self.arena, i, args[1]);
+                }
+                return .void_val;
+            }
+            if (args.len > 0) try list.items.append(self.arena, args[0]);
+            return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "set") and args.len >= 2 and args[0] == .integer) {
             if (args[0].integer < 0) return .void_val;
@@ -12566,71 +12611,10 @@ pub const Evaluator = struct {
             list.items.items.len = 0;
             return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(method, "contains") and args.len > 0) {
-            for (list.items.items) |item| {
-                if (self.values_equal(item, args[0])) return Value{ .boolean = true };
-            }
-            return Value{ .boolean = false };
-        }
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0 and args[0] == .integer) {
             if (args[0].integer < 0) return .void_val;
             const i: usize = @intCast(args[0].integer);
-            if (i < list.items.items.len) {
-                const removed = list.items.orderedRemove(i);
-                return removed;
-            }
-            return .void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "sort")) {
-            // If an arg is provided and is a Comparator instance, use it
-            if (args.len > 0 and args[0] == .object) {
-                const comparator_obj = args[0].object;
-                if (self.find_class(comparator_obj.class_name)) |comparator_class| {
-                    // Insertion sort using comparator.compare(a, b)
-                    const items = list.items.items;
-                    var i_idx: usize = 1;
-                    while (i_idx < items.len) : (i_idx += 1) {
-                        const key = items[i_idx];
-                        var j_idx: usize = i_idx;
-                        while (j_idx > 0) {
-                            const cmp = try self.call_instance_method(
-                                comparator_class,
-                                comparator_obj,
-                                "compare",
-                                &.{ items[j_idx - 1], key },
-                            );
-                            if (cmp == .integer and cmp.integer > 0) {
-                                items[j_idx] = items[j_idx - 1];
-                                j_idx -= 1;
-                            } else break;
-                        }
-                        items[j_idx] = key;
-                    }
-                }
-            } else {
-                // Default sort: for objects implementing Comparable, use compareTo.
-                // Otherwise, sort by natural order (strings, integers, etc.)
-                const items = list.items.items;
-                const use_comparable = items.len > 0 and items[0] == .object and
-                    self.has_comparable_interface(items[0].object.class_name);
-                var i_idx: usize = 1;
-                while (i_idx < items.len) : (i_idx += 1) {
-                    const key = items[i_idx];
-                    var j_idx: usize = i_idx;
-                    while (j_idx > 0) {
-                        const cmp =
-                            if (use_comparable and items[j_idx - 1] == .object and key == .object)
-                                try self.call_compare_to(items[j_idx - 1].object, key)
-                            else
-                                self.compare_values(items[j_idx - 1], key);
-                        if (cmp > 0) {
-                            items[j_idx] = items[j_idx - 1];
-                            j_idx -= 1;
-                        } else break;
-                    }
-                    items[j_idx] = key;
-                }
-            }
+            if (i < list.items.items.len) return list.items.orderedRemove(i);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "addAll") and args.len > 0) {
@@ -12641,94 +12625,138 @@ pub const Evaluator = struct {
             }
             return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(method, "clone") or
-            std.ascii.eqlIgnoreCase(method, "deepClone"))
-        {
-            const is_deep = std.ascii.eqlIgnoreCase(method, "deepClone");
-            const new_list = try self.arena.create(types.ListValue);
-            new_list.* = .{};
-            new_list.element_type = list.element_type;
-            new_list.explicitly_generic = list.explicitly_generic;
-            for (list.items.items) |item| {
-                const cloned = if (is_deep and item == .sobject) blk: {
-                    const clone = try self.clone_s_object(item.sobject);
-                    break :blk Value{ .sobject = clone };
-                } else item;
-                try new_list.items.append(self.arena, cloned);
-            }
-            return Value{ .list = new_list };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
-            for (list.items.items, 0..) |item, idx| {
-                if (self.values_equal(item, args[0])) return Value{ .integer = @intCast(idx) };
-            }
-            return Value{ .integer = -1 };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-            if (list.element_type) |element_type| {
-                const base_type = type_base_name(element_type);
-                if (std.ascii.eqlIgnoreCase(base_type, "Object") or
-                    is_collection_type_name(base_type))
-                {
-                    return Value.null_val;
-                }
-                // Generic List<SObject> on the declaration side: look at the actual
-                // elements. If every item is the same concrete SObjectType (the
-                // common case when a typed list was coerced through a SObject
-                // parameter — e.g. `Map<Id, SObject>.values()` then passed into a
-                // super(records) that declares `List<SObject>`), report that type
-                // instead of null. Real Apex runs `List<Opportunity>.getSObjectType()
-                // == Opportunity`; fflib_SObjectDomain relies on the inference when
-                // a sibling Map<Id, SObject>.values() gets piped through its generic
-                // construct() shim.
-                //
-                // However, lists that the user *explicitly* constructed with
-                // `new List<SObject>()` (and then populated element-by-element)
-                // must keep returning null — that matches real Apex, and
-                // NebulaLogger's `setRecord(System.Iterable<Id>)` depends on it
-                // to classify ID-collection inputs as `Unknown`.
-                if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
-                    if (list.explicitly_generic) return Value.null_val;
-                    if (list.items.items.len == 0) return Value.null_val;
-                    var inferred: ?[]const u8 = null;
-                    for (list.items.items) |item| {
-                        if (item != .sobject) return Value.null_val;
-                        if (inferred) |prev| {
-                            if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name))
-                                return Value.null_val;
-                        } else {
-                            inferred = item.sobject.type_name;
-                        }
-                    }
-                    if (inferred) |type_name| {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
-                        return Value{ .object = sot };
-                    }
-                    return Value.null_val;
-                }
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = base_type });
-                return Value{ .object = sot };
-            }
+        return null;
+    }
 
-            // Fall back to the first runtime element when there is no declared element type.
-            if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(
-                    self.arena,
-                    "name",
-                    Value{ .string = list.items.items[0].sobject.type_name },
-                );
-                return Value{ .object = sot };
+    /// clone / deepClone: allocate a fresh ListValue preserving declared
+    /// element_type and explicitly_generic flags, deep-cloning SObject items
+    /// when requested.
+    fn eval_list_copy(
+        self: *Evaluator,
+        list: *types.ListValue,
+        method: []const u8,
+        _: []const Value,
+    ) !?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "clone") or
+            std.ascii.eqlIgnoreCase(method, "deepClone"))) return null;
+        const is_deep = std.ascii.eqlIgnoreCase(method, "deepClone");
+        const new_list = try self.arena.create(types.ListValue);
+        new_list.* = .{};
+        new_list.element_type = list.element_type;
+        new_list.explicitly_generic = list.explicitly_generic;
+        for (list.items.items) |item| {
+            const cloned = if (is_deep and item == .sobject) blk: {
+                const clone = try self.clone_s_object(item.sobject);
+                break :blk Value{ .sobject = clone };
+            } else item;
+            try new_list.items.append(self.arena, cloned);
+        }
+        return Value{ .list = new_list };
+    }
+
+    /// List.sort() — use the supplied Comparator.compare(a, b) when present,
+    /// otherwise fall back to natural ordering (Comparable.compareTo for user
+    /// classes, compare_values otherwise).
+    fn eval_list_sort(
+        self: *Evaluator,
+        list: *types.ListValue,
+        args: []const Value,
+    ) !void {
+        if (args.len > 0 and args[0] == .object) {
+            const comparator_obj = args[0].object;
+            const comparator_class = self.find_class(comparator_obj.class_name) orelse return;
+            const items = list.items.items;
+            var i_idx: usize = 1;
+            while (i_idx < items.len) : (i_idx += 1) {
+                const key = items[i_idx];
+                var j_idx: usize = i_idx;
+                while (j_idx > 0) {
+                    const cmp = try self.call_instance_method(
+                        comparator_class,
+                        comparator_obj,
+                        "compare",
+                        &.{ items[j_idx - 1], key },
+                    );
+                    if (cmp == .integer and cmp.integer > 0) {
+                        items[j_idx] = items[j_idx - 1];
+                        j_idx -= 1;
+                    } else break;
+                }
+                items[j_idx] = key;
             }
-            // Empty list or non-SObject list → return null (Salesforce behavior)
-            return Value.null_val;
+            return;
+        }
+        // Default sort: Comparable.compareTo for user classes, natural order
+        // for everything else (strings / numbers).
+        const items = list.items.items;
+        const use_comparable = items.len > 0 and items[0] == .object and
+            self.has_comparable_interface(items[0].object.class_name);
+        var i_idx: usize = 1;
+        while (i_idx < items.len) : (i_idx += 1) {
+            const key = items[i_idx];
+            var j_idx: usize = i_idx;
+            while (j_idx > 0) {
+                const cmp =
+                    if (use_comparable and items[j_idx - 1] == .object and key == .object)
+                        try self.call_compare_to(items[j_idx - 1].object, key)
+                    else
+                        self.compare_values(items[j_idx - 1], key);
+                if (cmp > 0) {
+                    items[j_idx] = items[j_idx - 1];
+                    j_idx -= 1;
+                } else break;
+            }
+            items[j_idx] = key;
+        }
+    }
+
+    /// List.getSObjectType() — consults the declared element_type first, with
+    /// inference rules for the generic List<SObject> case. See inline notes
+    /// for the subtle distinctions between implicit-generic SObject lists
+    /// (inferred from content) and explicitly-generic ones (always null).
+    fn eval_list_get_sobject_type(
+        self: *Evaluator,
+        list: *types.ListValue,
+    ) !Value {
+        if (list.element_type) |element_type| {
+            const base_type = type_base_name(element_type);
+            if (std.ascii.eqlIgnoreCase(base_type, "Object") or
+                is_collection_type_name(base_type)) return Value.null_val;
+            if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
+                return try self.infer_sobject_list_type(list);
+            }
+            return try self.make_sobject_type_token(base_type);
+        }
+        if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
+            return try self.make_sobject_type_token(list.items.items[0].sobject.type_name);
         }
         return Value.null_val;
+    }
+
+    /// List<SObject> element-type inference: if every item is the same
+    /// concrete SObjectType (common when typed lists get coerced through a
+    /// SObject parameter — e.g. Map<Id, SObject>.values() piped into super(...)),
+    /// report that type. Lists explicitly constructed with `new List<SObject>()`
+    /// always return null to match real Apex (NebulaLogger's
+    /// `setRecord(Iterable<Id>)` relies on this to classify Id-collection
+    /// inputs as `Unknown`).
+    fn infer_sobject_list_type(
+        self: *Evaluator,
+        list: *types.ListValue,
+    ) !Value {
+        if (list.explicitly_generic) return Value.null_val;
+        if (list.items.items.len == 0) return Value.null_val;
+        var inferred: ?[]const u8 = null;
+        for (list.items.items) |item| {
+            if (item != .sobject) return Value.null_val;
+            if (inferred) |prev| {
+                if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name)) return Value.null_val;
+            } else {
+                inferred = item.sobject.type_name;
+            }
+        }
+        const type_name = inferred orelse return Value.null_val;
+        return try self.make_sobject_type_token(type_name);
     }
 
     fn uses_unique_collection_key(_: *Evaluator, value: Value) bool {
