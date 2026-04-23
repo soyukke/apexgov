@@ -3227,27 +3227,7 @@ pub const Evaluator = struct {
             }
         }
         if (std.ascii.eqlIgnoreCase(type_name, "ContentVersion")) {
-            // PathOnClient is required and must be non-empty
-            const poc_val = utils.sobject_get(&obj.fields, "PathOnClient");
-            if (poc_val == null or poc_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
-            }
-            if (poc_val.? == .string and poc_val.?.string.len == 0) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
-            }
-            // VersionData is required and must not be an empty Blob
-            const vd_val = utils.sobject_get(&obj.fields, "VersionData");
-            if (vd_val == null or vd_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
-            }
-            if (vd_val.? == .object) {
-                // Check if Blob has empty value
-                if (utils.sobject_get(&vd_val.?.object.fields, "value")) |inner| {
-                    if (inner == .string and inner.string.len == 0) {
-                        return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
-                    }
-                }
-            }
+            if (validate_content_version_required(obj)) |err_msg| return err_msg;
         }
         if (self.field_metadata.get(type_name)) |field_map| {
             var iter = field_map.iterator();
@@ -3268,6 +3248,31 @@ pub const Evaluator = struct {
                 }
                 if (field_val.? == .string and std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0) {
                     return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                }
+            }
+        }
+        return null;
+    }
+
+    /// ContentVersion の必須フィールド (`PathOnClient`, `VersionData`) を
+    /// チェックする。違反があれば Apex と同じ REQUIRED_FIELD_MISSING
+    /// メッセージを返す。`validate_required_fields` の ContentVersion ブロックを抽出。
+    fn validate_content_version_required(obj: *types.SObject) ?[]const u8 {
+        const poc_val = utils.sobject_get(&obj.fields, "PathOnClient");
+        if (poc_val == null or poc_val.? == .null_val) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+        }
+        if (poc_val.? == .string and poc_val.?.string.len == 0) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+        }
+        const vd_val = utils.sobject_get(&obj.fields, "VersionData");
+        if (vd_val == null or vd_val.? == .null_val) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
+        }
+        if (vd_val.? == .object) {
+            if (utils.sobject_get(&vd_val.?.object.fields, "value")) |inner| {
+                if (inner == .string and inner.string.len == 0) {
+                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
                 }
             }
         }
@@ -5145,38 +5150,7 @@ pub const Evaluator = struct {
                 pos = values_end + "</values>".len;
                 continue;
             }
-            if (std.mem.indexOfPos(u8, xml, value_search_start, ">")) |val_tag_end| {
-                if (val_tag_end < values_end) {
-                    const val_content_start = val_tag_end + 1;
-                    if (std.mem.indexOfPos(u8, xml, val_content_start, "</value>")) |val_end| {
-                        if (val_end <= values_end) {
-                            const field_value = std.mem.trim(u8, xml[val_content_start..val_end], " \t\n\r");
-                            // Determine value type from xsi:type attribute in the <value> tag
-                            const val_tag = xml[value_search_start..val_tag_end];
-                            const typed_value: Value = if (std.mem.indexOf(u8, val_tag, "xsd:boolean") != null)
-                                Value{ .boolean = std.ascii.eqlIgnoreCase(field_value, "true") }
-                            else if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
-                                if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value }
-                            else if (std.mem.indexOf(u8, val_tag, "xsd:int") != null)
-                                if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value }
-                            else
-                                Value{ .string = field_value };
-                            try sob.fields.put(self.arena, field_name, typed_value);
-                            // Also create __r relationship for fields that reference FieldDefinitions
-                            // Convention: Customer_Name__c → value is the API name of a field
-                            // Create Customer_Name__r as a FieldDefinition with QualifiedAPIName = value
-                            if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
-                                const base = field_name[0 .. field_name.len - 3];
-                                const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
-                                const fd = try self.arena.create(types.SObject);
-                                fd.* = .{ .type_name = "FieldDefinition" };
-                                try fd.fields.put(self.arena, "QualifiedAPIName", Value{ .string = field_value });
-                                try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
-                            }
-                        }
-                    }
-                }
-            }
+            try self.apply_mdt_field_from_xml(sob, xml, value_search_start, values_end, field_name);
 
             pos = values_end + "</values>".len;
         }
@@ -5191,6 +5165,45 @@ pub const Evaluator = struct {
         }
 
         return sob;
+    }
+
+    /// `parse_custom_metadata_xml` から抽出。`<values>` ブロック内の
+    /// `<value xsi:type="xsd:xxx">...</value>` を `xsi:type` に応じて
+    /// `Value{ .boolean / .double / .integer / .string }` として sob に
+    /// 格納し、必要なら `__r` 関係 SObject も張る。
+    fn apply_mdt_field_from_xml(
+        self: *Evaluator,
+        sob: *types.SObject,
+        xml: []const u8,
+        value_search_start: usize,
+        values_end: usize,
+        field_name: []const u8,
+    ) !void {
+        const val_tag_end = std.mem.indexOfPos(u8, xml, value_search_start, ">") orelse return;
+        if (val_tag_end >= values_end) return;
+        const val_content_start = val_tag_end + 1;
+        const val_end = std.mem.indexOfPos(u8, xml, val_content_start, "</value>") orelse return;
+        if (val_end > values_end) return;
+        const field_value = std.mem.trim(u8, xml[val_content_start..val_end], " \t\n\r");
+        const val_tag = xml[value_search_start..val_tag_end];
+        const typed_value: Value = if (std.mem.indexOf(u8, val_tag, "xsd:boolean") != null)
+            Value{ .boolean = std.ascii.eqlIgnoreCase(field_value, "true") }
+        else if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
+            if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value }
+        else if (std.mem.indexOf(u8, val_tag, "xsd:int") != null)
+            if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value }
+        else
+            Value{ .string = field_value };
+        try sob.fields.put(self.arena, field_name, typed_value);
+        // Custom field (`__c`) → FieldDefinition `__r` relationship stub.
+        if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
+            const base = field_name[0 .. field_name.len - 3];
+            const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
+            const fd = try self.arena.create(types.SObject);
+            fd.* = .{ .type_name = "FieldDefinition" };
+            try fd.fields.put(self.arena, "QualifiedAPIName", Value{ .string = field_value });
+            try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+        }
     }
 
     fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
@@ -8174,44 +8187,46 @@ pub const Evaluator = struct {
                 // Fall back to enum detection for bare `MyEnum.VALUE` forms.
                 return self.enum_access_type_name(expr);
             },
-            .method_call => |mc| {
-                const arg_count = mc.args.len;
-
-                if (mc.object.* == .identifier) {
-                    const target_name = mc.object.identifier.name;
-
-                    if (self.find_class(target_name)) |class_decl| {
-                        if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                            return strip_type_namespace(self.render_type_ref(method_decl.return_type));
-                        }
-                    }
-
-                    if (self.resolve_assignment_target_type(mc.object, current_env)) |instance_type| {
-                        const base_type = type_base_name(instance_type);
-                        if (self.find_class(base_type)) |class_decl| {
-                            if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                                return strip_type_namespace(self.render_type_ref(method_decl.return_type));
-                            }
-                        }
-                    }
-                }
-
-                if (mc.object.* == .field_access) {
-                    const fa = mc.object.field_access;
-                    if (fa.object.* == .identifier) {
-                        const qualified_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fa.object.identifier.name, fa.field }) catch return null;
-                        if (self.find_class(qualified_name)) |class_decl| {
-                            if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                                return strip_type_namespace(self.render_type_ref(method_decl.return_type));
-                            }
-                        }
-                    }
-                }
-
-                return null;
-            },
+            .method_call => |mc| return self.method_call_return_type_hint(mc, current_env),
             else => return null,
         }
+    }
+
+    /// `extract_expr_type_hint` から抽出。メソッド呼び出し式の **戻り値型** を
+    /// 推論する。`Foo.bar()` / `foo.bar()` / `Foo.Bar.baz()` の三形のみ扱う。
+    fn method_call_return_type_hint(self: *Evaluator, mc: anytype, current_env: *Env) ?[]const u8 {
+        const arg_count = mc.args.len;
+
+        if (mc.object.* == .identifier) {
+            const target_name = mc.object.identifier.name;
+            if (self.find_class(target_name)) |class_decl| {
+                if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                    return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                }
+            }
+            if (self.resolve_assignment_target_type(mc.object, current_env)) |instance_type| {
+                const base_type = type_base_name(instance_type);
+                if (self.find_class(base_type)) |class_decl| {
+                    if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                        return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                    }
+                }
+            }
+        }
+
+        if (mc.object.* == .field_access) {
+            const fa = mc.object.field_access;
+            if (fa.object.* == .identifier) {
+                const qualified_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fa.object.identifier.name, fa.field }) catch return null;
+                if (self.find_class(qualified_name)) |class_decl| {
+                    if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                        return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     fn maybe_coerce_schema_expr_value(self: *Evaluator, expr: *const ast.Expr, value: Value) !Value {
@@ -10780,19 +10795,24 @@ pub const Evaluator = struct {
             return Value{ .set = new_set };
         }
         if (std.ascii.eqlIgnoreCase(method, "iterator")) {
-            // Return an Iterator-like object that wraps the set values.
-            const iter = try self.arena.create(types.ObjectInstance);
-            iter.* = .{ .class_name = "System.Iterator" };
-            const values_list = try self.arena.create(types.ListValue);
-            values_list.* = .{};
-            for (set.entries.values()) |item| {
-                try values_list.items.append(self.arena, item);
-            }
-            try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
-            try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
-            return Value{ .object = iter };
+            return self.make_set_iterator(set);
         }
         return Value.null_val;
+    }
+
+    /// `Set.iterator()` 用の Iterator オブジェクトを生成する。
+    /// `__items__` に set の値を列挙したリストを、`__pos__` に 0 を載せる。
+    fn make_set_iterator(self: *Evaluator, set: *types.SetValue) !Value {
+        const iter = try self.arena.create(types.ObjectInstance);
+        iter.* = .{ .class_name = "System.Iterator" };
+        const values_list = try self.arena.create(types.ListValue);
+        values_list.* = .{};
+        for (set.entries.values()) |item| {
+            try values_list.items.append(self.arena, item);
+        }
+        try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
+        try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
+        return Value{ .object = iter };
     }
 
     fn eval_string_method(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !Value {
@@ -14640,47 +14660,57 @@ pub const Evaluator = struct {
         }
 
         if (left == .object and right == .object) {
-            if (utils.value_eql(left, right)) return true;
-
-            // Built-in value classes (Date / Datetime / Time / Blob) compare by
-            // their stored "value" (and for Time, the component fields) rather
-            // than by ObjectInstance identity.
-            const builtin_value_class = blk: {
-                const cn = left.object.class_name;
-                if (!std.ascii.eqlIgnoreCase(cn, right.object.class_name)) break :blk false;
-                break :blk std.ascii.eqlIgnoreCase(cn, "Date") or
-                    std.ascii.eqlIgnoreCase(cn, "Datetime") or
-                    std.ascii.eqlIgnoreCase(cn, "Time") or
-                    std.ascii.eqlIgnoreCase(cn, "Blob");
-            };
-            if (builtin_value_class) {
-                const lv = left.object.fields.get("value") orelse Value.null_val;
-                const rv = right.object.fields.get("value") orelse Value.null_val;
-                if (lv == .string and rv == .string) {
-                    return std.mem.eql(u8, lv.string, rv.string);
-                }
-            }
-
-            if (self.find_class(left.object.class_name)) |left_class| {
-                if (self.find_method_in_hierarchy_typed(null, left_class, "equals", &.{right}) != null or
-                    self.find_method_in_hierarchy(null, left_class, "equals", 1) != null)
-                {
-                    const result = self.call_instance_method(left_class, left.object, "equals", &.{right}) catch return false;
-                    return result == .boolean and result.boolean;
-                }
-            }
-
-            if (self.find_class(right.object.class_name)) |right_class| {
-                if (self.find_method_in_hierarchy_typed(null, right_class, "equals", &.{left}) != null or
-                    self.find_method_in_hierarchy(null, right_class, "equals", 1) != null)
-                {
-                    const result = self.call_instance_method(right_class, right.object, "equals", &.{left}) catch return false;
-                    return result == .boolean and result.boolean;
-                }
-            }
+            if (self.objects_equal(left.object, right.object)) return true;
         }
 
         return utils.value_eql(left, right);
+    }
+
+    /// `values_equal` の ObjectInstance 比較部分。
+    /// 1) pointer-identity / value_eql で同一判定、
+    /// 2) Date / Datetime / Time / Blob の built-in value class は "value"
+    ///    フィールドで比較、
+    /// 3) ユーザ定義クラスが `equals(Object)` を持つ場合はそれを呼び出す。
+    fn objects_equal(self: *Evaluator, left: *types.ObjectInstance, right: *types.ObjectInstance) bool {
+        if (utils.value_eql(Value{ .object = left }, Value{ .object = right })) return true;
+
+        // Built-in value classes (Date / Datetime / Time / Blob) compare by
+        // their stored "value" rather than by ObjectInstance identity.
+        const builtin_value_class = blk: {
+            const cn = left.class_name;
+            if (!std.ascii.eqlIgnoreCase(cn, right.class_name)) break :blk false;
+            break :blk std.ascii.eqlIgnoreCase(cn, "Date") or
+                std.ascii.eqlIgnoreCase(cn, "Datetime") or
+                std.ascii.eqlIgnoreCase(cn, "Time") or
+                std.ascii.eqlIgnoreCase(cn, "Blob");
+        };
+        if (builtin_value_class) {
+            const lv = left.fields.get("value") orelse Value.null_val;
+            const rv = right.fields.get("value") orelse Value.null_val;
+            if (lv == .string and rv == .string) {
+                return std.mem.eql(u8, lv.string, rv.string);
+            }
+        }
+
+        const right_val = Value{ .object = right };
+        const left_val = Value{ .object = left };
+        if (self.find_class(left.class_name)) |left_class| {
+            if (self.find_method_in_hierarchy_typed(null, left_class, "equals", &.{right_val}) != null or
+                self.find_method_in_hierarchy(null, left_class, "equals", 1) != null)
+            {
+                const result = self.call_instance_method(left_class, left, "equals", &.{right_val}) catch return false;
+                return result == .boolean and result.boolean;
+            }
+        }
+        if (self.find_class(right.class_name)) |right_class| {
+            if (self.find_method_in_hierarchy_typed(null, right_class, "equals", &.{left_val}) != null or
+                self.find_method_in_hierarchy(null, right_class, "equals", 1) != null)
+            {
+                const result = self.call_instance_method(right_class, right, "equals", &.{left_val}) catch return false;
+                return result == .boolean and result.boolean;
+            }
+        }
+        return false;
     }
 
     fn value_hash_code(self: *Evaluator, value: Value) anyerror!i64 {

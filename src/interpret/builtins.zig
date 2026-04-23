@@ -2035,18 +2035,7 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
         std.ascii.eqlIgnoreCase(method_name, "encrypt") or
         std.ascii.eqlIgnoreCase(method_name, "decrypt"))
     {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        const data_arg_idx: usize = if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
-            std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
-        const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and args[data_arg_idx].object.fields.get("value") != null)
-            args[data_arg_idx].object.fields.get("value").?
-        else if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
-            args[0].object.fields.get("value").?
-        else
-            Value{ .string = "encrypted-data" };
-        try obj.fields.put(ctx.arena, "value", val);
-        return Value{ .object = obj };
+        return crypto_pass_through_blob(ctx, method_name, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or std.ascii.eqlIgnoreCase(method_name, "verifyMac")) {
         const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
@@ -2065,6 +2054,25 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
         return Value{ .integer = if (val < 0) -val else val };
     }
     return Value.null_val;
+}
+
+/// `Crypto.encrypt` / `decrypt` / `encryptWithManagedIV` /
+/// `decryptWithManagedIV` 共通のスタブ実装。入力 blob を Blob に包み直して
+/// 返す（実暗号化は行わない — Apex テストで暗号結果を検証するのではなく、
+/// データフローの正しさだけを確認する目的）。
+fn crypto_pass_through_blob(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Blob" };
+    const data_arg_idx: usize = if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
+        std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
+    const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and args[data_arg_idx].object.fields.get("value") != null)
+        args[data_arg_idx].object.fields.get("value").?
+    else if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
+        args[0].object.fields.get("value").?
+    else
+        Value{ .string = "encrypted-data" };
+    try obj.fields.put(ctx.arena, "value", val);
+    return Value{ .object = obj };
 }
 
 fn dispatch_static_blob(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -3325,27 +3333,27 @@ fn create_field_describe_result_with_type(ctx: *BuiltinContext, object_type: []c
             try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
         }
     }
-    // Set SoapType based on field type
-    const soap: []const u8 = if (std.ascii.eqlIgnoreCase(ft, "Boolean"))
-        "BOOLEAN"
-    else if (std.ascii.eqlIgnoreCase(ft, "Integer") or std.ascii.eqlIgnoreCase(ft, "Long"))
-        "INTEGER"
-    else if (std.ascii.eqlIgnoreCase(ft, "Double") or std.ascii.eqlIgnoreCase(ft, "Currency") or std.ascii.eqlIgnoreCase(ft, "Percent"))
-        "DOUBLE"
-    else if (std.ascii.eqlIgnoreCase(ft, "Date"))
-        "DATE"
-    else if (std.ascii.eqlIgnoreCase(ft, "DateTime"))
-        "DATETIME"
-    else if (std.ascii.eqlIgnoreCase(ft, "ID") or std.ascii.eqlIgnoreCase(ft, "REFERENCE"))
-        "ID"
-    else
-        "STRING";
-    try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
+    try fdr.fields.put(ctx.arena, "soapType", Value{ .string = display_type_to_soap_type(ft) });
     // getDefaultValue() support — look up from field_defaults if available
     // The field_defaults map is populated from field-meta.xml <defaultValue>
     // We don't set a default here because it depends on the SObject type context,
     // which is handled by the caller (createDescribeResult).
     return Value{ .object = fdr };
+}
+
+/// DescribeFieldResult.getSoapType 互換。DisplayType enum 名を
+/// SoapType enum 名 (BOOLEAN / INTEGER / DOUBLE / DATE / DATETIME / ID /
+/// STRING) に写像する。`create_field_describe_result_with_type` から
+/// 抽出。
+fn display_type_to_soap_type(ft: []const u8) []const u8 {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(ft, "Boolean")) return "BOOLEAN";
+    if (ci.eqlIgnoreCase(ft, "Integer") or ci.eqlIgnoreCase(ft, "Long")) return "INTEGER";
+    if (ci.eqlIgnoreCase(ft, "Double") or ci.eqlIgnoreCase(ft, "Currency") or ci.eqlIgnoreCase(ft, "Percent")) return "DOUBLE";
+    if (ci.eqlIgnoreCase(ft, "Date")) return "DATE";
+    if (ci.eqlIgnoreCase(ft, "DateTime")) return "DATETIME";
+    if (ci.eqlIgnoreCase(ft, "ID") or ci.eqlIgnoreCase(ft, "REFERENCE")) return "ID";
+    return "STRING";
 }
 
 /// field-meta.xml の <type> 値を Schema.DisplayType enum 名にマッピング。
