@@ -469,65 +469,10 @@ fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: [
         return Value{ .string = "" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "join")) {
-        const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
-        if (args.len >= 1 and args[0] == .list) {
-            if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
-                const only = args[0].list.items.items[0];
-                if (only == .string and std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1")) {
-                    // When ignored stack-trace frames collapse down to only the
-                    // synthetic anonymous entry point, Salesforce behaves as if
-                    // no useful trace remains.
-                    return Value{ .string = "" };
-                }
-            }
-            var result: std.ArrayListUnmanaged(u8) = .empty;
-            for (args[0].list.items.items, 0..) |item, idx| {
-                if (idx > 0) try result.appendSlice(ctx.arena, sep);
-                const s = try utils.coerce_to_string(item, ctx.arena);
-                try result.appendSlice(ctx.arena, s);
-            }
-            return Value{ .string = try result.toOwnedSlice(ctx.arena) };
-        }
-        if (args.len >= 1 and args[0] == .set) {
-            var result: std.ArrayListUnmanaged(u8) = .empty;
-            var first = true;
-            for (args[0].set.entries.values()) |item| {
-                if (!first) try result.appendSlice(ctx.arena, sep);
-                first = false;
-                const s = try utils.coerce_to_string(item, ctx.arena);
-                try result.appendSlice(ctx.arena, s);
-            }
-            return Value{ .string = try result.toOwnedSlice(ctx.arena) };
-        }
-        return Value{ .string = "" };
+        return try dispatch_static_string_join(ctx, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "format")) {
-        if (args.len >= 2 and args[0] == .string and args[1] == .list) {
-            const fmt_str = args[0].string;
-            const items = args[1].list.items.items;
-            var result = std.ArrayListUnmanaged(u8).empty;
-            var i: usize = 0;
-            while (i < fmt_str.len) {
-                if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
-                    if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
-                        const idx_str = fmt_str[i + 1 .. close];
-                        if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
-                            if (idx < items.len) {
-                                const val_str: []const u8 = utils.coerce_to_string(items[idx], ctx.arena) catch "null";
-                                result.appendSlice(ctx.arena, val_str) catch {};
-                                i = close + 1;
-                                continue;
-                            }
-                        } else |_| {}
-                    }
-                }
-                result.append(ctx.arena, fmt_str[i]) catch {};
-                i += 1;
-            }
-            return Value{ .string = result.items };
-        }
-        if (args.len > 0 and args[0] == .string) return args[0];
-        return Value{ .string = "" };
+        return try dispatch_static_string_format(ctx, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
@@ -568,6 +513,69 @@ fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: [
         return Value{ .boolean = false };
     }
     return null;
+}
+
+fn dispatch_static_string_join(ctx: *BuiltinContext, args: []const Value) !Value {
+    const sep = if (args.len >= 2 and args[1] == .string) args[1].string else ", ";
+    if (args.len >= 1 and args[0] == .list) {
+        if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
+            const only = args[0].list.items.items[0];
+            if (only == .string and std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1")) {
+                // When ignored stack-trace frames collapse down to only the
+                // synthetic anonymous entry point, Salesforce behaves as if
+                // no useful trace remains.
+                return Value{ .string = "" };
+            }
+        }
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        for (args[0].list.items.items, 0..) |item, idx| {
+            if (idx > 0) try result.appendSlice(ctx.arena, sep);
+            const s = try utils.coerce_to_string(item, ctx.arena);
+            try result.appendSlice(ctx.arena, s);
+        }
+        return Value{ .string = try result.toOwnedSlice(ctx.arena) };
+    }
+    if (args.len >= 1 and args[0] == .set) {
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        var first = true;
+        for (args[0].set.entries.values()) |item| {
+            if (!first) try result.appendSlice(ctx.arena, sep);
+            first = false;
+            const s = try utils.coerce_to_string(item, ctx.arena);
+            try result.appendSlice(ctx.arena, s);
+        }
+        return Value{ .string = try result.toOwnedSlice(ctx.arena) };
+    }
+    return Value{ .string = "" };
+}
+
+fn dispatch_static_string_format(ctx: *BuiltinContext, args: []const Value) !Value {
+    if (args.len >= 2 and args[0] == .string and args[1] == .list) {
+        const fmt_str = args[0].string;
+        const items = args[1].list.items.items;
+        var result = std.ArrayListUnmanaged(u8).empty;
+        var i: usize = 0;
+        while (i < fmt_str.len) {
+            if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
+                if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
+                    const idx_str = fmt_str[i + 1 .. close];
+                    if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
+                        if (idx < items.len) {
+                            const val_str: []const u8 = utils.coerce_to_string(items[idx], ctx.arena) catch "null";
+                            result.appendSlice(ctx.arena, val_str) catch {};
+                            i = close + 1;
+                            continue;
+                        }
+                    } else |_| {}
+                }
+            }
+            result.append(ctx.arena, fmt_str[i]) catch {};
+            i += 1;
+        }
+        return Value{ .string = result.items };
+    }
+    if (args.len > 0 and args[0] == .string) return args[0];
+    return Value{ .string = "" };
 }
 
 fn is_salesforce_id_string(value: []const u8) bool {
@@ -1521,104 +1529,10 @@ fn dispatch_static_rest_context(ctx: *BuiltinContext, method_name: []const u8) !
 
 fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getGlobalDescribe")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        const known_types = [_][]const u8{
-            "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
-            "Case",              "User",                    "Group",              "Solution",               "Campaign",
-            "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
-            "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
-            "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
-            "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
-            "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
-            "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
-            "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
-            "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
-            "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
-            "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
-            "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
-            "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
-        };
-        for (known_types) |obj_name| {
-            const sot = try ctx.arena.create(types.ObjectInstance);
-            sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-            // Store with original case — Map.get uses case-insensitive lookup in evalMapMethod
-            try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
-        }
-        // Also add custom objects from store
-        {
-            var store_iter = ctx.eval.store.iterator();
-            while (store_iter.next()) |entry| {
-                if (!map.entries.contains(entry.key_ptr.*)) {
-                    const sot2 = try ctx.arena.create(types.ObjectInstance);
-                    sot2.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot2.fields.put(ctx.arena, "name", Value{ .string = entry.key_ptr.* });
-                    try map.entries.put(ctx.arena, entry.key_ptr.*, Value{ .object = sot2 });
-                }
-            }
-        }
-        // Also add all objects loaded from object-meta.xml, whether or not they have data yet.
-        {
-            var labels_iter = ctx.eval.object_labels.iterator();
-            while (labels_iter.next()) |entry| {
-                const key = entry.key_ptr.*;
-                if (!map.entries.contains(key)) {
-                    const sot3 = try ctx.arena.create(types.ObjectInstance);
-                    sot3.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot3.fields.put(ctx.arena, "name", Value{ .string = key });
-                    try map.entries.put(ctx.arena, key, Value{ .object = sot3 });
-                }
-            }
-        }
-        return Value{ .map = map };
+        return try dispatch_schema_global_describe(ctx);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "describeSObjects")) {
-        const known_types = [_][]const u8{
-            "account",         "contact",  "opportunity", "task",  "lead",            "case",           "user",
-            "group",           "solution", "campaign",    "event", "contentdocument", "contentversion", "flowdefinitionview",
-            "flowversionview",
-        };
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        const names: []const Value = if (args.len > 0 and args[0] == .list)
-            args[0].list.items.items
-        else if (args.len > 0 and args[0] == .string)
-            (&[_]Value{args[0]})[0..]
-        else
-            (&[_]Value{})[0..];
-        for (names) |item| {
-            const obj_name = if (item == .string) item.string else "Object";
-            const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
-            var found = false;
-            for (known_types) |kt| {
-                if (std.mem.eql(u8, lower, kt)) {
-                    found = true;
-                    break;
-                }
-            }
-            const has_custom_suffix = std.mem.endsWith(u8, obj_name, "__c") or
-                std.mem.endsWith(u8, obj_name, "__e") or
-                std.mem.endsWith(u8, obj_name, "__mdt") or
-                std.mem.endsWith(u8, obj_name, "__b");
-            if (!found and has_custom_suffix) {
-                // Custom SObject types must have a registered object-meta.xml in the fixture.
-                // Matching is case-insensitive on the type name key.
-                var it = ctx.eval.object_labels.iterator();
-                while (it.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if (!found) {
-                return ctx.throw_exception("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
-            }
-            const desc = try create_describe_result(ctx, obj_name);
-            try list.items.append(ctx.arena, desc);
-        }
-        return Value{ .list = list };
+        return try dispatch_schema_describe_s_objects(ctx, args);
     }
     // Minimal Schema.describeTabs() stub: return an empty list so utility
     // code (e.g. ActionPlansV4's SectionHeader controller) that iterates
@@ -1630,6 +1544,105 @@ fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: [
         return Value{ .list = list };
     }
     return Value.null_val;
+}
+
+fn dispatch_schema_global_describe(ctx: *BuiltinContext) !Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    const known_types = [_][]const u8{
+        "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
+        "Case",              "User",                    "Group",              "Solution",               "Campaign",
+        "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
+        "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
+        "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
+        "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
+        "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
+        "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
+        "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
+        "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
+        "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
+        "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
+        "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
+        "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
+    };
+    for (known_types) |obj_name| {
+        try put_schema_s_object_type(ctx, map, obj_name);
+    }
+
+    var store_iter = ctx.eval.store.iterator();
+    while (store_iter.next()) |entry| {
+        if (!map.entries.contains(entry.key_ptr.*)) {
+            try put_schema_s_object_type(ctx, map, entry.key_ptr.*);
+        }
+    }
+
+    var labels_iter = ctx.eval.object_labels.iterator();
+    while (labels_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!map.entries.contains(key)) {
+            try put_schema_s_object_type(ctx, map, key);
+        }
+    }
+    return Value{ .map = map };
+}
+
+fn put_schema_s_object_type(ctx: *BuiltinContext, map: *types.MapValue, obj_name: []const u8) !void {
+    const sot = try ctx.arena.create(types.ObjectInstance);
+    sot.* = .{ .class_name = "Schema.SObjectType" };
+    try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
+    // Store with original case: Map.get uses case-insensitive lookup in evalMapMethod.
+    try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
+}
+
+fn dispatch_schema_describe_s_objects(ctx: *BuiltinContext, args: []const Value) !Value {
+    const known_types = [_][]const u8{
+        "account",         "contact",  "opportunity", "task",  "lead",            "case",           "user",
+        "group",           "solution", "campaign",    "event", "contentdocument", "contentversion", "flowdefinitionview",
+        "flowversionview",
+    };
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const names: []const Value = if (args.len > 0 and args[0] == .list)
+        args[0].list.items.items
+    else if (args.len > 0 and args[0] == .string)
+        (&[_]Value{args[0]})[0..]
+    else
+        (&[_]Value{})[0..];
+    for (names) |item| {
+        const obj_name = if (item == .string) item.string else "Object";
+        if (!try is_schema_describe_object_known(ctx, obj_name, &known_types)) {
+            _ = try ctx.throw_exception(
+                "System.InvalidParameterValueException",
+                try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}),
+            );
+            return error.ApexException;
+        }
+        const desc = try create_describe_result(ctx, obj_name);
+        try list.items.append(ctx.arena, desc);
+    }
+    return Value{ .list = list };
+}
+
+fn is_schema_describe_object_known(
+    ctx: *BuiltinContext,
+    obj_name: []const u8,
+    known_types: []const []const u8,
+) !bool {
+    const lower = try std.ascii.allocLowerString(ctx.arena, obj_name);
+    for (known_types) |kt| {
+        if (std.mem.eql(u8, lower, kt)) return true;
+    }
+    const has_custom_suffix = std.mem.endsWith(u8, obj_name, "__c") or
+        std.mem.endsWith(u8, obj_name, "__e") or
+        std.mem.endsWith(u8, obj_name, "__mdt") or
+        std.mem.endsWith(u8, obj_name, "__b");
+    if (!has_custom_suffix) return false;
+
+    var it = ctx.eval.object_labels.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) return true;
+    }
+    return false;
 }
 
 fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
@@ -4838,56 +4851,7 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len >= 1) {
-        if (args.len >= 2 and args[1] == .string) {
-            const builder_type = args[0];
-            const key = args[1].string;
-            if (cache_map) |cm| {
-                const builder_name = if (builder_type == .object) blk: {
-                    if (builder_type.object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk builder_type.object.class_name;
-                } else "";
-                const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
-                if (cm.entries.get(cache_key)) |cached| return cached;
-                if (builder_name.len > 0) {
-                    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:")) builder_name[5..] else builder_name;
-                    const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
-                    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
-                    if (cm.entries.get(resolved_cache_key)) |cached| return cached;
-                    const result = ctx.eval.call_instance_method_by_name(resolved_class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
-                    if (result != .null_val) {
-                        try cm.entries.put(ctx.arena, resolved_cache_key, result);
-                        try cm.entries.put(ctx.arena, cache_key, result);
-                        return result;
-                    }
-
-                    var class_iter = ctx.eval.classes.iterator();
-                    while (class_iter.next()) |entry| {
-                        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
-                        const simple_name = if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
-                            entry.key_ptr.*[dot_idx + 1 ..]
-                        else
-                            entry.key_ptr.*;
-                        if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
-                        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
-                        if (cm.entries.get(fallback_cache_key)) |cached| return cached;
-                        const fallback_result = ctx.eval.call_instance_method_by_name(entry.key_ptr.*, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
-                        if (fallback_result == .null_val) continue;
-                        try cm.entries.put(ctx.arena, fallback_cache_key, fallback_result);
-                        try cm.entries.put(ctx.arena, resolved_cache_key, fallback_result);
-                        try cm.entries.put(ctx.arena, cache_key, fallback_result);
-                        return fallback_result;
-                    }
-                }
-            }
-            return Value.null_val;
-        }
-        if (cache_map) |cm| {
-            const key = try utils.coerce_to_string(args[0], ctx.arena);
-            return cm.entries.get(key) orelse Value.null_val;
-        }
-        return Value.null_val;
+        return try cache_partition_get(ctx, cache_map, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "contains") and args.len >= 1) {
         if (cache_map) |cm| {
@@ -4931,6 +4895,81 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
         return Value{ .set = set };
     }
     return null;
+}
+
+fn cache_partition_get(ctx: *BuiltinContext, cache_map: ?*types.MapValue, args: []const Value) !Value {
+    if (args.len >= 2 and args[1] == .string) {
+        if (cache_map) |cm| {
+            return try cache_partition_get_by_builder(ctx, cm, args[0], args[1].string);
+        }
+        return Value.null_val;
+    }
+    if (cache_map) |cm| {
+        const key = try utils.coerce_to_string(args[0], ctx.arena);
+        return cm.entries.get(key) orelse Value.null_val;
+    }
+    return Value.null_val;
+}
+
+fn cache_partition_get_by_builder(
+    ctx: *BuiltinContext,
+    cache_map: *types.MapValue,
+    builder_type: Value,
+    key: []const u8,
+) !Value {
+    const builder_name = cache_partition_builder_name(builder_type);
+    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+    if (cache_map.entries.get(cache_key)) |cached| return cached;
+    if (builder_name.len == 0) return Value.null_val;
+
+    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:")) builder_name[5..] else builder_name;
+    const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
+    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
+    if (cache_map.entries.get(resolved_cache_key)) |cached| return cached;
+    const result = ctx.eval.call_instance_method_by_name(resolved_class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+    if (result != .null_val) {
+        try cache_map.entries.put(ctx.arena, resolved_cache_key, result);
+        try cache_map.entries.put(ctx.arena, cache_key, result);
+        return result;
+    }
+
+    return try cache_partition_get_by_simple_class(ctx, cache_map, class_name, key, resolved_cache_key, cache_key);
+}
+
+fn cache_partition_builder_name(builder_type: Value) []const u8 {
+    if (builder_type != .object) return "";
+    if (builder_type.object.fields.get("name")) |name| {
+        if (name == .string) return name.string;
+    }
+    return builder_type.object.class_name;
+}
+
+fn cache_partition_get_by_simple_class(
+    ctx: *BuiltinContext,
+    cache_map: *types.MapValue,
+    class_name: []const u8,
+    key: []const u8,
+    resolved_cache_key: []const u8,
+    cache_key: []const u8,
+) !Value {
+    var class_iter = ctx.eval.classes.iterator();
+    while (class_iter.next()) |entry| {
+        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') == null) continue;
+        const simple_name = if (std.mem.lastIndexOfScalar(u8, entry.key_ptr.*, '.')) |dot_idx|
+            entry.key_ptr.*[dot_idx + 1 ..]
+        else
+            entry.key_ptr.*;
+        if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
+        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
+        if (cache_map.entries.get(fallback_cache_key)) |cached| return cached;
+        const fallback_result = ctx.eval.call_instance_method_by_name(entry.key_ptr.*, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+        if (fallback_result == .null_val) continue;
+        try cache_map.entries.put(ctx.arena, fallback_cache_key, fallback_result);
+        try cache_map.entries.put(ctx.arena, resolved_cache_key, fallback_result);
+        try cache_map.entries.put(ctx.arena, cache_key, fallback_result);
+        return fallback_result;
+    }
+    return Value.null_val;
 }
 
 fn dispatch_obj_flow_interview(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
