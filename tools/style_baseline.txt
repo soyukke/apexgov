@@ -9,8 +9,8 @@
 src/interpret/builtins.zig	line_too_long	642
 src/interpret/builtins.zig	function_too_long	17
 src/interpret/env.zig	line_too_long	1
-src/interpret/evaluator.zig	line_too_long	1386
-src/interpret/evaluator.zig	function_too_long	42
+src/interpret/evaluator.zig	line_too_long	1384
+src/interpret/evaluator.zig	function_too_long	40
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/root.zig	line_too_long	293

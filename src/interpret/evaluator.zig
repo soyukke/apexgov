@@ -680,32 +680,7 @@ pub const Evaluator = struct {
 
         const should_materialize_profile = (!is_automated_process and !has_null_profile) or profile_name_opt != null or explicit_user_type != null;
         if (should_materialize_profile) {
-            const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
-                (if (std.ascii.eqlIgnoreCase(user_type, "Guest")) "Logger Test LWR Site Guest Profile" else "Standard User")
-            else
-                "Standard User";
-            const profile = if (self.find_profile_by_name(profile_name)) |existing|
-                existing
-            else blk: {
-                const created = try self.arena.create(types.SObject);
-                const profile_id = try std.fmt.allocPrint(self.arena, "00e{d:0>15}", .{self.next_id});
-                self.next_id += 1;
-                created.* = .{ .type_name = "Profile", .id = profile_id };
-                try created.fields.put(self.arena, "Id", Value{ .string = profile_id });
-                try self.populate_synthetic_profile(created, profile_name);
-                const gop = try self.store.getOrPut(self.arena, "Profile");
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                try gop.value_ptr.append(self.arena, Value{ .sobject = created });
-                break :blk created;
-            };
-            if (explicit_user_type) |user_type| {
-                try profile.fields.put(self.arena, "UserType", Value{ .string = user_type });
-            }
-            try user.fields.put(self.arena, "ProfileId", Value{ .string = profile.id.? });
-            try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
-            if (utils.sobject_get(&profile.fields, "UserType")) |profile_user_type| {
-                try user.fields.put(self.arena, "UserType", profile_user_type);
-            }
+            try self.attach_synthetic_profile_to_user(user, profile_name_opt, explicit_user_type);
         } else {
             try user.fields.put(self.arena, "UserType", Value{ .string = "AutomatedProcess" });
         }
@@ -714,6 +689,43 @@ pub const Evaluator = struct {
         try user.fields.put(self.arena, "LastName", Value{ .string = if (is_automated_process) "Process" else "User" });
         try user.fields.put(self.arena, "Name", Value{ .string = if (is_automated_process) "Automated Process" else "Test User" });
         return Value{ .sobject = user };
+    }
+
+    /// `create_user_for_query` から抽出。`Profile.Name` / `UserType` の WHERE
+    /// ヒントに基づいてプロファイル SObject を生成（またはキャッシュから取得）し、
+    /// 合成ユーザーレコードに `ProfileId` / `Profile` / `UserType` を紐付ける。
+    fn attach_synthetic_profile_to_user(
+        self: *Evaluator,
+        user: *types.SObject,
+        profile_name_opt: ?[]const u8,
+        explicit_user_type: ?[]const u8,
+    ) !void {
+        const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
+            (if (std.ascii.eqlIgnoreCase(user_type, "Guest")) "Logger Test LWR Site Guest Profile" else "Standard User")
+        else
+            "Standard User";
+        const profile = if (self.find_profile_by_name(profile_name)) |existing|
+            existing
+        else blk: {
+            const created = try self.arena.create(types.SObject);
+            const profile_id = try std.fmt.allocPrint(self.arena, "00e{d:0>15}", .{self.next_id});
+            self.next_id += 1;
+            created.* = .{ .type_name = "Profile", .id = profile_id };
+            try created.fields.put(self.arena, "Id", Value{ .string = profile_id });
+            try self.populate_synthetic_profile(created, profile_name);
+            const gop = try self.store.getOrPut(self.arena, "Profile");
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.arena, Value{ .sobject = created });
+            break :blk created;
+        };
+        if (explicit_user_type) |user_type| {
+            try profile.fields.put(self.arena, "UserType", Value{ .string = user_type });
+        }
+        try user.fields.put(self.arena, "ProfileId", Value{ .string = profile.id.? });
+        try user.fields.put(self.arena, "Profile", Value{ .sobject = profile });
+        if (utils.sobject_get(&profile.fields, "UserType")) |profile_user_type| {
+            try user.fields.put(self.arena, "UserType", profile_user_type);
+        }
     }
 
     fn append_record_ids_from_value(self: *Evaluator, value: Value, record_ids: *std.ArrayListUnmanaged([]const u8)) !void {
@@ -6668,45 +6680,66 @@ pub const Evaluator = struct {
 
             if (!has_matching_rollups or impacted_ids.count() == 0) continue;
 
-            const parent_updates = try self.arena.create(types.ListValue);
-            parent_updates.* = .{};
-            var parent_old_records: std.ArrayListUnmanaged(Value) = .empty;
+            try self.flush_parent_rollup_updates(
+                parent_type,
+                child_type,
+                type_meta,
+                impacted_ids,
+                new_records,
+                old_records,
+            );
+        }
+    }
 
-            var impacted_iter = impacted_ids.iterator();
-            while (impacted_iter.next()) |impacted_entry| {
-                const parent_id = impacted_entry.key_ptr.*;
-                const parent_record = self.find_record_by_id(parent_type, parent_id) orelse continue;
-                if (parent_record != .sobject) continue;
+    /// `apply_rollup_summary_side_effects` から抽出した helper。親レコードの
+    /// rollup summary フィールドを再計算し、差分があれば DML update を発行する。
+    fn flush_parent_rollup_updates(
+        self: *Evaluator,
+        parent_type: []const u8,
+        child_type: []const u8,
+        type_meta: anytype,
+        impacted_ids: std.StringArrayHashMapUnmanaged(void),
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        const parent_updates = try self.arena.create(types.ListValue);
+        parent_updates.* = .{};
+        var parent_old_records: std.ArrayListUnmanaged(Value) = .empty;
 
-                const updated_parent = try self.clone_s_object(parent_record.sobject);
-                const old_parent = try self.clone_s_object(parent_record.sobject);
-                var changed = false;
+        var impacted_iter = impacted_ids.iterator();
+        while (impacted_iter.next()) |impacted_entry| {
+            const parent_id = impacted_entry.key_ptr.*;
+            const parent_record = self.find_record_by_id(parent_type, parent_id) orelse continue;
+            if (parent_record != .sobject) continue;
 
-                var summary_iter = type_meta.iterator();
-                while (summary_iter.next()) |summary_entry| {
-                    const field_name = summary_entry.key_ptr.*;
-                    const metadata = summary_entry.value_ptr.*;
-                    const summary_fk = metadata.summary_foreign_key orelse continue;
-                    const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
-                    if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
+            const updated_parent = try self.clone_s_object(parent_record.sobject);
+            const old_parent = try self.clone_s_object(parent_record.sobject);
+            var changed = false;
 
-                    const new_value = self.compute_summary_field_value(updated_parent, metadata) orelse Value.null_val;
-                    const old_value = self.compute_summary_field_value_before_delta(parent_record.sobject, metadata, new_records, old_records) orelse Value.null_val;
-                    try old_parent.fields.put(self.arena, field_name, old_value);
-                    try updated_parent.fields.put(self.arena, field_name, new_value);
-                    if (utils.value_eql(old_value, new_value)) continue;
+            var summary_iter = type_meta.iterator();
+            while (summary_iter.next()) |summary_entry| {
+                const field_name = summary_entry.key_ptr.*;
+                const metadata = summary_entry.value_ptr.*;
+                const summary_fk = metadata.summary_foreign_key orelse continue;
+                const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
+                if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
 
-                    changed = true;
-                }
+                const new_value = self.compute_summary_field_value(updated_parent, metadata) orelse Value.null_val;
+                const old_value = self.compute_summary_field_value_before_delta(parent_record.sobject, metadata, new_records, old_records) orelse Value.null_val;
+                try old_parent.fields.put(self.arena, field_name, old_value);
+                try updated_parent.fields.put(self.arena, field_name, new_value);
+                if (utils.value_eql(old_value, new_value)) continue;
 
-                if (!changed) continue;
-                try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
-                try parent_old_records.append(self.arena, Value{ .sobject = old_parent });
+                changed = true;
             }
 
-            if (parent_updates.items.items.len > 0) {
-                try self.execute_dml_with_external_id_internal(.update, Value{ .list = parent_updates }, null, false, parent_old_records);
-            }
+            if (!changed) continue;
+            try parent_updates.items.append(self.arena, Value{ .sobject = updated_parent });
+            try parent_old_records.append(self.arena, Value{ .sobject = old_parent });
+        }
+
+        if (parent_updates.items.items.len > 0) {
+            try self.execute_dml_with_external_id_internal(.update, Value{ .list = parent_updates }, null, false, parent_old_records);
         }
     }
 
