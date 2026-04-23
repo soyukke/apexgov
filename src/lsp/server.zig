@@ -763,10 +763,15 @@ pub const Server = struct {
             method_name,
             &test_allocating.writer,
         ) catch {
-            try self.transport.send_notification(self.allocator, "window/showMessage", types.ShowMessageParams{
+            const err_params = types.ShowMessageParams{
                 .type = .@"error",
                 .message = "Test execution failed",
-            });
+            };
+            try self.transport.send_notification(
+                self.allocator,
+                "window/showMessage",
+                err_params,
+            );
             return;
         };
 
@@ -787,10 +792,15 @@ pub const Server = struct {
         );
         defer self.allocator.free(msg);
 
-        try self.transport.send_notification(self.allocator, "window/showMessage", types.ShowMessageParams{
+        const result_params = types.ShowMessageParams{
             .type = if (suite.passed == suite.total) .info else .@"error",
             .message = msg,
-        });
+        };
+        try self.transport.send_notification(
+            self.allocator,
+            "window/showMessage",
+            result_params,
+        );
     }
 };
 

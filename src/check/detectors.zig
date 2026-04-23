@@ -66,7 +66,9 @@ pub fn contains_callout(line: []const u8, type_env: *std.StringHashMap([]const u
     if (contains_any_case_insensitive(line, &direct_needles)) return true;
 
     const send_idx = index_of_case_insensitive(line, ".send(") orelse return false;
-    const receiver = extract_last_identifier(std.mem.trimEnd(u8, line[0..send_idx], " \t")) orelse return false;
+    const receiver = extract_last_identifier(
+        std.mem.trimEnd(u8, line[0..send_idx], " \t"),
+    ) orelse return false;
     const bound_type = type_env.get(receiver) orelse return false;
     return equals_canonical_type(bound_type, "Http");
 }

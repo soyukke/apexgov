@@ -49,7 +49,8 @@ pub fn append_cpu_estimate_finding(
             severity = .err;
             break :blk try std.fmt.bufPrint(
                 &message_buffer,
-                "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. This likely exceeds sync CPU limit ({d}ms).",
+                "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. " ++
+                    "This likely exceeds sync CPU limit ({d}ms).",
                 .{ base_cost_ms, upper, per_iter_ms, total, sync_cpu_budget_ms },
             );
         }
@@ -59,7 +60,8 @@ pub fn append_cpu_estimate_finding(
         }
         break :blk try std.fmt.bufPrint(
             &message_buffer,
-            "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. Limit risk starts around N>{d} (sync {d}ms).",
+            "CPU estimate (heuristic): {d} + {d}*{d} ~= {d}ms. " ++
+                "Limit risk starts around N>{d} (sync {d}ms).",
             .{ base_cost_ms, upper, per_iter_ms, total, n_limit, sync_cpu_budget_ms },
         );
     } else blk: {

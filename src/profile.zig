@@ -128,7 +128,8 @@ fn find_baseline(
 
     for (baseline_profiles) |baseline| {
         if (!std.ascii.eqlIgnoreCase(curr_mode, baseline.mode)) continue;
-        if (baseline.transaction_index != 0 and baseline.transaction_index != curr.transaction_index) continue;
+        if (baseline.transaction_index != 0 and
+            baseline.transaction_index != curr.transaction_index) continue;
 
         const baseline_label_known = !is_unknown(baseline.label);
         if (curr_label_known and baseline_label_known) {

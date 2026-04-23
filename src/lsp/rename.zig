@@ -16,7 +16,9 @@ pub fn get_rename_edits(
     const sym = binder_mod.symbol_at_position(result, offset) orelse return null;
 
     // キーワードや非リネーム可能なシンボルはスキップ
-    if (sym.kind == .class or sym.kind == .interface or sym.kind == .enum_type or sym.kind == .trigger) {
+    if (sym.kind == .class or sym.kind == .interface or
+        sym.kind == .enum_type or sym.kind == .trigger)
+    {
         // トップレベル型のリネームも許可
     }
 

@@ -18,7 +18,12 @@ pub fn resolve_package_dirs(
     const json_path = try std.fs.path.join(allocator, &.{ workspace_root, "sfdx-project.json" });
     defer allocator.free(json_path);
 
-    const content = Io.Dir.cwd().readFileAlloc(io, json_path, allocator, .limited(1024 * 1024)) catch {
+    const content = Io.Dir.cwd().readFileAlloc(
+        io,
+        json_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
         return fallback_dirs(allocator, io, workspace_root);
     };
     defer allocator.free(content);

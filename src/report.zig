@@ -75,7 +75,10 @@ fn write_check_json(writer: *std.Io.Writer, findings: []const model.Finding) !vo
 }
 
 fn write_check_sarif(writer: *std.Io.Writer, findings: []const model.Finding) !void {
-    try writer.writeAll("{\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"apexgov\"}},\"results\":[");
+    try writer.writeAll(
+        "{\"version\":\"2.1.0\",\"runs\":" ++
+            "[{\"tool\":{\"driver\":{\"name\":\"apexgov\"}},\"results\":[",
+    );
 
     for (findings, 0..) |finding, i| {
         if (i != 0) try writer.writeAll(",");
@@ -85,7 +88,10 @@ fn write_check_sarif(writer: *std.Io.Writer, findings: []const model.Finding) !v
         try write_json_string(writer, sarif_level_from_severity(finding.severity));
         try writer.writeAll(",\"message\":{\"text\":");
         try write_json_string(writer, finding.message);
-        try writer.writeAll("},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
+        try writer.writeAll(
+            "},\"locations\":[{\"physicalLocation\":" ++
+                "{\"artifactLocation\":{\"uri\":",
+        );
         try write_json_string(writer, finding.file);
         try writer.writeAll("},\"region\":{\"startLine\":");
         try writer.print("{d}", .{finding.line});
@@ -157,16 +163,25 @@ fn write_profile_json(writer: *std.Io.Writer, profiles: []const model.ProfileRes
 }
 
 fn write_profile_sarif(writer: *std.Io.Writer, profiles: []const model.ProfileResult) !void {
-    try writer.writeAll("{\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"apexgov\"}},\"results\":[");
+    try writer.writeAll(
+        "{\"version\":\"2.1.0\",\"runs\":" ++
+            "[{\"tool\":{\"driver\":{\"name\":\"apexgov\"}},\"results\":[",
+    );
 
     var emitted: usize = 0;
     for (profiles) |profile| {
         if (profile.cpu_exceeded()) {
             if (emitted != 0) try writer.writeAll(",");
             emitted += 1;
-            try writer.writeAll("{\"ruleId\":\"AG_CPU_BUDGET\",\"level\":\"error\",\"message\":{\"text\":");
+            try writer.writeAll(
+                "{\"ruleId\":\"AG_CPU_BUDGET\",\"level\":\"error\"," ++
+                    "\"message\":{\"text\":",
+            );
             try write_json_string(writer, "CPU budget exceeded");
-            try writer.writeAll("},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
+            try writer.writeAll(
+                "},\"locations\":[{\"physicalLocation\":" ++
+                    "{\"artifactLocation\":{\"uri\":",
+            );
             try write_json_string(writer, profile.source);
             try writer.writeAll("},\"region\":{\"startLine\":1}}}]}");
         }
@@ -174,9 +189,15 @@ fn write_profile_sarif(writer: *std.Io.Writer, profiles: []const model.ProfileRe
         if (profile.heap_exceeded()) {
             if (emitted != 0) try writer.writeAll(",");
             emitted += 1;
-            try writer.writeAll("{\"ruleId\":\"AG_HEAP_BUDGET\",\"level\":\"error\",\"message\":{\"text\":");
+            try writer.writeAll(
+                "{\"ruleId\":\"AG_HEAP_BUDGET\",\"level\":\"error\"," ++
+                    "\"message\":{\"text\":",
+            );
             try write_json_string(writer, "Heap budget exceeded");
-            try writer.writeAll("},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
+            try writer.writeAll(
+                "},\"locations\":[{\"physicalLocation\":" ++
+                    "{\"artifactLocation\":{\"uri\":",
+            );
             try write_json_string(writer, profile.source);
             try writer.writeAll("},\"region\":{\"startLine\":1}}}]}");
         }

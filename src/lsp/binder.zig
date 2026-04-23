@@ -256,7 +256,13 @@ const Binder = struct {
     fn bind_params(self: *Binder, params: anytype, base_loc: SourceLoc, owner: SymbolId) !void {
         for (params) |p| {
             const param_loc = self.find_token_after(base_loc.offset, p.name) orelse base_loc;
-            _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, owner);
+            _ = try self.add_symbol(
+                p.name,
+                .parameter,
+                type_ref_to_string(p.type_ref),
+                param_loc,
+                owner,
+            );
         }
     }
 
@@ -322,7 +328,13 @@ const Binder = struct {
                 parent,
             ),
             .field_decl => |fd| {
-                _ = try self.add_symbol(fd.name, .field, type_ref_to_string(fd.type_ref), fd.loc, parent);
+                _ = try self.add_symbol(
+                    fd.name,
+                    .field,
+                    type_ref_to_string(fd.type_ref),
+                    fd.loc,
+                    parent,
+                );
             },
             .trigger_decl => |td| {
                 _ = try self.add_symbol(td.name, .trigger, null, td.loc, parent);
@@ -374,7 +386,13 @@ const Binder = struct {
     }
 
     fn bind_var_decl(self: *Binder, vd: anytype) !void {
-        _ = try self.add_symbol(vd.name, .local_variable, type_ref_to_string(vd.type_ref), vd.loc, null);
+        _ = try self.add_symbol(
+            vd.name,
+            .local_variable,
+            type_ref_to_string(vd.type_ref),
+            vd.loc,
+            null,
+        );
         if (vd.initializer) |init_expr| {
             try self.bind_expr(init_expr.*);
         }
@@ -382,7 +400,13 @@ const Binder = struct {
 
     fn bind_for_each_stmt(self: *Binder, fes: anytype) anyerror!void {
         _ = try self.push_scope();
-        _ = try self.add_symbol(fes.elem_name, .for_each_variable, type_ref_to_string(fes.elem_type), fes.loc, null);
+        _ = try self.add_symbol(
+            fes.elem_name,
+            .for_each_variable,
+            type_ref_to_string(fes.elem_type),
+            fes.loc,
+            null,
+        );
         try self.bind_expr(fes.iterable.*);
         for (fes.body) |s| try self.bind_stmt(s);
         self.pop_scope();
@@ -615,7 +639,9 @@ test "creates symbol for enum values" {
 // -- 参照追跡テスト --
 
 test "identifier creates reference to variable" {
-    var ctx = try bind_source("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
+    var ctx = try bind_source(
+        "public class Foo { public void run() { Integer x = 1; Integer y = x; } }",
+    );
     defer ctx.deinit();
 
     const sym = find_symbol(&ctx.result, "x");
@@ -628,7 +654,9 @@ test "identifier creates reference to variable" {
 }
 
 test "references sorted by offset" {
-    var ctx = try bind_source("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
+    var ctx = try bind_source(
+        "public class Foo { public void run() { Integer x = 1; Integer y = x; } }",
+    );
     defer ctx.deinit();
 
     for (ctx.result.references[1..], 0..) |ref, i| {
@@ -696,7 +724,9 @@ test "interface declaration" {
 }
 
 test "for-each variable scoped to loop body" {
-    var ctx = try bind_source("public class Foo { public void run() { for (Account a : accs) { } } }");
+    var ctx = try bind_source(
+        "public class Foo { public void run() { for (Account a : accs) { } } }",
+    );
     defer ctx.deinit();
 
     const sym = find_symbol(&ctx.result, "a");

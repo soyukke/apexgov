@@ -27,7 +27,10 @@ pub fn get_references(
             .uri = uri,
             .range = .{
                 .start = pos,
-                .end = .{ .line = pos.line, .character = pos.character + (ref.end_offset - ref.offset) },
+                .end = .{
+                    .line = pos.line,
+                    .character = pos.character + (ref.end_offset - ref.offset),
+                },
             },
         });
     }
@@ -84,7 +87,10 @@ pub fn get_references_cross_file(
                     .uri = entry.key_ptr.*,
                     .range = .{
                         .start = pos,
-                        .end = .{ .line = pos.line, .character = pos.character + (ref.end_offset - ref.offset) },
+                        .end = .{
+                            .line = pos.line,
+                            .character = pos.character + (ref.end_offset - ref.offset),
+                        },
                     },
                 });
             }

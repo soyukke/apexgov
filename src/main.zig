@@ -94,7 +94,10 @@ fn run(gpa: std.mem.Allocator, io: Io, argv: []const []const u8) !u8 {
     }
 
     const cmd = argv[1];
-    if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
+    if (std.mem.eql(u8, cmd, "help") or
+        std.mem.eql(u8, cmd, "--help") or
+        std.mem.eql(u8, cmd, "-h"))
+    {
         print_usage(io);
         return 0;
     }
@@ -419,7 +422,8 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     return 0;
 }
 
-/// メタファイル名をパースする。例: "leafletjs.resource-meta.xml" → { .name = "leafletjs", .meta_type = "resource" }
+/// メタファイル名をパースする。
+/// 例: "leafletjs.resource-meta.xml" → { .name = "leafletjs", .meta_type = "resource" }
 fn parse_meta_filename(basename: []const u8) ?struct { name: []const u8, meta_type: []const u8 } {
     const suffix = "-meta.xml";
     if (!std.mem.endsWith(u8, basename, suffix)) return null;
@@ -511,7 +515,8 @@ fn parse_check_options(gpa: std.mem.Allocator, io: Io, args: []const []const u8)
             continue;
         }
         if (try consume_option(args, &i, "--format")) |v| {
-            opts.format = apexgov.model.OutputFormat.from_string(v) orelse return error.InvalidFormat;
+            opts.format = apexgov.model.OutputFormat.from_string(v) orelse
+                return error.InvalidFormat;
             continue;
         }
         if (try consume_option(args, &i, "--out")) |v| {
@@ -555,7 +560,8 @@ fn parse_profile_options(gpa: std.mem.Allocator, io: Io, args: []const []const u
             continue;
         }
         if (try consume_option(args, &i, "--format")) |v| {
-            opts.format = apexgov.model.OutputFormat.from_string(v) orelse return error.InvalidFormat;
+            opts.format = apexgov.model.OutputFormat.from_string(v) orelse
+                return error.InvalidFormat;
             continue;
         }
         if (try consume_option(args, &i, "--out")) |v| {
@@ -653,15 +659,18 @@ fn print_usage(io: Io) void {
         \\Usage:
         \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif]
         \\                [--out FILE] [--severity-threshold info|warning|error|none]
-        \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
+        \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE]
+        \\                                 [--format text|json|sarif] [--out FILE]
         \\  apexgov interpret test <paths...>
         \\  apexgov typegen <sfdx-project-root> [--out DIR]
         \\  apexgov lsp
         \\
         \\Examples:
         \\  apexgov check force-app --format sarif --out reports/apexgov.sarif
-        \\  apexgov profile artifacts/logs --config apexgov.toml --format json --out reports/profile.json
-        \\  apexgov profile artifacts/logs --baseline reports/profile-baseline.json --config apexgov.toml
+        \\  apexgov profile artifacts/logs --config apexgov.toml
+        \\          --format json --out reports/profile.json
+        \\  apexgov profile artifacts/logs
+        \\          --baseline reports/profile-baseline.json --config apexgov.toml
         \\  apexgov interpret test force-app/main/default/classes
         \\  apexgov typegen my-sfdx-project --out .sfdx/typings/lwc
         \\  apexgov lsp                 Start the Language Server Protocol server (stdio)

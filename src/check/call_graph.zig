@@ -48,7 +48,8 @@ const apply_bound_updates = bounds_mod.apply_bound_updates;
 const infer_loop_info_at_line = bounds_mod.infer_loop_info_at_line;
 const effective_loop_upper_bound = bounds_mod.effective_loop_upper_bound;
 const collect_do_while_start_conditions = preprocessor.collect_do_while_start_conditions;
-const collect_do_while_start_conditions_from_stripped = preprocessor.collect_do_while_start_conditions_from_stripped;
+const collect_do_while_start_conditions_from_stripped =
+    preprocessor.collect_do_while_start_conditions_from_stripped;
 const is_do_loop_start = preprocessor.is_do_loop_start;
 
 pub const BuildResult = struct {
@@ -121,7 +122,9 @@ pub fn collect_type_relations(
 ) !TypeRelations {
     var relations = TypeRelations{
         .extends_by_type = std.StringHashMap([]const u8).init(arena_allocator),
-        .interfaces_by_type = std.StringHashMap(std.ArrayListUnmanaged([]const u8)).init(arena_allocator),
+        .interfaces_by_type = std.StringHashMap(
+            std.ArrayListUnmanaged([]const u8),
+        ).init(arena_allocator),
     };
 
     for (files) |file| {
@@ -312,7 +315,9 @@ fn process_metrics_line(state: *MetricsScanState, code_line: []const u8, line_no
         );
         const started_method = try begin_metrics_method(state, trimmed);
         if (!started_method) {
-            if (state.current_method) |scope| try record_method_line(state, scope, trimmed, line_no);
+            if (state.current_method) |scope| {
+                try record_method_line(state, scope, trimmed, line_no);
+            }
         }
     }
 
@@ -371,7 +376,12 @@ pub fn ensure_method_summary(
 ) !*MethodSummary {
     const param_signature = try build_param_type_signature(arena_allocator, params_raw);
     const param_count = count_signature_params(param_signature);
-    if (find_method_summary_by_owner_name_signature(summaries, owner, name, param_signature)) |existing| {
+    if (find_method_summary_by_owner_name_signature(
+        summaries,
+        owner,
+        name,
+        param_signature,
+    )) |existing| {
         return existing;
     }
 
@@ -444,12 +454,18 @@ fn apply_direct_line_metrics(
     if (detectors.contains_soql(line)) metrics.soql = sat_add(metrics.soql, weight);
     if (detectors.contains_dml(line)) metrics.dml = sat_add(metrics.dml, weight);
     if (detectors.contains_sosl(line)) metrics.sosl = sat_add(metrics.sosl, weight);
-    if (detectors.contains_callout(line, type_env)) metrics.callout = sat_add(metrics.callout, weight);
+    if (detectors.contains_callout(line, type_env)) {
+        metrics.callout = sat_add(metrics.callout, weight);
+    }
     if (detectors.contains_messaging(line)) metrics.messaging = sat_add(metrics.messaging, weight);
     if (detectors.contains_json_work(line)) metrics.json = sat_add(metrics.json, weight);
     if (detectors.contains_clone_work(line)) metrics.clone = sat_add(metrics.clone, weight);
-    if (detectors.contains_collection_alloc(line)) metrics.collection_alloc = sat_add(metrics.collection_alloc, weight);
-    if (detectors.contains_string_append(line)) metrics.string_append = sat_add(metrics.string_append, weight);
+    if (detectors.contains_collection_alloc(line)) {
+        metrics.collection_alloc = sat_add(metrics.collection_alloc, weight);
+    }
+    if (detectors.contains_string_append(line)) {
+        metrics.string_append = sat_add(metrics.string_append, weight);
+    }
 }
 
 fn record_called_methods(
@@ -472,7 +488,8 @@ fn record_called_methods(
         const entries = name_index.get(candidate_name) orelse continue;
         for (entries.items) |ie| {
             const callee = ie.summary.*;
-            if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
+            if (std.mem.eql(u8, callee.owner, caller_owner) and
+                std.mem.eql(u8, callee.name, caller_name)) continue;
             if (!line_calls_method(
                 line,
                 caller_owner,
@@ -694,14 +711,18 @@ fn contains_qualified_method_call(
         }
 
         var dot_idx = owner_idx + owner.len;
-        while (dot_idx < line.len and (line[dot_idx] == ' ' or line[dot_idx] == '\t')) : (dot_idx += 1) {}
+        while (dot_idx < line.len and
+            (line[dot_idx] == ' ' or line[dot_idx] == '\t')) : (dot_idx += 1)
+        {}
         if (dot_idx >= line.len or line[dot_idx] != '.') {
             start = owner_idx + owner.len;
             continue;
         }
 
         var method_idx = dot_idx + 1;
-        while (method_idx < line.len and (line[method_idx] == ' ' or line[method_idx] == '\t')) : (method_idx += 1) {}
+        while (method_idx < line.len and
+            (line[method_idx] == ' ' or line[method_idx] == '\t')) : (method_idx += 1)
+        {}
         if (method_idx + method_name.len > line.len) {
             start = owner_idx + owner.len;
             continue;
@@ -712,7 +733,9 @@ fn contains_qualified_method_call(
         }
 
         var open_idx = method_idx + method_name.len;
-        while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
+        while (open_idx < line.len and
+            (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1)
+        {}
         if (open_idx < line.len and line[open_idx] == '(') {
             const arg_count = count_call_arguments(line, open_idx) orelse {
                 start = owner_idx + owner.len;
@@ -736,7 +759,9 @@ fn contains_qualified_method_call(
 /// `receiver.method(...)` の receiver 部分が method_idx の直前にあれば返す。
 fn extract_dotted_receiver(line: []const u8, method_idx: usize) ?[]const u8 {
     var dot_idx = method_idx;
-    while (dot_idx > 0 and (line[dot_idx - 1] == ' ' or line[dot_idx - 1] == '\t')) : (dot_idx -= 1) {}
+    while (dot_idx > 0 and
+        (line[dot_idx - 1] == ' ' or line[dot_idx - 1] == '\t')) : (dot_idx -= 1)
+    {}
     if (dot_idx == 0 or line[dot_idx - 1] != '.') return null;
 
     var receiver_end = dot_idx - 1;
@@ -744,7 +769,9 @@ fn extract_dotted_receiver(line: []const u8, method_idx: usize) ?[]const u8 {
         (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1)
     {}
     var receiver_start = receiver_end;
-    while (receiver_start > 0 and is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1) {}
+    while (receiver_start > 0 and
+        is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1)
+    {}
     if (receiver_start == receiver_end) return null;
     return line[receiver_start..receiver_end];
 }
@@ -752,7 +779,9 @@ fn extract_dotted_receiver(line: []const u8, method_idx: usize) ?[]const u8 {
 /// 対応する open paren の位置を返す。method_end の後の空白をスキップ。
 fn find_call_open_paren(line: []const u8, method_end: usize) ?usize {
     var open_idx = method_end;
-    while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
+    while (open_idx < line.len and
+        (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1)
+    {}
     if (open_idx >= line.len or line[open_idx] != '(') return null;
     return open_idx;
 }
@@ -974,13 +1003,17 @@ fn arguments_match_param_signature(
                     (expected_iter.next() == null and expected_signature.len == 0);
             }
             const expected = expected_iter.next() orelse return false;
-            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
+            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) {
+                return false;
+            }
             return expected_iter.next() == null;
         }
         if (c == ',') {
             const segment = std.mem.trim(u8, line[arg_start..i], " \t");
             const expected = expected_iter.next() orelse return false;
-            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
+            if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) {
+                return false;
+            }
             arg_start = i + 1;
         }
     }
@@ -1001,7 +1034,9 @@ fn argument_expr_matches_type(
     if (std.mem.eql(u8, expr, "true") or std.mem.eql(u8, expr, "false")) {
         return std.mem.eql(u8, expected_type, "Boolean");
     }
-    if ((expr[0] == '\'' and expr[expr.len - 1] == '\'') or (expr[0] == '"' and expr[expr.len - 1] == '"')) {
+    if ((expr[0] == '\'' and expr[expr.len - 1] == '\'') or
+        (expr[0] == '"' and expr[expr.len - 1] == '"'))
+    {
         return std.mem.eql(u8, expected_type, "String");
     }
     if (looks_numeric_literal(expr)) {
@@ -1080,7 +1115,8 @@ fn is_type_assignable(
     type_relations: *const TypeRelations,
 ) bool {
     if (equals_canonical_type(actual_type_raw, expected_type_raw)) return true;
-    if (is_generic_like_type(actual_type_raw) or is_generic_like_type(expected_type_raw)) return false;
+    if (is_generic_like_type(actual_type_raw) or
+        is_generic_like_type(expected_type_raw)) return false;
 
     const actual_primary = extract_primary_type_name(actual_type_raw) orelse return false;
     const expected_primary = extract_primary_type_name(expected_type_raw) orelse return false;

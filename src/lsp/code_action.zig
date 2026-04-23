@@ -12,7 +12,8 @@ pub fn get_code_actions(
 
     for (diagnostics) |diag| {
         // range と重なる diagnostics のみ
-        if (diag.range.start.line > range.end.line or diag.range.end.line < range.start.line) continue;
+        if (diag.range.start.line > range.end.line or
+            diag.range.end.line < range.start.line) continue;
 
         const code = diag.code orelse continue;
         const source = diag.source orelse continue;
@@ -45,7 +46,10 @@ pub fn get_code_actions(
 
 test "SOQL in loop suggests extraction" {
     const diags = [_]lsp_types.Diagnostic{.{
-        .range = .{ .start = .{ .line = 3, .character = 0 }, .end = .{ .line = 3, .character = 0 } },
+        .range = .{
+            .start = .{ .line = 3, .character = 0 },
+            .end = .{ .line = 3, .character = 0 },
+        },
         .severity = .warning,
         .code = "AG002",
         .source = "apexgov-governor",

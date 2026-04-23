@@ -106,7 +106,9 @@ pub fn collect_do_while_start_conditions_from_stripped(
 
             if (try parse_do_while_tail_condition(allocator, trimmed)) |condition| {
                 errdefer allocator.free(condition);
-                if (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth == brace_depth) {
+                if (do_stack.items.len > 0 and
+                    do_stack.items[do_stack.items.len - 1].end_depth == brace_depth)
+                {
                     const do_start = do_stack.pop().?;
                     try out.put(do_start.start_line, condition);
                 } else {
@@ -121,7 +123,9 @@ pub fn collect_do_while_start_conditions_from_stripped(
                 pending_do_start = null;
             }
         }
-        while (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth > brace_depth) {
+        while (do_stack.items.len > 0 and
+            do_stack.items[do_stack.items.len - 1].end_depth > brace_depth)
+        {
             _ = do_stack.pop();
         }
     }

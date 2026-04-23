@@ -108,7 +108,8 @@ pub fn apply_local_type_updates(
 }
 
 pub fn parse_for_each_binding(line: []const u8) ?TypeBinding {
-    if (!std.mem.startsWith(u8, line, "for(") and !std.mem.startsWith(u8, line, "for (")) return null;
+    if (!std.mem.startsWith(u8, line, "for(") and
+        !std.mem.startsWith(u8, line, "for (")) return null;
     const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return null;
     const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return null;
     if (close_idx <= open_idx) return null;
@@ -119,7 +120,8 @@ pub fn parse_for_each_binding(line: []const u8) ?TypeBinding {
 }
 
 fn parse_for_init_binding(line: []const u8) ?TypeBinding {
-    if (!std.mem.startsWith(u8, line, "for(") and !std.mem.startsWith(u8, line, "for (")) return null;
+    if (!std.mem.startsWith(u8, line, "for(") and
+        !std.mem.startsWith(u8, line, "for (")) return null;
     const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return null;
     const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return null;
     if (close_idx <= open_idx) return null;
@@ -134,7 +136,8 @@ fn parse_for_init_binding(line: []const u8) ?TypeBinding {
 }
 
 fn parse_for_init_assigned_new_binding(line: []const u8) ?TypeBinding {
-    if (!std.mem.startsWith(u8, line, "for(") and !std.mem.startsWith(u8, line, "for (")) return null;
+    if (!std.mem.startsWith(u8, line, "for(") and
+        !std.mem.startsWith(u8, line, "for (")) return null;
     const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return null;
     const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return null;
     if (close_idx <= open_idx) return null;

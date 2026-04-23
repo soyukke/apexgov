@@ -233,7 +233,8 @@ fn has_label_with_kind(
     kind: lsp_types.CompletionItemKind,
 ) bool {
     for (items) |item| {
-        if (std.mem.eql(u8, item.label, label) and item.kind != null and item.kind.? == kind) return true;
+        if (std.mem.eql(u8, item.label, label) and
+            item.kind != null and item.kind.? == kind) return true;
     }
     return false;
 }

@@ -97,7 +97,9 @@ pub fn count_parameters(params_raw: []const u8) ?u16 {
                 if (brace_depth > 0) brace_depth -= 1;
             },
             ',' => {
-                if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                if (angle_depth == 0 and paren_depth == 0 and
+                    bracket_depth == 0 and brace_depth == 0)
+                {
                     count = sat_add_u16(count, 1);
                 }
             },
@@ -203,7 +205,10 @@ pub fn parse_type_decl(line: []const u8) ?TypeDecl {
     const name = extract_leading_identifier(after_keyword) orelse return null;
     after_keyword = std.mem.trimStart(u8, after_keyword[name.len..], " \t");
 
-    const extends_name = if (!is_interface) parse_single_type_after_keyword(after_keyword, "extends") else null;
+    const extends_name = if (!is_interface)
+        parse_single_type_after_keyword(after_keyword, "extends")
+    else
+        null;
     const interfaces_raw = if (is_interface)
         slice_after_keyword(after_keyword, "extends") orelse ""
     else

@@ -107,7 +107,14 @@ pub fn xml_tag_values(
 /// Salesforce フィールド型名を TypeScript 型に変換する。
 pub fn sf_type_to_ts(sf_type: []const u8) []const u8 {
     // 数値系
-    if (eql_any(sf_type, &.{ "Number", "Currency", "Percent", "Double", "Int", "Long" })) return "number";
+    if (eql_any(sf_type, &.{
+        "Number",
+        "Currency",
+        "Percent",
+        "Double",
+        "Int",
+        "Long",
+    })) return "number";
     // 真偽値
     if (std.mem.eql(u8, sf_type, "Checkbox")) return "boolean";
     // それ以外は string（Text, LongTextArea, RichTextArea, Phone, Email, Url,
@@ -507,6 +514,10 @@ test "render_apex_method generates correct .d.ts" {
         .method_name = "getAccounts",
     }, &buf.writer);
     const output = buf.written();
-    try std.testing.expect(std.mem.indexOf(u8, output, "@salesforce/apex/AccountController.getAccounts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "export default function getAccounts") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, output, "@salesforce/apex/AccountController.getAccounts") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, output, "export default function getAccounts") != null,
+    );
 }

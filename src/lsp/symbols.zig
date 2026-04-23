@@ -101,7 +101,10 @@ fn collect_decl(
             });
         },
         .field_decl => |fd| {
-            const kind: SymbolKind = if (fd.modifiers.is_static and fd.modifiers.is_final) .constant else .field;
+            const kind: SymbolKind = if (fd.modifiers.is_static and fd.modifiers.is_final)
+                .constant
+            else
+                .field;
             try out.append(allocator, .{
                 .name = fd.name,
                 .kind = kind,
@@ -149,7 +152,9 @@ fn parse_and_collect(source: []const u8) !TestResult {
 }
 
 test "class with methods → class symbol with method children" {
-    const source = "public class AccountService { public void process() {} private Integer count() { return 0; } }";
+    const source =
+        "public class AccountService {" ++
+        " public void process() {} private Integer count() { return 0; } }";
     var r = try parse_and_collect(source);
     defer r.deinit();
 
@@ -165,7 +170,9 @@ test "class with methods → class symbol with method children" {
 }
 
 test "class with fields → field symbols" {
-    const source = "public class Foo { public String name; private static final Integer MAX = 100; }";
+    const source =
+        "public class Foo {" ++
+        " public String name; private static final Integer MAX = 100; }";
     var r = try parse_and_collect(source);
     defer r.deinit();
 

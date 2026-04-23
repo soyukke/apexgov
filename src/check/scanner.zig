@@ -31,7 +31,8 @@ const update_brace_depth = utils.update_brace_depth;
 const sat_add = utils.sat_add;
 const sat_mul = utils.sat_mul;
 
-const collect_do_while_start_conditions_from_stripped = preprocessor.collect_do_while_start_conditions_from_stripped;
+const collect_do_while_start_conditions_from_stripped =
+    preprocessor.collect_do_while_start_conditions_from_stripped;
 const is_do_loop_start = preprocessor.is_do_loop_start;
 
 const pop_closed_scopes = scope_mod.pop_closed_scopes;
@@ -204,7 +205,8 @@ fn is_soql_for_loop(trimmed: []const u8) bool {
         break :blk buf[0..trimmed.len];
     };
     // "for" で始まり、":" の後に "[select" があるか
-    if (!std.mem.startsWith(u8, lower, "for ") and !std.mem.startsWith(u8, lower, "for(")) return false;
+    if (!std.mem.startsWith(u8, lower, "for ") and
+        !std.mem.startsWith(u8, lower, "for(")) return false;
     const colon_pos = std.mem.indexOfScalar(u8, lower, ':') orelse return false;
     const after_colon = lower[colon_pos + 1 ..];
     const after_trimmed = std.mem.trimStart(u8, after_colon, " \t");
