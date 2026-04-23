@@ -1144,102 +1144,94 @@ fn collect_field_sets(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
-
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) continue;
+        try process_field_set_entry(alloc, io, path, entry, field_sets);
+    }
+}
 
-        const entry_path = entry.path;
-        const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
-            std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
-        const after_objects = entry_path[objects_idx + 8 ..];
-        const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
-        const type_name = after_objects[0..sep_idx];
+fn process_field_set_entry(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    entry: std.Io.Dir.Walker.Entry,
+    field_sets: *std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata),
+    ),
+) !void {
+    const entry_path = entry.path;
+    const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+        std.mem.indexOf(u8, entry_path, "objects\\") orelse return;
+    const after_objects = entry_path[objects_idx + 8 ..];
+    const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return;
+    const type_name = after_objects[0..sep_idx];
 
-        const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(
-            io,
-            full_path,
-            alloc,
-            .limited(128 * 1024),
-        ) catch continue;
+    const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch return;
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(128 * 1024),
+    ) catch return;
 
-        var full_name: []const u8 =
-            entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
-        if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
-            const start = start_idx + "<fullName>".len;
-            if (std.mem.indexOfPos(u8, content, start, "</fullName>")) |end_idx| {
-                full_name = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
-            }
-        }
+    var full_name: []const u8 =
+        entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
+    if (extract_xml_tag_value(content, "fullName")) |value| {
+        full_name = std.mem.trim(u8, value, " \t\r\n");
+    }
+    const label: []const u8 = if (extract_xml_tag_value(content, "label")) |value|
+        std.mem.trim(u8, value, " \t\r\n")
+    else
+        full_name;
 
-        var label: []const u8 = full_name;
-        if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
-            const start = start_idx + "<label>".len;
-            if (std.mem.indexOfPos(u8, content, start, "</label>")) |end_idx| {
-                label = std.mem.trim(u8, content[start..end_idx], " \t\r\n");
-            }
-        }
+    var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
+    try parse_field_set_displayed_fields(alloc, content, &members);
 
-        var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(
+    const names = split_namespaced_metadata_name(full_name);
+    const type_key = alloc.dupe(u8, type_name) catch return;
+    const field_set_key = alloc.dupe(u8, full_name) catch return;
+    const gop = field_sets.getOrPut(alloc, type_key) catch return;
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    gop.value_ptr.put(alloc, field_set_key, .{
+        .name = alloc.dupe(u8, names.local_name) catch return,
+        .qualified_name = field_set_key,
+        .label = alloc.dupe(u8, label) catch return,
+        .namespace = alloc.dupe(u8, names.namespace) catch return,
+        .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch return,
+    }) catch {};
+}
+
+fn parse_field_set_displayed_fields(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    members: *std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata),
+) !void {
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+        const block_start = block_start_idx + "<displayedFields>".len;
+        const block_end = std.mem.indexOfPos(
             u8,
             content,
-            search_start,
-            "<displayedFields>",
-        )) |block_start_idx| {
-            const block_start = block_start_idx + "<displayedFields>".len;
-            const block_end = std.mem.indexOfPos(
-                u8,
-                content,
-                block_start,
-                "</displayedFields>",
-            ) orelse break;
-            const block = content[block_start..block_end];
+            block_start,
+            "</displayedFields>",
+        ) orelse break;
+        const block = content[block_start..block_end];
+        search_start = block_end + "</displayedFields>".len;
 
-            const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
-                search_start = block_end + "</displayedFields>".len;
-                continue;
-            };
-            const field_start = field_start_idx + "<field>".len;
-            const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
-                search_start = block_end + "</displayedFields>".len;
-                continue;
-            };
-            const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
+        const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse continue;
+        const field_start = field_start_idx + "<field>".len;
+        const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse continue;
+        const field_path = std.mem.trim(u8, block[field_start..field_end], " \t\r\n");
 
-            var is_required = false;
-            if (std.mem.indexOf(u8, block, "<isRequired>")) |req_idx| {
-                const req_start = req_idx + "<isRequired>".len;
-                if (std.mem.indexOfPos(u8, block, req_start, "</isRequired>")) |req_end| {
-                    const value = std.mem.trim(u8, block[req_start..req_end], " \t\r\n");
-                    is_required = std.ascii.eqlIgnoreCase(value, "true");
-                }
-            }
-
-            try members.append(alloc, .{
-                .field_path = try alloc.dupe(u8, field_path),
-                .is_required = is_required,
-            });
-            search_start = block_end + "</displayedFields>".len;
-        }
-
-        const names = split_namespaced_metadata_name(full_name);
-        const type_key = alloc.dupe(u8, type_name) catch continue;
-        const field_set_key = alloc.dupe(u8, full_name) catch continue;
-        const gop = field_sets.getOrPut(alloc, type_key) catch continue;
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        gop.value_ptr.put(alloc, field_set_key, .{
-            .name = alloc.dupe(u8, names.local_name) catch continue,
-            .qualified_name = field_set_key,
-            .label = alloc.dupe(u8, label) catch continue,
-            .namespace = alloc.dupe(u8, names.namespace) catch continue,
-            .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch continue,
-        }) catch {};
+        const is_required = parse_bool_xml_tag(block, "isRequired", false);
+        try members.append(alloc, .{
+            .field_path = try alloc.dupe(u8, field_path),
+            .is_required = is_required,
+        });
     }
 }
 
