@@ -1942,6 +1942,176 @@ pub const Evaluator = struct {
         return .normal;
     }
 
+    fn exec_var_decl(self: *Evaluator, vd: *ast.VarDecl, current_env: *Env) anyerror!StmtResult {
+        var val = if (vd.initializer) |init_expr|
+            try self.eval_expr(init_expr, current_env)
+        else
+            default_value(vd.type_ref);
+        val = try self.coerce_soql_assignment_to_declared_type(
+            val,
+            vd.initializer,
+            vd.type_ref.name,
+        );
+        const declared_type = self.render_type_ref(vd.type_ref);
+        val = self.annotate_declared_collection_type(val, declared_type);
+        try current_env.define_typed(vd.name, val, declared_type);
+        return .normal;
+    }
+
+    fn exec_dml_stmt(self: *Evaluator, dml: *ast.DmlStmt, current_env: *Env) anyerror!StmtResult {
+        const target = try self.eval_expr(dml.target, current_env);
+        const has_permset_dml = if (self.store.get("PermissionSetAssignment")) |psa|
+            psa.items.len > 0
+        else
+            false;
+        if (dml.is_user_mode and self.is_min_access_user and !has_permset_dml) {
+            const from_type = if (target == .sobject)
+                target.sobject.type_name
+            else if (target == .list and target.list.items.items.len > 0 and
+                target.list.items.items[0] == .sobject)
+                target.list.items.items[0].sobject.type_name
+            else
+                "SObject";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "No Access: Access to entity '{s}' denied",
+                .{from_type},
+            );
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NoAccessException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = msg });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        try self.execute_dml(dml.op, target);
+        return .normal;
+    }
+
+    fn exec_for_stmt(self: *Evaluator, fs: *ast.ForStmt, current_env: *Env) anyerror!StmtResult {
+        const loop_env = try current_env.child();
+        if (fs.init) |init_stmt| {
+            switch (init_stmt.*) {
+                .block => |init_stmts| {
+                    for (init_stmts) |init_item| _ = try self.exec_stmt(init_item, loop_env);
+                },
+                else => _ = try self.exec_stmt(init_stmt.*, loop_env),
+            }
+        }
+        var iterations: u32 = 0;
+        while (iterations < 100_000) : (iterations += 1) {
+            if (fs.condition) |cond| {
+                const cv = try self.eval_expr(cond, loop_env);
+                if (!(utils.coerce_to_bool(cv) catch false)) break;
+            }
+            const result = try self.exec_block(fs.body, loop_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+            if (fs.update) |upd| _ = try self.eval_expr(upd, loop_env);
+        }
+        return .normal;
+    }
+
+    fn exec_while_stmt(self: *Evaluator, ws: *ast.WhileStmt, current_env: *Env) anyerror!StmtResult {
+        var iterations: u32 = 0;
+        while (iterations < 100_000) : (iterations += 1) {
+            const cv = try self.eval_expr(ws.condition, current_env);
+            if (!(utils.coerce_to_bool(cv) catch false)) break;
+            const result = try self.exec_block(ws.body, current_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+        }
+        return .normal;
+    }
+
+    fn exec_do_while_stmt(self: *Evaluator, dw: *ast.DoWhileStmt, current_env: *Env) anyerror!StmtResult {
+        var iterations: u32 = 0;
+        while (iterations < 100_000) : (iterations += 1) {
+            const result = try self.exec_block(dw.body, current_env);
+            switch (result) {
+                .break_signal => break,
+                .continue_signal => {},
+                .return_val => return result,
+                .normal => {},
+            }
+            const cv = try self.eval_expr(dw.condition, current_env);
+            if (!(utils.coerce_to_bool(cv) catch false)) break;
+        }
+        return .normal;
+    }
+
+    fn update_run_as_profile_flags(self: *Evaluator, user_sobject: *types.SObject) void {
+        if (user_sobject.id) |uid| self.current_user_id = uid;
+        if (utils.sobject_get(&user_sobject.fields, "ProfileId") orelse
+            utils.sobject_get(&user_sobject.fields, "profileId")) |pv|
+        {
+            if (pv == .string) self.current_profile_id = pv.string;
+        } else if (utils.sobject_get(&user_sobject.fields, "Profile")) |prof| {
+            if (prof == .sobject and prof.sobject.id != null) {
+                self.current_profile_id = prof.sobject.id.?;
+            }
+        }
+        const profile_name = self.get_user_profile_name(user_sobject) orelse blk: {
+            if (self.find_record_by_id("Profile", self.current_profile_id)) |profile_val| {
+                if (profile_val == .sobject) {
+                    if (utils.sobject_get(&profile_val.sobject.fields, "Name")) |name| {
+                        if (name == .string) break :blk name.string;
+                    }
+                }
+            }
+            break :blk null;
+        };
+        if (profile_name) |pn| {
+            self.is_restricted_user = self.is_restricted_profile_name(pn);
+            self.is_min_access_user =
+                std.ascii.indexOfIgnoreCase(pn, "Minimum Access") != null or
+                std.ascii.indexOfIgnoreCase(pn, "MinAccess") != null;
+            self.is_standard_user = self.is_standard_profile_name(pn);
+        } else {
+            self.is_restricted_user = false;
+            self.is_min_access_user = false;
+            self.is_standard_user = false;
+        }
+    }
+
+    fn exec_run_as_stmt(self: *Evaluator, ras: *ast.RunAsStmt, current_env: *Env) anyerror!StmtResult {
+        const user_val = try self.eval_expr(ras.user_expr, current_env);
+        const prev_restricted = self.is_restricted_user;
+        const prev_min_access = self.is_min_access_user;
+        const prev_standard = self.is_standard_user;
+        const prev_user_id = self.current_user_id;
+        const prev_profile_id = self.current_profile_id;
+        const prev_user_override = self.current_user_override;
+        if (user_val == .sobject) {
+            self.current_user_override = user_val.sobject;
+        } else {
+            self.current_user_override = null;
+        }
+        defer self.current_user_override = prev_user_override;
+        if (user_val == .sobject) {
+            self.update_run_as_profile_flags(user_val.sobject);
+        } else {
+            self.is_restricted_user = true;
+            self.is_min_access_user = true;
+            self.is_standard_user = false;
+        }
+        defer self.is_restricted_user = prev_restricted;
+        defer self.is_min_access_user = prev_min_access;
+        defer self.is_standard_user = prev_standard;
+        defer self.current_user_id = prev_user_id;
+        defer self.current_profile_id = prev_profile_id;
+
+        const result = self.exec_block(ras.body, current_env);
+        if (result) |r| return r else |e| return e;
+    }
+
     fn try_switch_value_match(self: *Evaluator, subject: Value, val_copy: ast.Expr, when_val: Value) bool {
         if (subject == .string and when_val == .string) {
             if (std.mem.eql(u8, subject.string, when_val.string)) return true;
@@ -2242,21 +2412,7 @@ pub const Evaluator = struct {
                 _ = try self.eval_expr(expr, current_env);
                 return .normal;
             },
-            .var_decl => |vd| {
-                var val = if (vd.initializer) |init_expr|
-                    try self.eval_expr(init_expr, current_env)
-                else
-                    default_value(vd.type_ref);
-                val = try self.coerce_soql_assignment_to_declared_type(
-                    val,
-                    vd.initializer,
-                    vd.type_ref.name,
-                );
-                const declared_type = self.render_type_ref(vd.type_ref);
-                val = self.annotate_declared_collection_type(val, declared_type);
-                try current_env.define_typed(vd.name, val, declared_type);
-                return .normal;
-            },
+            .var_decl => |vd| return try self.exec_var_decl(vd, current_env),
             .block => |stmts| {
                 const block_env = try current_env.child();
                 return self.exec_block(stmts, block_env);
@@ -2271,68 +2427,10 @@ pub const Evaluator = struct {
                 }
                 return .normal;
             },
-            .for_stmt => |fs| {
-                const loop_env = try current_env.child();
-                if (fs.init) |init_stmt| {
-                    switch (init_stmt.*) {
-                        .block => |init_stmts| {
-                            for (init_stmts) |init_item| {
-                                _ = try self.exec_stmt(init_item, loop_env);
-                            }
-                        },
-                        else => _ = try self.exec_stmt(init_stmt.*, loop_env),
-                    }
-                }
-                var iterations: u32 = 0;
-                while (iterations < 100_000) : (iterations += 1) {
-                    if (fs.condition) |cond| {
-                        const cv = try self.eval_expr(cond, loop_env);
-                        if (!(utils.coerce_to_bool(cv) catch false)) break;
-                    }
-                    const result = try self.exec_block(fs.body, loop_env);
-                    switch (result) {
-                        .break_signal => break,
-                        .continue_signal => {},
-                        .return_val => return result,
-                        .normal => {},
-                    }
-                    if (fs.update) |upd| {
-                        _ = try self.eval_expr(upd, loop_env);
-                    }
-                }
-                return .normal;
-            },
+            .for_stmt => |fs| return try self.exec_for_stmt(fs, current_env),
             .for_each_stmt => |fes| return try self.exec_for_each_stmt(fes, current_env),
-            .while_stmt => |ws| {
-                var iterations: u32 = 0;
-                while (iterations < 100_000) : (iterations += 1) {
-                    const cv = try self.eval_expr(ws.condition, current_env);
-                    if (!(utils.coerce_to_bool(cv) catch false)) break;
-                    const result = try self.exec_block(ws.body, current_env);
-                    switch (result) {
-                        .break_signal => break,
-                        .continue_signal => {},
-                        .return_val => return result,
-                        .normal => {},
-                    }
-                }
-                return .normal;
-            },
-            .do_while => |dw| {
-                var iterations: u32 = 0;
-                while (iterations < 100_000) : (iterations += 1) {
-                    const result = try self.exec_block(dw.body, current_env);
-                    switch (result) {
-                        .break_signal => break,
-                        .continue_signal => {},
-                        .return_val => return result,
-                        .normal => {},
-                    }
-                    const cv = try self.eval_expr(dw.condition, current_env);
-                    if (!(utils.coerce_to_bool(cv) catch false)) break;
-                }
-                return .normal;
-            },
+            .while_stmt => |ws| return try self.exec_while_stmt(ws, current_env),
+            .do_while => |dw| return try self.exec_do_while_stmt(dw, current_env),
             .return_stmt => |rs| {
                 const val =
                     if (rs.value) |v| try self.eval_expr(v, current_env) else Value.void_val;
@@ -2349,97 +2447,8 @@ pub const Evaluator = struct {
                 self.pending_exception = exc_val;
                 return error.ApexException;
             },
-            .dml_stmt => |dml| {
-                const target = try self.eval_expr(dml.target, current_env);
-                // Check USER_MODE access for min-access users without permission sets
-                const has_permset_dml = if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
-                if (dml.is_user_mode and self.is_min_access_user and !has_permset_dml) {
-                    const from_type = if (target == .sobject) target.sobject.type_name else if (target == .list and target.list.items.items.len > 0 and target.list.items.items[0] == .sobject)
-                        target.list.items.items[0].sobject.type_name
-                    else
-                        "SObject";
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "No Access: Access to entity '{s}' denied",
-                        .{from_type},
-                    );
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.NoAccessException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-                try self.execute_dml(dml.op, target);
-                return .normal;
-            },
-            .run_as_stmt => |ras| {
-                const user_val = try self.eval_expr(ras.user_expr, current_env);
-                const prev_restricted = self.is_restricted_user;
-                const prev_min_access = self.is_min_access_user;
-                const prev_standard = self.is_standard_user;
-                const prev_user_id = self.current_user_id;
-                const prev_profile_id = self.current_profile_id;
-                const prev_user_override = self.current_user_override;
-                if (user_val == .sobject) {
-                    self.current_user_override = user_val.sobject;
-                } else {
-                    self.current_user_override = null;
-                }
-                defer self.current_user_override = prev_user_override;
-                // Determine if the user is a restricted/min-access/standard user
-                if (user_val == .sobject) {
-                    if (user_val.sobject.id) |uid| self.current_user_id = uid;
-                    if (utils.sobject_get(
-                        &user_val.sobject.fields,
-                        "ProfileId",
-                    ) orelse utils.sobject_get(&user_val.sobject.fields, "profileId")) |pv| {
-                        if (pv == .string) self.current_profile_id = pv.string;
-                    } else if (utils.sobject_get(&user_val.sobject.fields, "Profile")) |prof| {
-                        if (prof == .sobject and prof.sobject.id != null)
-                            self.current_profile_id = prof.sobject.id.?;
-                    }
-                    const profile_name = self.get_user_profile_name(user_val.sobject) orelse blk: {
-                        if (self.find_record_by_id(
-                            "Profile",
-                            self.current_profile_id,
-                        )) |profile_val| {
-                            if (profile_val == .sobject) {
-                                if (utils.sobject_get(&profile_val.sobject.fields, "Name")) |name| {
-                                    if (name == .string) break :blk name.string;
-                                }
-                            }
-                        }
-                        break :blk null;
-                    };
-                    if (profile_name) |pn| {
-                        self.is_restricted_user = self.is_restricted_profile_name(pn);
-                        self.is_min_access_user = std.ascii.indexOfIgnoreCase(
-                            pn,
-                            "Minimum Access",
-                        ) != null or
-                            std.ascii.indexOfIgnoreCase(pn, "MinAccess") != null;
-                        self.is_standard_user = self.is_standard_profile_name(pn);
-                    } else {
-                        // No profile info found: assume non-restricted (e.g. runAs with current
-                        // user)
-                        self.is_restricted_user = false;
-                        self.is_min_access_user = false;
-                        self.is_standard_user = false;
-                    }
-                } else {
-                    self.is_restricted_user = true;
-                    self.is_min_access_user = true;
-                    self.is_standard_user = false;
-                }
-                defer self.is_restricted_user = prev_restricted;
-                defer self.is_min_access_user = prev_min_access;
-                defer self.is_standard_user = prev_standard;
-                defer self.current_user_id = prev_user_id;
-                defer self.current_profile_id = prev_profile_id;
-
-                const result = self.exec_block(ras.body, current_env);
-                if (result) |r| return r else |e| return e;
-            },
+            .dml_stmt => |dml| return try self.exec_dml_stmt(dml, current_env),
+            .run_as_stmt => |ras| return try self.exec_run_as_stmt(ras, current_env),
         }
     }
 
