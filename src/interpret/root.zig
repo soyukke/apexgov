@@ -248,252 +248,387 @@ fn run_tests_filtered(
 
     const parse_alloc = parse_arena.allocator();
 
-    // 1. .cls ファイルを収集
-    var files: std.ArrayListUnmanaged(SourceFile) = .empty;
-    for (paths) |path| {
-        try collect_cls_files(parse_alloc, io, path, &files);
-    }
-    try writer.print("interpret: loaded {d} Apex source file(s)\n", .{files.items.len});
-
-    // 2. 全ファイルをパース（永続アリーナ上）
     var eval = try evaluator.Evaluator.init(parse_alloc, io);
     eval.source_paths = paths;
-    var parse_errors: u32 = 0;
+    const load_stats = try load_test_sources(parse_alloc, io, paths, &eval);
+    try writer.print("interpret: loaded {d} Apex source file(s)\n", .{load_stats.source_count});
+    try writer.print(
+        "interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n",
+        .{ eval.classes.count(), eval.triggers.count(), load_stats.parse_errors },
+    );
 
-    for (files.items) |file| {
-        const tokens = lexer.tokenize(file.content, parse_alloc) catch {
-            parse_errors += 1;
-            continue;
-        };
-        const decls = parser.parse(tokens, parse_alloc) catch {
-            parse_errors += 1;
-            continue;
-        };
-        eval.load_decls(decls) catch {
-            parse_errors += 1;
-            continue;
-        };
-        for (decls) |decl| {
-            switch (decl) {
-                .class_decl => |cd| {
-                    eval.register_class_source(cd.name, file.content) catch {};
-                },
-                .trigger_decl => |td| {
-                    eval.register_trigger_source(td.name, file.content) catch {};
-                },
-                else => {},
-            }
-        }
-    }
-    try writer.print("interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n", .{ eval.classes.count(), eval.triggers.count(), parse_errors });
-
-    // Load field-meta.xml default values for SObject types.
-    // Only walk ancestor directories when the input path points into a classes/
-    // or triggers/ subtree. For repo roots and package roots, recursive loading
-    // from the provided directory is sufficient and avoids pulling sibling repo
-    // metadata from shared fixture parents like `.local-fixtures/apex/repos`.
-    for (paths) |path| {
-        collect_field_defaults(parse_alloc, io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-        collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
-        collect_custom_setting_types(parse_alloc, io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
-        if (should_search_metadata_parents(path)) {
-            var parent = std.fs.path.dirname(path);
-            var depth: u8 = 0;
-            while (parent != null and depth < 3) : (depth += 1) {
-                const p = parent.?;
-                collect_field_defaults(parse_alloc, io, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-                collect_field_sets(parse_alloc, io, p, &eval.field_sets) catch {};
-                collect_custom_setting_types(parse_alloc, io, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
-                parent = std.fs.path.dirname(p);
-            }
-        }
-    }
-
-    // Static initializer blocks are now evaluated lazily via ensureStaticInit()
-    // on first class access, matching Salesforce behavior.
-
-    // Pre-compute which classes need static field reinit and which have static init blocks
-    var classes_with_statics: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
-    var classes_with_static_inits: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
-    {
-        var pre_iter = eval.classes.iterator();
-        while (pre_iter.next()) |entry| {
-            const cd = entry.value_ptr.*;
-            var has_static_fields = false;
-            var has_static_init = false;
-            for (cd.members) |member| {
-                switch (member) {
-                    .field_decl => |fd| {
-                        if (fd.modifiers.is_static) has_static_fields = true;
-                    },
-                    .static_init => {
-                        has_static_init = true;
-                    },
-                    else => {},
-                }
-            }
-            if (has_static_fields) try classes_with_statics.append(parse_alloc, cd);
-            if (has_static_init) try classes_with_static_inits.append(parse_alloc, cd);
-        }
-    }
-
-    // テスト実行用アリーナ: テストごとにリセットしてメモリを回収
-    var test_arena = std.heap.ArenaAllocator.init(gpa);
-    defer test_arena.deinit();
-
-    // 3. @isTest メソッドを発見・実行
+    load_test_metadata(parse_alloc, io, paths, &eval);
+    const classes_with_statics = try collect_classes_with_static_fields(parse_alloc, &eval);
     var suite = TestSuiteResult{};
-    var class_iter = eval.classes.iterator();
-    while (class_iter.next()) |entry| {
-        const class_name = entry.key_ptr.*;
-        const class_decl = entry.value_ptr.*;
-
-        // クラスフィルタ: 指定されていれば一致するクラスのみ
-        if (filter_class) |fc| {
-            if (!std.ascii.eqlIgnoreCase(class_name, fc)) continue;
-        }
-
-        // Find @TestSetup method if any
-        var test_setup_method: ?*ast.MethodDecl = null;
-        for (class_decl.members) |m| {
-            switch (m) {
-                .method_decl => |md2| {
-                    for (md2.annotations) |ann| {
-                        if (std.ascii.eqlIgnoreCase(ann, "@TestSetup")) {
-                            test_setup_method = md2;
-                            break;
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-
-        for (class_decl.members) |member| {
-            switch (member) {
-                .method_decl => |md| {
-                    if (!is_test_method(md)) continue;
-
-                    // メソッドフィルタ: 指定されていれば一致するメソッドのみ
-                    if (filter_method) |fm| {
-                        if (!std.ascii.eqlIgnoreCase(md.name, fm)) continue;
-                    }
-
-                    suite.total += 1;
-
-                    // テストアリーナをリセットしてメモリを回収し、新しい evaluator を作成
-                    _ = test_arena.reset(.retain_capacity);
-                    const test_alloc = test_arena.allocator();
-                    var test_eval = evaluator.Evaluator.init(test_alloc, io) catch continue;
-                    // 永続側のクラス・トリガー・ソース情報を引き継ぐ
-                    test_eval.classes = eval.classes;
-                    test_eval.class_arena = parse_alloc; // classes map は parse_arena 上に確保
-                    test_eval.triggers = eval.triggers;
-                    test_eval.class_sources = eval.class_sources;
-                    test_eval.trigger_sources = eval.trigger_sources;
-                    test_eval.source_paths = eval.source_paths;
-                    test_eval.field_defaults = eval.field_defaults;
-                    test_eval.field_types = eval.field_types;
-                    test_eval.field_metadata = eval.field_metadata;
-                    test_eval.child_relationships = eval.child_relationships;
-                    test_eval.custom_setting_types = eval.custom_setting_types;
-                    test_eval.custom_setting_kinds = eval.custom_setting_kinds;
-                    test_eval.object_labels = eval.object_labels;
-                    test_eval.object_label_plurals = eval.object_label_plurals;
-                    test_eval.field_sets = eval.field_sets;
-
-                    // Check for @isTest(SeeAllData=true) annotation
-                    test_eval.see_all_data = false;
-                    for (md.annotations) |ann| {
-                        if (std.ascii.indexOfIgnoreCase(ann, "seealldata") != null and
-                            std.ascii.indexOfIgnoreCase(ann, "true") != null)
-                        {
-                            test_eval.see_all_data = true;
-                            break;
-                        }
-                    }
-                    // Full lazy static initialization (Salesforce semantics):
-                    // Register null placeholders, then let ensureStaticInit hooks
-                    // initialize each class on first access.
-                    for (classes_with_statics.items) |cd| {
-                        test_eval.register_static_field_placeholders(cd);
-                    }
-                    // Run @TestSetup if exists
-                    if (test_setup_method) |setup| {
-                        // Test class initializes lazily when callMethod fires
-                        _ = test_eval.call_method(class_name, setup.name, &.{}) catch {};
-                        // After @TestSetup, reset all static state for fresh test
-                        for (classes_with_statics.items) |cd2| {
-                            test_eval.register_static_field_placeholders(cd2);
-                        }
-                        test_eval.static_inited.clearRetainingCapacity();
-                    }
-
-                    // Reset Limits counters before test body (static inits may have caused DML/SOQL)
-                    test_eval.limits_dml = 0;
-                    test_eval.limits_dml_rows = 0;
-                    test_eval.limits_soql = 0;
-                    test_eval.limits_publish_immediate = 0;
-                    test_eval.limits_queueable = 0;
-                    test_eval.limits_callouts = 0;
-
-                    const result = test_eval.call_method(class_name, md.name, &.{});
-                    if (result) |_| {
-                        // Check assertion failures
-                        if (test_eval.assertion_failure) |msg| {
-                            suite.failed += 1;
-                            // failure_message をテストアリーナから永続アリーナにコピー
-                            const msg_copy = parse_alloc.dupe(u8, msg) catch msg;
-                            try suite.results.append(parse_alloc, .{
-                                .class_name = class_name,
-                                .method_name = md.name,
-                                .passed = false,
-                                .failure_message = msg_copy,
-                            });
-                            try writer.print("[FAIL] {s}#{s}: {s}\n", .{ class_name, md.name, msg });
-                        } else {
-                            suite.passed += 1;
-                            try suite.results.append(parse_alloc, .{
-                                .class_name = class_name,
-                                .method_name = md.name,
-                                .passed = true,
-                            });
-                            try writer.print("[PASS] {s}#{s}\n", .{ class_name, md.name });
-                        }
-                    } else |err| {
-                        suite.errors += 1;
-                        // Include pending exception message if available
-                        const exc_detail = if (test_eval.pending_exception) |pe| blk: {
-                            if (pe == .object) {
-                                if (pe.object.fields.get("message")) |msg| {
-                                    if (msg == .string) break :blk msg.string;
-                                }
-                            }
-                            break :blk "";
-                        } else "";
-                        const err_msg = if (exc_detail.len > 0)
-                            try std.fmt.allocPrint(parse_alloc, "{s}: {s}", .{ @errorName(err), exc_detail })
-                        else
-                            try std.fmt.allocPrint(parse_alloc, "{s}", .{@errorName(err)});
-                        try suite.results.append(parse_alloc, .{
-                            .class_name = class_name,
-                            .method_name = md.name,
-                            .passed = false,
-                            .failure_message = err_msg,
-                        });
-                        try writer.print("[ERROR] {s}#{s}: {s}\n", .{ class_name, md.name, err_msg });
-                    }
-                },
-                else => {},
-            }
-        }
-    }
+    try run_loaded_tests(
+        gpa,
+        parse_alloc,
+        io,
+        &eval,
+        filter_class,
+        filter_method,
+        classes_with_statics.items,
+        &suite,
+        writer,
+    );
 
     suite.failed += suite.errors;
     try writer.print("\n--- Results: {d} total, {d} passed, {d} failed ---\n", .{ suite.total, suite.passed, suite.total - suite.passed });
     // 所有権 move: ここまでくれば caller が deinit で arena を解放する。
     suite.arena = parse_arena;
     return suite;
+}
+
+const TestSourceLoadStats = struct {
+    source_count: usize,
+    parse_errors: u32,
+};
+
+fn load_test_sources(
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    eval: *evaluator.Evaluator,
+) !TestSourceLoadStats {
+    var files: std.ArrayListUnmanaged(SourceFile) = .empty;
+    for (paths) |path| {
+        try collect_cls_files(parse_alloc, io, path, &files);
+    }
+    var parse_errors: u32 = 0;
+    for (files.items) |file| {
+        parse_errors += load_test_source_file(parse_alloc, file, eval);
+    }
+    return .{ .source_count = files.items.len, .parse_errors = parse_errors };
+}
+
+fn load_test_source_file(
+    parse_alloc: std.mem.Allocator,
+    file: SourceFile,
+    eval: *evaluator.Evaluator,
+) u32 {
+    const tokens = lexer.tokenize(file.content, parse_alloc) catch return 1;
+    const decls = parser.parse(tokens, parse_alloc) catch return 1;
+    eval.load_decls(decls) catch return 1;
+    for (decls) |decl| {
+        switch (decl) {
+            .class_decl => |cd| eval.register_class_source(cd.name, file.content) catch {},
+            .trigger_decl => |td| eval.register_trigger_source(td.name, file.content) catch {},
+            else => {},
+        }
+    }
+    return 0;
+}
+
+fn load_test_metadata(
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    eval: *evaluator.Evaluator,
+) void {
+    for (paths) |path| {
+        load_test_metadata_path(parse_alloc, io, path, eval);
+        if (!should_search_metadata_parents(path)) continue;
+        var parent = std.fs.path.dirname(path);
+        var depth: u8 = 0;
+        while (parent != null and depth < 3) : (depth += 1) {
+            const p = parent.?;
+            load_test_metadata_path(parse_alloc, io, p, eval);
+            parent = std.fs.path.dirname(p);
+        }
+    }
+}
+
+fn load_test_metadata_path(
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    eval: *evaluator.Evaluator,
+) void {
+    collect_field_defaults(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_defaults,
+        &eval.field_types,
+        &eval.field_metadata,
+        &eval.child_relationships,
+    ) catch {};
+    collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
+    collect_custom_setting_types(
+        parse_alloc,
+        io,
+        path,
+        &eval.custom_setting_types,
+        &eval.custom_setting_kinds,
+        &eval.object_labels,
+        &eval.object_label_plurals,
+    ) catch {};
+}
+
+fn collect_classes_with_static_fields(
+    parse_alloc: std.mem.Allocator,
+    eval: *evaluator.Evaluator,
+) !std.ArrayListUnmanaged(*ast.ClassDecl) {
+    var classes: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+    var iter = eval.classes.iterator();
+    while (iter.next()) |entry| {
+        const class_decl = entry.value_ptr.*;
+        if (class_has_static_fields(class_decl)) try classes.append(parse_alloc, class_decl);
+    }
+    return classes;
+}
+
+fn class_has_static_fields(class_decl: *ast.ClassDecl) bool {
+    for (class_decl.members) |member| {
+        switch (member) {
+            .field_decl => |field_decl| {
+                if (field_decl.modifiers.is_static) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn run_loaded_tests(
+    gpa: std.mem.Allocator,
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    eval: *evaluator.Evaluator,
+    filter_class: ?[]const u8,
+    filter_method: ?[]const u8,
+    classes_with_statics: []const *ast.ClassDecl,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
+    var test_arena = std.heap.ArenaAllocator.init(gpa);
+    defer test_arena.deinit();
+
+    var class_iter = eval.classes.iterator();
+    while (class_iter.next()) |entry| {
+        const class_name = entry.key_ptr.*;
+        if (filter_class) |fc| {
+            if (!std.ascii.eqlIgnoreCase(class_name, fc)) continue;
+        }
+        try run_test_class(
+            parse_alloc,
+            io,
+            eval,
+            class_name,
+            entry.value_ptr.*,
+            filter_method,
+            classes_with_statics,
+            &test_arena,
+            suite,
+            writer,
+        );
+    }
+}
+
+fn run_test_class(
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    eval: *evaluator.Evaluator,
+    class_name: []const u8,
+    class_decl: *ast.ClassDecl,
+    filter_method: ?[]const u8,
+    classes_with_statics: []const *ast.ClassDecl,
+    test_arena: *std.heap.ArenaAllocator,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
+    const test_setup_method = find_test_setup_method(class_decl);
+    for (class_decl.members) |member| {
+        switch (member) {
+            .method_decl => |method_decl| {
+                if (!is_test_method(method_decl)) continue;
+                if (filter_method) |fm| {
+                    if (!std.ascii.eqlIgnoreCase(method_decl.name, fm)) continue;
+                }
+                try run_test_method(
+                    parse_alloc,
+                    io,
+                    eval,
+                    class_name,
+                    method_decl,
+                    test_setup_method,
+                    classes_with_statics,
+                    test_arena,
+                    suite,
+                    writer,
+                );
+            },
+            else => {},
+        }
+    }
+}
+
+fn find_test_setup_method(class_decl: *ast.ClassDecl) ?*ast.MethodDecl {
+    for (class_decl.members) |member| {
+        switch (member) {
+            .method_decl => |method_decl| {
+                for (method_decl.annotations) |ann| {
+                    if (std.ascii.eqlIgnoreCase(ann, "@TestSetup")) return method_decl;
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn run_test_method(
+    parse_alloc: std.mem.Allocator,
+    io: std.Io,
+    base_eval: *evaluator.Evaluator,
+    class_name: []const u8,
+    method_decl: *ast.MethodDecl,
+    test_setup_method: ?*ast.MethodDecl,
+    classes_with_statics: []const *ast.ClassDecl,
+    test_arena: *std.heap.ArenaAllocator,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
+    suite.total += 1;
+    _ = test_arena.reset(.retain_capacity);
+    var test_eval = evaluator.Evaluator.init(test_arena.allocator(), io) catch return;
+    copy_test_eval_context(&test_eval, base_eval, parse_alloc);
+    configure_test_method(&test_eval, method_decl, class_name, test_setup_method, classes_with_statics);
+    reset_test_limits(&test_eval);
+
+    const result = test_eval.call_method(class_name, method_decl.name, &.{});
+    if (result) |_| {
+        try record_test_success(parse_alloc, class_name, method_decl, &test_eval, suite, writer);
+    } else |err| {
+        try record_test_error(parse_alloc, class_name, method_decl, &test_eval, err, suite, writer);
+    }
+}
+
+fn copy_test_eval_context(
+    test_eval: *evaluator.Evaluator,
+    base_eval: *evaluator.Evaluator,
+    parse_alloc: std.mem.Allocator,
+) void {
+    test_eval.classes = base_eval.classes;
+    test_eval.class_arena = parse_alloc;
+    test_eval.triggers = base_eval.triggers;
+    test_eval.class_sources = base_eval.class_sources;
+    test_eval.trigger_sources = base_eval.trigger_sources;
+    test_eval.source_paths = base_eval.source_paths;
+    test_eval.field_defaults = base_eval.field_defaults;
+    test_eval.field_types = base_eval.field_types;
+    test_eval.field_metadata = base_eval.field_metadata;
+    test_eval.child_relationships = base_eval.child_relationships;
+    test_eval.custom_setting_types = base_eval.custom_setting_types;
+    test_eval.custom_setting_kinds = base_eval.custom_setting_kinds;
+    test_eval.object_labels = base_eval.object_labels;
+    test_eval.object_label_plurals = base_eval.object_label_plurals;
+    test_eval.field_sets = base_eval.field_sets;
+}
+
+fn configure_test_method(
+    test_eval: *evaluator.Evaluator,
+    method_decl: *ast.MethodDecl,
+    class_name: []const u8,
+    test_setup_method: ?*ast.MethodDecl,
+    classes_with_statics: []const *ast.ClassDecl,
+) void {
+    test_eval.see_all_data = method_has_see_all_data(method_decl);
+    register_static_placeholders(test_eval, classes_with_statics);
+    if (test_setup_method) |setup| {
+        _ = test_eval.call_method(class_name, setup.name, &.{}) catch {};
+        register_static_placeholders(test_eval, classes_with_statics);
+        test_eval.static_inited.clearRetainingCapacity();
+    }
+}
+
+fn method_has_see_all_data(method_decl: *ast.MethodDecl) bool {
+    for (method_decl.annotations) |ann| {
+        if (std.ascii.indexOfIgnoreCase(ann, "seealldata") != null and
+            std.ascii.indexOfIgnoreCase(ann, "true") != null)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn register_static_placeholders(
+    test_eval: *evaluator.Evaluator,
+    classes_with_statics: []const *ast.ClassDecl,
+) void {
+    for (classes_with_statics) |class_decl| {
+        test_eval.register_static_field_placeholders(class_decl);
+    }
+}
+
+fn reset_test_limits(test_eval: *evaluator.Evaluator) void {
+    test_eval.limits_dml = 0;
+    test_eval.limits_dml_rows = 0;
+    test_eval.limits_soql = 0;
+    test_eval.limits_publish_immediate = 0;
+    test_eval.limits_queueable = 0;
+    test_eval.limits_callouts = 0;
+}
+
+fn record_test_success(
+    parse_alloc: std.mem.Allocator,
+    class_name: []const u8,
+    method_decl: *ast.MethodDecl,
+    test_eval: *evaluator.Evaluator,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
+    if (test_eval.assertion_failure) |msg| {
+        suite.failed += 1;
+        const msg_copy = parse_alloc.dupe(u8, msg) catch msg;
+        try suite.results.append(parse_alloc, .{
+            .class_name = class_name,
+            .method_name = method_decl.name,
+            .passed = false,
+            .failure_message = msg_copy,
+        });
+        try writer.print("[FAIL] {s}#{s}: {s}\n", .{ class_name, method_decl.name, msg });
+        return;
+    }
+    suite.passed += 1;
+    try suite.results.append(parse_alloc, .{
+        .class_name = class_name,
+        .method_name = method_decl.name,
+        .passed = true,
+    });
+    try writer.print("[PASS] {s}#{s}\n", .{ class_name, method_decl.name });
+}
+
+fn record_test_error(
+    parse_alloc: std.mem.Allocator,
+    class_name: []const u8,
+    method_decl: *ast.MethodDecl,
+    test_eval: *evaluator.Evaluator,
+    err: anyerror,
+    suite: *TestSuiteResult,
+    writer: anytype,
+) !void {
+    suite.errors += 1;
+    const exc_detail = pending_exception_message(test_eval);
+    const err_msg = if (exc_detail.len > 0)
+        try std.fmt.allocPrint(parse_alloc, "{s}: {s}", .{ @errorName(err), exc_detail })
+    else
+        try std.fmt.allocPrint(parse_alloc, "{s}", .{@errorName(err)});
+    try suite.results.append(parse_alloc, .{
+        .class_name = class_name,
+        .method_name = method_decl.name,
+        .passed = false,
+        .failure_message = err_msg,
+    });
+    try writer.print("[ERROR] {s}#{s}: {s}\n", .{ class_name, method_decl.name, err_msg });
+}
+
+fn pending_exception_message(test_eval: *evaluator.Evaluator) []const u8 {
+    const pending = test_eval.pending_exception orelse return "";
+    if (pending != .object) return "";
+    const message = pending.object.fields.get("message") orelse return "";
+    return if (message == .string) message.string else "";
 }
 
 fn is_test_class(cd: *ast.ClassDecl) bool {
