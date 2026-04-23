@@ -1203,6 +1203,18 @@ fn ensure_object_list_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, fi
     return list;
 }
 
+fn empty_list(ctx: *BuiltinContext) !*types.ListValue {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    return list;
+}
+
+fn empty_map(ctx: *BuiltinContext) !*types.MapValue {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    return map;
+}
+
 fn json_generator_output(obj: *types.ObjectInstance) []const u8 {
     if (obj.fields.get("__output__")) |existing| {
         if (existing == .string) return existing.string;
@@ -3847,33 +3859,20 @@ fn dispatch_set_instance(ctx: *BuiltinContext, set: *types.SetValue, method_name
 }
 
 fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+    if (try dispatch_obj_iterator(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_platform_classes(ctx, obj, method_name, args)) |v| return v;
+    if (try dispatch_obj_schema_classes(ctx, obj, method_name, args)) |v| return v;
+    return dispatch_obj_common(ctx, obj, method_name, args);
+}
+
+fn dispatch_obj_platform_classes(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     const cn = obj.class_name;
-
-    // System.Iterator — generic iterator for Set/List, with __items__ list and __pos__ index
-    if (ci.eqlIgnoreCase(cn, "System.Iterator") or ci.eqlIgnoreCase(cn, "Iterator")) {
-        const items_val = obj.fields.get("__items__") orelse return Value.null_val;
-        if (items_val != .list) return Value.null_val;
-        const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
-        const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
-        if (ci.eqlIgnoreCase(method_name, "hasNext")) {
-            return Value{ .boolean = pos < items_val.list.items.items.len };
-        }
-        if (ci.eqlIgnoreCase(method_name, "next")) {
-            if (pos >= items_val.list.items.items.len) {
-                const exc = try ctx.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(ctx.arena, "message", Value{ .string = "Iterator has no more elements" });
-                ctx.eval.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            const value = items_val.list.items.items[pos];
-            try obj.fields.put(ctx.arena, "__pos__", Value{ .integer = @intCast(pos + 1) });
-            return value;
-        }
-    }
-
-    // Class-specific handlers (return non-null on match, null to fall through)
     if (ci.eqlIgnoreCase(cn, "Formula.FormulaBuilder") or ci.eqlIgnoreCase(cn, "FormulaBuilder")) {
         if (try dispatch_obj_formula_builder(ctx, obj, method_name, args)) |v| return v;
     }
@@ -3891,51 +3890,47 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
         if (try dispatch_obj_event_bus(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "DataWeave.Script")) return dispatch_obj_data_weave_script(ctx, obj, method_name, args);
-    if (ci.eqlIgnoreCase(cn, "DataWeave.Result")) {
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value.null_val;
-        if (ci.eqlIgnoreCase(method_name, "getValueAsString")) {
-            if (obj.fields.get("value")) |value| {
-                if (value == .string) return value;
-                return Value{ .string = try utils.to_json(value, ctx.arena) };
-            }
-            return Value{ .string = "" };
-        }
+    if (try dispatch_obj_data_weave_result(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_rest_headers(ctx, obj, method_name, args)) |v| return v;
+    if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
+        if (try dispatch_obj_http(ctx, obj, method_name, args)) |v| return v;
     }
-    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
-        (ci.eqlIgnoreCase(method_name, "addHeader") or ci.eqlIgnoreCase(method_name, "setHeader")))
-    {
-        if (args.len >= 2 and args[0] == .string) {
-            const headers = try ensure_headers_map(ctx, obj);
-            try headers.entries.put(ctx.arena, args[0].string, args[1]);
-        }
-        return .void_val;
+    if (ci.eqlIgnoreCase(cn, "PageReference")) {
+        if (try dispatch_obj_page_reference(ctx, obj, method_name, args)) |v| return v;
     }
-    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeader")) {
-        if (args.len > 0 and args[0] == .string) {
-            if (obj.fields.get("headers")) |headers_val| {
-                if (headers_val == .map) {
-                    if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
-                    var iter = headers_val.map.entries.iterator();
-                    while (iter.next()) |entry| {
-                        if (ci.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
-                    }
-                }
-            }
-        }
-        return Value.null_val;
+    if (ci.eqlIgnoreCase(cn, "ApexPages.Message")) {
+        if (try dispatch_obj_apex_pages_message(obj, method_name)) |v| return v;
     }
-    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeaderKeys")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        if (obj.fields.get("headers")) |headers_val| {
-            if (headers_val == .map) {
-                for (headers_val.map.entries.keys()) |key| {
-                    try list.items.append(ctx.arena, Value{ .string = key });
-                }
-            }
-        }
-        return Value{ .list = list };
+    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardController") or ci.eqlIgnoreCase(cn, "StandardController")) {
+        if (try dispatch_obj_standard_controller(ctx, obj, method_name)) |v| return v;
     }
+    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
+        if (try dispatch_obj_standard_set_controller(ctx, obj, method_name, args)) |v| return v;
+    }
+    if (try dispatch_obj_query_locator(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_field_sets(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_dynamic_pick_list_rows(ctx, obj, method_name, args)) |v| return v;
+    if (ci.eqlIgnoreCase(cn, "Type")) {
+        if (try dispatch_obj_type(ctx, obj, method_name)) |v| return v;
+    }
+    if (ci.eqlIgnoreCase(cn, "Cache.Partition")) {
+        if (try dispatch_obj_cache_partition(ctx, obj, method_name, args)) |v| return v;
+    }
+    if (ci.eqlIgnoreCase(cn, "Flow.Interview")) {
+        if (try dispatch_obj_flow_interview(ctx, obj, method_name, args)) |v| return v;
+    }
+    if (try dispatch_obj_invocable(ctx, obj, method_name, args)) |v| return v;
+    return null;
+}
+
+fn dispatch_obj_schema_classes(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const ci = std.ascii;
+    const cn = obj.class_name;
     if (ci.eqlIgnoreCase(cn, "Schema.DescribeFieldResult") or
         ci.eqlIgnoreCase(cn, "DescribeFieldResult") or
         ci.eqlIgnoreCase(cn, "Schema.SObjectField") or
@@ -3952,185 +3947,6 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
         if (ci.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
         if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .integer = 0 };
         if (ci.eqlIgnoreCase(method_name, "getLimit")) return obj.fields.get("limit") orelse Value{ .integer = 0 };
-    }
-    if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
-        if (try dispatch_obj_http(ctx, obj, method_name, args)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "PageReference")) {
-        if (try dispatch_obj_page_reference(ctx, obj, method_name, args)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.Message")) {
-        if (try dispatch_obj_apex_pages_message(obj, method_name)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardController") or ci.eqlIgnoreCase(cn, "StandardController")) {
-        if (try dispatch_obj_standard_controller(ctx, obj, method_name)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
-        if (try dispatch_obj_standard_set_controller(ctx, obj, method_name, args)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "Database.QueryLocator") or ci.eqlIgnoreCase(cn, "QueryLocator")) {
-        if (ci.eqlIgnoreCase(method_name, "getQuery")) {
-            return obj.fields.get("query") orelse Value{ .string = "" };
-        }
-        if (ci.eqlIgnoreCase(method_name, "iterator")) {
-            // Materialize into a List iterator by re-executing the cached query
-            // or reusing a pre-materialized records list.
-            const list: *types.ListValue = blk: {
-                if (obj.fields.get("records")) |rec_v| {
-                    if (rec_v == .list) break :blk rec_v.list;
-                }
-                if (obj.fields.get("query")) |q_val| {
-                    if (q_val == .string) {
-                        const res = ctx.eval.execute_soql(q_val.string, ctx.eval.global_env) catch {
-                            const empty = try ctx.arena.create(types.ListValue);
-                            empty.* = .{};
-                            break :blk empty;
-                        };
-                        if (res == .list) {
-                            try obj.fields.put(ctx.arena, "records", res);
-                            break :blk res.list;
-                        }
-                    }
-                }
-                const empty = try ctx.arena.create(types.ListValue);
-                empty.* = .{};
-                break :blk empty;
-            };
-            const iter = try ctx.arena.create(types.ObjectInstance);
-            iter.* = .{ .class_name = "System.Iterator" };
-            try iter.fields.put(ctx.arena, "__items__", Value{ .list = list });
-            try iter.fields.put(ctx.arena, "__pos__", Value{ .integer = 0 });
-            return Value{ .object = iter };
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or ci.eqlIgnoreCase(cn, "FieldSetCollection")) {
-        if (ci.eqlIgnoreCase(method_name, "getMap")) {
-            return obj.fields.get("map") orelse blk: {
-                const empty = try ctx.arena.create(types.MapValue);
-                empty.* = .{};
-                break :blk Value{ .map = empty };
-            };
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "Schema.FieldSet") or ci.eqlIgnoreCase(cn, "FieldSet")) {
-        if (ci.eqlIgnoreCase(method_name, "getFields")) {
-            return obj.fields.get("fields") orelse blk: {
-                const empty = try ctx.arena.create(types.ListValue);
-                empty.* = .{};
-                break :blk Value{ .list = empty };
-            };
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") or ci.eqlIgnoreCase(cn, "DynamicPickListRows")) {
-        if (std.ascii.eqlIgnoreCase(method_name, "addRow") and args.len > 0) {
-            const rows_val = obj.fields.get("dataRows") orelse blk: {
-                const rows = try ctx.arena.create(types.ListValue);
-                rows.* = .{};
-                const val = Value{ .list = rows };
-                try obj.fields.put(ctx.arena, "dataRows", val);
-                break :blk val;
-            };
-            if (rows_val == .list) try rows_val.list.items.append(ctx.arena, args[0]);
-            return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "getDataRows")) {
-            return obj.fields.get("dataRows") orelse blk: {
-                const rows = try ctx.arena.create(types.ListValue);
-                rows.* = .{};
-                break :blk Value{ .list = rows };
-            };
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "Type")) {
-        if (try dispatch_obj_type(ctx, obj, method_name)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "Cache.Partition")) {
-        if (try dispatch_obj_cache_partition(ctx, obj, method_name, args)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "Flow.Interview")) {
-        if (try dispatch_obj_flow_interview(ctx, obj, method_name, args)) |v| return v;
-    }
-    if (ci.eqlIgnoreCase(cn, "Invocable.Action.Result")) {
-        if (ci.eqlIgnoreCase(method_name, "isSuccess")) {
-            return obj.fields.get("success") orelse Value{ .boolean = true };
-        }
-        if (ci.eqlIgnoreCase(method_name, "getOutputParameters")) {
-            if (obj.fields.get("outputParameters")) |v| {
-                if (v == .map) return v;
-            }
-            const map = try ctx.arena.create(types.MapValue);
-            map.* = .{};
-            const val = Value{ .map = map };
-            try obj.fields.put(ctx.arena, "outputParameters", val);
-            return val;
-        }
-        if (ci.eqlIgnoreCase(method_name, "getErrors")) {
-            if (obj.fields.get("errors")) |v| {
-                if (v == .list) return v;
-            }
-            const list = try ctx.arena.create(types.ListValue);
-            list.* = .{};
-            const val = Value{ .list = list };
-            try obj.fields.put(ctx.arena, "errors", val);
-            return val;
-        }
-        if (ci.eqlIgnoreCase(method_name, "getAction")) {
-            return obj.fields.get("action") orelse Value.null_val;
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "Invocable.Action.Error")) {
-        if (ci.eqlIgnoreCase(method_name, "getCode")) {
-            return obj.fields.get("code") orelse Value{ .string = "" };
-        }
-        if (ci.eqlIgnoreCase(method_name, "getMessage")) {
-            return obj.fields.get("message") orelse Value{ .string = "" };
-        }
-    }
-    if (ci.eqlIgnoreCase(cn, "Invocable.Action")) {
-        if (ci.eqlIgnoreCase(method_name, "setInvocations")) {
-            if (args.len > 0) try obj.fields.put(ctx.arena, "invocations", args[0]);
-            return Value.void_val;
-        }
-        if (ci.eqlIgnoreCase(method_name, "invoke")) {
-            const list = try ctx.arena.create(types.ListValue);
-            list.* = .{};
-            const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
-            const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
-            // An action marked non-existent (set by createCustomAction when the
-            // target cannot be resolved) yields a failure result per invocation.
-            const exists: bool = blk: {
-                if (obj.fields.get("exists")) |ev| {
-                    if (ev == .boolean) break :blk ev.boolean;
-                }
-                break :blk true;
-            };
-            var i: usize = 0;
-            while (i < count) : (i += 1) {
-                const res = try ctx.arena.create(types.ObjectInstance);
-                res.* = .{ .class_name = "Invocable.Action.Result" };
-                try res.fields.put(ctx.arena, "success", Value{ .boolean = exists });
-                const out_map = try ctx.arena.create(types.MapValue);
-                out_map.* = .{};
-                try res.fields.put(ctx.arena, "outputParameters", Value{ .map = out_map });
-                const err_list = try ctx.arena.create(types.ListValue);
-                err_list.* = .{};
-                if (!exists) {
-                    const err_obj = try ctx.arena.create(types.ObjectInstance);
-                    err_obj.* = .{ .class_name = "Invocable.Action.Error" };
-                    try err_obj.fields.put(ctx.arena, "code", Value{ .string = "INVALID_TYPE" });
-                    const action_name: Value = obj.fields.get("name") orelse Value{ .string = "" };
-                    const msg = if (action_name == .string)
-                        try std.fmt.allocPrint(ctx.arena, "No action with name {s} found.", .{action_name.string})
-                    else
-                        try std.fmt.allocPrint(ctx.arena, "No action found.", .{});
-                    try err_obj.fields.put(ctx.arena, "message", Value{ .string = msg });
-                    try err_list.items.append(ctx.arena, Value{ .object = err_obj });
-                }
-                try res.fields.put(ctx.arena, "errors", Value{ .list = err_list });
-                try list.items.append(ctx.arena, Value{ .object = res });
-            }
-            return Value{ .list = list };
-        }
     }
     if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult")) {
         if (try dispatch_obj_describe_s_object(ctx, obj, method_name)) |v| return v;
@@ -4159,9 +3975,315 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
     if (ci.eqlIgnoreCase(cn, "SObjectAccessDecision")) {
         if (try dispatch_obj_s_object_access_decision(ctx, obj, method_name)) |v| return v;
     }
+    return null;
+}
 
-    // Cross-class fallback methods
-    return dispatch_obj_common(ctx, obj, method_name, args);
+fn dispatch_obj_iterator(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const cn = obj.class_name;
+    if (!std.ascii.eqlIgnoreCase(cn, "System.Iterator") and !std.ascii.eqlIgnoreCase(cn, "Iterator")) {
+        return null;
+    }
+    const items_val = obj.fields.get("__items__") orelse return Value.null_val;
+    if (items_val != .list) return Value.null_val;
+    const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
+    const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+    if (std.ascii.eqlIgnoreCase(method_name, "hasNext")) {
+        return Value{ .boolean = pos < items_val.list.items.items.len };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "next")) {
+        if (pos >= items_val.list.items.items.len) {
+            const exc = try ctx.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NoSuchElementException" };
+            try exc.fields.put(ctx.arena, "message", Value{ .string = "Iterator has no more elements" });
+            ctx.eval.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        const value = items_val.list.items.items[pos];
+        try obj.fields.put(ctx.arena, "__pos__", Value{ .integer = @intCast(pos + 1) });
+        return value;
+    }
+    return null;
+}
+
+fn dispatch_obj_data_weave_result(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (!std.ascii.eqlIgnoreCase(obj.class_name, "DataWeave.Result")) return null;
+    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getValueAsString")) {
+        if (obj.fields.get("value")) |value| {
+            if (value == .string) return value;
+            return Value{ .string = try utils.to_json(value, ctx.arena) };
+        }
+        return Value{ .string = "" };
+    }
+    return null;
+}
+
+fn dispatch_obj_rest_headers(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (!is_rest_request_or_response(obj.class_name)) return null;
+    if (std.ascii.eqlIgnoreCase(method_name, "addHeader") or
+        std.ascii.eqlIgnoreCase(method_name, "setHeader"))
+    {
+        if (args.len >= 2 and args[0] == .string) {
+            const headers = try ensure_headers_map(ctx, obj);
+            try headers.entries.put(ctx.arena, args[0].string, args[1]);
+        }
+        return .void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeader")) {
+        return rest_get_header(obj, args);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+        return try rest_get_header_keys(ctx, obj);
+    }
+    return null;
+}
+
+fn is_rest_request_or_response(class_name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(class_name, "RestRequest") or
+        std.ascii.eqlIgnoreCase(class_name, "RestResponse");
+}
+
+fn rest_get_header(obj: *types.ObjectInstance, args: []const Value) Value {
+    if (args.len == 0 or args[0] != .string) return Value.null_val;
+    const headers_val = obj.fields.get("headers") orelse return Value.null_val;
+    if (headers_val != .map) return Value.null_val;
+    if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
+    var iter = headers_val.map.entries.iterator();
+    while (iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string)) return entry.value_ptr.*;
+    }
+    return Value.null_val;
+}
+
+fn rest_get_header_keys(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    if (obj.fields.get("headers")) |headers_val| {
+        if (headers_val == .map) {
+            for (headers_val.map.entries.keys()) |key| {
+                try list.items.append(ctx.arena, Value{ .string = key });
+            }
+        }
+    }
+    return Value{ .list = list };
+}
+
+fn dispatch_obj_query_locator(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const cn = obj.class_name;
+    if (!std.ascii.eqlIgnoreCase(cn, "Database.QueryLocator") and !std.ascii.eqlIgnoreCase(cn, "QueryLocator")) {
+        return null;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getQuery")) {
+        return obj.fields.get("query") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "iterator")) {
+        const list = try query_locator_records(ctx, obj);
+        const iter = try ctx.arena.create(types.ObjectInstance);
+        iter.* = .{ .class_name = "System.Iterator" };
+        try iter.fields.put(ctx.arena, "__items__", Value{ .list = list });
+        try iter.fields.put(ctx.arena, "__pos__", Value{ .integer = 0 });
+        return Value{ .object = iter };
+    }
+    return null;
+}
+
+fn query_locator_records(ctx: *BuiltinContext, obj: *types.ObjectInstance) !*types.ListValue {
+    if (obj.fields.get("records")) |records| {
+        if (records == .list) return records.list;
+    }
+    if (obj.fields.get("query")) |query| {
+        if (query == .string) {
+            const result = ctx.eval.execute_soql(query.string, ctx.eval.global_env) catch return empty_list(ctx);
+            if (result == .list) {
+                try obj.fields.put(ctx.arena, "records", result);
+                return result.list;
+            }
+        }
+    }
+    return empty_list(ctx);
+}
+
+fn dispatch_obj_field_sets(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const cn = obj.class_name;
+    if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or
+        std.ascii.eqlIgnoreCase(cn, "FieldSetCollection"))
+    {
+        if (std.ascii.eqlIgnoreCase(method_name, "getMap")) {
+            return obj.fields.get("map") orelse Value{ .map = try empty_map(ctx) };
+        }
+    }
+    if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet") or std.ascii.eqlIgnoreCase(cn, "FieldSet")) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getFields")) {
+            return obj.fields.get("fields") orelse Value{ .list = try empty_list(ctx) };
+        }
+    }
+    return null;
+}
+
+fn dispatch_obj_dynamic_pick_list_rows(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const cn = obj.class_name;
+    if (!std.ascii.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") and
+        !std.ascii.eqlIgnoreCase(cn, "DynamicPickListRows"))
+    {
+        return null;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "addRow") and args.len > 0) {
+        const rows = try ensure_object_list_field(ctx, obj, "dataRows");
+        try rows.items.append(ctx.arena, args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getDataRows")) {
+        return obj.fields.get("dataRows") orelse Value{ .list = try empty_list(ctx) };
+    }
+    return null;
+}
+
+fn dispatch_obj_invocable(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Invocable.Action.Result")) {
+        return try dispatch_obj_invocable_result(ctx, obj, method_name);
+    }
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Invocable.Action.Error")) {
+        return dispatch_obj_invocable_error(obj, method_name);
+    }
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Invocable.Action")) {
+        return try dispatch_obj_invocable_action(ctx, obj, method_name, args);
+    }
+    return null;
+}
+
+fn dispatch_obj_invocable_result(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) {
+        return obj.fields.get("success") orelse Value{ .boolean = true };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getOutputParameters")) {
+        if (obj.fields.get("outputParameters")) |value| {
+            if (value == .map) return value;
+        }
+        const map = try empty_map(ctx);
+        const value = Value{ .map = map };
+        try obj.fields.put(ctx.arena, "outputParameters", value);
+        return value;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getErrors")) {
+        if (obj.fields.get("errors")) |value| {
+            if (value == .list) return value;
+        }
+        const list = try empty_list(ctx);
+        const value = Value{ .list = list };
+        try obj.fields.put(ctx.arena, "errors", value);
+        return value;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getAction")) {
+        return obj.fields.get("action") orelse Value.null_val;
+    }
+    return null;
+}
+
+fn dispatch_obj_invocable_error(obj: *types.ObjectInstance, method_name: []const u8) ?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getCode")) {
+        return obj.fields.get("code") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) {
+        return obj.fields.get("message") orelse Value{ .string = "" };
+    }
+    return null;
+}
+
+fn dispatch_obj_invocable_action(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "setInvocations")) {
+        if (args.len > 0) try obj.fields.put(ctx.arena, "invocations", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "invoke")) {
+        return try invoke_invocable_action(ctx, obj);
+    }
+    return null;
+}
+
+fn invoke_invocable_action(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
+    const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
+    const exists = invocable_action_exists(obj);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        try list.items.append(ctx.arena, try make_invocable_action_result(ctx, obj, exists));
+    }
+    return Value{ .list = list };
+}
+
+fn invocable_action_exists(obj: *types.ObjectInstance) bool {
+    if (obj.fields.get("exists")) |value| {
+        if (value == .boolean) return value.boolean;
+    }
+    return true;
+}
+
+fn make_invocable_action_result(ctx: *BuiltinContext, obj: *types.ObjectInstance, exists: bool) !Value {
+    const result = try ctx.arena.create(types.ObjectInstance);
+    result.* = .{ .class_name = "Invocable.Action.Result" };
+    try result.fields.put(ctx.arena, "success", Value{ .boolean = exists });
+    try result.fields.put(ctx.arena, "outputParameters", Value{ .map = try empty_map(ctx) });
+    const errors = try empty_list(ctx);
+    if (!exists) {
+        try errors.items.append(ctx.arena, try make_invocable_action_error(ctx, obj));
+    }
+    try result.fields.put(ctx.arena, "errors", Value{ .list = errors });
+    return Value{ .object = result };
+}
+
+fn make_invocable_action_error(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const err_obj = try ctx.arena.create(types.ObjectInstance);
+    err_obj.* = .{ .class_name = "Invocable.Action.Error" };
+    try err_obj.fields.put(ctx.arena, "code", Value{ .string = "INVALID_TYPE" });
+    const action_name = obj.fields.get("name") orelse Value{ .string = "" };
+    const msg = if (action_name == .string)
+        try std.fmt.allocPrint(ctx.arena, "No action with name {s} found.", .{action_name.string})
+    else
+        try std.fmt.allocPrint(ctx.arena, "No action found.", .{});
+    try err_obj.fields.put(ctx.arena, "message", Value{ .string = msg });
+    return Value{ .object = err_obj };
 }
 
 fn dispatch_obj_common(
@@ -4173,9 +4295,9 @@ fn dispatch_obj_common(
     // EventBus.PublishResult.getEventUuids
     if (std.ascii.eqlIgnoreCase(method_name, "getEventUuids")) {
         if (obj.fields.get("eventUuids")) |uuids| return uuids;
-        const empty_list = try ctx.arena.create(types.ListValue);
-        empty_list.* = .{};
-        return Value{ .list = empty_list };
+        const event_uuids = try ctx.arena.create(types.ListValue);
+        event_uuids.* = .{};
+        return Value{ .list = event_uuids };
     }
 
     if (try dispatch_obj_exception_methods(ctx, obj, method_name, args)) |value| return value;
