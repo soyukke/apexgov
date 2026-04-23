@@ -7154,322 +7154,325 @@ pub const Evaluator = struct {
         return self.eval_simple_condition(sob, trimmed, current_env);
     }
 
+    const SimpleCondOp = struct {
+        pos: usize,
+        len: usize,
+        is_neq: bool = false,
+        is_like: bool = false,
+        is_in: bool = false,
+        is_gt: bool = false,
+        is_gte: bool = false,
+        is_lt: bool = false,
+        is_lte: bool = false,
+    };
+
     fn eval_simple_condition(
         self: *Evaluator,
         sob: *types.SObject,
         cond: []const u8,
         current_env: *Env,
     ) bool {
-        // Parse: field OP value
-        // Find operator
-        var op_pos: ?usize = null;
-        var op_len: usize = 1;
-        var is_neq = false;
-        var is_like = false;
-        var is_in = false;
-        var is_gt = false;
-        var is_gte = false;
-        var is_lt = false;
-        var is_lte = false;
+        const op = parse_simple_cond_operator(cond) orelse return true; // can't parse, include
+        const field_name = std.mem.trim(u8, cond[0..op.pos], " \t\n\r");
+        const value_str = std.mem.trim(u8, cond[op.pos + op.len ..], " \t\n\r");
 
+        const field_val_opt = self.resolve_simple_condition_field(sob, field_name);
+        const field_val = field_val_opt orelse {
+            return self.simple_condition_missing_field(cond, field_name, value_str, op, current_env);
+        };
+        if (op.is_like) return eval_simple_condition_like(self, field_val, value_str, current_env);
+        if (op.is_in) return eval_simple_condition_in(self, field_val, value_str, current_env);
+        const cmp_val = self.resolve_simple_condition_cmp_value(value_str, op.is_neq, current_env) orelse
+            return true;
+        return eval_simple_condition_compare(self, field_val, cmp_val, op);
+    }
+
+    /// Scan `cond` left-to-right for the first operator and return its
+    /// position/length/kind. Returns null when no operator is found (the
+    /// caller includes the record by default).
+    fn parse_simple_cond_operator(cond: []const u8) ?SimpleCondOp {
         var i: usize = 0;
         while (i < cond.len) : (i += 1) {
             if (i + 1 < cond.len and cond[i] == '>' and cond[i + 1] == '=') {
-                op_pos = i;
-                op_len = 2;
-                is_gte = true;
-                break;
+                return .{ .pos = i, .len = 2, .is_gte = true };
             }
             if (i + 1 < cond.len and cond[i] == '<' and cond[i + 1] == '=') {
-                op_pos = i;
-                op_len = 2;
-                is_lte = true;
-                break;
+                return .{ .pos = i, .len = 2, .is_lte = true };
             }
             if (cond[i] == '>' and (i + 1 >= cond.len or cond[i + 1] != '=')) {
-                op_pos = i;
-                op_len = 1;
-                is_gt = true;
-                break;
+                return .{ .pos = i, .len = 1, .is_gt = true };
             }
             if (cond[i] == '<' and
                 (i + 1 >= cond.len or (cond[i + 1] != '=' and cond[i + 1] != '>')))
             {
-                op_pos = i;
-                op_len = 1;
-                is_lt = true;
-                break;
+                return .{ .pos = i, .len = 1, .is_lt = true };
             }
             if (cond[i] == '=' and
                 (i == 0 or cond[i - 1] != '!' and cond[i - 1] != '<' and cond[i - 1] != '>'))
             {
-                op_pos = i;
-                op_len = 1;
-                break;
+                return .{ .pos = i, .len = 1 };
             }
             if (i + 1 < cond.len and cond[i] == '!' and cond[i + 1] == '=') {
-                op_pos = i;
-                op_len = 2;
-                is_neq = true;
-                break;
+                return .{ .pos = i, .len = 2, .is_neq = true };
             }
             if (i + 1 < cond.len and cond[i] == '<' and cond[i + 1] == '>') {
-                op_pos = i;
-                op_len = 2;
-                is_neq = true;
-                break;
+                return .{ .pos = i, .len = 2, .is_neq = true };
             }
-            if (i + 4 <= cond.len and std.ascii.eqlIgnoreCase(cond[i .. i + 4], "LIKE")) {
-                if ((i == 0 or cond[i - 1] == ' ') and (i + 4 >= cond.len or cond[i + 4] == ' ')) {
-                    op_pos = i;
-                    op_len = 4;
-                    is_like = true;
-                    break;
-                }
+            if (i + 4 <= cond.len and std.ascii.eqlIgnoreCase(cond[i .. i + 4], "LIKE") and
+                (i == 0 or cond[i - 1] == ' ') and (i + 4 >= cond.len or cond[i + 4] == ' '))
+            {
+                return .{ .pos = i, .len = 4, .is_like = true };
             }
-            if (i + 2 <= cond.len and std.ascii.eqlIgnoreCase(cond[i .. i + 2], "IN")) {
-                if ((i == 0 or cond[i - 1] == ' ') and (i + 2 >= cond.len or cond[i + 2] == ' ')) {
-                    op_pos = i;
-                    op_len = 2;
-                    is_in = true;
-                    break;
-                }
+            if (i + 2 <= cond.len and std.ascii.eqlIgnoreCase(cond[i .. i + 2], "IN") and
+                (i == 0 or cond[i - 1] == ' ') and (i + 2 >= cond.len or cond[i + 2] == ' '))
+            {
+                return .{ .pos = i, .len = 2, .is_in = true };
             }
         }
+        return null;
+    }
 
-        const op_start = op_pos orelse return true; // can't parse, include record
-        const field_name = std.mem.trim(u8, cond[0..op_start], " \t\n\r");
-        const value_str = std.mem.trim(u8, cond[op_start + op_len ..], " \t\n\r");
-
-        // Get field value from record (case-insensitive), supporting dotted parent refs
-        var field_val: Value = Value.null_val;
-        var field_found = false;
+    /// Resolve the record field. Falls back to `false` for `IsDeleted` on
+    /// live-store records. Returns null when the field does not exist.
+    fn resolve_simple_condition_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
         if (std.mem.indexOf(u8, field_name, ".")) |_| {
-            if (self.resolve_field_path_value(sob, field_name)) |resolved| {
-                field_val = resolved;
-                field_found = true;
-            }
-        } else {
-            if (self.get_s_object_field_value_case_insensitive(sob, field_name)) |resolved| {
-                field_val = resolved;
-                field_found = true;
-            }
+            if (self.resolve_field_path_value(sob, field_name)) |resolved| return resolved;
+        } else if (self.get_s_object_field_value_case_insensitive(sob, field_name)) |resolved| {
+            return resolved;
         }
-        if (!field_found) {
-            // IsDeleted defaults to FALSE for records in the active store
-            if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted")) {
-                field_val = Value{ .boolean = false };
-                field_found = true;
-            }
-        }
-        if (!field_found) {
-            if (self.has_where_field_null_literal(cond, field_name)) {
-                return !is_neq;
-            }
-            // Check if the comparison value is a null bind variable → skip condition
-            if (value_str.len > 0 and value_str[0] == ':') {
-                const bv_name = value_str[1..];
-                if (self.lookup_bind_value(current_env, bv_name)) |bv| {
-                    if (bv == .null_val) return true; // null bind → include record
-                }
-            }
-            return if (is_neq) true else false;
-        }
+        if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted")) return Value{ .boolean = false };
+        return null;
+    }
 
-        if (is_like) {
-            // LIKE support: '%xxx%' → contains, 'xxx%' → startsWith, '%xxx' → endsWith
-            if (field_val != .string) return false;
-            var pattern = std.mem.trim(u8, value_str, " \t\n\r");
-            // バインド変数 :type → 環境から値を解決
-            if (pattern.len > 0 and pattern[0] == ':') {
-                const var_name = pattern[1..];
-                if (self.lookup_bind_value(current_env, var_name)) |bind_val| {
-                    if (bind_val == .string) {
-                        pattern = bind_val.string;
-                    } else return false;
-                } else return false;
+    /// Fallback handling when the record has no value for the requested field
+    /// (e.g. after stripInaccessible or dynamic SOQL over an unknown field).
+    fn simple_condition_missing_field(
+        self: *Evaluator,
+        cond: []const u8,
+        field_name: []const u8,
+        value_str: []const u8,
+        op: SimpleCondOp,
+        current_env: *Env,
+    ) bool {
+        if (self.has_where_field_null_literal(cond, field_name)) return !op.is_neq;
+        // A null bind on the comparison side should keep the record in the
+        // result (`skip` semantics).
+        if (value_str.len > 0 and value_str[0] == ':') {
+            const bv_name = value_str[1..];
+            if (self.lookup_bind_value(current_env, bv_name)) |bv| {
+                if (bv == .null_val) return true;
             }
-            if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
-            if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'')
-                pattern = pattern[0 .. pattern.len - 1];
-            pattern = self.collapse_like_wildcards(pattern);
-            if (pattern.len == 0) return field_val.string.len == 0;
-            var non_wildcard_len: usize = 0;
-            for (pattern) |ch| {
-                if (ch != '%') non_wildcard_len += 1;
-            }
-            if (non_wildcard_len == 0) return true;
-            const starts_wild = pattern.len > 0 and pattern[0] == '%';
-            const ends_wild = pattern.len > 0 and pattern[pattern.len - 1] == '%';
-            const inner = pattern[@intFromBool(
-                starts_wild,
-            ) .. pattern.len - @intFromBool(ends_wild)];
-            if (starts_wild and ends_wild) {
-                return std.ascii.indexOfIgnoreCase(field_val.string, inner) != null;
-            } else if (starts_wild) {
-                return std.ascii.endsWithIgnoreCase(field_val.string, inner);
-            } else if (ends_wild) {
-                return std.ascii.startsWithIgnoreCase(field_val.string, inner);
-            }
-            return std.ascii.eqlIgnoreCase(field_val.string, pattern);
         }
+        return op.is_neq;
+    }
 
-        if (is_in) {
-            // IN ('val1', 'val2') or IN :bindVar
-            const in_str = std.mem.trim(u8, value_str, " \t\n\r");
-            // Handle :bindVar for IN clause
-            if (in_str.len > 0 and in_str[0] == ':') {
-                const var_name = in_str[1..];
-                if (self.lookup_bind_value(current_env, var_name)) |bind_val| {
-                    if (self.bind_collection_contains(field_val, bind_val)) return true;
-                    if (bind_val == .list or bind_val == .map or bind_val == .set) return false;
-                }
-            }
-            // IN ('val1', 'val2') — parse literal list
-            if (std.mem.indexOf(u8, in_str, "(")) |paren_start| {
-                const inner = if (std.mem.lastIndexOf(u8, in_str, ")")) |paren_end|
-                    in_str[paren_start + 1 .. paren_end]
-                else
-                    in_str[paren_start + 1 ..];
-                if (std.ascii.indexOfIgnoreCase(inner, "SELECT") != null) {
-                    return self.subquery_contains_value(field_val, inner, current_env);
-                }
-                // Split by comma and check each value
-                var iter = std.mem.splitScalar(u8, inner, ',');
-                while (iter.next()) |part| {
-                    const trimmed = std.mem.trim(u8, part, " \t\n\r'");
-                    if (field_val == .string and std.ascii.eqlIgnoreCase(field_val.string, trimmed))
-                        return true;
-                    if (field_val == .integer) {
-                        if (std.fmt.parseInt(i64, trimmed, 10)) |int_val| {
-                            if (field_val.integer == int_val) return true;
-                        } else |_| {}
-                    }
-                }
-                return false;
-            }
-            return true; // fallback: include all
+    /// LIKE support: `%xxx%` → contains / `xxx%` → startsWith / `%xxx` →
+    /// endsWith. Matches case-insensitive per Apex semantics.
+    fn eval_simple_condition_like(
+        self: *Evaluator,
+        field_val: Value,
+        value_str: []const u8,
+        current_env: *Env,
+    ) bool {
+        if (field_val != .string) return false;
+        var pattern = std.mem.trim(u8, value_str, " \t\n\r");
+        if (pattern.len > 0 and pattern[0] == ':') {
+            const var_name = pattern[1..];
+            const bind_val = self.lookup_bind_value(current_env, var_name) orelse return false;
+            if (bind_val != .string) return false;
+            pattern = bind_val.string;
         }
+        if (pattern.len >= 2 and pattern[0] == '\'') pattern = pattern[1..];
+        if (pattern.len >= 1 and pattern[pattern.len - 1] == '\'') {
+            pattern = pattern[0 .. pattern.len - 1];
+        }
+        pattern = self.collapse_like_wildcards(pattern);
+        if (pattern.len == 0) return field_val.string.len == 0;
+        var non_wildcard_len: usize = 0;
+        for (pattern) |ch| {
+            if (ch != '%') non_wildcard_len += 1;
+        }
+        if (non_wildcard_len == 0) return true;
+        const starts_wild = pattern[0] == '%';
+        const ends_wild = pattern[pattern.len - 1] == '%';
+        const inner = pattern[@intFromBool(starts_wild)..(pattern.len -
+            @intFromBool(ends_wild))];
+        if (starts_wild and ends_wild) {
+            return std.ascii.indexOfIgnoreCase(field_val.string, inner) != null;
+        }
+        if (starts_wild) return std.ascii.endsWithIgnoreCase(field_val.string, inner);
+        if (ends_wild) return std.ascii.startsWithIgnoreCase(field_val.string, inner);
+        return std.ascii.eqlIgnoreCase(field_val.string, pattern);
+    }
 
-        // Resolve the comparison value
-        var cmp_val: Value = Value.null_val;
-        if (value_str.len > 0 and value_str[0] == '\'') {
-            // String literal
-            if (value_str.len >= 2) {
-                // Find closing quote
-                var end = value_str.len;
-                if (value_str[end - 1] == '\'') end -= 1;
-                cmp_val = Value{ .string = value_str[1..end] };
-            }
-        } else if (value_str.len > 0 and value_str[0] == ':') {
-            // Bind variable
-            const var_name = value_str[1..];
+    /// `IN (...)` — literal list, sub-query, or bind-variable collection.
+    fn eval_simple_condition_in(
+        self: *Evaluator,
+        field_val: Value,
+        value_str: []const u8,
+        current_env: *Env,
+    ) bool {
+        const in_str = std.mem.trim(u8, value_str, " \t\n\r");
+        if (in_str.len > 0 and in_str[0] == ':') {
+            const var_name = in_str[1..];
             if (self.lookup_bind_value(current_env, var_name)) |bind_val| {
-                cmp_val = bind_val;
-                if (cmp_val == .null_val and !is_neq) return true;
-            } else if (std.mem.indexOf(u8, var_name, ".")) |dot_pos| {
-                // Fallback for older dotted bind handling when expression parsing
-                // does not resolve the value directly.
-                const base_name = var_name[0..dot_pos];
-                const prop_name = var_name[dot_pos + 1 ..];
-                // Resolve base value, handling array index access (e.g. "list[0]")
-                const base_val = blk: {
-                    if (std.mem.indexOf(u8, base_name, "[")) |bracket_pos| {
-                        const arr_name = base_name[0..bracket_pos];
-                        const idx_end = std.mem.indexOfPos(
-                            u8,
-                            base_name,
-                            bracket_pos,
-                            "]",
-                        ) orelse break :blk current_env.get(base_name);
-                        const idx_str = base_name[bracket_pos + 1 .. idx_end];
-                        const idx = std.fmt.parseInt(
-                            usize,
-                            idx_str,
-                            10,
-                        ) catch break :blk current_env.get(base_name);
-                        const arr_val = current_env.get(
-                            arr_name,
-                        ) orelse break :blk @as(?Value, null);
-                        if (arr_val == .list and idx < arr_val.list.items.items.len) {
-                            break :blk @as(?Value, arr_val.list.items.items[idx]);
-                        }
-                        break :blk @as(?Value, null);
-                    }
-                    break :blk current_env.get(base_name);
-                } orelse return true;
-                if (base_val == .sobject) {
-                    cmp_val = utils.sobject_get(
-                        &base_val.sobject.fields,
-                        prop_name,
-                    ) orelse return true;
-                } else if (base_val == .object) {
-                    cmp_val = utils.sobject_get(
-                        &base_val.object.fields,
-                        prop_name,
-                    ) orelse return true;
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        } else if (std.fmt.parseInt(i64, std.mem.trim(u8, value_str, " \t\n\r"), 10)) |int_val| {
-            cmp_val = Value{ .integer = int_val };
-        } else |_| {
-            // Could be null or enum value
-            const trimmed_value = std.mem.trim(u8, value_str, " \t\n\r");
-            if (std.ascii.eqlIgnoreCase(trimmed_value, "null")) {
-                cmp_val = Value.null_val;
-            } else if (std.ascii.eqlIgnoreCase(trimmed_value, "true")) {
-                cmp_val = Value{ .boolean = true };
-            } else if (std.ascii.eqlIgnoreCase(trimmed_value, "false")) {
-                cmp_val = Value{ .boolean = false };
-            } else {
-                return true; // unknown, include
+                if (self.bind_collection_contains(field_val, bind_val)) return true;
+                if (bind_val == .list or bind_val == .map or bind_val == .set) return false;
             }
         }
+        const paren_start = std.mem.indexOf(u8, in_str, "(") orelse return true;
+        const inner = if (std.mem.lastIndexOf(u8, in_str, ")")) |paren_end|
+            in_str[paren_start + 1 .. paren_end]
+        else
+            in_str[paren_start + 1 ..];
+        if (std.ascii.indexOfIgnoreCase(inner, "SELECT") != null) {
+            return self.subquery_contains_value(field_val, inner, current_env);
+        }
+        var iter = std.mem.splitScalar(u8, inner, ',');
+        while (iter.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t\n\r'");
+            if (field_val == .string and std.ascii.eqlIgnoreCase(field_val.string, trimmed)) {
+                return true;
+            }
+            if (field_val == .integer) {
+                if (std.fmt.parseInt(i64, trimmed, 10)) |int_val| {
+                    if (field_val.integer == int_val) return true;
+                } else |_| {}
+            }
+        }
+        return false;
+    }
 
+    /// Resolve the comparison value on the RHS of the operator. Returns null
+    /// when the value parses as a sentinel that should short-circuit the
+    /// caller (`include record` → `return true`).
+    fn resolve_simple_condition_cmp_value(
+        self: *Evaluator,
+        value_str: []const u8,
+        is_neq: bool,
+        current_env: *Env,
+    ) ?Value {
+        if (value_str.len > 0 and value_str[0] == '\'') {
+            if (value_str.len < 2) return Value{ .string = "" };
+            var end = value_str.len;
+            if (value_str[end - 1] == '\'') end -= 1;
+            return Value{ .string = value_str[1..end] };
+        }
+        if (value_str.len > 0 and value_str[0] == ':') {
+            return self.resolve_bind_cmp_value(value_str[1..], is_neq, current_env);
+        }
+        const trimmed_value = std.mem.trim(u8, value_str, " \t\n\r");
+        if (std.fmt.parseInt(i64, trimmed_value, 10)) |int_val| {
+            return Value{ .integer = int_val };
+        } else |_| {}
+        if (std.ascii.eqlIgnoreCase(trimmed_value, "null")) return Value.null_val;
+        if (std.ascii.eqlIgnoreCase(trimmed_value, "true")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(trimmed_value, "false")) return Value{ .boolean = false };
+        return null;
+    }
+
+    /// `:bindVar` resolution with a fallback for older dotted-access patterns
+    /// (`:obj.field`, `:list[0].field`) when the standard binding lookup
+    /// can't resolve the whole expression.
+    fn resolve_bind_cmp_value(
+        self: *Evaluator,
+        var_name: []const u8,
+        is_neq: bool,
+        current_env: *Env,
+    ) ?Value {
+        if (self.lookup_bind_value(current_env, var_name)) |bind_val| {
+            if (bind_val == .null_val and !is_neq) return null;
+            return bind_val;
+        }
+        const dot_pos = std.mem.indexOf(u8, var_name, ".") orelse return Value.null_val;
+        const base_name = var_name[0..dot_pos];
+        const prop_name = var_name[dot_pos + 1 ..];
+        const base_val = self.resolve_dotted_bind_base(base_name, current_env) orelse return null;
+        if (base_val == .sobject) {
+            return utils.sobject_get(&base_val.sobject.fields, prop_name) orelse null;
+        }
+        if (base_val == .object) {
+            return utils.sobject_get(&base_val.object.fields, prop_name) orelse null;
+        }
+        return Value.null_val;
+    }
+
+    fn resolve_dotted_bind_base(
+        _: *Evaluator,
+        base_name: []const u8,
+        current_env: *Env,
+    ) ?Value {
+        if (std.mem.indexOf(u8, base_name, "[")) |bracket_pos| {
+            const arr_name = base_name[0..bracket_pos];
+            const idx_end = std.mem.indexOfPos(u8, base_name, bracket_pos, "]") orelse
+                return current_env.get(base_name);
+            const idx_str = base_name[bracket_pos + 1 .. idx_end];
+            const idx = std.fmt.parseInt(usize, idx_str, 10) catch
+                return current_env.get(base_name);
+            const arr_val = current_env.get(arr_name) orelse return null;
+            if (arr_val == .list and idx < arr_val.list.items.items.len) {
+                return arr_val.list.items.items[idx];
+            }
+            return null;
+        }
+        return current_env.get(base_name);
+    }
+
+    fn eval_simple_condition_compare(
+        self: *Evaluator,
+        field_val: Value,
+        cmp_val: Value,
+        op: SimpleCondOp,
+    ) bool {
         if (cmp_val == .list or cmp_val == .map or cmp_val == .set) {
             const contains = self.bind_collection_contains(field_val, cmp_val);
-            return if (is_neq) !contains else contains;
+            return if (op.is_neq) !contains else contains;
         }
-
-        if (is_neq) return !utils.value_eql(field_val, cmp_val);
-        if (is_gt or is_gte or is_lt or is_lte) {
-            if (builtins.extract_date_string(field_val)) |lhs_date| {
-                if (builtins.extract_date_string(cmp_val)) |rhs_date| {
-                    const cmp = std.mem.order(u8, lhs_date, rhs_date);
-                    if (is_gt) return cmp == .gt;
-                    if (is_gte) return cmp == .gt or cmp == .eq;
-                    if (is_lt) return cmp == .lt;
-                    if (is_lte) return cmp == .lt or cmp == .eq;
-                }
-            }
-            // Numeric comparison
-            var lhs: ?f64 = null;
-            var rhs: ?f64 = null;
-            if (field_val == .integer) lhs = @floatFromInt(field_val.integer);
-            if (field_val == .double) lhs = field_val.double;
-            if (cmp_val == .integer) rhs = @floatFromInt(cmp_val.integer);
-            if (cmp_val == .double) rhs = cmp_val.double;
-            // String comparison for dates etc.
-            if (field_val == .string and cmp_val == .string) {
-                const cmp = std.mem.order(u8, field_val.string, cmp_val.string);
-                if (is_gt) return cmp == .gt;
-                if (is_gte) return cmp == .gt or cmp == .eq;
-                if (is_lt) return cmp == .lt;
-                if (is_lte) return cmp == .lt or cmp == .eq;
-            }
-            if (lhs != null and rhs != null) {
-                if (is_gt) return lhs.? > rhs.?;
-                if (is_gte) return lhs.? >= rhs.?;
-                if (is_lt) return lhs.? < rhs.?;
-                if (is_lte) return lhs.? <= rhs.?;
-            }
-            return false; // incomparable types
+        if (op.is_neq) return !utils.value_eql(field_val, cmp_val);
+        if (op.is_gt or op.is_gte or op.is_lt or op.is_lte) {
+            return eval_simple_condition_ordered(field_val, cmp_val, op);
         }
         return utils.value_eql(field_val, cmp_val);
+    }
+
+    fn eval_simple_condition_ordered(
+        field_val: Value,
+        cmp_val: Value,
+        op: SimpleCondOp,
+    ) bool {
+        if (builtins.extract_date_string(field_val)) |lhs_date| {
+            if (builtins.extract_date_string(cmp_val)) |rhs_date| {
+                const cmp = std.mem.order(u8, lhs_date, rhs_date);
+                if (op.is_gt) return cmp == .gt;
+                if (op.is_gte) return cmp == .gt or cmp == .eq;
+                if (op.is_lt) return cmp == .lt;
+                if (op.is_lte) return cmp == .lt or cmp == .eq;
+            }
+        }
+        if (field_val == .string and cmp_val == .string) {
+            const cmp = std.mem.order(u8, field_val.string, cmp_val.string);
+            if (op.is_gt) return cmp == .gt;
+            if (op.is_gte) return cmp == .gt or cmp == .eq;
+            if (op.is_lt) return cmp == .lt;
+            if (op.is_lte) return cmp == .lt or cmp == .eq;
+        }
+        var lhs: ?f64 = null;
+        var rhs: ?f64 = null;
+        if (field_val == .integer) lhs = @floatFromInt(field_val.integer);
+        if (field_val == .double) lhs = field_val.double;
+        if (cmp_val == .integer) rhs = @floatFromInt(cmp_val.integer);
+        if (cmp_val == .double) rhs = cmp_val.double;
+        if (lhs != null and rhs != null) {
+            if (op.is_gt) return lhs.? > rhs.?;
+            if (op.is_gte) return lhs.? >= rhs.?;
+            if (op.is_lt) return lhs.? < rhs.?;
+            if (op.is_lte) return lhs.? <= rhs.?;
+        }
+        return false;
     }
 
     fn subquery_contains_value(
