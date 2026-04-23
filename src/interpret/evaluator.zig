@@ -10165,315 +10165,375 @@ pub const Evaluator = struct {
             coerced_val = self.annotate_declared_collection_type(coerced_val, target_type);
         }
         switch (asgn.target.*) {
-            .identifier => |id| {
-                // ??= : only assign if current value is null
-                if (asgn.op == .null_coalesce_assign) {
-                    const cur = self.eval_expr(asgn.target, current_env) catch Value.null_val;
-                    if (cur != .null_val) return cur;
-                    // Current is null, fall through to assign the new value
-                    const nca = try self.arena.create(ast.Assignment);
-                    nca.* = .{ .target = asgn.target, .op = .assign, .value = asgn.value, .loc = asgn.loc };
-                    return self.eval_assignment(nca, coerced_val, current_env);
-                }
-                const final_val = if (asgn.op != .assign) blk: {
-                    const cur = if (current_env.has(id.name))
-                        (current_env.get(id.name) orelse Value.null_val)
-                    else
-                        (self.resolve_bare_static_value(
-                            current_env,
-                            id.name,
-                        ) orelse Value.null_val);
-                    var result = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                    // Handle string concatenation for +=
-                    if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
-                        const ls = try utils.coerce_to_string(cur, self.arena);
-                        const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                        result = Value{ .string = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}{s}",
-                            .{ ls, rs },
-                        ) };
-                    }
-                    break :blk result;
-                } else coerced_val;
-                current_env.set(id.name, final_val) catch {
-                    // Before defining locally, check if this is a static field
-                    // (ClassName.fieldName)
-                    // to avoid shadowing static variables with local bindings.
-                    var found_static = false;
-                    if (self.current_class) |cc| {
-                        const sk = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cc, id.name },
-                        ) catch "";
-                        if (self.global_env.get(sk) != null) {
-                            self.global_env.set(sk, final_val) catch {};
-                            found_static = true;
-                        } else if (self.find_outer_class_name(cc)) |oc| {
-                            const osk = std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ oc, id.name },
-                            ) catch "";
-                            if (self.global_env.get(osk) != null) {
-                                self.global_env.set(osk, final_val) catch {};
-                                found_static = true;
-                            }
-                        }
-                    }
-                    if (current_env.get("this")) |tv| {
-                        if (tv == .object) {
-                            const sk = std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ tv.object.class_name, id.name },
-                            ) catch "";
-                            if (self.global_env.get(sk) != null) {
-                                self.global_env.set(sk, final_val) catch {};
-                                found_static = true;
-                            } else if (self.find_outer_class_name(tv.object.class_name)) |oc| {
-                                const osk = std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}.{s}",
-                                    .{ oc, id.name },
-                                ) catch "";
-                                if (self.global_env.get(osk) != null) {
-                                    self.global_env.set(osk, final_val) catch {};
-                                    found_static = true;
-                                }
-                            }
-                        }
-                    }
-                    if (!found_static) {
-                        try current_env.define(id.name, final_val);
-                    }
-                };
-                // Also update instance field on `this` if field exists or is declared
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        // Check if this field already exists on the instance or is declared in
-                        // class
-                        var should_update = false;
-                        for (this_val.object.fields.keys()) |k| {
-                            if (std.ascii.eqlIgnoreCase(k, id.name)) {
-                                should_update = true;
-                                break;
-                            }
-                        }
-                        if (!should_update) {
-                            if (self.find_class(this_val.object.class_name)) |cd| {
-                                should_update = self.is_instance_field(
-                                    cd,
-                                    id.name,
-                                ) or self.is_parent_instance_field(cd, id.name);
-                            }
-                        }
-                        if (should_update) {
-                            try this_val.object.fields.put(self.arena, id.name, final_val);
-                        }
-                        // Also update static field if applicable
-                        const static_key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ this_val.object.class_name, id.name },
-                        ) catch "";
-                        if (self.global_env.get(static_key) != null) {
-                            self.global_env.set(static_key, final_val) catch {};
-                        }
-                    }
-                }
-                // Also update current_class static field if applicable
-                if (self.current_class) |cc| {
-                    if (current_env.get("this") == null) { // Only in static context
-                        const static_key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cc, id.name },
-                        ) catch "";
-                        if (self.global_env.get(static_key) != null) {
-                            self.global_env.set(static_key, final_val) catch {};
-                        } else if (self.find_outer_class_name(cc)) |oc| {
-                            const osk = std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ oc, id.name },
-                            ) catch "";
-                            if (self.global_env.get(osk) != null) {
-                                self.global_env.set(osk, final_val) catch {};
-                            }
-                        }
-                    }
-                }
-                return final_val;
-            },
-            .field_access => |fa| {
-                // Handle static field assignment: ClassName.fieldName = val
-                if (fa.object.* == .identifier) {
-                    const cls = fa.object.identifier.name;
-                    // Check if it's a class name (not a local variable or a static field
-                    // in the enclosing class/inheritance chain).
-                    const is_class = self.find_class(cls) != null or
-                        std.ascii.eqlIgnoreCase(cls, "RestContext") or
-                        std.ascii.eqlIgnoreCase(cls, "System") or
-                        std.ascii.eqlIgnoreCase(cls, "Trigger");
-                    const is_var = current_env.get(cls) != null or self.resolve_bare_static_value(
-                        current_env,
-                        cls,
-                    ) != null;
-                    if (is_class and !is_var) {
-                        // Lazy static init: ensure the class is initialized before writing
-                        self.ensure_static_init(cls);
-                        const key = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cls, fa.field },
-                        );
-                        var final_val = coerced_val;
-                        if (asgn.op != .assign) {
-                            const cur = self.global_env.get(key) orelse Value.null_val;
-                            final_val = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                            if (asgn.op == .plus_assign and
-                                (cur == .string or coerced_val == .string))
-                            {
-                                const ls = try utils.coerce_to_string(cur, self.arena);
-                                const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                                final_val = Value{ .string = try std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}{s}",
-                                    .{ ls, rs },
-                                ) };
-                            }
-                        }
-                        self.global_env.set(key, final_val) catch {
-                            try self.global_env.define(key, final_val);
-                        };
-                        return final_val;
-                    }
-                }
-                const obj = try self.eval_expr(fa.object, current_env);
-                var final_val = coerced_val;
-                if (asgn.op != .assign) {
-                    // Compound assignment: get current value and compute
-                    const cur = if (obj == .sobject)
-                        utils.sobject_get(&obj.sobject.fields, fa.field) orelse Value.null_val
-                    else if (obj == .object)
-                        utils.sobject_get(&obj.object.fields, fa.field) orelse Value.null_val
-                    else
-                        Value.null_val;
-                    final_val = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
-                    // Handle string concatenation for +=
-                    if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
-                        const ls = try utils.coerce_to_string(cur, self.arena);
-                        const rs = try utils.coerce_to_string(coerced_val, self.arena);
-                        final_val = Value{ .string = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}{s}",
-                            .{ ls, rs },
-                        ) };
-                    }
-                }
-                if (obj == .sobject) {
-                    try utils.sobject_put(&obj.sobject.fields, self.arena, fa.field, final_val);
-                    // Sync SObject.id when Id field is set
-                    if (std.ascii.eqlIgnoreCase(fa.field, "Id")) {
-                        obj.sobject.id = if (final_val == .string) final_val.string else null;
-                    }
-                } else if (obj == .object) {
-                    if (self.find_class(obj.object.class_name)) |class_decl| {
-                        for (class_decl.members) |member| {
-                            switch (member) {
-                                .field_decl => |fd| {
-                                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or
-                                        fd.setter_body == null)
-                                    {
-                                        continue;
-                                    }
-
-                                    const setter_env = try self.global_env.child();
-                                    try setter_env.define("this", Value{ .object = obj.object });
-
-                                    for (
-                                        obj.object.fields.keys(),
-                                        obj.object.fields.values(),
-                                    ) |k, v| {
-                                        setter_env.set(k, v) catch {
-                                            try setter_env.define(k, v);
-                                        };
-                                    }
-                                    try setter_env.define("value", final_val);
-                                    _ = try self.exec_block(fd.setter_body.?, setter_env);
-
-                                    if (setter_env.get("this")) |this_val| {
-                                        if (this_val == .object and this_val.object == obj.object) {
-                                            var field_keys: std.ArrayListUnmanaged(
-                                                []const u8,
-                                            ) = .empty;
-                                            for (obj.object.fields.keys()) |k| field_keys.append(
-                                                self.arena,
-                                                k,
-                                            ) catch {};
-                                            for (field_keys.items) |k| {
-                                                if (setter_env.get(k)) |updated| {
-                                                    try obj.object.fields.put(
-                                                        self.arena,
-                                                        k,
-                                                        updated,
-                                                    );
-                                                }
-                                            }
-                                        } else if (this_val == .object) {
-                                            for (
-                                                this_val.object.fields.keys(),
-                                                this_val.object.fields.values(),
-                                            ) |k, v| {
-                                                try obj.object.fields.put(self.arena, k, v);
-                                            }
-                                        }
-                                    }
-
-                                    if (fa.object.* == .this_expr) {
-                                        current_env.set(
-                                            fa.field,
-                                            obj.object.fields.get(fa.field) orelse final_val,
-                                        ) catch {};
-                                    }
-                                    return final_val;
-                                },
-                                else => {},
-                            }
-                        }
-                    }
-                    // Case-insensitive put: use existing key if it matches
-                    var existing_key: ?[]const u8 = null;
-                    for (obj.object.fields.keys()) |k| {
-                        if (std.ascii.eqlIgnoreCase(k, fa.field)) {
-                            existing_key = k;
-                            break;
-                        }
-                    }
-                    try obj.object.fields.put(self.arena, existing_key orelse fa.field, final_val);
-                    // Sync local env when assigning to this.field
-                    // so that bare field references (without this.) see the updated value
-                    if (fa.object.* == .this_expr) {
-                        current_env.set(fa.field, final_val) catch {};
-                    }
-                }
-                return final_val;
-            },
-            .index_access => |ia| {
-                const obj = try self.eval_expr(ia.object, current_env);
-                const idx = try self.eval_expr(ia.index, current_env);
-                if (obj == .list and idx == .integer and idx.integer >= 0) {
-                    const i: usize = @intCast(idx.integer);
-                    if (i < obj.list.items.items.len) {
-                        obj.list.items.items[i] = val;
-                    }
-                }
-                return val;
-            },
+            .identifier => |id| return try self.assign_to_identifier(
+                asgn,
+                id.name,
+                coerced_val,
+                current_env,
+            ),
+            .field_access => |fa| return try self.assign_to_field_access(
+                asgn,
+                fa,
+                coerced_val,
+                current_env,
+            ),
+            .index_access => |ia| return try self.assign_to_index_access(ia, val, current_env),
             else => return val,
         }
+    }
+
+    /// Assign to a bare identifier. Handles `??=`, compound assignment, and
+    /// the four-way propagation (local env → static field on current/outer
+    /// class → this.field → current_class static).
+    fn assign_to_identifier(
+        self: *Evaluator,
+        asgn: *ast.Assignment,
+        name: []const u8,
+        coerced_val: Value,
+        current_env: *Env,
+    ) anyerror!Value {
+        if (asgn.op == .null_coalesce_assign) {
+            const cur = self.eval_expr(asgn.target, current_env) catch Value.null_val;
+            if (cur != .null_val) return cur;
+            const nca = try self.arena.create(ast.Assignment);
+            nca.* = .{
+                .target = asgn.target,
+                .op = .assign,
+                .value = asgn.value,
+                .loc = asgn.loc,
+            };
+            return self.eval_assignment(nca, coerced_val, current_env);
+        }
+        const final_val = if (asgn.op != .assign)
+            try self.compute_compound_identifier_assignment(asgn.op, name, coerced_val, current_env)
+        else
+            coerced_val;
+        current_env.set(name, final_val) catch {
+            try self.assign_identifier_fallback_to_static(name, final_val, current_env);
+        };
+        try self.propagate_identifier_assignment(name, final_val, current_env);
+        return final_val;
+    }
+
+    fn compute_compound_identifier_assignment(
+        self: *Evaluator,
+        op: ast.AssignOp,
+        name: []const u8,
+        coerced_val: Value,
+        current_env: *Env,
+    ) !Value {
+        const cur = if (current_env.has(name))
+            current_env.get(name) orelse Value.null_val
+        else
+            self.resolve_bare_static_value(current_env, name) orelse Value.null_val;
+        var result = eval_compound_assign(cur, op, coerced_val, self.arena);
+        if (op == .plus_assign and (cur == .string or coerced_val == .string)) {
+            const ls = try utils.coerce_to_string(cur, self.arena);
+            const rs = try utils.coerce_to_string(coerced_val, self.arena);
+            result = Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{s}{s}",
+                .{ ls, rs },
+            ) };
+        }
+        return result;
+    }
+
+    /// If `current_env.set` failed (no binding in scope), route the write to a
+    /// matching static field on the current class, its outer class, or
+    /// `this.class_name`. Otherwise define a fresh local binding.
+    fn assign_identifier_fallback_to_static(
+        self: *Evaluator,
+        name: []const u8,
+        final_val: Value,
+        current_env: *Env,
+    ) !void {
+        var found_static = false;
+        if (self.current_class) |cc| {
+            found_static = self.try_write_static_field(cc, name, final_val) or found_static;
+            if (self.find_outer_class_name(cc)) |oc| {
+                found_static = self.try_write_static_field(oc, name, final_val) or found_static;
+            }
+        }
+        if (current_env.get("this")) |tv| {
+            if (tv == .object) {
+                const cn = tv.object.class_name;
+                found_static = self.try_write_static_field(cn, name, final_val) or found_static;
+                if (self.find_outer_class_name(cn)) |oc| {
+                    found_static = self.try_write_static_field(oc, name, final_val) or
+                        found_static;
+                }
+            }
+        }
+        if (!found_static) try current_env.define(name, final_val);
+    }
+
+    /// Try writing `final_val` to the `ClassName.field_name` global key.
+    /// Returns true when the static field exists (write succeeded / newly
+    /// defined), false when no binding was found at all.
+    fn try_write_static_field(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+        final_val: Value,
+    ) bool {
+        const key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ class_name, field_name },
+        ) catch return false;
+        if (self.global_env.get(key) == null) return false;
+        self.global_env.set(key, final_val) catch {
+            self.global_env.define(key, final_val) catch {};
+        };
+        return true;
+    }
+
+    /// Propagate a successful `current_env.set` to any instance field on
+    /// `this`, any static field on `this.class_name`, and any static field on
+    /// the current class (only when there is no `this` — static context).
+    fn propagate_identifier_assignment(
+        self: *Evaluator,
+        name: []const u8,
+        final_val: Value,
+        current_env: *Env,
+    ) !void {
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object) {
+                try self.propagate_to_instance_field(this_val.object, name, final_val);
+                _ = self.try_write_static_field(this_val.object.class_name, name, final_val);
+            }
+        }
+        if (self.current_class) |cc| {
+            if (current_env.get("this") != null) return;
+            if (self.try_write_static_field(cc, name, final_val)) return;
+            if (self.find_outer_class_name(cc)) |oc| {
+                _ = self.try_write_static_field(oc, name, final_val);
+            }
+        }
+    }
+
+    fn propagate_to_instance_field(
+        self: *Evaluator,
+        this_obj: *types.ObjectInstance,
+        name: []const u8,
+        final_val: Value,
+    ) !void {
+        var should_update = false;
+        for (this_obj.fields.keys()) |k| {
+            if (std.ascii.eqlIgnoreCase(k, name)) {
+                should_update = true;
+                break;
+            }
+        }
+        if (!should_update) {
+            if (self.find_class(this_obj.class_name)) |cd| {
+                should_update = self.is_instance_field(cd, name) or
+                    self.is_parent_instance_field(cd, name);
+            }
+        }
+        if (should_update) try this_obj.fields.put(self.arena, name, final_val);
+    }
+
+    /// `a.b = v` assignments — split across static (`ClassName.field`),
+    /// setter property, and plain object/sobject field writes.
+    fn assign_to_field_access(
+        self: *Evaluator,
+        asgn: *ast.Assignment,
+        fa: *ast.FieldAccess,
+        coerced_val: Value,
+        current_env: *Env,
+    ) anyerror!Value {
+        if (try self.try_assign_to_static_class_field(fa, asgn.op, coerced_val, current_env)) |v| {
+            return v;
+        }
+        const obj = try self.eval_expr(fa.object, current_env);
+        const final_val = try self.compute_field_access_final_value(
+            asgn.op,
+            obj,
+            fa.field,
+            coerced_val,
+        );
+        if (obj == .sobject) {
+            try utils.sobject_put(&obj.sobject.fields, self.arena, fa.field, final_val);
+            if (std.ascii.eqlIgnoreCase(fa.field, "Id")) {
+                obj.sobject.id = if (final_val == .string) final_val.string else null;
+            }
+            return final_val;
+        }
+        if (obj == .object) {
+            if (try self.try_invoke_property_setter(obj.object, fa, final_val, current_env)) |v| {
+                return v;
+            }
+            try self.put_object_field_case_insensitive(obj.object, fa.field, final_val);
+            if (fa.object.* == .this_expr) current_env.set(fa.field, final_val) catch {};
+        }
+        return final_val;
+    }
+
+    /// `ClassName.field = v` assignment. Returns the assigned value when the
+    /// identifier resolves to a class (not a shadowing local/static of same
+    /// name) and null otherwise so the caller falls through to instance
+    /// field handling.
+    fn try_assign_to_static_class_field(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        op: ast.AssignOp,
+        coerced_val: Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (fa.object.* != .identifier) return null;
+        const cls = fa.object.identifier.name;
+        const is_class = self.find_class(cls) != null or
+            std.ascii.eqlIgnoreCase(cls, "RestContext") or
+            std.ascii.eqlIgnoreCase(cls, "System") or
+            std.ascii.eqlIgnoreCase(cls, "Trigger");
+        const is_var = current_env.get(cls) != null or
+            self.resolve_bare_static_value(current_env, cls) != null;
+        if (!(is_class and !is_var)) return null;
+        self.ensure_static_init(cls);
+        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cls, fa.field });
+        var final_val = coerced_val;
+        if (op != .assign) {
+            const cur = self.global_env.get(key) orelse Value.null_val;
+            final_val = eval_compound_assign(cur, op, coerced_val, self.arena);
+            if (op == .plus_assign and (cur == .string or coerced_val == .string)) {
+                const ls = try utils.coerce_to_string(cur, self.arena);
+                const rs = try utils.coerce_to_string(coerced_val, self.arena);
+                final_val = Value{ .string = try std.fmt.allocPrint(
+                    self.arena,
+                    "{s}{s}",
+                    .{ ls, rs },
+                ) };
+            }
+        }
+        self.global_env.set(key, final_val) catch {
+            try self.global_env.define(key, final_val);
+        };
+        return final_val;
+    }
+
+    fn compute_field_access_final_value(
+        self: *Evaluator,
+        op: ast.AssignOp,
+        obj: Value,
+        field: []const u8,
+        coerced_val: Value,
+    ) !Value {
+        if (op == .assign) return coerced_val;
+        const cur = if (obj == .sobject)
+            utils.sobject_get(&obj.sobject.fields, field) orelse Value.null_val
+        else if (obj == .object)
+            utils.sobject_get(&obj.object.fields, field) orelse Value.null_val
+        else
+            Value.null_val;
+        var final_val = eval_compound_assign(cur, op, coerced_val, self.arena);
+        if (op == .plus_assign and (cur == .string or coerced_val == .string)) {
+            const ls = try utils.coerce_to_string(cur, self.arena);
+            const rs = try utils.coerce_to_string(coerced_val, self.arena);
+            final_val = Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{s}{s}",
+                .{ ls, rs },
+            ) };
+        }
+        return final_val;
+    }
+
+    /// If the class declares a setter for `fa.field`, execute it against
+    /// `obj` with `value = final_val` and propagate field updates back to
+    /// `obj`. Returns the assigned value when a setter fired, else null.
+    fn try_invoke_property_setter(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        fa: *ast.FieldAccess,
+        final_val: Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        const class_decl = self.find_class(obj.class_name) orelse return null;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (!std.ascii.eqlIgnoreCase(fd.name, fa.field) or fd.setter_body == null) {
+                        continue;
+                    }
+                    const setter_env = try self.global_env.child();
+                    try setter_env.define("this", Value{ .object = obj });
+                    for (obj.fields.keys(), obj.fields.values()) |k, v| {
+                        setter_env.set(k, v) catch {
+                            try setter_env.define(k, v);
+                        };
+                    }
+                    try setter_env.define("value", final_val);
+                    _ = try self.exec_block(fd.setter_body.?, setter_env);
+                    try self.sync_setter_env_back_to_obj(obj, setter_env);
+                    if (fa.object.* == .this_expr) {
+                        current_env.set(
+                            fa.field,
+                            obj.fields.get(fa.field) orelse final_val,
+                        ) catch {};
+                    }
+                    return final_val;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn sync_setter_env_back_to_obj(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        setter_env: *Env,
+    ) !void {
+        const this_val = setter_env.get("this") orelse return;
+        if (this_val != .object) return;
+        if (this_val.object == obj) {
+            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+            for (obj.fields.keys()) |k| field_keys.append(self.arena, k) catch {};
+            for (field_keys.items) |k| {
+                if (setter_env.get(k)) |updated| {
+                    try obj.fields.put(self.arena, k, updated);
+                }
+            }
+            return;
+        }
+        for (this_val.object.fields.keys(), this_val.object.fields.values()) |k, v| {
+            try obj.fields.put(self.arena, k, v);
+        }
+    }
+
+    fn put_object_field_case_insensitive(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        field: []const u8,
+        final_val: Value,
+    ) !void {
+        var existing_key: ?[]const u8 = null;
+        for (obj.fields.keys()) |k| {
+            if (std.ascii.eqlIgnoreCase(k, field)) {
+                existing_key = k;
+                break;
+            }
+        }
+        try obj.fields.put(self.arena, existing_key orelse field, final_val);
+    }
+
+    fn assign_to_index_access(
+        self: *Evaluator,
+        ia: *ast.IndexAccess,
+        val: Value,
+        current_env: *Env,
+    ) anyerror!Value {
+        const obj = try self.eval_expr(ia.object, current_env);
+        const idx = try self.eval_expr(ia.index, current_env);
+        if (obj == .list and idx == .integer and idx.integer >= 0) {
+            const i: usize = @intCast(idx.integer);
+            if (i < obj.list.items.items.len) {
+                obj.list.items.items[i] = val;
+            }
+        }
+        return val;
     }
 
     /// Apex platform magic: `record.FieldName.addError(msg)` is sugar for
