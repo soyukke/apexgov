@@ -17517,249 +17517,25 @@ pub const Evaluator = struct {
         args: []const Value,
         env: *Env,
     ) anyerror!Value {
-        if (std.ascii.eqlIgnoreCase(method, "insert") or
-            std.ascii.eqlIgnoreCase(method, "update") or
-            std.ascii.eqlIgnoreCase(method, "upsert") or
-            std.ascii.eqlIgnoreCase(method, "delete") or
-            std.ascii.eqlIgnoreCase(method, "undelete"))
-        {
-            const result_class = if (std.ascii.eqlIgnoreCase(method, "upsert"))
-                "Database.UpsertResult"
-            else if (std.ascii.eqlIgnoreCase(method, "undelete"))
-                "Database.UndeleteResult"
-            else if (std.ascii.eqlIgnoreCase(method, "delete"))
-                "Database.DeleteResult"
-            else
-                "Database.SaveResult";
-
-            const is_upsert = std.ascii.eqlIgnoreCase(method, "upsert");
-            const external_id_field = if (is_upsert and args.len >= 2 and args[1] != .boolean) extract_s_object_field_name(args[1]) else null;
-            // Check allOrNothing flag (second arg, defaults to true).
-            // Upsert with external id field uses the third arg for allOrNothing.
-            const all_or_nothing = blk: {
-                if (is_upsert and args.len >= 3 and args[2] == .boolean) break :blk args[2].boolean;
-                if (is_upsert and args.len >= 3) {
-                    if (self.get_dml_options_all_or_none(args[2])) |opt| break :blk opt;
-                }
-                if (args.len >= 2 and args[1] == .boolean) break :blk args[1].boolean;
-                if (args.len >= 2) {
-                    if (self.get_dml_options_all_or_none(args[1])) |opt| break :blk opt;
-                }
-                break :blk true;
-            };
-
-            // Check if second arg is AccessLevel.USER_MODE for min-access user context (without
-            // permsets)
-            const has_permset_db =
-                if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
-            if (self.is_min_access_user and !has_permset_db and args.len >= 2) {
-                const is_user_mode = if (args[1] == .string)
-                    std.ascii.eqlIgnoreCase(args[1].string, "USER_MODE")
-                else if (args[1] == .object) blk: {
-                    if (args[1].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk std.ascii.eqlIgnoreCase(n.string, "USER_MODE");
-                    }
-                    break :blk false;
-                } else false;
-                if (is_user_mode) {
-                    const from_type = if (args[0] == .sobject) args[0].sobject.type_name else if (args[0] == .list and args[0].list.items.items.len > 0 and args[0].list.items.items[0] == .sobject)
-                        args[0].list.items.items[0].sobject.type_name
-                    else
-                        "SObject";
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "Access to entity '{s}' denied",
-                        .{from_type},
-                    );
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.SecurityException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-            }
-
-            // For upsert, record which items will insert vs update before DML runs.
-            var upsert_creates: std.ArrayListUnmanaged(bool) = .empty;
-            if (is_upsert and args.len > 0) {
-                if (args[0] == .sobject) {
-                    try upsert_creates.append(
-                        self.arena,
-                        self.will_upsert_create_record(args[0].sobject, external_id_field),
-                    );
-                } else if (args[0] == .list) {
-                    for (args[0].list.items.items) |item| {
-                        try upsert_creates.append(self.arena, if (item == .sobject) self.will_upsert_create_record(item.sobject, external_id_field) else true);
-                    }
-                }
-            }
-
-            // First arg is the records to DML
-            if (args.len > 0) {
-                const op: ast.DmlOp = if (std.ascii.eqlIgnoreCase(method, "insert"))
-                    .insert
-                else if (std.ascii.eqlIgnoreCase(method, "update"))
-                    .update
-                else if (std.ascii.eqlIgnoreCase(method, "upsert"))
-                    .upsert
-                else if (std.ascii.eqlIgnoreCase(method, "undelete"))
-                    .undelete
-                else
-                    .delete;
-
-                if (all_or_nothing) {
-                    // allOrNothing mode: propagate exceptions
-                    if (is_upsert) {
-                        try self.execute_dml_with_external_id(op, args[0], external_id_field);
-                    } else {
-                        try self.execute_dml(op, args[0]);
-                    }
-                } else {
-                    // Best-effort mode: allow per-record failures instead of failing the whole DML
-                    // statement.
-                    return self.execute_partial_database_method(
-                        op,
-                        result_class,
-                        args[0],
-                        external_id_field,
-                    ) catch |err| {
-                        if (err == error.ApexException and args[0] == .sobject) {
-                            const failed = try self.build_failed_dml_result(
-                                result_class,
-                                args[0],
-                                is_upsert,
-                            );
-                            self.pending_exception = null;
-                            return failed;
-                        }
-                        self.pending_exception = null;
-                        return err;
-                    };
-                }
-            }
-            // Create SaveResult(s) for success case
-            if (args.len > 0 and args[0] == .sobject) {
-                // Single record: return single result (not a list)
-                const was_created =
-                    is_upsert and (upsert_creates.items.len > 0 and upsert_creates.items[0]);
-                const sr = try self.arena.create(types.ObjectInstance);
-                sr.* = .{ .class_name = result_class };
-                try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
-                try sr.fields.put(self.arena, "success", Value{ .boolean = true });
-                try sr.fields.put(
-                    self.arena,
-                    "Id",
-                    Value{ .string = args[0].sobject.id orelse "001000000000001" },
-                );
-                if (is_upsert) {
-                    try sr.fields.put(self.arena, "isCreated", Value{ .boolean = was_created });
-                    try sr.fields.put(self.arena, "created", Value{ .boolean = was_created });
-                }
-                return Value{ .object = sr };
-            }
-            // Return SaveResult list
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            if (args.len > 0 and args[0] == .list) {
-                for (args[0].list.items.items, 0..) |item, idx| {
-                    const was_created = is_upsert and (if (idx < upsert_creates.items.len) upsert_creates.items[idx] else true);
-                    const sr = try self.arena.create(types.ObjectInstance);
-                    sr.* = .{ .class_name = result_class };
-                    try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
-                    try sr.fields.put(self.arena, "success", Value{ .boolean = true });
-                    try sr.fields.put(self.arena, "Id", Value{ .string = if (item == .sobject) (item.sobject.id orelse "001000000000001") else "001000000000001" });
-                    if (is_upsert) {
-                        try sr.fields.put(self.arena, "isCreated", Value{ .boolean = was_created });
-                        try sr.fields.put(self.arena, "created", Value{ .boolean = was_created });
-                    }
-                    try list.items.append(self.arena, Value{ .object = sr });
-                }
-            } else {
-                const sr = try self.arena.create(types.ObjectInstance);
-                sr.* = .{ .class_name = result_class };
-                try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
-                try sr.fields.put(self.arena, "success", Value{ .boolean = true });
-                try sr.fields.put(self.arena, "Id", Value{ .string = "001000000000001" });
-                try list.items.append(self.arena, Value{ .object = sr });
-            }
-            return Value{ .list = list };
+        if (is_database_dml_method(method)) {
+            return try self.handle_database_dml_method(method, args);
         }
         if (std.ascii.eqlIgnoreCase(method, "query")) {
-            // Execute the SOQL string against the store
-            if (args.len > 0 and args[0] == .string) {
-                return self.execute_soql(args[0].string, env);
-            }
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            return Value{ .list = list };
+            if (args.len > 0 and args[0] == .string) return self.execute_soql(args[0].string, env);
+            return try self.make_empty_list();
         }
         if (std.ascii.eqlIgnoreCase(method, "queryWithBinds")) {
-            // debug removed
-            // Database.queryWithBinds(queryString, bindMap, accessLevel)
-            if (args.len >= 2 and args[0] == .string) {
-                // Resolve bind variables from the map
-                var soql_str = args[0].string;
-                if (args[1] == .map) {
-                    // Replace :bindVar with actual values from the map
-                    var result_buf: std.ArrayListUnmanaged(u8) = .empty;
-                    var pos: usize = 0;
-                    while (pos < soql_str.len) {
-                        if (soql_str[pos] == ':') {
-                            // Extract bind variable name
-                            var end = pos + 1;
-                            while (end < soql_str.len and (std.ascii.isAlphanumeric(soql_str[end]) or soql_str[end] == '_')) end += 1;
-                            const bind_name = soql_str[pos + 1 .. end];
-                            if (args[1].map.entries.get(bind_name)) |bind_val| {
-                                const s = try utils.coerce_to_string(bind_val, self.arena);
-                                try result_buf.append(self.arena, '\'');
-                                try result_buf.appendSlice(self.arena, s);
-                                try result_buf.append(self.arena, '\'');
-                            } else {
-                                try result_buf.appendSlice(self.arena, soql_str[pos..end]);
-                            }
-                            pos = end;
-                        } else {
-                            try result_buf.append(self.arena, soql_str[pos]);
-                            pos += 1;
-                        }
-                    }
-                    soql_str = try result_buf.toOwnedSlice(self.arena);
-                }
-                return self.execute_soql(soql_str, env);
-            }
-            return try self.make_empty_list();
+            return try self.handle_database_query_with_binds(args, env);
         }
         if (std.ascii.eqlIgnoreCase(method, "countQuery") or
             std.ascii.eqlIgnoreCase(method, "countQueryWithBinds"))
         {
-            // countQuery can take a SOQL string
-            if (args.len > 0 and args[0] == .string) {
-                const soql = args[0].string;
-                // Execute as a count query
-                if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
-                    return self.execute_soql(soql, env);
-                }
-                // Wrap as COUNT query
-                const count_result = try self.execute_soql(soql, env);
-                if (count_result == .list)
-                    return Value{ .integer = @intCast(count_result.list.items.items.len) };
-                return count_result;
-            }
-            return Value{ .integer = 0 };
+            return try self.handle_database_count_query(args, env);
         }
         if (std.ascii.eqlIgnoreCase(method, "getQueryLocator")) {
-            const ql = try self.arena.create(types.ObjectInstance);
-            ql.* = .{ .class_name = "Database.QueryLocator" };
-            if (args.len > 0 and args[0] == .string) {
-                try ql.fields.put(self.arena, "query", args[0]);
-            } else if (args.len > 0 and args[0] == .list) {
-                try ql.fields.put(self.arena, "records", args[0]);
-            }
-            return Value{ .object = ql };
+            return try self.handle_database_get_query_locator(args);
         }
         if (std.ascii.eqlIgnoreCase(method, "emptyRecycleBin")) {
-            // Database.emptyRecycleBin permanently deletes records from the recycle bin.
-            // Count it as a DML operation.
             self.limits_dml += 1;
             if (args.len > 0 and args[0] == .list) {
                 self.limits_dml_rows += @intCast(args[0].list.items.items.len);
@@ -17769,162 +17545,493 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setSavepoint")) {
-            // Setting a savepoint counts as a DML statement in Apex's governor
-            // limits, matching real platform semantics.
             self.limits_dml += 1;
             const sp = try self.arena.create(types.ObjectInstance);
             sp.* = .{ .class_name = "Database.SavePoint" };
             return Value{ .object = sp };
         }
         if (std.ascii.eqlIgnoreCase(method, "rollback")) {
-            // Database.rollback(savepoint) also counts as a DML statement.
             self.limits_dml += 1;
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "executeBatch")) {
-            // Batch runs in separate transaction — save/restore limits
-            const sb_dml = self.limits_dml;
-            const sb_dml_rows = self.limits_dml_rows;
-            const sb_soql = self.limits_soql;
-            const sb_pub = self.limits_publish_immediate;
-            const sb_call = self.limits_callouts;
-            defer {
-                self.limits_dml = sb_dml;
-                self.limits_dml_rows = sb_dml_rows;
-                self.limits_soql = sb_soql;
-                self.limits_publish_immediate = sb_pub;
-                self.limits_callouts = sb_call;
-            }
-
-            if (args.len > 0 and args[0] == .object) {
-                if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
-                    const job_id = try self.create_async_apex_job(
-                        "BatchApex",
-                        args[0].object.class_name,
-                        "execute",
-                    );
-                    try args[0].object.fields.put(
-                        self.arena,
-                        "__batchJobId",
-                        Value{ .string = job_id },
-                    );
-                    if (self.active_batch_context) |batch_context| {
-                        try batch_context.fields.put(
-                            self.arena,
-                            "ChildJobId",
-                            Value{ .string = job_id },
-                        );
-                    }
-                    if (self.batch_job_runner_active) {
-                        try self.pending_batch_jobs.append(self.arena, args[0]);
-                    }
-                    return Value{ .string = job_id };
-                }
-
-                const job_id = try self.create_async_apex_job(
-                    "BatchApex",
-                    args[0].object.class_name,
-                    "execute",
-                );
-                try args[0].object.fields.put(
-                    self.arena,
-                    "__batchJobId",
-                    Value{ .string = job_id },
-                );
-                self.batch_job_runner_active = true;
-                self.pending_batch_jobs = .empty;
-                defer {
-                    self.pending_batch_jobs = .empty;
-                    self.batch_job_runner_active = false;
-                }
-
-                try self.pending_batch_jobs.append(self.arena, args[0]);
-
-                var job_index: usize = 0;
-                while (job_index < self.pending_batch_jobs.items.len) : (job_index += 1) {
-                    const batch_value = self.pending_batch_jobs.items[job_index];
-                    if (batch_value != .object) continue;
-                    try self.execute_pending_batch_job(batch_value.object);
-                }
-                return Value{ .string = job_id };
-            }
-            return Value{ .string = try self.alloc_id() }; // Fake job ID
+            return try self.handle_database_execute_batch(args);
         }
         if (std.ascii.eqlIgnoreCase(method, "merge")) {
-            // Database.merge(primary, secondaries, allOrNothing)
-            // Delete secondary records and cascade-delete referencing DuplicateRecordItems.
-            // Return MergeResult[].
-            if (args.len >= 2) {
-                var secondary_ids: std.ArrayListUnmanaged([]const u8) = .empty;
-                // Collect secondary record ids
-                if (args[1] == .sobject and args[1].sobject.id != null) {
-                    try secondary_ids.append(self.arena, args[1].sobject.id.?);
-                } else if (args[1] == .list) {
-                    for (args[1].list.items.items) |item| {
-                        if (item == .sobject and item.sobject.id != null) {
-                            try secondary_ids.append(self.arena, item.sobject.id.?);
-                        }
+            return try self.handle_database_merge(args);
+        }
+        return .void_val;
+    }
+
+    fn is_database_dml_method(method: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(method, "insert") or
+            std.ascii.eqlIgnoreCase(method, "update") or
+            std.ascii.eqlIgnoreCase(method, "upsert") or
+            std.ascii.eqlIgnoreCase(method, "delete") or
+            std.ascii.eqlIgnoreCase(method, "undelete");
+    }
+
+    fn database_result_class(method: []const u8) []const u8 {
+        if (std.ascii.eqlIgnoreCase(method, "upsert")) return "Database.UpsertResult";
+        if (std.ascii.eqlIgnoreCase(method, "undelete")) return "Database.UndeleteResult";
+        if (std.ascii.eqlIgnoreCase(method, "delete")) return "Database.DeleteResult";
+        return "Database.SaveResult";
+    }
+
+    fn database_dml_op(method: []const u8) ast.DmlOp {
+        if (std.ascii.eqlIgnoreCase(method, "insert")) return .insert;
+        if (std.ascii.eqlIgnoreCase(method, "update")) return .update;
+        if (std.ascii.eqlIgnoreCase(method, "upsert")) return .upsert;
+        if (std.ascii.eqlIgnoreCase(method, "undelete")) return .undelete;
+        return .delete;
+    }
+
+    /// Extract allOrNothing from a Database.insert/update/upsert/delete call.
+    /// Upsert with an external-id field uses the THIRD arg; other ops use the
+    /// second. Falls back to the DmlOptions record or true.
+    fn resolve_all_or_nothing(
+        self: *Evaluator,
+        is_upsert: bool,
+        args: []const Value,
+    ) bool {
+        if (is_upsert and args.len >= 3 and args[2] == .boolean) return args[2].boolean;
+        if (is_upsert and args.len >= 3) {
+            if (self.get_dml_options_all_or_none(args[2])) |opt| return opt;
+        }
+        if (args.len >= 2 and args[1] == .boolean) return args[1].boolean;
+        if (args.len >= 2) {
+            if (self.get_dml_options_all_or_none(args[1])) |opt| return opt;
+        }
+        return true;
+    }
+
+    /// `args[1] == AccessLevel.USER_MODE` combined with a min-access user and
+    /// no permset assignments must raise SecurityException to match real Apex.
+    fn check_database_user_mode_security(
+        self: *Evaluator,
+        args: []const Value,
+    ) !void {
+        if (args.len < 2) return;
+        const has_permset_db = if (self.store.get("PermissionSetAssignment")) |psa|
+            psa.items.len > 0
+        else
+            false;
+        if (!(self.is_min_access_user and !has_permset_db)) return;
+        const is_user_mode = if (args[1] == .string)
+            std.ascii.eqlIgnoreCase(args[1].string, "USER_MODE")
+        else if (args[1] == .object) blk: {
+            if (args[1].object.fields.get("name")) |n| {
+                if (n == .string) break :blk std.ascii.eqlIgnoreCase(n.string, "USER_MODE");
+            }
+            break :blk false;
+        } else false;
+        if (!is_user_mode) return;
+        const from_type = if (args[0] == .sobject)
+            args[0].sobject.type_name
+        else if (args[0] == .list and args[0].list.items.items.len > 0 and
+            args[0].list.items.items[0] == .sobject)
+            args[0].list.items.items[0].sobject.type_name
+        else
+            "SObject";
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "Access to entity '{s}' denied",
+            .{from_type},
+        );
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.SecurityException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn handle_database_dml_method(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        const result_class = database_result_class(method);
+        const is_upsert = std.ascii.eqlIgnoreCase(method, "upsert");
+        const external_id_field = if (is_upsert and args.len >= 2 and args[1] != .boolean)
+            extract_s_object_field_name(args[1])
+        else
+            null;
+        const all_or_nothing = self.resolve_all_or_nothing(is_upsert, args);
+        try self.check_database_user_mode_security(args);
+
+        var upsert_creates: std.ArrayListUnmanaged(bool) = .empty;
+        if (is_upsert and args.len > 0) {
+            try self.precompute_upsert_creates(&upsert_creates, args[0], external_id_field);
+        }
+
+        if (args.len > 0) {
+            const op = database_dml_op(method);
+            if (try self.invoke_database_dml(
+                op,
+                result_class,
+                is_upsert,
+                all_or_nothing,
+                args[0],
+                external_id_field,
+            )) |v| return v;
+        }
+        return try self.build_database_success_results(
+            result_class,
+            is_upsert,
+            args,
+            upsert_creates.items,
+        );
+    }
+
+    fn precompute_upsert_creates(
+        self: *Evaluator,
+        upsert_creates: *std.ArrayListUnmanaged(bool),
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) !void {
+        if (target == .sobject) {
+            try upsert_creates.append(
+                self.arena,
+                self.will_upsert_create_record(target.sobject, external_id_field),
+            );
+            return;
+        }
+        if (target != .list) return;
+        for (target.list.items.items) |item| {
+            try upsert_creates.append(self.arena, if (item == .sobject)
+                self.will_upsert_create_record(item.sobject, external_id_field)
+            else
+                true);
+        }
+    }
+
+    /// Run the DML. In allOrNothing mode exceptions propagate; in best-effort
+    /// mode we return a failure result value directly, nulling the pending
+    /// exception so the caller sees the result list instead.
+    fn invoke_database_dml(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        is_upsert: bool,
+        all_or_nothing: bool,
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) !?Value {
+        if (all_or_nothing) {
+            if (is_upsert) {
+                try self.execute_dml_with_external_id(op, target, external_id_field);
+            } else {
+                try self.execute_dml(op, target);
+            }
+            return null;
+        }
+        return self.execute_partial_database_method(
+            op,
+            result_class,
+            target,
+            external_id_field,
+        ) catch |err| {
+            if (err == error.ApexException and target == .sobject) {
+                const failed = try self.build_failed_dml_result(result_class, target, is_upsert);
+                self.pending_exception = null;
+                return failed;
+            }
+            self.pending_exception = null;
+            return err;
+        };
+    }
+
+    fn build_database_success_results(
+        self: *Evaluator,
+        result_class: []const u8,
+        is_upsert: bool,
+        args: []const Value,
+        upsert_creates: []const bool,
+    ) !Value {
+        if (args.len > 0 and args[0] == .sobject) {
+            const was_created = is_upsert and upsert_creates.len > 0 and upsert_creates[0];
+            return Value{ .object = try self.make_dml_success_result(
+                result_class,
+                args[0].sobject.id orelse "001000000000001",
+                is_upsert,
+                was_created,
+            ) };
+        }
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        if (args.len > 0 and args[0] == .list) {
+            for (args[0].list.items.items, 0..) |item, idx| {
+                const was_created = is_upsert and
+                    (if (idx < upsert_creates.len) upsert_creates[idx] else true);
+                const record_id = if (item == .sobject)
+                    item.sobject.id orelse "001000000000001"
+                else
+                    "001000000000001";
+                try list.items.append(self.arena, Value{ .object = try self.make_dml_success_result(
+                    result_class,
+                    record_id,
+                    is_upsert,
+                    was_created,
+                ) });
+            }
+        } else {
+            try list.items.append(self.arena, Value{ .object = try self.make_dml_success_result(
+                result_class,
+                "001000000000001",
+                false,
+                false,
+            ) });
+        }
+        return Value{ .list = list };
+    }
+
+    fn make_dml_success_result(
+        self: *Evaluator,
+        result_class: []const u8,
+        record_id: []const u8,
+        is_upsert: bool,
+        was_created: bool,
+    ) !*types.ObjectInstance {
+        const sr = try self.arena.create(types.ObjectInstance);
+        sr.* = .{ .class_name = result_class };
+        try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
+        try sr.fields.put(self.arena, "success", Value{ .boolean = true });
+        try sr.fields.put(self.arena, "Id", Value{ .string = record_id });
+        if (is_upsert) {
+            try sr.fields.put(self.arena, "isCreated", Value{ .boolean = was_created });
+            try sr.fields.put(self.arena, "created", Value{ .boolean = was_created });
+        }
+        return sr;
+    }
+
+    fn handle_database_query_with_binds(
+        self: *Evaluator,
+        args: []const Value,
+        env: *Env,
+    ) !Value {
+        if (!(args.len >= 2 and args[0] == .string)) return try self.make_empty_list();
+        var soql_str = args[0].string;
+        if (args[1] == .map) {
+            var result_buf: std.ArrayListUnmanaged(u8) = .empty;
+            var pos: usize = 0;
+            while (pos < soql_str.len) {
+                if (soql_str[pos] == ':') {
+                    var end = pos + 1;
+                    while (end < soql_str.len and
+                        (std.ascii.isAlphanumeric(soql_str[end]) or
+                            soql_str[end] == '_')) : (end += 1)
+                    {}
+                    const bind_name = soql_str[pos + 1 .. end];
+                    if (args[1].map.entries.get(bind_name)) |bind_val| {
+                        const s = try utils.coerce_to_string(bind_val, self.arena);
+                        try result_buf.append(self.arena, '\'');
+                        try result_buf.appendSlice(self.arena, s);
+                        try result_buf.append(self.arena, '\'');
+                    } else {
+                        try result_buf.appendSlice(self.arena, soql_str[pos..end]);
                     }
+                    pos = end;
+                } else {
+                    try result_buf.append(self.arena, soql_str[pos]);
+                    pos += 1;
                 }
-                // Delete secondary records from store
-                for (secondary_ids.items) |sec_id| {
-                    var store_iter = self.store.iterator();
-                    while (store_iter.next()) |entry| {
-                        var i: usize = 0;
-                        while (i < entry.value_ptr.items.len) {
-                            if (entry.value_ptr.items[i] == .sobject and entry.value_ptr.items[i].sobject.id != null and
-                                std.mem.eql(u8, entry.value_ptr.items[i].sobject.id.?, sec_id))
-                            {
-                                _ = entry.value_ptr.orderedRemove(i);
-                            } else {
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-                // Cascade-delete DuplicateRecordItems that reference deleted secondary records
-                if (self.store.getPtr("DuplicateRecordItem")) |dri_records| {
-                    var i: usize = 0;
-                    while (i < dri_records.items.len) {
-                        const item = dri_records.items[i];
-                        if (item == .sobject) {
-                            const rec_id_val = utils.sobject_get(&item.sobject.fields, "RecordId");
-                            if (rec_id_val != null and rec_id_val.? == .string) {
-                                var is_deleted = false;
-                                for (secondary_ids.items) |sec_id| {
-                                    if (std.mem.eql(u8, rec_id_val.?.string, sec_id)) {
-                                        is_deleted = true;
-                                        break;
-                                    }
-                                }
-                                if (is_deleted) {
-                                    // Update RecordCount on parent DRS before removing
-                                    self.update_duplicate_record_set_count(
-                                        item.sobject,
-                                        -1,
-                                    ) catch {};
-                                    _ = dri_records.orderedRemove(i);
-                                    continue;
-                                }
-                            }
-                        }
+            }
+            soql_str = try result_buf.toOwnedSlice(self.arena);
+        }
+        return self.execute_soql(soql_str, env);
+    }
+
+    fn handle_database_count_query(
+        self: *Evaluator,
+        args: []const Value,
+        env: *Env,
+    ) !Value {
+        if (!(args.len > 0 and args[0] == .string)) return Value{ .integer = 0 };
+        const soql = args[0].string;
+        if (std.ascii.indexOfIgnoreCase(soql, "count()")) |_| {
+            return self.execute_soql(soql, env);
+        }
+        const count_result = try self.execute_soql(soql, env);
+        if (count_result == .list) {
+            return Value{ .integer = @intCast(count_result.list.items.items.len) };
+        }
+        return count_result;
+    }
+
+    fn handle_database_get_query_locator(
+        self: *Evaluator,
+        args: []const Value,
+    ) !Value {
+        const ql = try self.arena.create(types.ObjectInstance);
+        ql.* = .{ .class_name = "Database.QueryLocator" };
+        if (args.len > 0 and args[0] == .string) {
+            try ql.fields.put(self.arena, "query", args[0]);
+        } else if (args.len > 0 and args[0] == .list) {
+            try ql.fields.put(self.arena, "records", args[0]);
+        }
+        return Value{ .object = ql };
+    }
+
+    /// Database.executeBatch runs in a separate transaction; save/restore the
+    /// active transaction's governor-limit counters across the call.
+    fn handle_database_execute_batch(
+        self: *Evaluator,
+        args: []const Value,
+    ) !Value {
+        const sb_dml = self.limits_dml;
+        const sb_dml_rows = self.limits_dml_rows;
+        const sb_soql = self.limits_soql;
+        const sb_pub = self.limits_publish_immediate;
+        const sb_call = self.limits_callouts;
+        defer {
+            self.limits_dml = sb_dml;
+            self.limits_dml_rows = sb_dml_rows;
+            self.limits_soql = sb_soql;
+            self.limits_publish_immediate = sb_pub;
+            self.limits_callouts = sb_call;
+        }
+
+        if (!(args.len > 0 and args[0] == .object)) {
+            return Value{ .string = try self.alloc_id() };
+        }
+        const obj = args[0].object;
+        if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
+            return try self.enqueue_nested_batch_job(args[0], obj);
+        }
+        return try self.run_standalone_batch_job(args[0], obj);
+    }
+
+    fn enqueue_nested_batch_job(
+        self: *Evaluator,
+        job_value: Value,
+        obj: *types.ObjectInstance,
+    ) !Value {
+        const job_id = try self.create_async_apex_job("BatchApex", obj.class_name, "execute");
+        try obj.fields.put(self.arena, "__batchJobId", Value{ .string = job_id });
+        if (self.active_batch_context) |batch_context| {
+            try batch_context.fields.put(self.arena, "ChildJobId", Value{ .string = job_id });
+        }
+        if (self.batch_job_runner_active) {
+            try self.pending_batch_jobs.append(self.arena, job_value);
+        }
+        return Value{ .string = job_id };
+    }
+
+    fn run_standalone_batch_job(
+        self: *Evaluator,
+        job_value: Value,
+        obj: *types.ObjectInstance,
+    ) !Value {
+        const job_id = try self.create_async_apex_job("BatchApex", obj.class_name, "execute");
+        try obj.fields.put(self.arena, "__batchJobId", Value{ .string = job_id });
+        self.batch_job_runner_active = true;
+        self.pending_batch_jobs = .empty;
+        defer {
+            self.pending_batch_jobs = .empty;
+            self.batch_job_runner_active = false;
+        }
+
+        try self.pending_batch_jobs.append(self.arena, job_value);
+        var job_index: usize = 0;
+        while (job_index < self.pending_batch_jobs.items.len) : (job_index += 1) {
+            const batch_value = self.pending_batch_jobs.items[job_index];
+            if (batch_value != .object) continue;
+            try self.execute_pending_batch_job(batch_value.object);
+        }
+        return Value{ .string = job_id };
+    }
+
+    /// Database.merge(primary, secondaries, allOrNothing): delete the
+    /// secondaries from the store, cascade-remove DuplicateRecordItems that
+    /// reference them, and clean up orphaned DuplicateRecordSets.
+    fn handle_database_merge(self: *Evaluator, args: []const Value) !Value {
+        if (args.len >= 2) {
+            var secondary_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+            try self.collect_merge_secondary_ids(args[1], &secondary_ids);
+            self.delete_merge_secondaries(secondary_ids.items);
+            self.cascade_delete_duplicate_record_items(secondary_ids.items);
+        }
+        try self.cleanup_orphaned_duplicate_record_sets();
+        const mr_list = try self.arena.create(types.ListValue);
+        mr_list.* = .{};
+        const mr = try self.arena.create(types.ObjectInstance);
+        mr.* = .{ .class_name = "Database.MergeResult" };
+        try mr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
+        try mr.fields.put(self.arena, "success", Value{ .boolean = true });
+        try mr_list.items.append(self.arena, Value{ .object = mr });
+        return Value{ .list = mr_list };
+    }
+
+    fn collect_merge_secondary_ids(
+        self: *Evaluator,
+        secondaries: Value,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) !void {
+        if (secondaries == .sobject and secondaries.sobject.id != null) {
+            try out.append(self.arena, secondaries.sobject.id.?);
+            return;
+        }
+        if (secondaries != .list) return;
+        for (secondaries.list.items.items) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                try out.append(self.arena, item.sobject.id.?);
+            }
+        }
+    }
+
+    fn delete_merge_secondaries(self: *Evaluator, ids: []const []const u8) void {
+        for (ids) |sec_id| {
+            var store_iter = self.store.iterator();
+            while (store_iter.next()) |entry| {
+                var i: usize = 0;
+                while (i < entry.value_ptr.items.len) {
+                    const rec = entry.value_ptr.items[i];
+                    if (rec == .sobject and rec.sobject.id != null and
+                        std.mem.eql(u8, rec.sobject.id.?, sec_id))
+                    {
+                        _ = entry.value_ptr.orderedRemove(i);
+                    } else {
                         i += 1;
                     }
                 }
             }
-            // Auto-delete orphaned DuplicateRecordSets after merge
-            try self.cleanup_orphaned_duplicate_record_sets();
-            // Return MergeResult list
-            const mr_list = try self.arena.create(types.ListValue);
-            mr_list.* = .{};
-            const mr = try self.arena.create(types.ObjectInstance);
-            mr.* = .{ .class_name = "Database.MergeResult" };
-            try mr.fields.put(self.arena, "isSuccess", Value{ .boolean = true });
-            try mr.fields.put(self.arena, "success", Value{ .boolean = true });
-            try mr_list.items.append(self.arena, Value{ .object = mr });
-            return Value{ .list = mr_list };
         }
-        return .void_val;
+    }
+
+    fn cascade_delete_duplicate_record_items(
+        self: *Evaluator,
+        secondary_ids: []const []const u8,
+    ) void {
+        const dri_records = self.store.getPtr("DuplicateRecordItem") orelse return;
+        var i: usize = 0;
+        while (i < dri_records.items.len) {
+            const item = dri_records.items[i];
+            if (item != .sobject) {
+                i += 1;
+                continue;
+            }
+            const rec_id_val = utils.sobject_get(&item.sobject.fields, "RecordId") orelse {
+                i += 1;
+                continue;
+            };
+            if (rec_id_val != .string) {
+                i += 1;
+                continue;
+            }
+            var is_deleted = false;
+            for (secondary_ids) |sec_id| {
+                if (std.mem.eql(u8, rec_id_val.string, sec_id)) {
+                    is_deleted = true;
+                    break;
+                }
+            }
+            if (is_deleted) {
+                self.update_duplicate_record_set_count(item.sobject, -1) catch {};
+                _ = dri_records.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
     }
 
     fn handle_system_method(
