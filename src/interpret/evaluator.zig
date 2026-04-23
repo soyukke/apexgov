@@ -15066,197 +15066,25 @@ pub const Evaluator = struct {
         if (try self.try_new_standard_controller(ne, type_name, current_env)) |v| return v;
         if (try self.try_new_known_non_sobject(ne, type_name, current_env)) |v| return v;
 
-        // SObject with named params: new Account(Name = 'Test', ...)
-        // Strip "Schema." prefix for SObject type names (e.g. Schema.User → User)
-        const sob_type_name =
-            if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) type_name[7..] else type_name;
-        const obj = try self.arena.create(types.SObject);
-        obj.* = .{ .type_name = sob_type_name };
-        // Parse named params: args should be Assignment expressions
-        for (ne.args) |*arg| {
-            if (arg.* == .assignment) {
-                const asgn = arg.assignment;
-                if (asgn.target.* == .identifier) {
-                    const field_name = asgn.target.identifier.name;
-                    const field_val = try self.eval_expr(asgn.value, current_env);
-                    try obj.fields.put(self.arena, field_name, field_val);
-                    // Sync internal id field when Id is set via constructor
-                    if (std.ascii.eqlIgnoreCase(field_name, "Id") and field_val == .string) {
-                        obj.id = field_val.string;
-                    }
-                }
-            }
-        }
+        const obj = try self.build_sobject_from_new_expr(ne, type_name, current_env);
 
-        // Check if it's a user-defined class or exception.
-        // Resolve simple names against the current lexical scope first so
-        // nested inner classes instantiate sibling inner classes from the
-        // correct outer class instead of drifting to an unrelated duplicate.
-        const simple_name = if (std.mem.lastIndexOfScalar(
-            u8,
+        if (self.resolve_new_expr_user_class_name(
             type_name,
-            '.',
-        )) |di| type_name[di + 1 ..] else type_name;
-        const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
-            (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
-                (std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, type_name }) catch null)
-            else
-                null)
-        else
-            null;
-        const allow_simple_name_fallback = !is_platform_qualified and std.mem.indexOfScalar(
-            u8,
-            type_name,
-            '.',
-        ) == null;
-        const resolved_class_name: ?[]const u8 = blk: {
-            if (!is_platform_qualified) {
-                if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
-                    if (self.resolve_visible_user_class_in_scope(
-                        current_env,
-                        type_name,
-                    )) |visible_class| break :blk visible_class;
-                }
-                if (fq_inner_name) |fqn| {
-                    if (self.find_class(fqn) != null) break :blk fqn;
-                }
-                if (self.find_class(type_name) != null) break :blk type_name;
-            }
-            if (allow_simple_name_fallback and self.find_class(simple_name) != null) {
-                // Look up whether simple_name is an inner class of some outer — prefer FQ if unique
-                if (self.find_outer_class_name(simple_name)) |outer| {
-                    break :blk std.fmt.allocPrint(
-                        self.arena,
-                        "{s}.{s}",
-                        .{ outer, simple_name },
-                    ) catch simple_name;
-                }
-                break :blk simple_name;
-            }
-            break :blk null;
-        };
-        if (if (resolved_class_name) |rn| self.find_class(rn) else null) |class_decl| {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = resolved_class_name.? };
-
-            // Lazy static init for this class and parent hierarchy
-            // (so static field initializers like `static final Integer X = 5;`
-            // are evaluated before the constructor body references them)
-            self.ensure_static_init(class_decl.name);
-            if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
-
-            // Check if it's an exception class (extends Exception)
-            // If the class has its own constructor, fall through to run it
-            // (user-defined exceptions like RestRouteError.RestException may set extra fields)
-            {
-                const is_exc = if (class_decl.super_class) |sc| std.mem.endsWith(u8, sc.name, "Exception") else std.mem.endsWith(u8, type_name, "Exception");
-                if (is_exc) {
-                    // Check if class has a user-defined constructor
-                    var has_constructor = false;
-                    for (class_decl.members) |member| {
-                        switch (member) {
-                            .constructor_decl => {
-                                has_constructor = true;
-                                break;
-                            },
-                            else => {},
-                        }
-                    }
-                    if (!has_constructor) {
-                        // No constructor: use simple message extraction
-                        if (ne.args.len > 0) {
-                            var arg_copy = ne.args[0];
-                            const msg_val = try self.eval_expr(&arg_copy, current_env);
-                            try instance.fields.put(self.arena, "message", msg_val);
-                        }
-                        return Value{ .object = instance };
-                    }
-                    // Has constructor: fall through to normal constructor logic below
-                }
-            }
-
-            // Initialize ancestor fields top-down (grandparents before parent) so child
-            // field declarations can shadow, and every inherited field with an
-            // initializer actually runs.
-            {
-                var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
-                defer chain.deinit(self.arena);
-
-                var cursor: ?*ast.ClassDecl =
-                    if (class_decl.super_class) |sc| self.find_class(sc.name) else null;
-                while (cursor) |cd_cursor| {
-                    try chain.append(self.arena, cd_cursor);
-                    cursor = if (cd_cursor.super_class) |sc| self.find_class(sc.name) else null;
-                }
-                var i: usize = chain.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    self.init_instance_fields(chain.items[i], instance) catch {};
-                }
-            }
-
-            // Initialize instance fields from class (non-static) — after ancestors
-            self.init_instance_fields(class_decl, instance) catch {};
-
-            // Evaluate constructor args. Capture enum-only type hints so
-            // overload resolution can distinguish `(String, Enum, Boolean)`
-            // from `(String, String, Enum)` when a typed variable or enum
-            // literal appears in the middle position. We intentionally stay
-            // narrower than method-call hinting (enum_access_type_name plus
-            // declared enum-typed locals) because broader hinting regresses
-            // overloads that rely on raw argument-shape scoring.
-            var eval_args: std.ArrayListUnmanaged(Value) = .empty;
-            var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
-            var any_enum_hint = false;
-            for (ne.args) |*arg| {
-                const enum_hint = self.enum_access_type_name(arg) orelse blk: {
-                    // Also surface declared enum-typed local variables like
-                    // `Mode direction = Mode.A; new Ordering(name, direction, flag)`.
-                    if (arg.* != .identifier) break :blk null;
-                    if (self.resolve_assignment_target_type(arg, current_env)) |t| {
-                        const base = type_base_name(strip_type_namespace(t));
-                        if (is_system_enum_type_name(base)) break :blk base;
-                        if (self.find_visible_enum_decl(base) != null) break :blk base;
-                    }
-                    break :blk null;
-                };
-                if (enum_hint != null) any_enum_hint = true;
-                try ctor_type_hints.append(self.arena, enum_hint);
-                try eval_args.append(self.arena, try self.eval_expr(arg, current_env));
-            }
-            const prev_ctor_hints = self.cast_type_hints;
-            if (any_enum_hint) self.cast_type_hints = ctor_type_hints.items;
-            defer if (any_enum_hint) {
-                self.cast_type_hints = prev_ctor_hints;
-            };
-
-            // Execute parent constructor first (if has super_class and parent has constructor).
-            // Skip the implicit parent call if the child's chosen constructor explicitly
-            // invokes super(...) or this(...). Also skip if the parent only declares
-            // non-zero-arg constructors (the child must then call super(...) explicitly,
-            // which we evaluate inside its body instead).
-            if (class_decl.super_class) |sc| {
-                if (self.find_class(sc.name)) |parent_decl| {
-                    const child_chosen = self.find_matching_constructor(
-                        class_decl,
-                        eval_args.items,
-                    );
-                    const child_explicit =
-                        if (child_chosen) |cc| ctor_starts_with_super_or_this(cc) else false;
-                    if (!child_explicit and class_has_no_arg_ctor(parent_decl)) {
-                        try self.run_constructor(parent_decl, instance, &.{});
-                    }
-                }
-            }
-
-            // Execute own constructor
-            try self.run_constructor(class_decl, instance, eval_args.items);
-
-            return Value{ .object = instance };
+            current_env,
+            is_platform_qualified,
+        )) |resolved_class_name| {
+            const class_decl = self.find_class(resolved_class_name).?;
+            return try self.instantiate_user_class(
+                ne,
+                type_name,
+                resolved_class_name,
+                class_decl,
+                current_env,
+            );
         }
 
         // Any type ending with "Exception" that wasn't found as a user class
-        // should still be an ObjectInstance (not SObject)
+        // should still be an ObjectInstance (not SObject).
         if (std.mem.endsWith(u8, type_name, "Exception")) {
             const instance = try self.arena.create(types.ObjectInstance);
             instance.* = .{ .class_name = type_name };
@@ -15267,8 +15095,232 @@ pub const Evaluator = struct {
             }
             return Value{ .object = instance };
         }
-
         return Value{ .sobject = obj };
+    }
+
+    /// `new Account(Name = 'Test', ...)` — build a raw SObject shell with
+    /// named-param initialisers. The Schema. prefix is stripped so that
+    /// `new Schema.User(...)` produces a `User` SObject.
+    fn build_sobject_from_new_expr(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !*types.SObject {
+        const sob_type_name =
+            if (std.ascii.startsWithIgnoreCase(type_name, "Schema.")) type_name[7..] else type_name;
+        const obj = try self.arena.create(types.SObject);
+        obj.* = .{ .type_name = sob_type_name };
+        for (ne.args) |*arg| {
+            if (arg.* != .assignment) continue;
+            const asgn = arg.assignment;
+            if (asgn.target.* != .identifier) continue;
+            const field_name = asgn.target.identifier.name;
+            const field_val = try self.eval_expr(asgn.value, current_env);
+            try obj.fields.put(self.arena, field_name, field_val);
+            if (std.ascii.eqlIgnoreCase(field_name, "Id") and field_val == .string) {
+                obj.id = field_val.string;
+            }
+        }
+        return obj;
+    }
+
+    /// Resolve `type_name` to a loaded user class, preferring the current
+    /// lexical scope (so nested inner classes instantiate sibling inner
+    /// classes from the correct outer). Falls back to an FQ "Outer.Inner"
+    /// form when an unqualified simple name matches an inner class.
+    fn resolve_new_expr_user_class_name(
+        self: *Evaluator,
+        type_name: []const u8,
+        current_env: *Env,
+        is_platform_qualified: bool,
+    ) ?[]const u8 {
+        const simple_name = if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |di|
+            type_name[di + 1 ..]
+        else
+            type_name;
+        const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
+            (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
+                (std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, type_name }) catch null)
+            else
+                null)
+        else
+            null;
+        const allow_simple_name_fallback =
+            !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
+
+        if (!is_platform_qualified) {
+            if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
+                if (self.resolve_visible_user_class_in_scope(
+                    current_env,
+                    type_name,
+                )) |visible_class| return visible_class;
+            }
+            if (fq_inner_name) |fqn| {
+                if (self.find_class(fqn) != null) return fqn;
+            }
+            if (self.find_class(type_name) != null) return type_name;
+        }
+        if (allow_simple_name_fallback and self.find_class(simple_name) != null) {
+            if (self.find_outer_class_name(simple_name)) |outer| {
+                return std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ outer, simple_name },
+                ) catch simple_name;
+            }
+            return simple_name;
+        }
+        return null;
+    }
+
+    fn instantiate_user_class(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        resolved_class_name: []const u8,
+        class_decl: *ast.ClassDecl,
+        current_env: *Env,
+    ) !Value {
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = resolved_class_name };
+
+        self.ensure_static_init(class_decl.name);
+        if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
+
+        // User-defined exception classes without their own constructor use a
+        // simple "args[0] = message" convention; otherwise they fall through
+        // to run the declared constructor (e.g. RestRouteError.RestException
+        // populates extra fields there).
+        if (try self.try_exception_class_no_ctor_shortcut(
+            ne,
+            type_name,
+            class_decl,
+            instance,
+            current_env,
+        )) |v| return v;
+
+        try self.init_ancestor_fields_top_down(class_decl, instance);
+        self.init_instance_fields(class_decl, instance) catch {};
+
+        var eval_args: std.ArrayListUnmanaged(Value) = .empty;
+        const ctor_type_hints_ptr = try self.evaluate_ctor_args_and_hints(
+            ne,
+            current_env,
+            &eval_args,
+        );
+        const prev_ctor_hints = self.cast_type_hints;
+        if (ctor_type_hints_ptr) |hints| self.cast_type_hints = hints;
+        defer if (ctor_type_hints_ptr != null) {
+            self.cast_type_hints = prev_ctor_hints;
+        };
+
+        // Parent no-arg constructor runs implicitly unless the child's chosen
+        // constructor explicitly invokes super(...) or this(...), and unless
+        // the parent only exposes non-zero-arg constructors (in which case
+        // the child must call super(...) explicitly inside its body).
+        if (class_decl.super_class) |sc| {
+            if (self.find_class(sc.name)) |parent_decl| {
+                const child_chosen = self.find_matching_constructor(class_decl, eval_args.items);
+                const child_explicit = if (child_chosen) |cc|
+                    ctor_starts_with_super_or_this(cc)
+                else
+                    false;
+                if (!child_explicit and class_has_no_arg_ctor(parent_decl)) {
+                    try self.run_constructor(parent_decl, instance, &.{});
+                }
+            }
+        }
+        try self.run_constructor(class_decl, instance, eval_args.items);
+        return Value{ .object = instance };
+    }
+
+    fn try_exception_class_no_ctor_shortcut(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        current_env: *Env,
+    ) !?Value {
+        const is_exc = if (class_decl.super_class) |sc|
+            std.mem.endsWith(u8, sc.name, "Exception")
+        else
+            std.mem.endsWith(u8, type_name, "Exception");
+        if (!is_exc) return null;
+        var has_constructor = false;
+        for (class_decl.members) |member| {
+            switch (member) {
+                .constructor_decl => {
+                    has_constructor = true;
+                    break;
+                },
+                else => {},
+            }
+        }
+        if (has_constructor) return null;
+        if (ne.args.len > 0) {
+            var arg_copy = ne.args[0];
+            const msg_val = try self.eval_expr(&arg_copy, current_env);
+            try instance.fields.put(self.arena, "message", msg_val);
+        }
+        return Value{ .object = instance };
+    }
+
+    /// Initialise inherited instance fields top-down (grandparents first,
+    /// then parent) so child declarations can shadow and every ancestor's
+    /// field initialisers run.
+    fn init_ancestor_fields_top_down(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+    ) !void {
+        var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
+        defer chain.deinit(self.arena);
+        var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc|
+            self.find_class(sc.name)
+        else
+            null;
+        while (cursor) |cd_cursor| {
+            try chain.append(self.arena, cd_cursor);
+            cursor = if (cd_cursor.super_class) |sc| self.find_class(sc.name) else null;
+        }
+        var i: usize = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            self.init_instance_fields(chain.items[i], instance) catch {};
+        }
+    }
+
+    /// Evaluate constructor args, capturing enum-only type hints so overload
+    /// resolution can disambiguate `(String, Enum, Boolean)` from
+    /// `(String, String, Enum)` when a typed variable or enum literal appears
+    /// in the middle position. We stay narrower than method-call hinting
+    /// (enum_access_type_name plus declared enum-typed locals) because
+    /// broader hinting regresses overloads that rely on raw shape scoring.
+    fn evaluate_ctor_args_and_hints(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+        eval_args: *std.ArrayListUnmanaged(Value),
+    ) !?[]const ?[]const u8 {
+        var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
+        var any_enum_hint = false;
+        for (ne.args) |*arg| {
+            const enum_hint = self.enum_access_type_name(arg) orelse blk: {
+                if (arg.* != .identifier) break :blk null;
+                if (self.resolve_assignment_target_type(arg, current_env)) |t| {
+                    const base = type_base_name(strip_type_namespace(t));
+                    if (is_system_enum_type_name(base)) break :blk base;
+                    if (self.find_visible_enum_decl(base) != null) break :blk base;
+                }
+                break :blk null;
+            };
+            if (enum_hint != null) any_enum_hint = true;
+            try ctor_type_hints.append(self.arena, enum_hint);
+            try eval_args.append(self.arena, try self.eval_expr(arg, current_env));
+        }
+        return if (any_enum_hint) ctor_type_hints.items else null;
     }
 
     // -----------------------------------------------------------------------
