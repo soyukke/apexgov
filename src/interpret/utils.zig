@@ -521,7 +521,18 @@ pub fn is_json_balanced(json: []const u8) bool {
                 in_str = false;
             }
         } else {
-            if (json[i] == '"') in_str = true else if (json[i] == '{') brace_depth += 1 else if (json[i] == '}') brace_depth -= 1 else if (json[i] == '[') bracket_depth += 1 else if (json[i] == ']') bracket_depth -= 1;
+            const ch = json[i];
+            if (ch == '"') {
+                in_str = true;
+            } else if (ch == '{') {
+                brace_depth += 1;
+            } else if (ch == '}') {
+                brace_depth -= 1;
+            } else if (ch == '[') {
+                bracket_depth += 1;
+            } else if (ch == ']') {
+                bracket_depth -= 1;
+            }
         }
     }
     return brace_depth == 0 and bracket_depth == 0 and !in_str;

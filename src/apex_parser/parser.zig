@@ -60,7 +60,10 @@ const Parser = struct {
             const mods = self.parse_modifiers();
 
             if (self.check(.class_kw)) {
-                try decls.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
+                const ann_slice = try annotations.toOwnedSlice(self.arena);
+                try decls.append(self.arena, .{
+                    .class_decl = try self.parse_class_decl(mods, ann_slice),
+                });
             } else if (self.check(.interface_kw)) {
                 try decls.append(
                     self.arena,
@@ -293,7 +296,10 @@ const Parser = struct {
             const mods = self.parse_modifiers();
 
             if (self.check(.class_kw)) {
-                try members.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
+                const ann_slice = try annotations.toOwnedSlice(self.arena);
+                try members.append(self.arena, .{
+                    .class_decl = try self.parse_class_decl(mods, ann_slice),
+                });
             } else if (self.check(.interface_kw)) {
                 try members.append(
                     self.arena,
@@ -584,7 +590,12 @@ const Parser = struct {
         }
 
         const stmt = try self.arena.create(ast.IfStmt);
-        stmt.* = .{ .condition = condition, .then_body = then_body, .else_body = else_body, .loc = loc };
+        stmt.* = .{
+            .condition = condition,
+            .then_body = then_body,
+            .else_body = else_body,
+            .loc = loc,
+        };
         return .{ .if_stmt = stmt };
     }
 
@@ -1706,7 +1717,8 @@ const Parser = struct {
                     if (self.check(.dot)) {
                         self.pos += 1;
                         if (self.check(.class_kw) or
-                            (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.current().lexeme, "class")))
+                            (self.check(.identifier) and
+                                std.ascii.eqlIgnoreCase(self.current().lexeme, "class")))
                         {
                             return true;
                         }
@@ -2715,7 +2727,9 @@ test "no diagnostics: .class in method arguments" {
         \\public class ClassLiteral {
         \\    public void run() {
         \\        Object stub = Test.createStub(UnitOfWork.class, mock);
-        \\        mocks.mockVoidMethod(this, 'registerNew', new List<Type> {SObject.class, Schema.sObjectField.class}, new List<Object> {record, field});
+        \\        mocks.mockVoidMethod(this, 'registerNew',
+        \\            new List<Type> {SObject.class, Schema.sObjectField.class},
+        \\            new List<Object> {record, field});
         \\        String name = TDTM_RunnableMutableMock.class.getName();
         \\    }
         \\}

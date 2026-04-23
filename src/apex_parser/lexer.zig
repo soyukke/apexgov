@@ -146,7 +146,10 @@ const Lexer = struct {
         // Check if [ is followed by SELECT (case-insensitive), skipping whitespace including
         // newlines
         var i = self.pos + 1;
-        while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t' or self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1) {}
+        while (i < self.source.len and
+            (self.source[i] == ' ' or self.source[i] == '\t' or
+                self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1)
+        {}
         if (i + 6 > self.source.len) return false;
         const word = self.source[i .. i + 6];
         if (std.ascii.eqlIgnoreCase(word, "select")) return true;
@@ -154,7 +157,9 @@ const Lexer = struct {
         if (i + 4 <= self.source.len) {
             const find_word = self.source[i .. i + 4];
             if (std.ascii.eqlIgnoreCase(find_word, "find") and
-                (i + 4 >= self.source.len or self.source[i + 4] == ' ' or self.source[i + 4] == '\t' or self.source[i + 4] == '\n' or self.source[i + 4] == ':'))
+                (i + 4 >= self.source.len or
+                    self.source[i + 4] == ' ' or self.source[i + 4] == '\t' or
+                    self.source[i + 4] == '\n' or self.source[i + 4] == ':'))
             {
                 return true;
             }

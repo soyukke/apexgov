@@ -426,9 +426,8 @@ fn match_at_group_single(
         while (true) {
             if (grp_idx > 0) groups.*[grp_idx] = .{ .start = ip, .end = alt_end };
             if (rest_start >= pat.len) return alt_end;
-            if (match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end| {
+            if (match_at(pat, rest_start, input, alt_end, groups, depth + 1, group_base)) |final_end|
                 return final_end;
-            }
             if (grp_idx > 0) groups.*[grp_idx] = null;
             if (alt_end <= ip) break;
             if (greedy) |g| {
@@ -830,7 +829,8 @@ fn match_quantified_group(
                         null;
                 }
                 if (rest_start >= pat.len) return try_ip;
-                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
+                    return end;
             }
             if (try_reps == 0) break;
             try_reps -= 1;
@@ -846,7 +846,8 @@ fn match_quantified_group(
                     null;
             }
             if (rest_start >= pat.len) return try_ip;
-            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end|
+                return end;
         }
     }
     return null;
@@ -1024,7 +1025,8 @@ test "replace_all supports non-greedy quantifiers" {
         try replace_all(
             a,
             "(Class\\.Logger)\\..+?column 1",
-            "Class.Logger.newEntry: line 2, column 1\nClass.CallableLogger_Tests.test: line 10, column 1",
+            "Class.Logger.newEntry: line 2, column 1\n" ++
+                "Class.CallableLogger_Tests.test: line 10, column 1",
             "",
         ),
     );
