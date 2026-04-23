@@ -347,13 +347,13 @@ test "parseFieldMeta extracts field info" {
 }
 
 test "renderSchemaField generates correct .d.ts" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
     try renderSchemaField(.{
         .object_name = "Account",
         .field_name = "Name",
         .ts_type = "string",
-    }, buf.writer(std.testing.allocator));
+    }, &buf.writer);
     const expected =
         \\declare module "@salesforce/schema/Account.Name" {
         \\    const Name: string;
@@ -361,59 +361,59 @@ test "renderSchemaField generates correct .d.ts" {
         \\}
         \\
     ;
-    try std.testing.expectEqualStrings(expected, buf.items);
+    try std.testing.expectEqualStrings(expected, buf.written());
 }
 
 test "renderLabel matches official format" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    try renderLabel("Github_username", buf.writer(std.testing.allocator));
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    try renderLabel("Github_username", &buf.writer);
     const expected =
         \\declare module "@salesforce/label/c.Github_username" {
         \\    var Github_username: string;
         \\    export default Github_username;
         \\}
     ;
-    try std.testing.expectEqualStrings(expected, buf.items);
+    try std.testing.expectEqualStrings(expected, buf.written());
 }
 
 test "renderResourceUrl matches official format" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    try renderResourceUrl("leafletjs", buf.writer(std.testing.allocator));
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    try renderResourceUrl("leafletjs", &buf.writer);
     const expected =
         \\declare module "@salesforce/resourceUrl/leafletjs" {
         \\    var leafletjs: string;
         \\    export default leafletjs;
         \\}
     ;
-    try std.testing.expectEqualStrings(expected, buf.items);
+    try std.testing.expectEqualStrings(expected, buf.written());
 }
 
 test "renderMessageChannel adds __c suffix (official format)" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    try renderMessageChannel("PropertySelected", buf.writer(std.testing.allocator));
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    try renderMessageChannel("PropertySelected", &buf.writer);
     const expected =
         \\declare module "@salesforce/messageChannel/PropertySelected__c" {
         \\    var PropertySelected: string;
         \\    export default PropertySelected;
         \\}
     ;
-    try std.testing.expectEqualStrings(expected, buf.items);
+    try std.testing.expectEqualStrings(expected, buf.written());
 }
 
 test "renderContentAssetUrl matches official format" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    try renderContentAssetUrl("dreamhouselogosquare", buf.writer(std.testing.allocator));
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    try renderContentAssetUrl("dreamhouselogosquare", &buf.writer);
     const expected =
         \\declare module "@salesforce/contentAssetUrl/dreamhouselogosquare" {
         \\    var dreamhouselogosquare: string;
         \\    export default dreamhouselogosquare;
         \\}
     ;
-    try std.testing.expectEqualStrings(expected, buf.items);
+    try std.testing.expectEqualStrings(expected, buf.written());
 }
 
 test "findAuraEnabledMethods detects @AuraEnabled static method" {
@@ -464,13 +464,13 @@ test "findAuraEnabledMethods detects multiple methods" {
 }
 
 test "renderApexMethod generates correct .d.ts" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
     try renderApexMethod(.{
         .class_name = "AccountController",
         .method_name = "getAccounts",
-    }, buf.writer(std.testing.allocator));
-    const output = buf.items;
+    }, &buf.writer);
+    const output = buf.written();
     try std.testing.expect(std.mem.indexOf(u8, output, "@salesforce/apex/AccountController.getAccounts") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "export default function getAccounts") != null);
 }

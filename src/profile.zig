@@ -345,7 +345,7 @@ test "run splits multi-transaction log file" {
         \\  Maximum heap size: 9100 out of 12000000
         \\08:05:01.0 (9)|EXECUTION_FINISHED
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "multi.log", .data = log });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "multi.log", .data = log });
 
     const log_path = try std.fs.path.join(
         std.testing.allocator,
@@ -354,7 +354,7 @@ test "run splits multi-transaction log file" {
     defer std.testing.allocator.free(log_path);
 
     const inputs = [_][]const u8{log_path};
-    var profiles = try run(std.testing.allocator, &inputs, config.Config.defaults());
+    var profiles = try run(std.testing.allocator, std.testing.io, &inputs, config.Config.defaults());
     defer model.deinitProfiles(std.testing.allocator, &profiles);
 
     try std.testing.expectEqual(@as(usize, 2), profiles.items.len);
@@ -392,7 +392,7 @@ test "compareWithBaseline reports regression by label and mode" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -423,7 +423,7 @@ test "compareWithBaseline reports regression by label and mode" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -458,7 +458,7 @@ test "compareWithBaseline can disambiguate by transaction index" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -479,7 +479,7 @@ test "compareWithBaseline can disambiguate by transaction index" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -501,7 +501,7 @@ test "compareWithBaseline returns empty when baseline path is null" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, null, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, null, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
 }
@@ -523,7 +523,7 @@ test "compareWithBaseline matches by basename when label is unknown" {
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "baseline.json", .data = baseline_json });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "baseline.json", .data = baseline_json });
 
     const baseline_path = try std.fs.path.join(
         std.testing.allocator,
@@ -544,7 +544,7 @@ test "compareWithBaseline matches by basename when label is unknown" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, &current, baseline_path, 15);
+    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
