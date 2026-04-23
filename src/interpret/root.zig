@@ -123,13 +123,32 @@ const SampleAppFixturePaths = struct {
     }
 };
 
+// POSIX libc が crt 経由で初期化する環境変数ブロック。
+// Zig 0.16 で `std.process.getEnvVarOwned` が削除され、test runner は
+// `std.process.Environ` を引数として渡さないため、環境変数を読むには
+// この extern シンボルを直接 walk するのが最も軽い手段になる。libc の
+// 明示リンク (-lc) は不要で、POSIX crt がシンボルを提供する。
+extern var environ: [*:null]const ?[*:0]const u8;
+
+/// `KEY=VALUE` 形式の environ ブロックから `key` に対応する値を返す。
+/// 見つからなければ null。戻り値は environ ブロックをそのまま指すスライスで、
+/// プロセス終了まで有効。
+fn getenvPosix(key: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (environ[i]) |entry| : (i += 1) {
+        const e = std.mem.span(entry);
+        const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
+        if (std.mem.eql(u8, e[0..eq], key)) return e[eq + 1 ..];
+    }
+    return null;
+}
+
 fn fixtureTestsEnabled(alloc: std.mem.Allocator) !bool {
-    // TODO(zig-0.16 migration): `std.process.getEnvVarOwned` was removed in
-    // favour of `std.process.Environ.Map`; the test runner does not yet
-    // thread an Environ through, so fixture-backed tests are skipped for
-    // now. Re-enable once Environ plumbing lands.
     _ = alloc;
-    return false;
+    const raw = getenvPosix("APEXGOV_ENABLE_FIXTURE_TESTS") orelse return false;
+    return std.mem.eql(u8, raw, "1") or
+        std.ascii.eqlIgnoreCase(raw, "true") or
+        std.ascii.eqlIgnoreCase(raw, "yes");
 }
 
 fn isSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io, base_path: []const u8) bool {
