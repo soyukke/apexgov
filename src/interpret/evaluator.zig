@@ -14759,6 +14759,83 @@ pub const Evaluator = struct {
         return Value{ .set = set };
     }
 
+    fn try_new_builtin_exception(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        const builtin_exception_types = [_][]const u8{
+            "Exception",              "DMLException",
+            "DmlException",           "NullPointerException",
+            "TypeException",          "QueryException",
+            "JSONException",          "ListException",
+            "MathException",          "SecurityException",
+            "NoAccessException",      "InvalidParameterValueException",
+            "CalloutException",       "StringException",
+            "NoSuchElementException", "NoDataFoundException",
+            "SearchException",        "SObjectException",
+            "HandledException",       "IllegalArgumentException",
+            "LimitException",         "AsyncException",
+            "SerializationException", "FlowException",
+            "FinalException",         "UnsupportedOperationException",
+            "EventBusException",
+        };
+        inline for (builtin_exception_types) |exc_type| {
+            if (std.ascii.eqlIgnoreCase(type_name, exc_type)) {
+                const instance = try self.arena.create(types.ObjectInstance);
+                instance.* = .{ .class_name = exc_type };
+                if (ne.args.len > 0) {
+                    var arg_copy = ne.args[0];
+                    try instance.fields.put(
+                        self.arena,
+                        "message",
+                        try self.eval_expr(&arg_copy, current_env),
+                    );
+                }
+                return Value{ .object = instance };
+            }
+        }
+        return null;
+    }
+
+    /// `new ApexPages.StandardController(record)` and
+    /// `new ApexPages.StandardSetController(records)` — both support bare
+    /// (unqualified) aliases.
+    fn try_new_standard_controller(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardController") or
+            std.ascii.eqlIgnoreCase(type_name, "StandardController"))
+        {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = "ApexPages.StandardController" };
+            if (ne.args.len > 0) {
+                var arg_copy = ne.args[0];
+                const record = try self.eval_expr(&arg_copy, current_env);
+                try instance.fields.put(self.arena, "record", record);
+            }
+            return Value{ .object = instance };
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardSetController") or
+            std.ascii.eqlIgnoreCase(type_name, "StandardSetController"))
+        {
+            const instance = try self.arena.create(types.ObjectInstance);
+            instance.* = .{ .class_name = "ApexPages.StandardSetController" };
+            if (ne.args.len > 0) {
+                var arg_copy = ne.args[0];
+                const records = try self.eval_expr(&arg_copy, current_env);
+                try instance.fields.put(self.arena, "records", records);
+            }
+            try instance.fields.put(self.arena, "pageSize", Value{ .integer = 20 });
+            return Value{ .object = instance };
+        }
+        return null;
+    }
+
     fn eval_new_expr(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !Value {
         const raw_type_name = ne.type_name.name;
         const is_platform_qualified = std.ascii.startsWithIgnoreCase(raw_type_name, "System.") or
@@ -14784,83 +14861,8 @@ pub const Evaluator = struct {
             return try self.new_set_expr(ne, current_env);
         }
 
-        const builtin_exception_types = [_][]const u8{
-            "Exception",
-            "DMLException",
-            "DmlException",
-            "NullPointerException",
-            "TypeException",
-            "QueryException",
-            "JSONException",
-            "ListException",
-            "MathException",
-            "SecurityException",
-            "NoAccessException",
-            "InvalidParameterValueException",
-            "CalloutException",
-            "StringException",
-            "NoSuchElementException",
-            "NoDataFoundException",
-            "SearchException",
-            "SObjectException",
-            "HandledException",
-            "IllegalArgumentException",
-            "LimitException",
-            "AsyncException",
-            "SerializationException",
-            "FlowException",
-            "FinalException",
-            "UnsupportedOperationException",
-            "EventBusException",
-        };
-        inline for (builtin_exception_types) |exc_type| {
-            if (std.ascii.eqlIgnoreCase(type_name, exc_type)) {
-                const instance = try self.arena.create(types.ObjectInstance);
-                instance.* = .{ .class_name = exc_type };
-                if (ne.args.len > 0) {
-                    var arg_copy = ne.args[0];
-                    try instance.fields.put(
-                        self.arena,
-                        "message",
-                        try self.eval_expr(&arg_copy, current_env),
-                    );
-                }
-                return Value{ .object = instance };
-            }
-        }
-
-        // ApexPages.StandardController constructor
-        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardController") or
-            std.ascii.eqlIgnoreCase(type_name, "StandardController"))
-        {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = "ApexPages.StandardController" };
-            if (ne.args.len > 0) {
-                var arg_copy = ne.args[0];
-                const record = try self.eval_expr(&arg_copy, current_env);
-                try instance.fields.put(self.arena, "record", record);
-            }
-            return Value{ .object = instance };
-        }
-
-        // ApexPages.StandardSetController constructor
-        if (std.ascii.eqlIgnoreCase(type_name, "ApexPages.StandardSetController") or
-            std.ascii.eqlIgnoreCase(type_name, "StandardSetController"))
-        {
-            const instance = try self.arena.create(types.ObjectInstance);
-            instance.* = .{ .class_name = "ApexPages.StandardSetController" };
-            if (ne.args.len > 0) {
-                var arg_copy = ne.args[0];
-                const records = try self.eval_expr(&arg_copy, current_env);
-                try instance.fields.put(self.arena, "records", records);
-            }
-            try instance.fields.put(
-                self.arena,
-                "pageSize",
-                Value{ .integer = 20 },
-            ); // default page size
-            return Value{ .object = instance };
-        }
+        if (try self.try_new_builtin_exception(ne, type_name, current_env)) |v| return v;
+        if (try self.try_new_standard_controller(ne, type_name, current_env)) |v| return v;
 
         // Known non-SObject types: create ObjectInstance instead
         const non_sobject_types = [_][]const u8{
