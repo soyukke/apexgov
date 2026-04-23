@@ -18265,81 +18265,95 @@ pub const Evaluator = struct {
                 const json = try utils.to_json(value, self.arena);
                 break :blk self.string_hash_code(json);
             },
-            .list => |list| blk: {
-                var result: i64 = 1;
-                for (list.items.items) |item| {
-                    result = result *% 31 +% try self.value_hash_code(item);
-                }
-                break :blk result;
-            },
-            .map => |map| blk: {
-                var result: i64 = 1;
-                for (map.entries.keys(), map.entries.values()) |key, entry_value| {
-                    result = result *% 31 +% self.string_hash_code(key);
-                    result = result *% 31 +% try self.value_hash_code(entry_value);
-                }
-                break :blk result;
-            },
-            .set => |set| blk: {
-                var result: i64 = 1;
-                for (set.entries.values()) |item| {
-                    result = result *% 31 +% try self.value_hash_code(item);
-                }
-                break :blk result;
-            },
-            .object => |obj| blk: {
-                if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
-                {
-                    const name_value = obj.fields.get(
-                        "name",
-                    ) orelse obj.fields.get("fieldName") orelse Value.null_val;
-                    if (name_value == .string) break :blk self.string_hash_code(name_value.string);
-                }
-
-                if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
-                    std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
-                {
-                    if (obj.fields.get("value")) |raw_value| {
-                        if (raw_value == .string)
-                            break :blk self.string_hash_code(raw_value.string);
-                    }
-                }
-
-                if (self.find_class(obj.class_name)) |class_decl| {
-                    if (self.find_method_in_hierarchy_typed(
-                        null,
-                        class_decl,
-                        "hashCode",
-                        &.{},
-                    ) != null or
-                        self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null)
-                    {
-                        const result = self.call_instance_method(
-                            class_decl,
-                            obj,
-                            "hashCode",
-                            &.{},
-                        ) catch Value{ .integer = 0 };
-                        switch (result) {
-                            .integer => |i| break :blk i,
-                            .double => |d| break :blk @intFromFloat(d),
-                            else => {},
-                        }
-                    }
-                }
-
-                if (obj.fields.get("__hashCode__")) |existing| {
-                    if (existing == .integer) break :blk existing.integer;
-                }
-                const generated = @as(i64, @intCast(@intFromPtr(obj) & 0x7fffffff));
-                try obj.fields.put(self.arena, "__hashCode__", Value{ .integer = generated });
-                break :blk generated;
-            },
+            .list => |list| try self.list_hash_code(list),
+            .map => |map| try self.map_hash_code(map),
+            .set => |set| try self.set_hash_code(set),
+            .object => |obj| try self.object_hash_code(obj),
             .void_val => 0,
+        };
+    }
+
+    fn list_hash_code(self: *Evaluator, list: *types.ListValue) anyerror!i64 {
+        var result: i64 = 1;
+        for (list.items.items) |item| {
+            result = result *% 31 +% try self.value_hash_code(item);
+        }
+        return result;
+    }
+
+    fn map_hash_code(self: *Evaluator, map: *types.MapValue) anyerror!i64 {
+        var result: i64 = 1;
+        for (map.entries.keys(), map.entries.values()) |key, entry_value| {
+            result = result *% 31 +% self.string_hash_code(key);
+            result = result *% 31 +% try self.value_hash_code(entry_value);
+        }
+        return result;
+    }
+
+    fn set_hash_code(self: *Evaluator, set: *types.SetValue) anyerror!i64 {
+        var result: i64 = 1;
+        for (set.entries.values()) |item| {
+            result = result *% 31 +% try self.value_hash_code(item);
+        }
+        return result;
+    }
+
+    fn object_hash_code(self: *Evaluator, obj: *types.ObjectInstance) anyerror!i64 {
+        if (try self.builtin_identity_hash_code(obj)) |v| return v;
+        if (try self.try_user_hash_code(obj)) |v| return v;
+        if (obj.fields.get("__hashCode__")) |existing| {
+            if (existing == .integer) return existing.integer;
+        }
+        const generated = @as(i64, @intCast(@intFromPtr(obj) & 0x7fffffff));
+        try obj.fields.put(self.arena, "__hashCode__", Value{ .integer = generated });
+        return generated;
+    }
+
+    /// Hash codes for built-in Type/Schema.SObjectType/SObjectField tokens
+    /// (which compare by their `name`/`fieldName`), plus Date/Datetime/Blob
+    /// (which hash their stored `value` string). Returns null when `obj` is
+    /// a plain user ObjectInstance.
+    fn builtin_identity_hash_code(self: *Evaluator, obj: *types.ObjectInstance) anyerror!?i64 {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+        {
+            const name_value = obj.fields.get("name") orelse
+                obj.fields.get("fieldName") orelse Value.null_val;
+            if (name_value == .string) return self.string_hash_code(name_value.string);
+        }
+        if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+            std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+        {
+            if (obj.fields.get("value")) |raw_value| {
+                if (raw_value == .string) return self.string_hash_code(raw_value.string);
+            }
+        }
+        return null;
+    }
+
+    fn try_user_hash_code(self: *Evaluator, obj: *types.ObjectInstance) anyerror!?i64 {
+        const class_decl = self.find_class(obj.class_name) orelse return null;
+        const has_typed = self.find_method_in_hierarchy_typed(
+            null,
+            class_decl,
+            "hashCode",
+            &.{},
+        ) != null;
+        const has_arity = self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null;
+        if (!has_typed and !has_arity) return null;
+        const result = self.call_instance_method(
+            class_decl,
+            obj,
+            "hashCode",
+            &.{},
+        ) catch Value{ .integer = 0 };
+        return switch (result) {
+            .integer => |i| i,
+            .double => |d| @as(i64, @intFromFloat(d)),
+            else => null,
         };
     }
 
