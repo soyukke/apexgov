@@ -17862,27 +17862,79 @@ pub const Evaluator = struct {
         args: []const Value,
         current_env: *Env,
     ) !Value {
-        // System.enqueue_job → execute the Queueable's execute method synchronously
-        // Queueable runs in a separate transaction in Salesforce, so save/restore limits
-        if (std.ascii.eqlIgnoreCase(inner, "enqueue_job") and args.len > 0 and args[0] == .object) {
-            return self.enqueue_job(args[0].object);
+        if (try self.handle_system_async_method(inner, method, args)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(inner, "runAs")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "abortJob")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "debug") and args.len > 0) {
+            const msg = try utils.coerce_to_string(args[0], self.arena);
+            try self.stdout.appendSlice(self.arena, msg);
+            try self.stdout.append(self.arena, '\n');
+            return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(inner, "enqueue_job")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "Request")) {
+            return try self.handle_system_request(method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "AccessType") or
+            std.ascii.eqlIgnoreCase(inner, "AccessLevel"))
+        {
+            return Value{ .string = method };
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or
+            std.ascii.eqlIgnoreCase(inner, "TriggerOperation"))
+        {
+            return try self.handle_system_enum_method(inner, method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "SObjectAccessDecision")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
+            return try self.handle_system_limits_method(method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
+            if (try self.handle_system_json_method(method, args)) |v| return v;
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "Test")) return self.handle_test(method, args);
+        if (std.ascii.eqlIgnoreCase(inner, "Database")) {
+            return self.handle_database_method(method, args, current_env);
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "EventBus") and
+            std.ascii.eqlIgnoreCase(method, "publish"))
+        {
+            return self.call_method("EventBus", "publish", args) catch .void_val;
+        }
+        // Generic fallback: delegate System.X.method to builtins.dispatch_static.
+        // Covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
+        var bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        if (try builtins.dispatch_static(&bctx, inner, method, args)) |result| return result;
+        return .void_val;
+    }
+
+    /// Handle System.enqueue_job / attachFinalizer / schedule. Returns null
+    /// when the call doesn't match any of those.
+    fn handle_system_async_method(
+        self: *Evaluator,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        _ = method;
+        if (std.ascii.eqlIgnoreCase(inner, "enqueue_job")) {
+            if (args.len > 0 and args[0] == .object) return try self.enqueue_job(args[0].object);
+            return Value.void_val;
+        }
         if (std.ascii.eqlIgnoreCase(inner, "attachFinalizer")) {
             if (self.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
                 self.attached_finalizer = args[0].object;
             }
-            return .void_val;
+            return Value.void_val;
         }
-        // System.runAs → now handled by run_as_stmt in the AST; this is a fallback no-op
-        if (std.ascii.eqlIgnoreCase(inner, "runAs")) {
-            return .void_val;
-        }
-        // System.schedule → store cron expression and return unique job ID
         if (std.ascii.eqlIgnoreCase(inner, "schedule")) {
             const job_id = try std.fmt.allocPrint(self.arena, "08e{d:0>15}", .{self.next_id});
             self.next_id += 1;
-            // args: (jobName, cronExpression, schedulableInstance)
             if (args.len >= 2 and args[1] == .string) {
                 try self.scheduled_jobs.put(self.arena, job_id, args[1].string);
             }
@@ -17891,196 +17943,175 @@ pub const Evaluator = struct {
             }
             return Value{ .string = job_id };
         }
-        // System.abortJob → no-op
-        if (std.ascii.eqlIgnoreCase(inner, "abortJob")) return .void_val;
-        // System.debug
-        if (std.ascii.eqlIgnoreCase(inner, "debug") and args.len > 0) {
-            const msg = try utils.coerce_to_string(args[0], self.arena);
-            try self.stdout.appendSlice(self.arena, msg);
-            try self.stdout.append(self.arena, '\n');
-            return .void_val;
+        return null;
+    }
+
+    fn handle_system_request(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        var bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        if (try builtins.dispatch_static(&bctx, "Request", method, args)) |result| return result;
+        const obj = try self.arena.create(types.ObjectInstance);
+        obj.* = .{ .class_name = "Request" };
+        return Value{ .object = obj };
+    }
+
+    /// LoggingLevel / TriggerOperation: valueOf(name) returns the name or
+    /// throws NoSuchElementException for unknown values; values() returns all
+    /// names as a list; a plain member access returns the name itself.
+    fn handle_system_enum_method(
+        self: *Evaluator,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        const logging_level_names = [_][]const u8{
+            "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO",
+            "WARN",     "ERROR",  "NONE",
+        };
+        const trigger_op_names = [_][]const u8{
+            "BEFORE_INSERT",  "BEFORE_UPDATE", "BEFORE_DELETE",
+            "AFTER_INSERT",   "AFTER_UPDATE",  "AFTER_DELETE",
+            "AFTER_UNDELETE",
+        };
+        const is_logging = std.ascii.eqlIgnoreCase(inner, "LoggingLevel");
+        const valid_values: []const []const u8 = if (is_logging)
+            &logging_level_names
+        else
+            &trigger_op_names;
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
+            for (valid_values) |v| {
+                if (std.ascii.eqlIgnoreCase(args[0].string, v)) return Value{ .string = v };
+            }
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.NoSuchElementException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "No enum constant System.{s}.{s}",
+                .{ inner, args[0].string },
+            ) });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
         }
-        // System.Request.getCurrent() → return a Request object
-        if (std.ascii.eqlIgnoreCase(inner, "Request")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(
-                &bctx,
-                "Request",
-                method,
-                args,
-            )) |result| return result;
-            const obj = try self.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Request" };
-            return Value{ .object = obj };
+        if (std.ascii.eqlIgnoreCase(method, "values")) {
+            const list = try self.arena.create(types.ListValue);
+            list.* = .{};
+            for (valid_values) |name| try list.items.append(self.arena, Value{ .string = name });
+            return Value{ .list = list };
         }
-        // System.AccessType/AccessLevel
-        if (std.ascii.eqlIgnoreCase(inner, "AccessType") or
-            std.ascii.eqlIgnoreCase(inner, "AccessLevel"))
+        return Value{ .string = method };
+    }
+
+    fn handle_system_limits_method(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        var bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        if (try builtins.dispatch_static(&bctx, "Limits", method, args)) |result| return result;
+        return Value{ .integer = 0 };
+    }
+
+    /// System.JSON.* — the handlers here differ from the top-level JSON.*
+    /// dispatch by raising JSONException from `deserializeUntyped` on null
+    /// input (Apex is stricter on System.JSON than on bare JSON).
+    fn handle_system_json_method(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "serialize") or
+            std.ascii.eqlIgnoreCase(method, "serializePretty"))
         {
-            return Value{ .string = method };
+            return try self.mc_json_serialize(args);
         }
-        // System.LoggingLevel / System.TriggerOperation
-        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or
-            std.ascii.eqlIgnoreCase(inner, "TriggerOperation"))
+        if (std.ascii.eqlIgnoreCase(method, "deserialize") or
+            std.ascii.eqlIgnoreCase(method, "deserializeUntyped"))
         {
-            // valueOf(name) → return the enum value string, throw NoSuchElementException for
-            // invalid values
-            if (std.ascii.eqlIgnoreCase(method, "valueOf") and
-                args.len > 0 and
-                args[0] == .string)
-            {
-                const valid_values: []const []const u8 =
-                    if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel"))
-                        &.{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" }
-                    else
-                        &.{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-                for (valid_values) |v| {
-                    if (std.ascii.eqlIgnoreCase(args[0].string, v)) return Value{ .string = v };
-                }
+            return try self.handle_system_json_deserialize(method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "createParser")) {
+            if (args.len >= 1 and args[0] == .string) {
+                const parser_obj = try self.arena.create(types.ObjectInstance);
+                parser_obj.* = .{ .class_name = "JSONParser" };
+                try parser_obj.fields.put(self.arena, "__json_body__", args[0]);
+                return Value{ .object = parser_obj };
+            }
+            return Value.null_val;
+        }
+        var bctx2 = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        return try builtins.dispatch_static(&bctx2, "JSON", method, args);
+    }
+
+    fn handle_system_json_deserialize(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (args.len >= 1 and args[0] == .null_val) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "System.JSONException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "Argument cannot be null." },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (args.len >= 1 and args[0] == .string) {
+            const json_str = args[0].string;
+            const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
+            if (!utils.is_json_balanced(trimmed_json)) {
                 const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant System.{s}.{s}", .{ inner, args[0].string }) });
+                exc.* = .{ .class_name = "System.JSONException" };
+                try exc.fields.put(
+                    self.arena,
+                    "message",
+                    Value{ .string = "Unexpected end-of-input" },
+                );
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
-            // values() → return list of all values
-            if (std.ascii.eqlIgnoreCase(method, "values")) {
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel")) {
-                    const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
-                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
-                } else {
-                    const names = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
-                }
-                return Value{ .list = list };
-            }
-            // ENUM_VALUE → return the value name
-            return Value{ .string = method };
-        }
-        // System.SObjectAccessDecision
-        if (std.ascii.eqlIgnoreCase(inner, "SObjectAccessDecision")) {
-            return .void_val;
-        }
-        // System.Limits → all methods return 0
-        if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx, "Limits", method, args)) |result| return result;
-            return Value{ .integer = 0 };
-        }
-        // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
-        if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
-            if (std.ascii.eqlIgnoreCase(method, "serialize") or
-                std.ascii.eqlIgnoreCase(method, "serializePretty"))
-            {
-                if (args.len > 0) {
-                    if (args[0] == .object and
-                        (std.ascii.eqlIgnoreCase(
-                            args[0].object.class_name,
-                            "Schema.SObjectField",
-                        ) or
-                            std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
-                    {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "System.JSONException" };
-                        try exc.fields.put(
-                            self.arena,
-                            "message",
-                            Value{ .string = "Apex Type unsupported in JSON: Schema.SObjectField" },
-                        );
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
+            var bctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
+            if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| return result;
+            const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) blk: {
+                if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
+                    if (args[1].object.fields.get("name")) |n| {
+                        if (n == .string) break :blk n.string;
                     }
-                    return Value{ .string = try utils.to_json(args[0], self.arena) };
                 }
-                return Value{ .string = "{}" };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "deserialize") or
-                std.ascii.eqlIgnoreCase(method, "deserializeUntyped"))
-            {
-                if (args.len >= 1 and args[0] == .null_val) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.JSONException" };
-                    try exc.fields.put(
-                        self.arena,
-                        "message",
-                        Value{ .string = "Argument cannot be null." },
-                    );
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-                if (args.len >= 1 and args[0] == .string) {
-                    const json_str = args[0].string;
-                    const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
-                    // Check balanced braces/brackets for truncated JSON detection
-                    if (!utils.is_json_balanced(trimmed_json)) {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "System.JSONException" };
-                        try exc.fields.put(
-                            self.arena,
-                            "message",
-                            Value{ .string = "Unexpected end-of-input" },
-                        );
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    // Delegate to builtins for actual parsing
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    if (try builtins.dispatch_static(
-                        &bctx,
-                        "JSON",
-                        method,
-                        args,
-                    )) |result| return result;
-                    const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) blk: {
-                        if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
-                            if (args[1].object.fields.get("name")) |n| {
-                                if (n == .string) break :blk n.string;
-                            }
-                        }
-                        break :blk args[1].object.class_name;
-                    } else "Object";
-                    if (self.parse_json_value(json_str, type_name)) |pv| return pv;
-                }
-                return Value.null_val;
-            }
-            // JSON.createParser → JSONParser instance with the JSON body stored
-            if (std.ascii.eqlIgnoreCase(method, "createParser")) {
-                if (args.len >= 1 and args[0] == .string) {
-                    const parser_obj = try self.arena.create(types.ObjectInstance);
-                    parser_obj.* = .{ .class_name = "JSONParser" };
-                    try parser_obj.fields.put(self.arena, "__json_body__", args[0]);
-                    return Value{ .object = parser_obj };
-                }
-                return Value.null_val;
-            }
-            // Other JSON methods: delegate to builtins
-            var bctx2 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx2, "JSON", method, args)) |result| return result;
+                break :blk args[1].object.class_name;
+            } else "Object";
+            if (self.parse_json_value(json_str, type_name)) |pv| return pv;
         }
-        // System.Test.startTest / System.Test.stopTest / setMock / etc.
-        if (std.ascii.eqlIgnoreCase(inner, "Test")) {
-            return self.handle_test(method, args);
-        }
-        // System.Database.insert / update / delete / upsert / undelete
-        if (std.ascii.eqlIgnoreCase(inner, "Database")) {
-            return self.handle_database_method(method, args, current_env);
-        }
-        // System.EventBus.publish → delegate to call_method so it goes through the EventBus.publish
-        // handler
-        if (std.ascii.eqlIgnoreCase(inner, "EventBus") and
-            std.ascii.eqlIgnoreCase(method, "publish"))
-        {
-            return self.call_method("EventBus", "publish", args) catch .void_val;
-        }
-        // Generic fallback: delegate System.X.method to builtins.dispatch_static(X, method, args)
-        // This covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
-        {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx, inner, method, args)) |result| return result;
-        }
-        return .void_val;
+        return Value.null_val;
     }
 
     // -----------------------------------------------------------------------
