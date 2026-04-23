@@ -5,6 +5,7 @@
 //! textDocument/didOpen, didChange, didClose → publishDiagnostics を処理する。
 
 const std = @import("std");
+const Io = std.Io;
 const types = @import("types.zig");
 const Transport = @import("transport.zig").Transport;
 const DocumentStore = @import("document_store.zig").DocumentStore;
@@ -31,6 +32,7 @@ const sobject_schema = @import("sobject_schema.zig");
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     transport: Transport,
     store: DocumentStore,
     custom_fields: sobject_schema.CustomFieldRegistry,
@@ -38,10 +40,11 @@ pub const Server = struct {
     initialized: bool = false,
     shutdown_requested: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, in_file: std.fs.File, out_file: std.fs.File) Server {
+    pub fn init(allocator: std.mem.Allocator, io: Io, in_file: Io.File, out_file: Io.File) Server {
         return .{
             .allocator = allocator,
-            .transport = Transport.init(allocator, in_file, out_file),
+            .io = io,
+            .transport = Transport.init(allocator, io, in_file, out_file),
             .store = DocumentStore.init(allocator),
             .custom_fields = sobject_schema.CustomFieldRegistry.init(allocator),
         };

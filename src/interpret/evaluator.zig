@@ -16299,7 +16299,7 @@ pub const Evaluator = struct {
             // Check that it's preceded by "[] " or "> " (array type indicators)
             if (found >= 3) {
                 const before = source[0..found];
-                const trimmed_before = std.mem.trimRight(u8, before, " \t");
+                const trimmed_before = std.mem.trimEnd(u8, before, " \t");
                 // Check for "[]" suffix → "TypeName[]"
                 if (std.mem.endsWith(u8, trimmed_before, "[]")) {
                     // Find the start of the type name

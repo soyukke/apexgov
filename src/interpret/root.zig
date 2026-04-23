@@ -185,25 +185,27 @@ fn findSampleAppFixturePath(alloc: std.mem.Allocator) ![]const u8 {
 }
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
-pub fn runTestSuite(gpa: std.mem.Allocator, paths: []const []const u8, writer: anytype) !TestSuiteResult {
-    return runTestsFiltered(gpa, paths, null, null, writer);
+pub fn runTestSuite(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8, writer: anytype) !TestSuiteResult {
+    return runTestsFiltered(gpa, io, paths, null, null, writer);
 }
 
 /// 指定クラス（+ オプションでメソッド）のテストのみ実行する。
 /// method_name が null の場合はクラス内全テストメソッドを実行。
 pub fn runSingleTest(
     gpa: std.mem.Allocator,
+    io: std.Io,
     paths: []const []const u8,
     class_name: []const u8,
     method_name: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return runTestsFiltered(gpa, paths, class_name, method_name, writer);
+    return runTestsFiltered(gpa, io, paths, class_name, method_name, writer);
 }
 
 /// テスト実行の共通内部関数。filter_class / filter_method が null なら全テスト実行。
 fn runTestsFiltered(
     gpa: std.mem.Allocator,
+    io: std.Io,
     paths: []const []const u8,
     filter_class: ?[]const u8,
     filter_method: ?[]const u8,
@@ -217,7 +219,7 @@ fn runTestsFiltered(
     // 1. .cls ファイルを収集
     var files: std.ArrayListUnmanaged(SourceFile) = .empty;
     for (paths) |path| {
-        try collectClsFiles(parse_alloc, path, &files);
+        try collectClsFiles(parse_alloc, io, path, &files);
     }
     try writer.print("interpret: loaded {d} Apex source file(s)\n", .{files.items.len});
 

@@ -268,7 +268,7 @@ pub fn parseTypedBinding(segment_raw: []const u8) ?TypeBinding {
     if (start == 0) return null;
     if (!std.ascii.isWhitespace(segment[start - 1])) return null;
 
-    var type_part = std.mem.trimRight(u8, segment[0..start], " \t");
+    var type_part = std.mem.trimEnd(u8, segment[0..start], " \t");
     type_part = stripLeadingTypeModifiers(type_part);
     if (type_part.len == 0) return null;
 
@@ -282,31 +282,31 @@ pub fn stripLeadingTypeModifiers(raw: []const u8) []const u8 {
     var out = std.mem.trim(u8, raw, " \t");
     while (true) {
         if (std.mem.startsWith(u8, out, "final ")) {
-            out = std.mem.trimLeft(u8, out[6..], " \t");
+            out = std.mem.trimStart(u8, out[6..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "public ")) {
-            out = std.mem.trimLeft(u8, out[7..], " \t");
+            out = std.mem.trimStart(u8, out[7..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "private ")) {
-            out = std.mem.trimLeft(u8, out[8..], " \t");
+            out = std.mem.trimStart(u8, out[8..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "protected ")) {
-            out = std.mem.trimLeft(u8, out[10..], " \t");
+            out = std.mem.trimStart(u8, out[10..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "global ")) {
-            out = std.mem.trimLeft(u8, out[7..], " \t");
+            out = std.mem.trimStart(u8, out[7..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "static ")) {
-            out = std.mem.trimLeft(u8, out[7..], " \t");
+            out = std.mem.trimStart(u8, out[7..], " \t");
             continue;
         }
         if (std.mem.startsWith(u8, out, "transient ")) {
-            out = std.mem.trimLeft(u8, out[10..], " \t");
+            out = std.mem.trimStart(u8, out[10..], " \t");
             continue;
         }
         break;

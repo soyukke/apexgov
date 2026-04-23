@@ -153,7 +153,7 @@ fn isSoqlForLoop(trimmed: []const u8) bool {
     if (!std.mem.startsWith(u8, lower, "for ") and !std.mem.startsWith(u8, lower, "for(")) return false;
     const colon_pos = std.mem.indexOfScalar(u8, lower, ':') orelse return false;
     const after_colon = lower[colon_pos + 1 ..];
-    const after_trimmed = std.mem.trimLeft(u8, after_colon, " \t");
+    const after_trimmed = std.mem.trimStart(u8, after_colon, " \t");
     return std.mem.startsWith(u8, after_trimmed, "[select ");
 }
 

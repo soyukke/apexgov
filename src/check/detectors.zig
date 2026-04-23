@@ -25,7 +25,7 @@ pub fn containsSoql(line: []const u8) bool {
 }
 
 pub fn containsDml(line: []const u8) bool {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (startsWithIgnoreCase(trimmed, "insert ") or
         startsWithIgnoreCase(trimmed, "update ") or
         startsWithIgnoreCase(trimmed, "upsert ") or
@@ -66,7 +66,7 @@ pub fn containsCallout(line: []const u8, type_env: *std.StringHashMap([]const u8
     if (containsAnyCaseInsensitive(line, &direct_needles)) return true;
 
     const send_idx = indexOfCaseInsensitive(line, ".send(") orelse return false;
-    const receiver = extractLastIdentifier(std.mem.trimRight(u8, line[0..send_idx], " \t")) orelse return false;
+    const receiver = extractLastIdentifier(std.mem.trimEnd(u8, line[0..send_idx], " \t")) orelse return false;
     const bound_type = type_env.get(receiver) orelse return false;
     return equalsCanonicalType(bound_type, "Http");
 }

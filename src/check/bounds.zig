@@ -142,7 +142,7 @@ fn parseQueryLimitBound(line: []const u8) ?BoundUpdate {
     if (indexOfCaseInsensitive(right, "select") == null) return null;
 
     const limit_idx = indexOfCaseInsensitive(right, "limit") orelse return null;
-    const limit_raw = std.mem.trimLeft(u8, right[(limit_idx + 5)..], " \t");
+    const limit_raw = std.mem.trimStart(u8, right[(limit_idx + 5)..], " \t");
     const limit = parseLeadingUnsigned(limit_raw) orelse return null;
     const name = extractLastIdentifier(left) orelse return null;
 
