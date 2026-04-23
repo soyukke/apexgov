@@ -18162,99 +18162,94 @@ pub const Evaluator = struct {
     }
 
     fn values_equal(self: *Evaluator, left: Value, right: Value) bool {
-        if (left == .list and right == .list) {
-            if (left.list == right.list) return true;
-            if (left.list.items.items.len != right.list.items.items.len) return false;
-            for (left.list.items.items, right.list.items.items) |left_item, right_item| {
-                if (!self.values_equal(left_item, right_item)) return false;
-            }
-            return true;
-        }
-
-        if (left == .map and right == .map) {
-            if (left.map == right.map) return true;
-            if (left.map.entries.count() != right.map.entries.count()) return false;
-            for (left.map.entries.keys(), left.map.entries.values()) |left_key, left_value| {
-                const right_value = right.map.entries.get(left_key) orelse return false;
-                if (!self.values_equal(left_value, right_value)) return false;
-            }
-            return true;
-        }
-
-        if (left == .set and right == .set) {
-            if (left.set == right.set) return true;
-            if (left.set.entries.count() != right.set.entries.count()) return false;
-            outer: for (left.set.entries.values()) |left_item| {
-                for (right.set.entries.values()) |right_item| {
-                    if (self.values_equal(left_item, right_item)) continue :outer;
-                }
-                return false;
-            }
-            return true;
-        }
-
+        if (left == .list and right == .list) return self.lists_equal(left.list, right.list);
+        if (left == .map and right == .map) return self.maps_equal(left.map, right.map);
+        if (left == .set and right == .set) return self.sets_equal(left.set, right.set);
         if (left == .object and right == .object) {
             if (utils.value_eql(left, right)) return true;
-
-            // Built-in value classes (Date / Datetime / Time / Blob) compare by
-            // their stored "value" (and for Time, the component fields) rather
-            // than by ObjectInstance identity.
-            const builtin_value_class = blk: {
-                const cn = left.object.class_name;
-                if (!std.ascii.eqlIgnoreCase(cn, right.object.class_name)) break :blk false;
-                break :blk std.ascii.eqlIgnoreCase(cn, "Date") or
-                    std.ascii.eqlIgnoreCase(cn, "Datetime") or
-                    std.ascii.eqlIgnoreCase(cn, "Time") or
-                    std.ascii.eqlIgnoreCase(cn, "Blob");
-            };
-            if (builtin_value_class) {
-                const lv = left.object.fields.get("value") orelse Value.null_val;
-                const rv = right.object.fields.get("value") orelse Value.null_val;
-                if (lv == .string and rv == .string) {
-                    return std.mem.eql(u8, lv.string, rv.string);
-                }
-            }
-
-            if (self.find_class(left.object.class_name)) |left_class| {
-                if (self.find_method_in_hierarchy_typed(
-                    null,
-                    left_class,
-                    "equals",
-                    &.{right},
-                ) != null or
-                    self.find_method_in_hierarchy(null, left_class, "equals", 1) != null)
-                {
-                    const result = self.call_instance_method(
-                        left_class,
-                        left.object,
-                        "equals",
-                        &.{right},
-                    ) catch return false;
-                    return result == .boolean and result.boolean;
-                }
-            }
-
-            if (self.find_class(right.object.class_name)) |right_class| {
-                if (self.find_method_in_hierarchy_typed(
-                    null,
-                    right_class,
-                    "equals",
-                    &.{left},
-                ) != null or
-                    self.find_method_in_hierarchy(null, right_class, "equals", 1) != null)
-                {
-                    const result = self.call_instance_method(
-                        right_class,
-                        right.object,
-                        "equals",
-                        &.{left},
-                    ) catch return false;
-                    return result == .boolean and result.boolean;
-                }
-            }
+            if (builtin_value_classes_equal(left.object, right.object)) |result| return result;
+            if (self.try_user_equals(left.object, right)) |result| return result;
+            if (self.try_user_equals(right.object, left)) |result| return result;
         }
-
         return utils.value_eql(left, right);
+    }
+
+    fn lists_equal(self: *Evaluator, a: *types.ListValue, b: *types.ListValue) bool {
+        if (a == b) return true;
+        if (a.items.items.len != b.items.items.len) return false;
+        for (a.items.items, b.items.items) |x, y| {
+            if (!self.values_equal(x, y)) return false;
+        }
+        return true;
+    }
+
+    fn maps_equal(self: *Evaluator, a: *types.MapValue, b: *types.MapValue) bool {
+        if (a == b) return true;
+        if (a.entries.count() != b.entries.count()) return false;
+        for (a.entries.keys(), a.entries.values()) |key, left_value| {
+            const right_value = b.entries.get(key) orelse return false;
+            if (!self.values_equal(left_value, right_value)) return false;
+        }
+        return true;
+    }
+
+    fn sets_equal(self: *Evaluator, a: *types.SetValue, b: *types.SetValue) bool {
+        if (a == b) return true;
+        if (a.entries.count() != b.entries.count()) return false;
+        outer: for (a.entries.values()) |left_item| {
+            for (b.entries.values()) |right_item| {
+                if (self.values_equal(left_item, right_item)) continue :outer;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /// Built-in value classes (Date / Datetime / Time / Blob) compare by the
+    /// stored "value" field rather than ObjectInstance identity. Returns null
+    /// when the pair isn't a matched built-in-value class — the caller should
+    /// continue with user-defined equals() resolution.
+    fn builtin_value_classes_equal(
+        left: *types.ObjectInstance,
+        right: *types.ObjectInstance,
+    ) ?bool {
+        if (!std.ascii.eqlIgnoreCase(left.class_name, right.class_name)) return null;
+        const cn = left.class_name;
+        const is_builtin = std.ascii.eqlIgnoreCase(cn, "Date") or
+            std.ascii.eqlIgnoreCase(cn, "Datetime") or
+            std.ascii.eqlIgnoreCase(cn, "Time") or
+            std.ascii.eqlIgnoreCase(cn, "Blob");
+        if (!is_builtin) return null;
+        const lv = left.fields.get("value") orelse Value.null_val;
+        const rv = right.fields.get("value") orelse Value.null_val;
+        if (lv == .string and rv == .string) return std.mem.eql(u8, lv.string, rv.string);
+        return null;
+    }
+
+    /// Try dispatching a user-defined equals(...) on `subject.class_name`.
+    /// Returns null when the class doesn't declare one; otherwise the boolean
+    /// outcome of the call (false when the call throws).
+    fn try_user_equals(
+        self: *Evaluator,
+        subject: *types.ObjectInstance,
+        other: Value,
+    ) ?bool {
+        const subject_class = self.find_class(subject.class_name) orelse return null;
+        const has_typed = self.find_method_in_hierarchy_typed(
+            null,
+            subject_class,
+            "equals",
+            &.{other},
+        ) != null;
+        const has_arity = self.find_method_in_hierarchy(null, subject_class, "equals", 1) != null;
+        if (!has_typed and !has_arity) return null;
+        const result = self.call_instance_method(
+            subject_class,
+            subject,
+            "equals",
+            &.{other},
+        ) catch return false;
+        return result == .boolean and result.boolean;
     }
 
     fn value_hash_code(self: *Evaluator, value: Value) anyerror!i64 {
