@@ -700,7 +700,10 @@ pub const Evaluator = struct {
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name))
                 continue;
-            if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
+            if (pos != 0) {
+                const prev = where_clause[pos - 1];
+                if (!is_soql_whitespace(prev) and prev != '(') continue;
+            }
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
             if (j < where_clause.len and where_clause[j] == '=') return true;
@@ -719,7 +722,10 @@ pub const Evaluator = struct {
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
             if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name))
                 continue;
-            if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
+            if (pos != 0) {
+                const prev = where_clause[pos - 1];
+                if (!is_soql_whitespace(prev) and prev != '(') continue;
+            }
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
             if (j + 4 <= where_clause.len and
@@ -1691,7 +1697,13 @@ pub const Evaluator = struct {
                         any_publish_success = true;
                         try successful_items.items.append(self.arena, item);
                     }
-                    try results.items.append(self.arena, try self.create_dml_result_value("Database.SaveResult", publish_result.success, publish_result.id, null));
+                    const dml_result = try self.create_dml_result_value(
+                        "Database.SaveResult",
+                        publish_result.success,
+                        publish_result.id,
+                        null,
+                    );
+                    try results.items.append(self.arena, dml_result);
                 }
                 break :blk Value{ .list = results };
             } else blk: {
@@ -1864,7 +1876,13 @@ pub const Evaluator = struct {
         // class name itself is a user-defined class that intentionally shadows
         // a builtin static namespace like Security or CanTheUser.
         if (!(is_builtin_static_namespace(class_name) and self.find_class(class_name) != null)) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
             if (try builtins.dispatch_static(&bctx, class_name, method_name, args)) |result| {
                 return result;
             }
@@ -1925,7 +1943,16 @@ pub const Evaluator = struct {
                                     }
                                     const exc = try self.arena.create(types.ObjectInstance);
                                     exc.* = .{ .class_name = "System.NoSuchElementException" };
-                                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant {s}.{s}", .{ class_name, args[0].string }) });
+                                    const enum_msg = try std.fmt.allocPrint(
+                                        self.arena,
+                                        "No enum constant {s}.{s}",
+                                        .{ class_name, args[0].string },
+                                    );
+                                    try exc.fields.put(
+                                        self.arena,
+                                        "message",
+                                        Value{ .string = enum_msg },
+                                    );
                                     self.pending_exception = Value{ .object = exc };
                                     return error.ApexException;
                                 }
@@ -4844,7 +4871,9 @@ pub const Evaluator = struct {
             const fp_id = try self.alloc_id();
             fp.id = fp_id;
             try fp.fields.put(self.arena, "Id", Value{ .string = fp_id });
-            try fp.fields.put(self.arena, "Field", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name }) });
+            const field_str =
+                try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name });
+            try fp.fields.put(self.arena, "Field", Value{ .string = field_str });
             try fp.fields.put(self.arena, "PermissionsRead", Value{ .boolean = f.read });
             try fp.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = f.edit });
             try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
@@ -7129,7 +7158,12 @@ pub const Evaluator = struct {
         for (records) |r| {
             if (r == .sobject) {
                 if (utils.sobject_get(&r.sobject.fields, field)) |fv| {
-                    const num: ?f64 = if (fv == .double) fv.double else if (fv == .integer) @floatFromInt(fv.integer) else null;
+                    const num: ?f64 = if (fv == .double)
+                        fv.double
+                    else if (fv == .integer)
+                        @floatFromInt(fv.integer)
+                    else
+                        null;
                     if (num) |n| {
                         sum += n;
                         count += 1;
@@ -7140,7 +7174,10 @@ pub const Evaluator = struct {
             }
         }
         if (std.ascii.eqlIgnoreCase(fn_name, "SUM")) return Value{ .double = sum };
-        if (std.ascii.eqlIgnoreCase(fn_name, "AVG")) return if (count > 0) Value{ .double = sum / @as(f64, @floatFromInt(count)) } else Value{ .double = 0 };
+        if (std.ascii.eqlIgnoreCase(fn_name, "AVG")) {
+            if (count > 0) return Value{ .double = sum / @as(f64, @floatFromInt(count)) };
+            return Value{ .double = 0 };
+        }
         if (std.ascii.eqlIgnoreCase(fn_name, "MIN"))
             return if (min_val) |v| Value{ .double = v } else Value.null_val;
         if (std.ascii.eqlIgnoreCase(fn_name, "MAX"))
@@ -7262,7 +7299,10 @@ pub const Evaluator = struct {
             is_soql_whitespace(where_clause[bind_start])) : (bind_start += 1)
         {}
         var bind_end = bind_start;
-        while (bind_end < where_clause.len and (std.ascii.isAlphanumeric(where_clause[bind_end]) or where_clause[bind_end] == '_')) : (bind_end += 1) {}
+        while (bind_end < where_clause.len and
+            (std.ascii.isAlphanumeric(where_clause[bind_end]) or
+                where_clause[bind_end] == '_')) : (bind_end += 1)
+        {}
         if (bind_end == bind_start) return null;
 
         return .{
@@ -7759,7 +7799,11 @@ pub const Evaluator = struct {
             const candidate = if (std.ascii.eqlIgnoreCase(selected_field, "Id"))
                 (if (item.sobject.id) |record_id| Value{ .string = record_id } else Value.null_val)
             else
-                self.resolve_field_path_value(item.sobject, selected_field) orelse self.get_s_object_field_value_case_insensitive(item.sobject, selected_field) orelse Value.null_val;
+                self.resolve_field_path_value(item.sobject, selected_field) orelse
+                    self.get_s_object_field_value_case_insensitive(
+                        item.sobject,
+                        selected_field,
+                    ) orelse Value.null_val;
             if (utils.value_eql(field_val, candidate)) return true;
         }
         return false;
@@ -8307,7 +8351,13 @@ pub const Evaluator = struct {
         if (matched_value) |value| {
             if (value != .null_val) {
                 if (value == .string) {
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+                    var bctx = builtins.BuiltinContext{
+                        .arena = self.arena,
+                        .stdout = &self.stdout,
+                        .pending_exception = &self.pending_exception,
+                        .see_all_data = self.see_all_data,
+                        .eval = self,
+                    };
                     const display_type = builtins.get_s_object_field_display_type(
                         &bctx,
                         sob,
