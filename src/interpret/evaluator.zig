@@ -11490,6 +11490,222 @@ pub const Evaluator = struct {
         return Value{ .list = outer };
     }
 
+    /// Http / HttpRequest .send() → apply the configured mock if any. Returns
+    /// null when the call does not match (let later dispatch handle it).
+    fn eval_http_send_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        if (!std.ascii.eqlIgnoreCase(method, "send")) return null;
+        if (!(std.ascii.eqlIgnoreCase(obj.object.class_name, "Http") or
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
+        {
+            return null;
+        }
+        self.limits_callouts += 1;
+        const mock = self.callout_mock orelse return null;
+        if (mock != .object) return null;
+        const mock_class = self.find_class(mock.object.class_name) orelse return null;
+        const req_arg = if (args.len > 0) args[0] else Value.null_val;
+        return try self.call_instance_method(
+            mock_class,
+            mock.object,
+            "respond",
+            &.{req_arg},
+        );
+    }
+
+    /// Type.getName()/toString()/getSimpleName() → the stored `name` field, or null.
+    fn eval_type_reflection_method(obj: Value, method: []const u8) ?Value {
+        if (obj != .object) return null;
+        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "Type")) return null;
+        if (!(std.ascii.eqlIgnoreCase(method, "getName") or
+            std.ascii.eqlIgnoreCase(method, "toString") or
+            std.ascii.eqlIgnoreCase(method, "getSimpleName")))
+        {
+            return null;
+        }
+        if (obj.object.fields.get("name")) |n| {
+            if (n == .string) return n;
+        }
+        return Value.null_val;
+    }
+
+    /// Type.newInstance() for built-in collection (List/Map/Set) or SObject type
+    /// names. Returns null for user-defined types (handled elsewhere).
+    fn eval_type_new_instance_builtin(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "Type")) return null;
+        if (!std.ascii.eqlIgnoreCase(method, "newInstance")) return null;
+        const type_name = if (obj.object.fields.get("name")) |n|
+            (if (n == .string) n.string else "Object")
+        else
+            "Object";
+        if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
+            const map = try self.arena.create(types.MapValue);
+            map.* = .{};
+            return Value{ .map = map };
+        }
+        if (std.ascii.startsWithIgnoreCase(type_name, "List")) {
+            const list = try self.arena.create(types.ListValue);
+            list.* = .{};
+            return Value{ .list = list };
+        }
+        if (std.ascii.startsWithIgnoreCase(type_name, "Set")) {
+            const set = try self.arena.create(types.SetValue);
+            set.* = .{};
+            return Value{ .set = set };
+        }
+        if (self.is_s_object_type_name(type_name)) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = type_name };
+            return Value{ .sobject = sob };
+        }
+        return try self.instantiate_class(type_name);
+    }
+
+    /// Type.newInstance() for user-defined classes. Instantiates the class,
+    /// initialises fields, and runs the no-arg constructor if available.
+    fn eval_type_new_instance_user_class(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "Type")) return null;
+        if (!std.ascii.eqlIgnoreCase(method, "newInstance")) return null;
+        const type_name = if (obj.object.fields.get("name")) |n|
+            (if (n == .string) n.string else "Object")
+        else
+            "Object";
+        const cd = self.find_class(type_name) orelse return null;
+        const inst = try self.arena.create(types.ObjectInstance);
+        // Preserve the requested type name so qualified inner classes continue
+        // to dispatch against the intended outer class.
+        inst.* = .{ .class_name = type_name };
+        self.init_instance_fields(cd, inst) catch {};
+        if (cd.super_class) |sc| {
+            if (self.find_class(sc.name)) |parent| {
+                self.init_instance_fields(parent, inst) catch {};
+            }
+        }
+        if (self.find_method_in_hierarchy(null, cd, type_name, 0)) |ctor| {
+            const ctor_env = try self.global_env.child();
+            try ctor_env.define("this", Value{ .object = inst });
+            for (inst.fields.keys(), inst.fields.values()) |k, v| {
+                ctor_env.set(k, v) catch {
+                    try ctor_env.define(k, v);
+                };
+            }
+            _ = self.exec_block(ctor.body, ctor_env) catch {};
+            if (ctor_env.get("this")) |tv| {
+                if (tv == .object and tv.object == inst) {} else if (tv == .object) {
+                    for (tv.object.fields.keys(), tv.object.fields.values()) |k, v| {
+                        inst.fields.put(self.arena, k, v) catch {};
+                    }
+                }
+            }
+        }
+        return Value{ .object = inst };
+    }
+
+    /// Stub provider delegation: if `obj` has a `__stubProvider__` field, forward
+    /// the method call through `handleMethodCall(...)`. Default Object methods
+    /// (toString/hashCode/equals) are NOT stubbed unless the class overrides them.
+    fn eval_stub_provider_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        const provider_val = obj.object.fields.get("__stubProvider__") orelse return null;
+        if (provider_val != .object) return null;
+        const prov_class = self.find_class(provider_val.object.class_name) orelse return null;
+
+        const stub_md = if (self.find_class(obj.object.class_name)) |stub_class|
+            self.find_method_in_hierarchy_typed(null, stub_class, method, args) orelse
+                self.find_method_in_hierarchy(null, stub_class, method, args.len)
+        else
+            null;
+        const is_default_object_method =
+            (args.len == 0 and
+                (std.ascii.eqlIgnoreCase(method, "toString") or
+                    std.ascii.eqlIgnoreCase(method, "hashCode"))) or
+            (args.len == 1 and std.ascii.eqlIgnoreCase(method, "equals"));
+        if (is_default_object_method and stub_md == null) return null;
+
+        // Build args for
+        //   handleMethodCall(
+        //       stubbedObject, stubbedMethodName, returnType,
+        //       listOfParamTypes, listOfParamNames, listOfArgs)
+        const args_list = try self.arena.create(types.ListValue);
+        args_list.* = .{};
+        for (args) |a| try args_list.items.append(self.arena, a);
+
+        const type_list = try self.arena.create(types.ListValue);
+        type_list.* = .{};
+        for (args, 0..) |a, i| {
+            const type_name: []const u8 = if (stub_md) |md|
+                if (i < md.params.len)
+                    self.render_type_ref(md.params[i].type_ref)
+                else
+                    stub_provider_param_type_fallback(a)
+            else
+                stub_provider_param_type_fallback(a);
+            const type_obj = try self.arena.create(types.ObjectInstance);
+            type_obj.* = .{ .class_name = "Type" };
+            try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
+            try type_list.items.append(self.arena, Value{ .object = type_obj });
+        }
+
+        const name_list = try self.arena.create(types.ListValue);
+        name_list.* = .{};
+        if (stub_md) |md| {
+            for (md.params) |p| {
+                try name_list.items.append(self.arena, Value{ .string = p.name });
+            }
+        }
+
+        const hmc_args = [_]Value{
+            obj,
+            Value{ .string = method },
+            Value.null_val,
+            Value{ .list = type_list },
+            Value{ .list = name_list },
+            Value{ .list = args_list },
+        };
+        return try self.call_instance_method(
+            prov_class,
+            provider_val.object,
+            "handleMethodCall",
+            &hmc_args,
+        );
+    }
+
+    fn stub_provider_param_type_fallback(a: Value) []const u8 {
+        return switch (a) {
+            .string => "String",
+            .integer => "Integer",
+            .double => "Double",
+            .boolean => "Boolean",
+            .list => "List",
+            .map => "Map",
+            .set => "Set",
+            .sobject => "SObject",
+            .object => |o| o.class_name,
+            .null_val => "Object",
+            else => "Object",
+        };
+    }
+
     fn eval_instance_method(
         self: *Evaluator,
         obj: Value,
@@ -11503,216 +11719,11 @@ pub const Evaluator = struct {
         }
         if (try self.eval_search_query_method(obj, method, args)) |v| return v;
         if (try self.eval_primitive_instance_method(obj, method)) |v| return v;
-
-        // Http.send() mock interception
-        if (obj == .object and std.ascii.eqlIgnoreCase(method, "send") and
-            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Http") or
-                std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
-        {
-            self.limits_callouts += 1;
-            if (self.callout_mock) |mock| {
-                // Call mock.respond(request) method
-                if (mock == .object) {
-                    if (self.find_class(mock.object.class_name)) |mock_class| {
-                        const req_arg = if (args.len > 0) args[0] else Value.null_val;
-                        return self.call_instance_method(
-                            mock_class,
-                            mock.object,
-                            "respond",
-                            &.{req_arg},
-                        );
-                    }
-                }
-            }
-        }
-
-        // Type.getName() / Type.toString() → return the type name
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            (std.ascii.eqlIgnoreCase(method, "getName") or std.ascii.eqlIgnoreCase(method, "toString") or std.ascii.eqlIgnoreCase(method, "getSimpleName")))
-        {
-            if (obj.object.fields.get("name")) |n| {
-                if (n == .string) return n;
-            }
-            return Value.null_val;
-        }
-
-        // Type.newInstance() → use evaluator to properly instantiate classes
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            std.ascii.eqlIgnoreCase(method, "newInstance"))
-        {
-            const type_name = if (obj.object.fields.get("name")) |n|
-                (if (n == .string) n.string else "Object")
-            else
-                "Object";
-            // If the type name starts with Map/List/Set, return collection
-            if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                return Value{ .map = map };
-            }
-            if (std.ascii.startsWithIgnoreCase(type_name, "List")) {
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                return Value{ .list = list };
-            }
-            if (std.ascii.startsWithIgnoreCase(type_name, "Set")) {
-                const set = try self.arena.create(types.SetValue);
-                set.* = .{};
-                return Value{ .set = set };
-            }
-            // SObject type name → return .sobject directly
-            if (self.is_s_object_type_name(type_name)) {
-                const sob = try self.arena.create(types.SObject);
-                sob.* = .{ .type_name = type_name };
-                return Value{ .sobject = sob };
-            }
-            return self.instantiate_class(type_name);
-        }
-
-        // Stub provider delegation: if the object has __stubProvider__, delegate method calls
-        if (obj == .object) {
-            if (obj.object.fields.get("__stubProvider__")) |provider| {
-                if (provider == .object) {
-                    if (self.find_class(provider.object.class_name)) |prov_class| {
-                        const stub_md = if (self.find_class(obj.object.class_name)) |stub_class|
-                            self.find_method_in_hierarchy_typed(
-                                null,
-                                stub_class,
-                                method,
-                                args,
-                            ) orelse
-                                self.find_method_in_hierarchy(null, stub_class, method, args.len)
-                        else
-                            null;
-                        const is_default_object_method =
-                            (args.len == 0 and
-                                (std.ascii.eqlIgnoreCase(method, "toString") or
-                                    std.ascii.eqlIgnoreCase(method, "hashCode"))) or
-                            (args.len == 1 and std.ascii.eqlIgnoreCase(method, "equals"));
-
-                        if (is_default_object_method and stub_md == null) {
-                            // Test.createStub proxies should not treat inherited Object methods
-                            // as stubbed invocations unless the mocked type explicitly overrides
-                            // them.
-                        } else {
-
-                            // Build args for handleMethodCall(stubbedObject, stubbedMethodName,
-                            // returnType, listOfParamTypes, listOfParamNames, listOfArgs)
-                            const args_list = try self.arena.create(types.ListValue);
-                            args_list.* = .{};
-                            for (args) |a| try args_list.items.append(self.arena, a);
-                            // Build param types from the resolved method declaration when
-                            // available.
-                            const type_list = try self.arena.create(types.ListValue);
-                            type_list.* = .{};
-                            for (args, 0..) |a, i| {
-                                const type_name: []const u8 = if (stub_md) |md|
-                                    if (i < md.params.len)
-                                        self.render_type_ref(md.params[i].type_ref)
-                                    else switch (a) {
-                                        .string => "String",
-                                        .integer => "Integer",
-                                        .double => "Double",
-                                        .boolean => "Boolean",
-                                        .list => "List",
-                                        .map => "Map",
-                                        .set => "Set",
-                                        .sobject => "SObject",
-                                        .object => |o| o.class_name,
-                                        .null_val => "Object",
-                                        else => "Object",
-                                    }
-                                else switch (a) {
-                                    .string => "String",
-                                    .integer => "Integer",
-                                    .double => "Double",
-                                    .boolean => "Boolean",
-                                    .list => "List",
-                                    .map => "Map",
-                                    .set => "Set",
-                                    .sobject => "SObject",
-                                    .object => |o| o.class_name,
-                                    .null_val => "Object",
-                                    else => "Object",
-                                };
-                                const type_obj = try self.arena.create(types.ObjectInstance);
-                                type_obj.* = .{ .class_name = "Type" };
-                                try type_obj.fields.put(
-                                    self.arena,
-                                    "name",
-                                    Value{ .string = type_name },
-                                );
-                                try type_list.items.append(self.arena, Value{ .object = type_obj });
-                            }
-                            // Build param names from method declaration if available
-                            const name_list = try self.arena.create(types.ListValue);
-                            name_list.* = .{};
-                            if (stub_md) |md| {
-                                for (md.params) |p| {
-                                    try name_list.items.append(
-                                        self.arena,
-                                        Value{ .string = p.name },
-                                    );
-                                }
-                            }
-                            const hmc_args = [_]Value{
-                                obj,
-                                Value{ .string = method },
-                                Value.null_val,
-                                Value{ .list = type_list },
-                                Value{ .list = name_list },
-                                Value{ .list = args_list },
-                            };
-                            return self.call_instance_method(
-                                prov_class,
-                                provider.object,
-                                "handleMethodCall",
-                                &hmc_args,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Type.newInstance() → instantiate actual user-defined class if known
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            std.ascii.eqlIgnoreCase(method, "newInstance"))
-        {
-            const type_name = if (obj.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object";
-            if (self.find_class(type_name)) |cd| {
-                const inst = try self.arena.create(types.ObjectInstance);
-                // Preserve the requested type name so qualified inner classes
-                // continue to dispatch against the intended outer class.
-                inst.* = .{ .class_name = type_name };
-                self.init_instance_fields(cd, inst) catch {};
-                if (cd.super_class) |sc| {
-                    if (self.find_class(sc.name)) |parent| {
-                        self.init_instance_fields(parent, inst) catch {};
-                    }
-                }
-                // Run constructor with no args if exists
-                if (self.find_method_in_hierarchy(null, cd, type_name, 0)) |ctor| {
-                    const ctor_env = try self.global_env.child();
-                    try ctor_env.define("this", Value{ .object = inst });
-                    for (inst.fields.keys(), inst.fields.values()) |k, v| {
-                        ctor_env.set(k, v) catch {
-                            try ctor_env.define(k, v);
-                        };
-                    }
-                    _ = self.exec_block(ctor.body, ctor_env) catch {};
-                    // Sync back fields
-                    if (ctor_env.get("this")) |tv| {
-                        if (tv == .object and tv.object == inst) {} else if (tv == .object) {
-                            for (tv.object.fields.keys(), tv.object.fields.values()) |k, v| {
-                                inst.fields.put(self.arena, k, v) catch {};
-                            }
-                        }
-                    }
-                }
-                return Value{ .object = inst };
-            }
-        }
+        if (try self.eval_http_send_method(obj, method, args)) |v| return v;
+        if (eval_type_reflection_method(obj, method)) |v| return v;
+        if (try self.eval_type_new_instance_builtin(obj, method)) |v| return v;
+        if (try self.eval_stub_provider_method(obj, method, args)) |v| return v;
+        if (try self.eval_type_new_instance_user_class(obj, method)) |v| return v;
 
         // JSONParser methods: nextToken, getCurrentToken, getCurrentName, getText, readValueAs
         if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser")) {
