@@ -15098,46 +15098,58 @@ pub const Evaluator = struct {
         var best: ?*ast.MethodDecl = null;
         var best_score: i32 = -1;
         for (candidates[0..count]) |md| {
-            var score: i32 = 0;
-            for (md.params, 0..) |param, i| {
-                if (i >= args.len) break;
-                const pt = param.type_ref.name;
-                const arg = args[i];
-                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                if (arg_hint) |hint| {
-                    const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
-                    if (hint_score > 0) {
-                        score += hint_score;
-                        if (arg == .null_val) continue;
-                    }
-                }
-                // Score: higher is better match (with special cases for collection mismatches)
-                if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
-                    // SObject passed where List expected = poor match
-                    score -= 1;
-                } else if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
-                    // List passed where non-List expected = poor match
-                    score -= 1;
-                } else {
-                    var arg_score = overload_score_for_arg(arg, pt);
-                    if (arg_score == 0 and arg == .object) {
-                        if (self.is_subclass_of(arg.object.class_name, pt)) {
-                            arg_score = 2;
-                        }
-                    }
-                    // List generic element type check
-                    if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
-                        arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
-                    }
-                    score += arg_score;
-                }
-            }
+            const score = self.score_overload_candidate(md, args, arg_type_hints);
             if (best == null or score > best_score) {
                 best = md;
                 best_score = score;
             }
         }
         return best orelse candidates[0];
+    }
+
+    /// `find_best_method_in_class` の内側ループを抽出したスコアリング helper。
+    /// 1 つのオーバーロード候補について、引数列との型互換性スコアを返す。
+    fn score_overload_candidate(
+        self: *Evaluator,
+        md: *ast.MethodDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+    ) i32 {
+        var score: i32 = 0;
+        for (md.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const pt = param.type_ref.name;
+            const arg = args[i];
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+            if (arg_hint) |hint| {
+                const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
+                if (hint_score > 0) {
+                    score += hint_score;
+                    if (arg == .null_val) continue;
+                }
+            }
+            // Score: higher is better match (with special cases for collection mismatches)
+            if (arg == .sobject and std.ascii.eqlIgnoreCase(pt, "List")) {
+                // SObject passed where List expected = poor match
+                score -= 1;
+            } else if (arg == .list and !std.ascii.eqlIgnoreCase(pt, "List")) {
+                // List passed where non-List expected = poor match
+                score -= 1;
+            } else {
+                var arg_score = overload_score_for_arg(arg, pt);
+                if (arg_score == 0 and arg == .object) {
+                    if (self.is_subclass_of(arg.object.class_name, pt)) {
+                        arg_score = 2;
+                    }
+                }
+                // List generic element type check
+                if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
+                    arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+                }
+                score += arg_score;
+            }
+        }
+        return score;
     }
 
     fn find_compatible_method_in_class(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
@@ -15888,44 +15900,7 @@ pub const Evaluator = struct {
         switch (exception_value) {
             .object => |obj| {
                 message_value = obj.fields.get("message") orelse Value.null_val;
-                exception_type = obj.class_name;
-                if (std.mem.indexOfScalar(u8, exception_type, '.') == null) {
-                    const builtin_exception_types = [_][]const u8{
-                        "Exception",
-                        "DMLException",
-                        "DmlException",
-                        "NullPointerException",
-                        "TypeException",
-                        "QueryException",
-                        "JSONException",
-                        "ListException",
-                        "MathException",
-                        "SecurityException",
-                        "NoAccessException",
-                        "InvalidParameterValueException",
-                        "CalloutException",
-                        "StringException",
-                        "NoSuchElementException",
-                        "NoDataFoundException",
-                        "SearchException",
-                        "SObjectException",
-                        "HandledException",
-                        "IllegalArgumentException",
-                        "LimitException",
-                        "AsyncException",
-                        "SerializationException",
-                        "FlowException",
-                        "FinalException",
-                        "UnsupportedOperationException",
-                        "EventBusException",
-                    };
-                    inline for (builtin_exception_types) |builtin_exception_type| {
-                        if (std.ascii.eqlIgnoreCase(exception_type, builtin_exception_type)) {
-                            exception_type = try std.fmt.allocPrint(self.arena, "System.{s}", .{builtin_exception_type});
-                            break;
-                        }
-                    }
-                }
+                exception_type = try self.qualify_builtin_exception_type(obj.class_name);
                 if (obj.fields.get("stackTraceString")) |stack_val| {
                     if (stack_val == .string and stack_val.string.len > 0) stack_trace = stack_val.string;
                 }
@@ -15941,6 +15916,50 @@ pub const Evaluator = struct {
         try evt.fields.put(self.arena, "Message", message_value);
         try evt.fields.put(self.arena, "StackTrace", Value{ .string = stack_trace });
         _ = self.call_method("EventBus", "publish", &.{Value{ .sobject = evt }}) catch {};
+    }
+
+    /// Apex の非限定例外クラス名 (`DmlException`, `NullPointerException` ...)
+    /// が渡されたら `System.<name>` に upgrade して返す。既に `.` を含んで
+    /// いる、あるいは列挙に含まれない名前はそのまま返す。
+    /// `publish_batch_apex_error_event` と同等の exception 名正規化を他でも
+    /// 使えるよう切り出した。
+    fn qualify_builtin_exception_type(self: *Evaluator, type_name: []const u8) ![]const u8 {
+        if (std.mem.indexOfScalar(u8, type_name, '.') != null) return type_name;
+        const builtin_exception_types = [_][]const u8{
+            "Exception",
+            "DMLException",
+            "DmlException",
+            "NullPointerException",
+            "TypeException",
+            "QueryException",
+            "JSONException",
+            "ListException",
+            "MathException",
+            "SecurityException",
+            "NoAccessException",
+            "InvalidParameterValueException",
+            "CalloutException",
+            "StringException",
+            "NoSuchElementException",
+            "NoDataFoundException",
+            "SearchException",
+            "SObjectException",
+            "HandledException",
+            "IllegalArgumentException",
+            "LimitException",
+            "AsyncException",
+            "SerializationException",
+            "FlowException",
+            "FinalException",
+            "UnsupportedOperationException",
+            "EventBusException",
+        };
+        inline for (builtin_exception_types) |builtin_exception_type| {
+            if (std.ascii.eqlIgnoreCase(type_name, builtin_exception_type)) {
+                return try std.fmt.allocPrint(self.arena, "System.{s}", .{builtin_exception_type});
+            }
+        }
+        return type_name;
     }
 
     fn invoke_attached_finalizer(self: *Evaluator, job_id: []const u8, exception_value: ?Value) !void {

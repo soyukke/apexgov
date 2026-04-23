@@ -7,10 +7,10 @@
 #
 # Format: <path>\t<rule>\t<count>
 src/interpret/builtins.zig	line_too_long	642
-src/interpret/builtins.zig	function_too_long	19
+src/interpret/builtins.zig	function_too_long	17
 src/interpret/env.zig	line_too_long	1
-src/interpret/evaluator.zig	line_too_long	1387
-src/interpret/evaluator.zig	function_too_long	44
+src/interpret/evaluator.zig	line_too_long	1386
+src/interpret/evaluator.zig	function_too_long	42
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/root.zig	line_too_long	293

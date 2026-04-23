@@ -1260,22 +1260,7 @@ fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance,
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "writeFieldName")) {
-        if (args.len == 0 or args[0] == .null_val) {
-            _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
-            return error.ApexException;
-        }
-        if (!std.ascii.eqlIgnoreCase(json_generator_current_context_type(obj) orelse "", "object") or json_generator_is_expecting_value(obj)) {
-            _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
-            return error.ApexException;
-        }
-        const count = json_generator_current_count(obj);
-        if (count > 0) try json_generator_append(ctx, obj, ",");
-        const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
-        try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
-        try json_generator_append(ctx, obj, ":");
-        try json_generator_set_current_count(ctx, obj, count + 1);
-        try json_generator_set_expecting_value(ctx, obj, true);
-        return Value.void_val;
+        return json_gen_write_field_name(ctx, obj, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "writeString")) {
         if (args.len == 0) return Value.void_val;
@@ -1304,6 +1289,28 @@ fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance,
         return Value.void_val;
     }
     return null;
+}
+
+/// `JSON.Generator.writeFieldName(name)` 本体。オブジェクトコンテキスト
+/// かつ直前が field:value 直後であることをチェックし、区切り `,` と
+/// 改行済み `"name":` を emit する。
+fn json_gen_write_field_name(ctx: *BuiltinContext, obj: *types.ObjectInstance, args: []const Value) !?Value {
+    if (args.len == 0 or args[0] == .null_val) {
+        _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+        return error.ApexException;
+    }
+    if (!std.ascii.eqlIgnoreCase(json_generator_current_context_type(obj) orelse "", "object") or json_generator_is_expecting_value(obj)) {
+        _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+        return error.ApexException;
+    }
+    const count = json_generator_current_count(obj);
+    if (count > 0) try json_generator_append(ctx, obj, ",");
+    const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
+    try json_generator_append(ctx, obj, ":");
+    try json_generator_set_current_count(ctx, obj, count + 1);
+    try json_generator_set_expecting_value(ctx, obj, true);
+    return Value.void_val;
 }
 
 fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Value {
@@ -4288,34 +4295,39 @@ fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
         return Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
-        const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
-        const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
-        if (pattern_value != .string or input_value != .string) return Value{ .boolean = false };
-        // Apex's Matcher.matches() not only returns true/false but also positions the matcher
-        // so that `group(n)` reports captures for the whole-input match. Pre-built matches
-        // always start at position 0; we expose the first whole-input match as `currentMatch`
-        // and reset `pos` so subsequent `find()` calls are consistent with Java semantics.
-        const whole_match = try regex.matches(ctx.arena, pattern_value.string, input_value.string);
-        if (!whole_match) return Value{ .boolean = false };
-        if (obj.fields.get("matches")) |existing| {
-            if (existing == .list and existing.list.items.items.len > 0) {
-                for (existing.list.items.items) |candidate| {
-                    if (candidate != .object) continue;
-                    if (candidate.object.fields.get("groups")) |groups| {
-                        if (groups != .list or groups.list.items.items.len == 0) continue;
-                        const whole = groups.list.items.items[0];
-                        if (whole == .string and std.mem.eql(u8, whole.string, input_value.string)) {
-                            try obj.fields.put(ctx.arena, "currentMatch", candidate);
-                            try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
-                            return Value{ .boolean = true };
-                        }
+        return matcher_matches(ctx, obj);
+    }
+    return null;
+}
+
+/// `Matcher.matches()` 本体。Apex 仕様に従い、pattern 全体が input に
+/// マッチするかを返しつつ、後続の `group(n)` / `find()` が参照できるよう
+/// `currentMatch` と `pos` を更新する。
+/// 戻り値は caller (`dispatch_obj_matcher`) が `!?Value` を返すので
+/// それに合わせて `!?Value`。
+fn matcher_matches(ctx: *BuiltinContext, obj: *types.ObjectInstance) !?Value {
+    const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
+    const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
+    if (pattern_value != .string or input_value != .string) return Value{ .boolean = false };
+    const whole_match = try regex.matches(ctx.arena, pattern_value.string, input_value.string);
+    if (!whole_match) return Value{ .boolean = false };
+    if (obj.fields.get("matches")) |existing| {
+        if (existing == .list and existing.list.items.items.len > 0) {
+            for (existing.list.items.items) |candidate| {
+                if (candidate != .object) continue;
+                if (candidate.object.fields.get("groups")) |groups| {
+                    if (groups != .list or groups.list.items.items.len == 0) continue;
+                    const whole = groups.list.items.items[0];
+                    if (whole == .string and std.mem.eql(u8, whole.string, input_value.string)) {
+                        try obj.fields.put(ctx.arena, "currentMatch", candidate);
+                        try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
+                        return Value{ .boolean = true };
                     }
                 }
             }
         }
-        return Value{ .boolean = true };
     }
-    return null;
+    return Value{ .boolean = true };
 }
 
 fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
