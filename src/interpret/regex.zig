@@ -296,7 +296,8 @@ fn match_at(
                         continue;
                     }
                     if (pat[gi] == '(') {
-                        // Skip non-capturing groups (?...) and lookahead/lookbehind for index counting
+                        // Skip non-capturing groups (?...) and lookahead/lookbehind for index
+                        // counting
                         if (gi + 2 < pat.len and pat[gi + 1] == '?' and (pat[gi + 2] == '=' or pat[gi + 2] == '!' or pat[gi + 2] == ':' or pat[gi + 2] == '<')) continue;
                         idx += 1;
                     }

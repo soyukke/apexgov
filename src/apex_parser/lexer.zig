@@ -134,7 +134,8 @@ const Lexer = struct {
     }
 
     fn peek_soql(self: *Lexer) bool {
-        // Check if [ is followed by SELECT (case-insensitive), skipping whitespace including newlines
+        // Check if [ is followed by SELECT (case-insensitive), skipping whitespace including
+        // newlines
         var i = self.pos + 1;
         while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t' or self.source[i] == '\n' or self.source[i] == '\r')) : (i += 1) {}
         if (i + 6 > self.source.len) return false;

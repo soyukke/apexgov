@@ -1201,7 +1201,8 @@ fn dispatch_static_json(
                                     pos = arr_pos;
                                     continue;
                                 } else if (json_str[val_start] == '{') {
-                                    // Nested object — find matching closing brace and recursively deserialize
+                                    // Nested object — find matching closing brace and recursively
+                                    // deserialize
                                     var obj_depth: i32 = 1;
                                     var obj_pos: usize = val_start + 1;
                                     while (obj_pos < json_str.len and obj_depth > 0) : (obj_pos += 1) {
@@ -3368,7 +3369,8 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
 
     // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
-    // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
+    // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via
+    // <customSettingsType>.
     // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
     const is_custom_setting = std.mem.endsWith(
         u8,
@@ -6415,7 +6417,8 @@ fn field_permission_matches(
     return true;
 }
 
-/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
+/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions
+/// store.
 /// Returns null when no matching FieldPermissions record exists for the current user context.
 fn check_field_permission(
     eval: *evaluator_mod.Evaluator,
@@ -7172,7 +7175,8 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
     return buf.items;
 }
 
-/// Handle DataWeave logFilter / filterWinners: filter JSON array keeping only items where isWinner == true.
+/// Handle DataWeave logFilter / filterWinners: filter JSON array keeping only items where isWinner
+/// == true.
 fn handle_log_filter(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     // Extract the payload string from the input map
     const payload_str = blk: {
@@ -7226,7 +7230,8 @@ fn handle_log_filter(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     return buf.items;
 }
 
-/// Handle DataWeave multipleInputs: filter books by publishedAfter year and convert to XML with exchange rates.
+/// Handle DataWeave multipleInputs: filter books by publishedAfter year and convert to XML with
+/// exchange rates.
 fn handle_multiple_inputs(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     _ = args;
     // The test asserts:
@@ -7325,7 +7330,8 @@ test "String.length instance method" {
 }
 
 /// SFDX メタデータ XML からピックリスト値を読み取る。
-/// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
+/// source_paths (e.g. ".../main/default/classes") から
+/// "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
 fn append_picklist_entry(
     ctx: *BuiltinContext,
     list: *types.ListValue,

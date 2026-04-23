@@ -1695,7 +1695,8 @@ const Parser = struct {
                 }
             }
             if (self.check(.semicolon) or self.check(.rparen)) return false;
-            // comma at depth 0 means we're not in generics; inside <...> commas are param separators
+            // comma at depth 0 means we're not in generics; inside <...> commas are param
+            // separators
             if (self.check(.comma) and depth == 0) return false;
             self.pos += 1;
         }
