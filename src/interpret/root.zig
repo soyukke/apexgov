@@ -8803,7 +8803,8 @@ test "E2E: constructed DmlException stack trace ends at anonymous block" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\nAnonymousBlock: line 1, column 1",
+        "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\n" ++
+            "AnonymousBlock: line 1, column 1",
         result.value.string,
     );
 }
@@ -8835,7 +8836,9 @@ test "E2E: constructor-built DmlException stack trace keeps only immediate calle
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\nClass.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\nAnonymousBlock: line 1, column 1",
+        "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\n" ++
+            "Class.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\n" ++
+            "AnonymousBlock: line 1, column 1",
         result.value.string,
     );
 }
@@ -8844,7 +8847,8 @@ test "E2E: replace_all can collapse ignored constructed stack trace frames to em
     const source =
         \\public class StackTraceCleanupProbe {
         \\    public static String test() {
-        \\        return new DmlException().getStackTraceString().replace_all('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
+        \\        String raw = new DmlException().getStackTraceString();
+        \\        return raw.replace_all('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
         \\    }
         \\}
     ;
@@ -9112,7 +9116,9 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         \\    }
         \\    public static String test() {
         \\        Map<String, FieldSchema> fields = new Map<String, FieldSchema>();
-        \\        for (Schema.SObjectField field : Schema.User.SObjectType.getDescribe().fields.getMap().values()) {
+        \\        Map<String, Schema.SObjectField> user_fields =
+        \\            Schema.User.SObjectType.getDescribe().fields.getMap();
+        \\        for (Schema.SObjectField field : user_fields.values()) {
         \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
         \\            FieldSchema schema = new FieldSchema();
         \\            schema.localApiName = fieldDescribe.getLocalName();
@@ -9156,7 +9162,8 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
     const source =
         \\public class EmailMessageDescribeFieldTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> fields = Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
         \\        return String.valueOf(fields.containsKey('Subject')) + ':' +
         \\ String.valueOf(Schema.EmailMessage.Subject.getDescribe().isNameField());
         \\    }
@@ -9177,7 +9184,9 @@ test "E2E: implicit standard Name fields are treated as required" {
         \\    public static String test() {
         \\        List<String> requiredFields = new List<String>();
         \\        SObject record = Schema.Campaign.SObjectType.newSObject(null, true);
-        \\        for (Schema.SObjectField field : Schema.Campaign.SObjectType.getDescribe().fields.getMap().values()) {
+        \\        Map<String, Schema.SObjectField> camp_fields =
+        \\            Schema.Campaign.SObjectType.getDescribe().fields.getMap();
+        \\        for (Schema.SObjectField field : camp_fields.values()) {
         \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
         \\            if (fieldDescribe.isCreateable() && !fieldDescribe.isNillable()) {
         \\                requiredFields.add(fieldDescribe.getName());
@@ -9236,7 +9245,8 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
         \\    public static String test() {
         \\        Map<String,
         \\ Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
-        \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
+        \\        Map<String, Schema.FieldSet> byDescribe =
+        \\            Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
         \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
         \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
         \\        List<Schema.FieldSetMember> members = fieldSet.get_fields();
@@ -9540,7 +9550,8 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     const source =
         \\public class ThingPicklist extends VisualEditor.DynamicPickList {
         \\    public override VisualEditor.DataRow getDefaultValue() {
-        \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c.fieldSets.getMap().get('Related_List_Defaults');
+        \\        Map<String, Schema.FieldSet> thing_fs = Schema.SObjectType.Thing__c.fieldSets.getMap();
+        \\        Schema.FieldSet fieldSet = thing_fs.get('Related_List_Defaults');
         \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(),
         \\ fieldSet.getName());
         \\    }
@@ -9615,7 +9626,9 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     const source =
         \\public class FieldSetLookupMetadataTest {
         \\    public static String test() {
-        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults').get_fields().get(0);
+        \\        Schema.FieldSet fs =
+        \\            Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults');
+        \\        Schema.FieldSetMember member = fs.get_fields().get(0);
         \\        Schema.DescribeFieldResult describe = member.getSObjectField().getDescribe();
         \\        return member.getLabel()
         \\            + ':' + describe.getLabel()
@@ -9725,7 +9738,9 @@ test "E2E: field set queries do not mark null summary fields as populated" {
         \\            '(SELECT Id FROM ThingEntries__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
+        \\        Schema.FieldSet nf_set =
+        \\            Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults');
+        \\        for (Schema.FieldSetMember member : nf_set.get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
         \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
@@ -9781,7 +9796,9 @@ test "E2E: field set queries materialize formula fields built from rollup counts
         \\            '(SELECT Id FROM Children__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
+        \\        Schema.FieldSet pf_set =
+        \\            Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults');
+        \\        for (Schema.FieldSetMember member : pf_set.get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
         \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
@@ -9813,7 +9830,8 @@ test "E2E: List<SObject> preserves token-based field access for Apex metadata re
         \\        List<SObject> metadataRecords = typedRecords;
         \\        SObject metadataRecord = metadataRecords.get(0);
         \\        String body = (String) metadataRecord.get(Schema.ApexClass.Body);
-        \\        Boolean modified = ((Datetime) metadataRecord.get(Schema.ApexClass.LastModifiedDate)) > Datetime.newInstance(2026, 3, 1, 0, 0, 0);
+        \\        Datetime lmd = (Datetime) metadataRecord.get(Schema.ApexClass.LastModifiedDate);
+        \\        Boolean modified = lmd > Datetime.newInstance(2026, 3, 1, 0, 0, 0);
         \\        return body + ':' + String.valueOf(modified);
         \\    }
         \\}
@@ -9886,7 +9904,8 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
         \\        Map<String, Object> fields = (Map<String,
         \\ Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        String json_str = JSON.serialize(fields);
+        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(json_str, SObject.class);
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ castedRecord };
         \\        List<SObject> genericRecords = typedRecords;
         \\        return String.valueOf(castedRecord.getSObjectType()) + ':' +
