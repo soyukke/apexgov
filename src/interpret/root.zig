@@ -95,6 +95,17 @@ pub const TestSuiteResult = struct {
     failed: u32 = 0,
     errors: u32 = 0,
     results: std.ArrayListUnmanaged(TestResult) = .empty,
+    /// `results` 配列の各 `class_name` / `method_name` / `failure_message` は
+    /// この arena 上に allocate される。`runTestsFiltered` が自身の parse_arena を
+    /// move してここに保持するので、caller は受け取ったあと `deinit()` を呼ぶ必要がある。
+    /// 空の `TestSuiteResult{}` を自前で作った場合は null のままでよい。
+    arena: ?std.heap.ArenaAllocator = null,
+
+    /// arena を解放する。`arena == null` の場合は no-op。
+    pub fn deinit(self: *TestSuiteResult) void {
+        if (self.arena) |*a| a.deinit();
+        self.arena = null;
+    }
 };
 
 const SourceFile = struct { path: []const u8, content: []const u8 };
@@ -235,9 +246,12 @@ fn runTestsFiltered(
     filter_method: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）
+    // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）。
+    // 返値 `TestSuiteResult` の `results` 内の class_name / method_name /
+    // failure_message はすべてこの arena 上に乗るため、正常終了時は arena の
+    // 所有権を `suite.arena` に move する（caller が `suite.deinit()` で解放する）。
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
-    defer parse_arena.deinit();
+    errdefer parse_arena.deinit();
 
     const parse_alloc = parse_arena.allocator();
 
@@ -484,6 +498,8 @@ fn runTestsFiltered(
 
     suite.failed += suite.errors;
     try writer.print("\n--- Results: {d} total, {d} passed, {d} failed ---\n", .{ suite.total, suite.passed, suite.total - suite.passed });
+    // 所有権 move: ここまでくれば caller が deinit で arena を解放する。
+    suite.arena = parse_arena;
     return suite;
 }
 
@@ -6151,7 +6167,9 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
 
     var _null_buf: [256]u8 = undefined;
     var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
-    const suite = try runTestSuite(alloc, std.testing.io, &.{tmp_path}, &_null_writer.writer);
+    var suite = try runTestSuite(alloc, std.testing.io, &.{tmp_path}, &_null_writer.writer);
+    defer suite.deinit();
+
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
     try std.testing.expectEqual(@as(u32, 0), suite.failed);
@@ -8038,7 +8056,9 @@ test "runTestSuite keeps repo-root metadata loading scoped to the requested repo
 
     var _null_buf: [256]u8 = undefined;
     var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
-    const suite = try runTestSuite(alloc, std.testing.io, &.{repo_a_path}, &_null_writer.writer);
+    var suite = try runTestSuite(alloc, std.testing.io, &.{repo_a_path}, &_null_writer.writer);
+    defer suite.deinit();
+
     try std.testing.expectEqual(@as(usize, 1), suite.total);
     try std.testing.expectEqual(@as(usize, 1), suite.passed);
 }
@@ -12286,7 +12306,7 @@ test "E2E: fixture flow definition view selector test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12294,6 +12314,7 @@ test "E2E: fixture flow definition view selector test passes" {
         "it_returns_matching_flow_definition_view_for_specified_flow_api_name",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12306,7 +12327,7 @@ test "E2E: fixture cached organization selector test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12314,6 +12335,7 @@ test "E2E: fixture cached organization selector test passes" {
         "it_returns_cached_organization",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12353,7 +12375,7 @@ test "E2E: fixture field mapping integration test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12361,6 +12383,7 @@ test "E2E: fixture field mapping integration test passes" {
         "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry_when_mappings_have_been_configured",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12373,7 +12396,7 @@ test "E2E: fixture transaction limits builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12381,6 +12404,7 @@ test "E2E: fixture transaction limits builder test passes" {
         "it_should_set_transaction_limits_fields_when_enabled_via_logger_parameter",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12393,7 +12417,7 @@ test "E2E: fixture auth session builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12401,6 +12425,7 @@ test "E2E: fixture auth session builder test passes" {
         "it_should_run_authSession_query_when_enabled_via_logger_parameter",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12413,7 +12438,7 @@ test "E2E: fixture organization builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12421,6 +12446,7 @@ test "E2E: fixture organization builder test passes" {
         "it_should_run_organization_query_when_enabled_via_logger_parameter",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12433,7 +12459,7 @@ test "E2E: fixture user builder test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12441,6 +12467,7 @@ test "E2E: fixture user builder test passes" {
         "it_should_run_user_query_when_enabled_via_logger_parameter",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12571,7 +12598,7 @@ test "E2E: fixture duplicate scenario guard test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12579,6 +12606,7 @@ test "E2E: fixture duplicate scenario guard test passes" {
         "it_should_not_allow_duplicate_scenario_to_be_inserted",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12591,7 +12619,7 @@ test "E2E: fixture tag creation test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12599,6 +12627,7 @@ test "E2E: fixture tag creation test passes" {
         "it_should_create_tag_records_when_tagging_is_enabled",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12611,7 +12640,7 @@ test "E2E: fixture tag reuse test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12619,6 +12648,7 @@ test "E2E: fixture tag reuse test passes" {
         "it_should_reuse_existing_tag_records",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -12631,7 +12661,7 @@ test "E2E: fixture event-uuid upsert test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -12639,6 +12669,7 @@ test "E2E: fixture event-uuid upsert test passes" {
         "it_should_upsert_log_entries_when_event_uuid_is_populated",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13108,7 +13139,7 @@ test "E2E: fixture anonymous-mode-disabled user fields test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13116,6 +13147,7 @@ test "E2E: fixture anonymous-mode-disabled user fields test passes" {
         "it_should_set_user_fields_when_anonymous_mode_disabled",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13128,7 +13160,7 @@ test "E2E: fixture standard-object recordId test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13136,6 +13168,7 @@ test "E2E: fixture standard-object recordId test passes" {
         "it_should_set_record_fields_for_recordId_when_template_standard_object",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13148,7 +13181,7 @@ test "E2E: fixture custom-object recordId test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13156,6 +13189,7 @@ test "E2E: fixture custom-object recordId test passes" {
         "it_should_set_record_fields_for_recordId_when_custom_object",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13168,7 +13202,7 @@ test "E2E: fixture null record overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13176,6 +13210,7 @@ test "E2E: fixture null record overload test passes" {
         "it_should_set_record_fields_for_record_when_null",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13188,7 +13223,7 @@ test "E2E: fixture null list overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13196,6 +13231,7 @@ test "E2E: fixture null list overload test passes" {
         "it_should_set_record_fields_for_list_of_records_when_list_is_null",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13208,7 +13244,7 @@ test "E2E: fixture null map overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13216,6 +13252,7 @@ test "E2E: fixture null map overload test passes" {
         "it_should_set_record_fields_for_map_of_sobject_records_when_map_is_null",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);
@@ -13228,7 +13265,7 @@ test "E2E: fixture null iterable overload test passes" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
-    const suite = try runSingleTest(
+    var suite = try runSingleTest(
         std.testing.allocator,
         std.testing.io,
         fixture_paths.slice(),
@@ -13236,6 +13273,7 @@ test "E2E: fixture null iterable overload test passes" {
         "it_should_set_record_fields_for_iterable_ids_when_null",
         &out.writer,
     );
+    defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
     try std.testing.expectEqual(@as(u32, 1), suite.passed);

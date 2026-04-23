@@ -494,7 +494,9 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
     var stderr_writer = Io.File.stderr().writer(io, &write_buffer);
     const writer = &stderr_writer.interface;
 
-    const suite = try apexgov.interpret.run_test_suite(gpa, io, paths.items, writer);
+    var suite = try apexgov.interpret.run_test_suite(gpa, io, paths.items, writer);
+    defer suite.deinit();
+
     try writer.flush();
 
     return if (suite.total > 0 and suite.passed == suite.total) 0 else 1;
