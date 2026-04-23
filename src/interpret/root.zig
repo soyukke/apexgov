@@ -41,20 +41,20 @@ pub const Result = struct {
 };
 
 /// Apex ソースコードを解釈実行する。
-pub fn run(gpa: std.mem.Allocator, source: []const u8, opts: Options) !Result {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options) !Result {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
     const tokens = try lexer.tokenize(source, arena.allocator());
     const decls = try parser.parse(tokens, arena.allocator());
 
-    var eval = try evaluator.Evaluator.init(arena.allocator());
+    var eval = try evaluator.Evaluator.init(arena.allocator(), io);
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            collectFieldDefaults(arena.allocator(), path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-            collectFieldSets(arena.allocator(), path, &eval.field_sets) catch {};
-            collectCustomSettingTypes(arena.allocator(), path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+            collectFieldDefaults(arena.allocator(), io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collectFieldSets(arena.allocator(), io, path, &eval.field_sets) catch {};
+            collectCustomSettingTypes(arena.allocator(), io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
         }
     }
     try eval.loadDecls(decls);
@@ -103,12 +103,12 @@ const SampleAppFixturePaths = struct {
     arena: std.heap.ArenaAllocator,
     paths: []const []const u8,
 
-    fn init(gpa: std.mem.Allocator) !SampleAppFixturePaths {
+    fn init(gpa: std.mem.Allocator, io: std.Io) !SampleAppFixturePaths {
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const alloc = arena.allocator();
         if (!try fixtureTestsEnabled(alloc)) return error.SkipZigTest;
-        const fixture_path = try findSampleAppFixturePath(alloc);
+        const fixture_path = try findSampleAppFixturePath(alloc, io);
         const paths = try alloc.alloc([]const u8, 1);
         paths[0] = fixture_path;
         return .{ .arena = arena, .paths = paths };
@@ -135,7 +135,7 @@ fn fixtureTestsEnabled(alloc: std.mem.Allocator) !bool {
     return true;
 }
 
-fn isSampleAppFixturePath(alloc: std.mem.Allocator, base_path: []const u8) bool {
+fn isSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io, base_path: []const u8) bool {
     const markers = [_][]const u8{
         "core/tests/logger-engine/classes/LogEntryEventBuilder_Tests.cls",
         "core/tests/logger-engine/classes/LoggerEngineDataSelector_Tests.cls",
@@ -144,34 +144,34 @@ fn isSampleAppFixturePath(alloc: std.mem.Allocator, base_path: []const u8) bool 
     for (markers) |marker| {
         const full_path = std.fs.path.join(alloc, &.{ base_path, marker }) catch continue;
         defer alloc.free(full_path);
-        std.fs.cwd().access(full_path, .{}) catch continue;
+        std.Io.Dir.cwd().access(io, full_path, .{}) catch continue;
         return true;
     }
     return false;
 }
 
-fn findSampleAppFixturePath(alloc: std.mem.Allocator) ![]const u8 {
+fn findSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io) ![]const u8 {
     const fixture_root = ".local-fixtures/apex/repos";
-    var root_dir = try std.fs.cwd().openDir(fixture_root, .{ .iterate = true });
-    defer root_dir.close();
+    var root_dir = try std.Io.Dir.cwd().openDir(io, fixture_root, .{ .iterate = true });
+    defer root_dir.close(io);
 
     var root_iter = root_dir.iterate();
-    while (try root_iter.next()) |entry| {
+    while (try root_iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         const repo_path = try std.fs.path.join(alloc, &.{ fixture_root, entry.name });
-        if (isSampleAppFixturePath(alloc, repo_path)) return repo_path;
+        if (isSampleAppFixturePath(alloc, io, repo_path)) return repo_path;
 
-        var repo_dir = std.fs.cwd().openDir(repo_path, .{ .iterate = true }) catch {
+        var repo_dir = std.Io.Dir.cwd().openDir(io, repo_path, .{ .iterate = true }) catch {
             alloc.free(repo_path);
             continue;
         };
-        defer repo_dir.close();
+        defer repo_dir.close(io);
 
         var repo_iter = repo_dir.iterate();
-        while (try repo_iter.next()) |child_entry| {
+        while (try repo_iter.next(io)) |child_entry| {
             if (child_entry.kind != .directory) continue;
             const child_path = try std.fs.path.join(alloc, &.{ repo_path, child_entry.name });
-            if (isSampleAppFixturePath(alloc, child_path)) {
+            if (isSampleAppFixturePath(alloc, io, child_path)) {
                 alloc.free(repo_path);
                 return child_path;
             }
@@ -224,7 +224,7 @@ fn runTestsFiltered(
     try writer.print("interpret: loaded {d} Apex source file(s)\n", .{files.items.len});
 
     // 2. 全ファイルをパース（永続アリーナ上）
-    var eval = try evaluator.Evaluator.init(parse_alloc);
+    var eval = try evaluator.Evaluator.init(parse_alloc, io);
     eval.source_paths = paths;
     var parse_errors: u32 = 0;
 
@@ -261,17 +261,17 @@ fn runTestsFiltered(
     // from the provided directory is sufficient and avoids pulling sibling repo
     // metadata from shared fixture parents like `.local-fixtures/apex/repos`.
     for (paths) |path| {
-        collectFieldDefaults(parse_alloc, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-        collectFieldSets(parse_alloc, path, &eval.field_sets) catch {};
-        collectCustomSettingTypes(parse_alloc, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+        collectFieldDefaults(parse_alloc, io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+        collectFieldSets(parse_alloc, io, path, &eval.field_sets) catch {};
+        collectCustomSettingTypes(parse_alloc, io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
         if (shouldSearchMetadataParents(path)) {
             var parent = std.fs.path.dirname(path);
             var depth: u8 = 0;
             while (parent != null and depth < 3) : (depth += 1) {
                 const p = parent.?;
-                collectFieldDefaults(parse_alloc, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-                collectFieldSets(parse_alloc, p, &eval.field_sets) catch {};
-                collectCustomSettingTypes(parse_alloc, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+                collectFieldDefaults(parse_alloc, io, p, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+                collectFieldSets(parse_alloc, io, p, &eval.field_sets) catch {};
+                collectCustomSettingTypes(parse_alloc, io, p, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
                 parent = std.fs.path.dirname(p);
             }
         }
@@ -352,7 +352,7 @@ fn runTestsFiltered(
                     // テストアリーナをリセットしてメモリを回収し、新しい evaluator を作成
                     _ = test_arena.reset(.retain_capacity);
                     const test_alloc = test_arena.allocator();
-                    var test_eval = evaluator.Evaluator.init(test_alloc) catch continue;
+                    var test_eval = evaluator.Evaluator.init(test_alloc, io) catch continue;
                     // 永続側のクラス・トリガー・ソース情報を引き継ぐ
                     test_eval.classes = eval.classes;
                     test_eval.class_arena = parse_alloc; // classes map は parse_arena 上に確保
@@ -496,21 +496,21 @@ fn isTestMethod(md: *ast.MethodDecl) bool {
     return false;
 }
 
-fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
+fn collectClsFiles(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
     // Try as single .cls/.trigger file first
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
-        const content = std.fs.cwd().readFileAlloc(alloc, path, 10 * 1024 * 1024) catch return;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch return;
         const path_copy = alloc.dupe(u8, path) catch return;
         files.append(alloc, .{ .path = path_copy, .content = content }) catch return;
         return;
     }
 
     // Walk directory recursively
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
         // Skip name-shadowing stub classes that intentionally shadow system classes
@@ -521,7 +521,7 @@ fn collectClsFiles(alloc: std.mem.Allocator, path: []const u8, files: *std.Array
             std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null) continue;
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 10 * 1024 * 1024) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(10 * 1024 * 1024)) catch continue;
         files.append(alloc, .{ .path = full_path, .content = content }) catch continue;
     }
 }
@@ -542,17 +542,18 @@ fn shouldSearchMetadataParents(path: []const u8) bool {
 /// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
 fn collectFieldDefaults(
     alloc: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
     field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
     field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
     child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
 ) !void {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
 
@@ -566,7 +567,7 @@ fn collectFieldDefaults(
         const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 64 * 1024) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(64 * 1024)) catch continue;
 
         var metadata = evaluator.FieldMetadata{};
         if (extractXmlTagValue(content, "label")) |label| {
@@ -811,23 +812,24 @@ fn putChildRelationship(
 /// パス構造: .../objects/<TypeName>/<TypeName>.object-meta.xml
 fn collectCustomSettingTypes(
     alloc: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
     custom_setting_kinds: *std.StringArrayHashMapUnmanaged([]const u8),
     object_labels: *std.StringArrayHashMapUnmanaged([]const u8),
     object_label_plurals: *std.StringArrayHashMapUnmanaged([]const u8),
 ) !void {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".object-meta.xml")) continue;
 
         const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 256 * 1024) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(256 * 1024)) catch continue;
 
         // Extract <label> — all objects with a label
         if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
@@ -884,14 +886,15 @@ fn splitNamespacedMetadataName(name: []const u8) struct { namespace: []const u8,
 /// パス構造: .../objects/TypeName__c/fieldSets/FieldSetName.fieldSet-meta.xml
 fn collectFieldSets(
     alloc: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     field_sets: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata)),
 ) !void {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
-    while (walker.next() catch null) |entry| {
+    while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) continue;
 
@@ -903,7 +906,7 @@ fn collectFieldSets(
         const type_name = after_objects[0..sep_idx];
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.fs.cwd().readFileAlloc(alloc, full_path, 128 * 1024) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(128 * 1024)) catch continue;
 
         var full_name: []const u8 = entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
         if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
@@ -4034,7 +4037,7 @@ test "areEqual with custom message includes expected and actual" {
     ;
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
     _ = eval.callMethod("T", "test", &.{}) catch {};
 
@@ -4059,7 +4062,7 @@ test "isTrue with custom message includes expected and actual" {
     ;
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
     _ = eval.callMethod("T2", "test", &.{}) catch {};
 
@@ -4083,7 +4086,7 @@ test "areNotEqual with custom message includes values" {
     ;
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
     _ = eval.callMethod("T3", "test", &.{}) catch {};
 
@@ -7384,7 +7387,7 @@ test "parser: class with inner class preserves parent methods" {
     }
 
     // Verify that callMethod finds and executes the method correctly
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
     const val = try eval.callMethod("Outer", "myMethod", &.{});
     try std.testing.expectEqualStrings("hello", val.string);
@@ -7409,7 +7412,7 @@ test "loadDecls: Controller class with inner class has getItems method" {
     ;
     const tokens3 = try lexer.tokenize(source3, alloc3);
     const decls3 = try parser.parse(tokens3, alloc3);
-    var eval3 = try evaluator.Evaluator.init(alloc3);
+    var eval3 = try evaluator.Evaluator.init(alloc3, std.testing.io);
     try eval3.loadDecls(decls3);
 
     // Verify classes map contents
@@ -7576,7 +7579,7 @@ test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
     _ = eval.callMethod("CalculatorTest", "testMultiplyWrong", &.{}) catch {};
 
@@ -7613,7 +7616,7 @@ test "Contact Name is synthesized from FirstName + LastName" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("ContactNameTest", "testContactName", &.{}) catch |e| {
@@ -7657,7 +7660,7 @@ test "Double/Decimal instance fields default to null" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("DoubleDefaultTest", "testDecimalNull", &.{}) catch |e| {
@@ -7708,7 +7711,7 @@ test "resetForTest re-runs static initializers for later test methods" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("StaticInitResetTest", "firstMethod", &.{}) catch |e| {
@@ -7814,7 +7817,7 @@ test "JSON.deserialize maps fields to user-defined class" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("JsonDeserTest", "testDeserialize", &.{}) catch |e| {
@@ -7847,7 +7850,7 @@ test "JSON.createParser + readValueAs deserializes into typed class" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("JsonParserTest", "testReadValueAs", &.{}) catch |e| {
@@ -7886,7 +7889,7 @@ test "PageReference.getUrl returns stored URL" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("PageRefTest", "testGetUrl", &.{}) catch |e| {
@@ -7937,7 +7940,7 @@ test "SOQL LIKE with bind variable matches correctly" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("LikeBindTest", "testLikeBind", &.{}) catch |e| {
@@ -7964,7 +7967,7 @@ test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("SchemaTest", "testSchemaAccess", &.{}) catch |e| {
@@ -7992,7 +7995,7 @@ test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("CryptoTest", "testRoundTrip", &.{}) catch |e| {
@@ -8026,7 +8029,7 @@ test "AuraHandledException is caught in try-catch" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("AuraTest", "testCatch", &.{}) catch |e| {
@@ -8055,7 +8058,7 @@ test "Type.forName returns null for non-existent class" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     _ = eval.callMethod("TypeForNameTest", "testForName", &.{}) catch |e| {
@@ -8173,7 +8176,7 @@ test "Trigger recursion does not StackOverflow" {
     const tokens3 = try lexer.tokenize(test_source, alloc);
     const decls3 = try parser.parse(tokens3, alloc);
 
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls1);
     try eval.loadDecls(decls2);
     try eval.loadDecls(decls3);
@@ -8207,7 +8210,7 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    var eval = try evaluator.Evaluator.init(alloc);
+    var eval = try evaluator.Evaluator.init(alloc, std.testing.io);
     try eval.loadDecls(decls);
 
     eval.resetForTest();
@@ -9955,7 +9958,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
 
     const tokens = try lexer.tokenize(source, parse_alloc);
     const decls = try parser.parse(tokens, parse_alloc);
-    var base_eval = try evaluator.Evaluator.init(parse_alloc);
+    var base_eval = try evaluator.Evaluator.init(parse_alloc, std.testing.io);
     try base_eval.loadDecls(decls);
 
     // テスト実行用アリーナ
@@ -9965,7 +9968,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
     // 1回実行後のテストアリーナの容量を記録
     {
         _ = test_arena.reset(.retain_capacity);
-        var test_eval = try evaluator.Evaluator.init(test_arena.allocator());
+        var test_eval = try evaluator.Evaluator.init(test_arena.allocator(), std.testing.io);
         test_eval.classes = base_eval.classes;
         _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
     }
@@ -9974,7 +9977,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
     // 同じテストを 50 回繰り返す
     for (0..50) |_| {
         _ = test_arena.reset(.retain_capacity);
-        var test_eval = try evaluator.Evaluator.init(test_arena.allocator());
+        var test_eval = try evaluator.Evaluator.init(test_arena.allocator(), std.testing.io);
         test_eval.classes = base_eval.classes;
         _ = test_eval.callMethod("LeakTest", "test1", &.{}) catch {};
     }

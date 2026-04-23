@@ -5,35 +5,36 @@
 //! ファイルが無い/パース失敗時はフォールバック候補を返す。
 
 const std = @import("std");
+const Io = std.Io;
 
 /// sfdx-project.json の packageDirectories[].path を解決する。
 /// 戻り値のスライス要素は allocator で確保済み。呼び出し側で解放すること。
 /// sfdx-project.json が無い/パース不能の場合はフォールバックパスを返す。
-pub fn resolvePackageDirs(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const []const u8 {
+pub fn resolvePackageDirs(allocator: std.mem.Allocator, io: Io, workspace_root: []const u8) ![]const []const u8 {
     const json_path = try std.fs.path.join(allocator, &.{ workspace_root, "sfdx-project.json" });
     defer allocator.free(json_path);
 
-    const content = std.fs.cwd().readFileAlloc(allocator, json_path, 1024 * 1024) catch {
-        return fallbackDirs(allocator, workspace_root);
+    const content = Io.Dir.cwd().readFileAlloc(io, json_path, allocator, .limited(1024 * 1024)) catch {
+        return fallbackDirs(allocator, io, workspace_root);
     };
     defer allocator.free(content);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
-        return fallbackDirs(allocator, workspace_root);
+        return fallbackDirs(allocator, io, workspace_root);
     };
     defer parsed.deinit();
 
     const root_obj = switch (parsed.value) {
         .object => |o| o,
-        else => return fallbackDirs(allocator, workspace_root),
+        else => return fallbackDirs(allocator, io, workspace_root),
     };
 
     const pkg_dirs_val = root_obj.get("packageDirectories") orelse {
-        return fallbackDirs(allocator, workspace_root);
+        return fallbackDirs(allocator, io, workspace_root);
     };
     const pkg_dirs = switch (pkg_dirs_val) {
         .array => |a| a,
-        else => return fallbackDirs(allocator, workspace_root),
+        else => return fallbackDirs(allocator, io, workspace_root),
     };
 
     var result: std.ArrayList([]const u8) = .empty;
@@ -58,7 +59,7 @@ pub fn resolvePackageDirs(allocator: std.mem.Allocator, workspace_root: []const 
 
     if (result.items.len == 0) {
         result.deinit(allocator);
-        return fallbackDirs(allocator, workspace_root);
+        return fallbackDirs(allocator, io, workspace_root);
     }
 
     return result.toOwnedSlice(allocator);
@@ -67,7 +68,7 @@ pub fn resolvePackageDirs(allocator: std.mem.Allocator, workspace_root: []const 
 /// sfdx-project.json が無い場合のフォールバック。
 /// 従来のハードコードパスのうち実在するものを返す。
 /// どれも無ければ workspace_root 自体を返す。
-fn fallbackDirs(allocator: std.mem.Allocator, workspace_root: []const u8) ![]const []const u8 {
+fn fallbackDirs(allocator: std.mem.Allocator, io: Io, workspace_root: []const u8) ![]const []const u8 {
     const candidates = [_][]const u8{
         "force-app",
         "src",
@@ -81,9 +82,9 @@ fn fallbackDirs(allocator: std.mem.Allocator, workspace_root: []const u8) ![]con
 
     for (&candidates) |rel| {
         const full = try std.fs.path.join(allocator, &.{ workspace_root, rel });
-        if (std.fs.openDirAbsolute(full, .{})) |dir| {
+        if (Io.Dir.openDirAbsolute(io, full, .{})) |dir| {
             var d = dir;
-            d.close();
+            d.close(io);
             try result.append(allocator, full);
         } else |_| {
             allocator.free(full);
@@ -103,6 +104,7 @@ fn fallbackDirs(allocator: std.mem.Allocator, workspace_root: []const u8) ![]con
 ///   → ["ws/force-app/main/default/classes"] (存在する場合のみ)
 pub fn resolveSubDirs(
     allocator: std.mem.Allocator,
+    io: Io,
     pkg_dirs: []const []const u8,
     sub_path: []const u8,
 ) ![]const []const u8 {
@@ -114,9 +116,9 @@ pub fn resolveSubDirs(
 
     for (pkg_dirs) |pkg_dir| {
         const full = try std.fs.path.join(allocator, &.{ pkg_dir, sub_path });
-        if (std.fs.openDirAbsolute(full, .{})) |dir| {
+        if (Io.Dir.openDirAbsolute(io, full, .{})) |dir| {
             var d = dir;
-            d.close();
+            d.close(io);
             try result.append(allocator, full);
         } else |_| {
             allocator.free(full);

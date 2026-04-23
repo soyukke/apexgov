@@ -156,7 +156,7 @@ pub const Server = struct {
                 if (root_uri) |uri| {
                     if (uriToPath(uri)) |ws_path| {
                         self.workspace_root = self.allocator.dupe(u8, ws_path) catch null;
-                        self.custom_fields.loadFromWorkspace(ws_path) catch {};
+                        self.custom_fields.loadFromWorkspace(self.io, ws_path) catch {};
                     }
                 }
             }
@@ -622,7 +622,7 @@ pub const Server = struct {
         const sfdx_project = @import("sfdx_project.zig");
 
         // sfdx-project.json から packageDirectories を解決
-        const pkg_dirs = try sfdx_project.resolvePackageDirs(self.allocator, ws_root);
+        const pkg_dirs = try sfdx_project.resolvePackageDirs(self.allocator, self.io, ws_root);
         defer {
             for (pkg_dirs) |p| self.allocator.free(p);
             self.allocator.free(pkg_dirs);
@@ -637,7 +637,7 @@ pub const Server = struct {
             all_dirs.deinit(self.allocator);
         }
         for (&sub_candidates) |sub| {
-            const sub_dirs = try sfdx_project.resolveSubDirs(self.allocator, pkg_dirs, sub);
+            const sub_dirs = try sfdx_project.resolveSubDirs(self.allocator, self.io, pkg_dirs, sub);
             defer self.allocator.free(sub_dirs);
             for (sub_dirs) |d| {
                 try all_dirs.append(self.allocator, d);
@@ -647,15 +647,16 @@ pub const Server = struct {
         // サブディレクトリが見つかればそれを使い、無ければパッケージディレクトリ自体を使用
         const test_paths = if (all_dirs.items.len > 0) all_dirs.items else pkg_dirs;
 
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
+        var test_allocating = std.Io.Writer.Allocating.init(self.allocator);
+        defer test_allocating.deinit();
 
         const suite = interpret.runSingleTest(
             self.allocator,
+            self.io,
             test_paths,
             class_name,
             method_name,
-            buf.writer(self.allocator),
+            &test_allocating.writer,
         ) catch {
             try self.transport.sendNotification(self.allocator, "window/showMessage", types.ShowMessageParams{
                 .type = .@"error",
@@ -668,7 +669,7 @@ pub const Server = struct {
         var failure_detail: []const u8 = "";
         if (suite.passed < suite.total) {
             // buf から [FAIL] 行を探す
-            var lines = std.mem.splitScalar(u8, buf.items, '\n');
+            var lines = std.mem.splitScalar(u8, test_allocating.written(), '\n');
             while (lines.next()) |line| {
                 if (std.mem.startsWith(u8, line, "[FAIL] ")) {
                     // "[FAIL] Class#method: message" → "message" 部分を抽出

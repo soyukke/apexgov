@@ -164,44 +164,44 @@ pub const CustomFieldRegistry = struct {
     }
 
     /// ワークスペースの objects/ ディレクトリからカスタムフィールドを読み込む。
-    pub fn loadFromWorkspace(self: *CustomFieldRegistry, workspace_path: []const u8) !void {
+    pub fn loadFromWorkspace(self: *CustomFieldRegistry, io: std.Io, workspace_path: []const u8) !void {
         const alloc = self.arena.allocator();
         const sfdx_project = @import("sfdx_project.zig");
 
         // sfdx-project.json の packageDirectories からソースルートを動的に解決
-        const pkg_dirs = try sfdx_project.resolvePackageDirs(alloc, workspace_path);
+        const pkg_dirs = try sfdx_project.resolvePackageDirs(alloc, io, workspace_path);
         // arena で確保しているため個別 free は不要
 
-        const objects_dirs = try sfdx_project.resolveSubDirs(alloc, pkg_dirs, "main/default/objects");
+        const objects_dirs = try sfdx_project.resolveSubDirs(alloc, io, pkg_dirs, "main/default/objects");
 
         for (objects_dirs) |objects_path| {
-            var dir = std.fs.openDirAbsolute(objects_path, .{ .iterate = true }) catch continue;
-            defer dir.close();
+            var dir = std.Io.Dir.openDirAbsolute(io, objects_path, .{ .iterate = true }) catch continue;
+            defer dir.close(io);
 
             var iter = dir.iterate();
-            while (try iter.next()) |entry| {
+            while (try iter.next(io)) |entry| {
                 if (entry.kind != .directory) continue;
                 const obj_name = try alloc.dupe(u8, entry.name);
-                try self.loadObjectFields(objects_path, obj_name);
+                try self.loadObjectFields(io, objects_path, obj_name);
             }
         }
     }
 
-    fn loadObjectFields(self: *CustomFieldRegistry, objects_path: []const u8, obj_name: []const u8) !void {
+    fn loadObjectFields(self: *CustomFieldRegistry, io: std.Io, objects_path: []const u8, obj_name: []const u8) !void {
         const alloc = self.arena.allocator();
         const fields_path = try std.fs.path.join(alloc, &.{ objects_path, obj_name, "fields" });
 
-        var fields_dir = std.fs.openDirAbsolute(fields_path, .{ .iterate = true }) catch return;
-        defer fields_dir.close();
+        var fields_dir = std.Io.Dir.openDirAbsolute(io, fields_path, .{ .iterate = true }) catch return;
+        defer fields_dir.close(io);
 
         var fields: std.ArrayList(FieldInfo) = .empty;
 
         var iter = fields_dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".field-meta.xml")) continue;
 
-            const content = fields_dir.readFileAlloc(alloc, entry.name, 64 * 1024) catch continue;
+            const content = fields_dir.readFileAlloc(io, entry.name, alloc, .limited(64 * 1024)) catch continue;
             const parsed = parseFieldMetaXml(content, alloc) catch continue;
             if (parsed) |field| {
                 try fields.append(alloc, field);
