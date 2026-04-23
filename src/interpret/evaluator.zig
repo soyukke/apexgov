@@ -20167,17 +20167,7 @@ pub const Evaluator = struct {
 
     fn execute_pending_batch_job(self: *Evaluator, batch_obj: *types.ObjectInstance) !void {
         const batch_class = self.find_class(batch_obj.class_name) orelse return;
-        const batch_job_id = if (batch_obj.fields.get("__batchJobId")) |job_id_val|
-            switch (job_id_val) {
-                .string => job_id_val.string,
-                else => try self.create_async_apex_job(
-                    "BatchApex",
-                    batch_obj.class_name,
-                    "execute",
-                ),
-            }
-        else
-            try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
+        const batch_job_id = try self.resolve_or_create_batch_job_id(batch_obj);
 
         const batch_context_value = try self.build_batchable_context(batch_job_id, null);
         const batch_context = batch_context_value.object;
@@ -20196,73 +20186,22 @@ pub const Evaluator = struct {
             "start",
             &.{batch_context_value},
         ) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(
-                    batch_obj,
-                    batch_job_id,
-                    "START",
-                    exception_value,
-                );
-            }
+            try self.fail_batch_job(batch_obj, batch_job_id, "START");
             return err;
         };
 
         var all_records: std.ArrayListUnmanaged(Value) = .empty;
-        if (start_scope == .object) {
-            if (start_scope.object.fields.get("query")) |query_val| {
-                if (query_val == .string) {
-                    const batch_env = try self.global_env.child();
-                    const query_result = self.execute_soql(
-                        query_val.string,
-                        batch_env,
-                    ) catch Value.null_val;
-                    if (query_result == .list) {
-                        for (query_result.list.items.items) |item| {
-                            try all_records.append(self.arena, item);
-                        }
-                    }
-                }
-            } else if (start_scope.object.fields.get("records")) |records_val| {
-                if (records_val == .list) {
-                    for (records_val.list.items.items) |item| {
-                        try all_records.append(self.arena, item);
-                    }
-                }
-            } else {
-                var store_iter = self.store.iterator();
-                while (store_iter.next()) |entry| {
-                    for (entry.value_ptr.items) |item| {
-                        try all_records.append(self.arena, item);
-                    }
-                }
-            }
-        } else {
-            var store_iter = self.store.iterator();
-            while (store_iter.next()) |entry| {
-                for (entry.value_ptr.items) |item| {
-                    try all_records.append(self.arena, item);
-                }
-            }
-        }
-
+        try self.collect_batch_records(start_scope, &all_records);
         const record_list = try self.arena.create(types.ListValue);
         record_list.* = .{ .items = all_records };
+
         _ = self.call_instance_method(
             batch_class,
             batch_obj,
             "execute",
             &.{ batch_context_value, Value{ .list = record_list } },
         ) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(
-                    batch_obj,
-                    batch_job_id,
-                    "EXECUTE",
-                    exception_value,
-                );
-            }
+            try self.fail_batch_job(batch_obj, batch_job_id, "EXECUTE");
             return err;
         };
         _ = self.call_instance_method(
@@ -20271,19 +20210,77 @@ pub const Evaluator = struct {
             "finish",
             &.{batch_context_value},
         ) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(
-                    batch_obj,
-                    batch_job_id,
-                    "FINISH",
-                    exception_value,
-                );
-            }
+            try self.fail_batch_job(batch_obj, batch_job_id, "FINISH");
             return err;
         };
-
         self.update_async_apex_job(batch_job_id, "Completed", 0);
+    }
+
+    fn resolve_or_create_batch_job_id(
+        self: *Evaluator,
+        batch_obj: *types.ObjectInstance,
+    ) ![]const u8 {
+        if (batch_obj.fields.get("__batchJobId")) |job_id_val| {
+            if (job_id_val == .string) return job_id_val.string;
+        }
+        return try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
+    }
+
+    fn fail_batch_job(
+        self: *Evaluator,
+        batch_obj: *types.ObjectInstance,
+        batch_job_id: []const u8,
+        phase: []const u8,
+    ) !void {
+        self.update_async_apex_job(batch_job_id, "Failed", 1);
+        if (self.pending_exception) |exception_value| {
+            try self.publish_batch_apex_error_event(
+                batch_obj,
+                batch_job_id,
+                phase,
+                exception_value,
+            );
+        }
+    }
+
+    /// Gather records for the batch execute() call. If `start()` returned a
+    /// Database.QueryLocator-like object with `query`, run the SOQL through
+    /// the batch env; with `records`, copy them; otherwise fall back to
+    /// iterating the entire store.
+    fn collect_batch_records(
+        self: *Evaluator,
+        start_scope: Value,
+        all_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (start_scope == .object) {
+            if (start_scope.object.fields.get("query")) |query_val| {
+                if (query_val == .string) {
+                    const batch_env = try self.global_env.child();
+                    const query_result = self.execute_soql(query_val.string, batch_env) catch
+                        Value.null_val;
+                    if (query_result == .list) {
+                        for (query_result.list.items.items) |item| {
+                            try all_records.append(self.arena, item);
+                        }
+                    }
+                }
+                return;
+            }
+            if (start_scope.object.fields.get("records")) |records_val| {
+                if (records_val == .list) {
+                    for (records_val.list.items.items) |item| {
+                        try all_records.append(self.arena, item);
+                    }
+                }
+                return;
+            }
+        }
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            for (entry.value_ptr.items) |item| {
+                try all_records.append(self.arena, item);
+            }
+        }
     }
 
     fn enqueue_job(self: *Evaluator, job_obj: *types.ObjectInstance) !Value {
