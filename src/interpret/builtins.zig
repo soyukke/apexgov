@@ -186,7 +186,18 @@ fn parse_loose_date_time(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 
         if (hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59)
             return null;
     }
-    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{ @as(u32, @intCast(year)), @as(u32, @intCast(month)), @as(u32, @intCast(day)), @as(u32, @intCast(hour)), @as(u32, @intCast(minute)), @as(u32, @intCast(second)) }) catch null;
+    return std.fmt.allocPrint(
+        arena,
+        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+        .{
+            @as(u32, @intCast(year)),
+            @as(u32, @intCast(month)),
+            @as(u32, @intCast(day)),
+            @as(u32, @intCast(hour)),
+            @as(u32, @intCast(minute)),
+            @as(u32, @intCast(second)),
+        },
+    ) catch null;
 }
 
 /// 静的メソッド呼び出しを試行する。
@@ -990,7 +1001,10 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     }
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) {
         if (args.len > 0) {
-            if (args[0] == .integer) return Value{ .integer = if (args[0].integer < 0) -args[0].integer else args[0].integer };
+            if (args[0] == .integer) {
+                const v = args[0].integer;
+                return Value{ .integer = if (v < 0) -v else v };
+            }
             if (args[0] == .double) return Value{ .double = @abs(args[0].double) };
         }
         return Value{ .integer = 0 };
@@ -1102,10 +1116,15 @@ fn dispatch_static_date_time(
             const yd = epoch_day.calculateYearDay();
             const md = yd.calculateMonthDay();
             const ds = es.getDaySeconds();
-            return make_datetime_value(ctx2.arena, try std.fmt.allocPrint(ctx2.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                yd.year,              md.month.numeric(),      md.day_index + 1,
-                ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
-            }));
+            const iso = try std.fmt.allocPrint(
+                ctx2.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{
+                    yd.year,              md.month.numeric(),      md.day_index + 1,
+                    ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+                },
+            );
+            return make_datetime_value(ctx2.arena, iso);
         }
     };
     const numericAsI64 = struct {
@@ -1129,7 +1148,10 @@ fn dispatch_static_date_time(
         // Date is stored as an ObjectInstance with a "value" field. Time is
         // currently represented as a plain "HH:MM:SS.fff" string.
         if (args.len == 2 and args[0] == .object) {
-            const date_val = if (args[0].object.fields.get("value")) |v| (if (v == .string) v.string else "1970-01-01") else "1970-01-01";
+            const date_val: []const u8 = if (args[0].object.fields.get("value")) |v|
+                (if (v == .string) v.string else "1970-01-01")
+            else
+                "1970-01-01";
             const time_val: []const u8 = switch (args[1]) {
                 .string => |s| s,
                 .object => |obj| blk: {
@@ -1151,24 +1173,34 @@ fn dispatch_static_date_time(
             const h = numericAsI64.from(args[3], 0);
             const mi = numericAsI64.from(args[4], 0);
             const s = numericAsI64.from(args[5], 0);
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(if (y < 0) 1 else y)),
-                @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
-                @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
-                @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
-                @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
-                @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
-            }));
+            const iso = try std.fmt.allocPrint(
+                ctx.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{
+                    @as(u32, @intCast(if (y < 0) 1 else y)),
+                    @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                    @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
+                    @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
+                    @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
+                    @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
+                },
+            );
+            return try make_datetime_value(ctx.arena, iso);
         }
         if (args.len >= 3) {
             const y = numericAsI64.from(args[0], 2026);
             const mo = numericAsI64.from(args[1], 1);
             const d8 = numericAsI64.from(args[2], 1);
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
-                @as(u32, @intCast(if (y < 0) 1 else y)),
-                @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
-                @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
-            }));
+            const iso = try std.fmt.allocPrint(
+                ctx.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z",
+                .{
+                    @as(u32, @intCast(if (y < 0) 1 else y)),
+                    @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                    @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
+                },
+            );
+            return try make_datetime_value(ctx.arena, iso);
         }
         if (args.len >= 1) {
             const ms: i64 = numericAsI64.from(args[0], 0);
@@ -1970,21 +2002,34 @@ fn dispatch_static_logging_level(
     args: []const Value,
 ) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
-        const valid_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const valid_levels = [_][]const u8{
+            "INTERNAL", "FINEST", "FINER", "FINE",
+            "DEBUG",    "INFO",   "WARN",  "ERROR",
+            "NONE",
+        };
         for (valid_levels) |level| {
             if (std.ascii.eqlIgnoreCase(args[0].string, level)) return Value{ .string = level };
         }
         // Invalid enum value → throw NoSuchElementException
         const exc = try ctx.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "NoSuchElementException" };
-        try exc.fields.put(ctx.arena, "message", Value{ .string = try std.fmt.allocPrint(ctx.arena, "No enum constant System.LoggingLevel.{s}", .{args[0].string}) });
+        const level_msg = try std.fmt.allocPrint(
+            ctx.arena,
+            "No enum constant System.LoggingLevel.{s}",
+            .{args[0].string},
+        );
+        try exc.fields.put(ctx.arena, "message", Value{ .string = level_msg });
         ctx.pending_exception.?.* = Value{ .object = exc };
         return error.ApexException;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "values")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const names = [_][]const u8{
+            "INTERNAL", "FINEST", "FINER", "FINE",
+            "DEBUG",    "INFO",   "WARN",  "ERROR",
+            "NONE",
+        };
         for (names) |name| try list.items.append(ctx.arena, Value{ .string = name });
         return Value{ .list = list };
     }
@@ -2633,12 +2678,20 @@ fn is_resolvable_type_name(ctx: *BuiltinContext, name: []const u8) bool {
     }
     if (ctx.eval.is_s_object_type_name_public(name)) return true;
     const primitives = [_][]const u8{
-        "String",       "Integer",           "Long",      "Double",   "Decimal",      "Boolean", "Date",
-        "Datetime",     "Time",              "Id",        "Blob",     "Object",       "Schema",  "System",
-        "SObject",      "Type",              "JSON",      "Test",     "Database",     "Http",    "HttpRequest",
-        "HttpResponse", "UserInfo",          "Limits",    "Assert",   "UUID",         "Pattern", "Matcher",
-        "Messaging",    "EventBus",          "ApexPages", "UserInfo", "EncodingUtil", "Network", "Url",
-        "URL",          "FeatureManagement", "Crypto",    "Request",  "OrgLimits",
+        "String",            "Integer",   "Long",
+        "Double",            "Decimal",   "Boolean",
+        "Date",              "Datetime",  "Time",
+        "Id",                "Blob",      "Object",
+        "Schema",            "System",    "SObject",
+        "Type",              "JSON",      "Test",
+        "Database",          "Http",      "HttpRequest",
+        "HttpResponse",      "UserInfo",  "Limits",
+        "Assert",            "UUID",      "Pattern",
+        "Matcher",           "Messaging", "EventBus",
+        "ApexPages",         "UserInfo",  "EncodingUtil",
+        "Network",           "Url",       "URL",
+        "FeatureManagement", "Crypto",    "Request",
+        "OrgLimits",
     };
     for (primitives) |p| {
         if (std.ascii.eqlIgnoreCase(p, name)) return true;
@@ -2794,7 +2847,9 @@ fn dispatch_static_encoding_util(
         // pass through, spaces become '+', everything else is percent-encoded.
         var out = std.ArrayListUnmanaged(u8).empty;
         for (args[0].string) |ch| {
-            const is_safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9') or
+            const is_safe = (ch >= 'A' and ch <= 'Z') or
+                (ch >= 'a' and ch <= 'z') or
+                (ch >= '0' and ch <= '9') or
                 ch == '-' or ch == '_' or ch == '.' or ch == '*';
             if (is_safe) {
                 try out.append(ctx.arena, ch);
@@ -3511,7 +3566,9 @@ fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bo
     {
         return false;
     }
-    if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
+    if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or
+        std.ascii.eqlIgnoreCase(object_type, "Lead")) and
+        std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "ContentVersion") and
         (std.ascii.eqlIgnoreCase(
             field_name,
@@ -4296,11 +4353,14 @@ fn canonical_field_api_name(
     }
     const canonical_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
         .{ .object = "Account", .fields = &.{
-            "Id",                "Name",         "ParentId",      "OwnerId",            "Phone",
-            "Fax",               "Website",      "AccountNumber", "Industry",           "Type",
-            "BillingStreet",     "BillingCity",  "BillingState",  "BillingPostalCode",  "BillingCountry",
-            "ShippingStreet",    "ShippingCity", "ShippingState", "ShippingPostalCode", "ShippingCountry",
-            "NumberOfEmployees", "Description",  "Rating",        "AnnualRevenue",
+            "Id",                 "Name",              "ParentId",
+            "OwnerId",            "Phone",             "Fax",
+            "Website",            "AccountNumber",     "Industry",
+            "Type",               "BillingStreet",     "BillingCity",
+            "BillingState",       "BillingPostalCode", "BillingCountry",
+            "ShippingStreet",     "ShippingCity",      "ShippingState",
+            "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
+            "Description",        "Rating",            "AnnualRevenue",
         } },
         .{ .object = "Contact", .fields = &.{
             "Id",          "AccountId",      "FirstName",    "LastName",      "Name",
@@ -4314,8 +4374,11 @@ fn canonical_field_api_name(
             "OwnerId", "LeadSource", "Rating",   "Industry",
         } },
         .{ .object = "User", .fields = &.{
-            "Id",    "Username", "Email",    "FirstName",      "LastName",          "Name",         "ProfileId",
-            "Alias", "UserType", "IsActive", "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
+            "Id",           "Username",         "Email",
+            "FirstName",    "LastName",         "Name",
+            "ProfileId",    "Alias",            "UserType",
+            "IsActive",     "TimeZoneSidKey",   "LanguageLocaleKey",
+            "LocaleSidKey", "EmailEncodingKey",
         } },
         .{ .object = "Profile", .fields = &.{
             "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
@@ -5527,13 +5590,19 @@ fn dispatch_obj_common_exception_methods(
 fn exception_get_type_name(ctx: *BuiltinContext, cn: []const u8) !Value {
     if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
         const system_exceptions = [_][]const u8{
-            "DMLException",                  "DmlException",           "NullPointerException",           "TypeException",
-            "QueryException",                "JSONException",          "ListException",                  "MathException",
-            "SecurityException",             "NoAccessException",      "InvalidParameterValueException", "CalloutException",
-            "StringException",               "NoSuchElementException", "NoDataFoundException",           "SearchException",
-            "SObjectException",              "HandledException",       "IllegalArgumentException",       "LimitException",
-            "AsyncException",                "SerializationException", "FlowException",                  "FinalException",
-            "UnsupportedOperationException", "EventBusException",
+            "DMLException",                   "DmlException",
+            "NullPointerException",           "TypeException",
+            "QueryException",                 "JSONException",
+            "ListException",                  "MathException",
+            "SecurityException",              "NoAccessException",
+            "InvalidParameterValueException", "CalloutException",
+            "StringException",                "NoSuchElementException",
+            "NoDataFoundException",           "SearchException",
+            "SObjectException",               "HandledException",
+            "IllegalArgumentException",       "LimitException",
+            "AsyncException",                 "SerializationException",
+            "FlowException",                  "FinalException",
+            "UnsupportedOperationException",  "EventBusException",
         };
         for (system_exceptions) |se| {
             if (std.ascii.eqlIgnoreCase(cn, se)) {
@@ -8902,7 +8971,13 @@ fn load_picklist_from_metadata(
         // Try multiple path patterns to find the field-meta.xml
         const candidates = [_][]const u8{
             // Pattern 1: path is "classes" dir → sibling "objects" dir
-            try std.fs.path.join(ctx.arena, &.{ std.fs.path.dirname(path) orelse ".", "objects", obj_type, "fields", field_name }),
+            try std.fs.path.join(ctx.arena, &.{
+                std.fs.path.dirname(path) orelse ".",
+                "objects",
+                obj_type,
+                "fields",
+                field_name,
+            }),
             // Pattern 2: path is package root (e.g. "cc-base-app") → "main/default/objects/..."
             try std.fs.path.join(
                 ctx.arena,
@@ -8923,7 +8998,10 @@ fn load_picklist_from_metadata(
         var it = dir.iterate();
         while (it.next(ctx.eval.io) catch null) |entry| {
             if (entry.kind != .directory) continue;
-            const sub_path = std.fs.path.join(ctx.arena, &.{ path, entry.name, "main", "default", "objects", obj_type, "fields", field_name }) catch continue;
+            const sub_path = std.fs.path.join(ctx.arena, &.{
+                path,      entry.name, "main",   "default",
+                "objects", obj_type,   "fields", field_name,
+            }) catch continue;
             if (try try_load_field_meta(ctx, list, sub_path)) return true;
         }
     }
