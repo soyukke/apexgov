@@ -10,7 +10,6 @@ src/interpret/builtins.zig	line_too_long	575
 src/interpret/env.zig	line_too_long	1
 src/interpret/evaluator.zig	line_too_long	1235
 src/interpret/evaluator.zig	function_too_long	6
-src/interpret/regex.zig	line_too_long	25
-src/interpret/regex.zig	function_too_long	1
+src/interpret/regex.zig	line_too_long	15
 src/interpret/root.zig	line_too_long	285
 src/interpret/utils.zig	line_too_long	7
