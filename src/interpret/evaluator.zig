@@ -18912,7 +18912,10 @@ pub const Evaluator = struct {
             const arg = args[i];
             const rendered_param_type = self.render_type_ref(param.type_ref);
             const param_base = type_base_name(rendered_param_type);
-            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len)
+                arg_type_hints.?[i]
+            else
+                null;
 
             var enum_bridge = false;
             if (arg_hint) |hint| {
@@ -18920,52 +18923,18 @@ pub const Evaluator = struct {
                 if (hint_score > 0) {
                     score += hint_score;
                     if (arg == .null_val) continue;
-                    // Enum values are stored as plain strings internally; when the
-                    // declared hint matches an enum-typed parameter, accept the
-                    // arg even though overload_score_for_arg would score it as 0.
-                    if (arg == .string and (is_system_enum_type_name(rendered_param_type) or self.find_visible_enum_decl(if (std.mem.lastIndexOfScalar(u8, rendered_param_type, '.')) |di| rendered_param_type[di + 1 ..] else rendered_param_type) != null)) {
+                    if (self.arg_bridges_to_enum_param(arg, rendered_param_type)) {
                         enum_bridge = true;
                     }
                 }
             }
-
             if (arg == .null_val) continue;
 
-            var arg_score: i32 = 0;
-            if (arg == .sobject and std.ascii.eqlIgnoreCase(param_base, "List")) {
+            const arg_score = self.score_overload_arg(arg, param, param_base, arg_hint) orelse {
                 return null;
-            } else if (arg == .list) {
-                if (std.ascii.eqlIgnoreCase(param_base, "List") or
-                    std.ascii.eqlIgnoreCase(param_base, "Iterable"))
-                {
-                    arg_score = self.score_list_argument_for_param(
-                        arg.list,
-                        arg_hint,
-                        param.type_ref,
-                    );
-                } else if (std.ascii.eqlIgnoreCase(param_base, "Object")) {
-                    arg_score = 1;
-                } else {
-                    return null;
-                }
-            } else {
-                arg_score = overload_score_for_arg(arg, param.type_ref.name);
-                if (arg_score == 0 and
-                    arg == .string and
-                    std.ascii.eqlIgnoreCase(param_base, "Blob"))
-                {
-                    arg_score = 1;
-                }
-                if (arg_score == 0 and
-                    arg == .object and
-                    self.is_subclass_of(arg.object.class_name, param.type_ref.name))
-                {
-                    arg_score = 2;
-                }
-            }
-
+            };
             if (arg_score <= 0) {
-                // Without an enum bridge we reject; with one, the hint already
+                // Without an enum bridge we reject; with one the hint already
                 // credited the match and we skip the argument score.
                 if (enum_bridge) continue;
                 return null;
@@ -18973,6 +18942,56 @@ pub const Evaluator = struct {
             score += arg_score;
         }
         return score;
+    }
+
+    /// Enum values are stored as plain strings internally; when a declared
+    /// type hint matches an enum-typed parameter, accept the arg even though
+    /// `overload_score_for_arg` would score a plain string as 0 against the
+    /// enum param.
+    fn arg_bridges_to_enum_param(
+        self: *Evaluator,
+        arg: Value,
+        rendered_param_type: []const u8,
+    ) bool {
+        if (arg != .string) return false;
+        if (is_system_enum_type_name(rendered_param_type)) return true;
+        const simple_name = if (std.mem.lastIndexOfScalar(u8, rendered_param_type, '.')) |di|
+            rendered_param_type[di + 1 ..]
+        else
+            rendered_param_type;
+        return self.find_visible_enum_decl(simple_name) != null;
+    }
+
+    /// Score a single argument against a parameter. Returns null when the
+    /// match is structurally impossible (e.g. `SObject` passed to `List<...>`).
+    /// A score of 0 indicates no positive match; the caller may still accept
+    /// the argument via an enum bridge.
+    fn score_overload_arg(
+        self: *Evaluator,
+        arg: Value,
+        param: ast.Param,
+        param_base: []const u8,
+        arg_hint: ?[]const u8,
+    ) ?i32 {
+        if (arg == .sobject and std.ascii.eqlIgnoreCase(param_base, "List")) return null;
+        if (arg == .list) {
+            if (std.ascii.eqlIgnoreCase(param_base, "List") or
+                std.ascii.eqlIgnoreCase(param_base, "Iterable"))
+            {
+                return self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+            }
+            if (std.ascii.eqlIgnoreCase(param_base, "Object")) return 1;
+            return null;
+        }
+        var arg_score = overload_score_for_arg(arg, param.type_ref.name);
+        if (arg_score == 0 and
+            arg == .string and std.ascii.eqlIgnoreCase(param_base, "Blob")) arg_score = 1;
+        if (arg_score == 0 and arg == .object and
+            self.is_subclass_of(arg.object.class_name, param.type_ref.name))
+        {
+            arg_score = 2;
+        }
+        return arg_score;
     }
 
     /// If `expr` syntactically accesses an enum value (e.g. `SortOrder.ASCENDING`,
