@@ -3637,7 +3637,18 @@ pub const Evaluator = struct {
                     &obj.fields,
                     "PathOnClient",
                 )) |poc| (if (poc == .string) poc.string else "") else "";
-                const file_type: []const u8 = if (std.ascii.endsWithIgnoreCase(path_on_client, ".png")) "PNG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".jpg") or std.ascii.endsWithIgnoreCase(path_on_client, ".jpeg")) "JPG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".gif")) "GIF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pdf")) "PDF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".docx")) "WORD_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".xlsx")) "EXCEL_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pptx")) "POWER_POINT_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".m4a")) "M4A" else "UNKNOWN";
+                const ew = std.ascii.endsWithIgnoreCase;
+                const file_type: []const u8 = blk: {
+                    if (ew(path_on_client, ".png")) break :blk "PNG";
+                    if (ew(path_on_client, ".jpg") or ew(path_on_client, ".jpeg")) break :blk "JPG";
+                    if (ew(path_on_client, ".gif")) break :blk "GIF";
+                    if (ew(path_on_client, ".pdf")) break :blk "PDF";
+                    if (ew(path_on_client, ".docx")) break :blk "WORD_X";
+                    if (ew(path_on_client, ".xlsx")) break :blk "EXCEL_X";
+                    if (ew(path_on_client, ".pptx")) break :blk "POWER_POINT_X";
+                    if (ew(path_on_client, ".m4a")) break :blk "M4A";
+                    break :blk "UNKNOWN";
+                };
                 try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
                 const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
                 if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
