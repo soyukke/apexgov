@@ -445,84 +445,77 @@ pub const Evaluator = struct {
             .{ obj_type, field_name },
         ) catch return null;
         for (self.source_paths) |base_path| {
-            // Try to find the field-meta.xml by walking common SFDX paths
-            // Also try parent directories (e.g., "force-app/main/default/classes" → "force-app")
-            const parent1 = std.fs.path.dirname(base_path) orelse base_path; // strip "classes"
-            const parent2 = std.fs.path.dirname(parent1) orelse parent1; // strip "default"
-            const parent3 = std.fs.path.dirname(parent2) orelse parent2; // strip "main"
-            const candidates = [_][]const u8{
-                "main/default",
-                ".",
-                "force-app/main/default",
-                "src/main/default",
-            };
-            // Also try from parent directories
-            const base_paths = [_][]const u8{ base_path, parent1, parent2, parent3 };
-            for (base_paths) |bp| {
-                for (candidates) |sub| {
-                    const xml_path = std.fs.path.join(
-                        self.arena,
-                        &.{ bp, sub, suffix },
-                    ) catch continue;
-                    const content = std.Io.Dir.cwd().readFileAlloc(
-                        self.io,
-                        xml_path,
-                        self.arena,
-                        .limited(512 * 1024),
-                    ) catch continue;
+            if (self.find_picklist_label_in_source_root(
+                base_path,
+                suffix,
+                api_name,
+            )) |label| return label;
+        }
+        return null;
+    }
 
-                    // Parse <value> blocks: find <fullName> matching api_name, return corresponding
-                    // <label>
-                    var pos: usize = 0;
-                    while (pos < content.len) {
-                        const value_start = std.mem.indexOfPos(
-                            u8,
-                            content,
-                            pos,
-                            "<value>",
-                        ) orelse break;
-                        const value_end = std.mem.indexOfPos(
-                            u8,
-                            content,
-                            value_start,
-                            "</value>",
-                        ) orelse break;
-                        const block = content[value_start..value_end];
-
-                        const fn_tag = "<fullName>";
-                        const fn_end_tag = "</fullName>";
-                        if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
-                            const fn_content_start = fn_start + fn_tag.len;
-                            if (std.mem.indexOfPos(
-                                u8,
-                                block,
-                                fn_content_start,
-                                fn_end_tag,
-                            )) |fn_end| {
-                                const full_name = block[fn_content_start..fn_end];
-                                if (std.mem.eql(u8, full_name, api_name)) {
-                                    const lbl_tag = "<label>";
-                                    const lbl_end_tag = "</label>";
-                                    if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
-                                        const lbl_content_start = lbl_start + lbl_tag.len;
-                                        if (std.mem.indexOfPos(
-                                            u8,
-                                            block,
-                                            lbl_content_start,
-                                            lbl_end_tag,
-                                        )) |lbl_end| {
-                                            return block[lbl_content_start..lbl_end];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        pos = value_end + 8;
-                    }
-                }
+    /// Walk common SFDX subpaths under `base_path` (and each parent dir, in
+    /// case we were handed a nested `classes/` directory) looking for the
+    /// field-meta.xml, then scan it for `api_name` → label.
+    fn find_picklist_label_in_source_root(
+        self: *Evaluator,
+        base_path: []const u8,
+        suffix: []const u8,
+        api_name: []const u8,
+    ) ?[]const u8 {
+        const parent1 = std.fs.path.dirname(base_path) orelse base_path;
+        const parent2 = std.fs.path.dirname(parent1) orelse parent1;
+        const parent3 = std.fs.path.dirname(parent2) orelse parent2;
+        const candidates = [_][]const u8{
+            "main/default",
+            ".",
+            "force-app/main/default",
+            "src/main/default",
+        };
+        const base_paths = [_][]const u8{ base_path, parent1, parent2, parent3 };
+        for (base_paths) |bp| {
+            for (candidates) |sub| {
+                const xml_path = std.fs.path.join(self.arena, &.{ bp, sub, suffix }) catch continue;
+                const content = std.Io.Dir.cwd().readFileAlloc(
+                    self.io,
+                    xml_path,
+                    self.arena,
+                    .limited(512 * 1024),
+                ) catch continue;
+                if (find_picklist_label_in_xml(content, api_name)) |label| return label;
             }
         }
         return null;
+    }
+
+    /// Scan a field-meta.xml for `<value>` blocks; when a block's
+    /// `<fullName>` matches `api_name`, return its `<label>`.
+    fn find_picklist_label_in_xml(content: []const u8, api_name: []const u8) ?[]const u8 {
+        var pos: usize = 0;
+        while (pos < content.len) {
+            const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
+            const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse
+                break;
+            const block = content[value_start..value_end];
+            if (picklist_block_matches(block, api_name)) {
+                if (extract_xml_tag(block, "<label>", "</label>")) |label| return label;
+            }
+            pos = value_end + 8;
+        }
+        return null;
+    }
+
+    fn picklist_block_matches(block: []const u8, api_name: []const u8) bool {
+        const full_name = extract_xml_tag(block, "<fullName>", "</fullName>") orelse return false;
+        return std.mem.eql(u8, full_name, api_name);
+    }
+
+    fn extract_xml_tag(block: []const u8, open_tag: []const u8, close_tag: []const u8) ?[]const u8 {
+        const open_start = std.mem.indexOf(u8, block, open_tag) orelse return null;
+        const content_start = open_start + open_tag.len;
+        const close_start = std.mem.indexOfPos(u8, block, content_start, close_tag) orelse
+            return null;
+        return block[content_start..close_start];
     }
 
     /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store
