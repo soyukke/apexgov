@@ -7982,75 +7982,86 @@ fn pluralize_word(arena: std.mem.Allocator, word: []const u8) ![]const u8 {
 
 /// Handle DataWeave reserved keyword escaping
 fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
-    // Get the payload JSON string
-    var json_str: []const u8 = "[]";
-    if (args.len > 0 and args[0] == .object) {
-        if (args[0].object.fields.get("payload")) |payload| {
-            if (payload == .string) json_str = payload.string;
-        }
-    } else if (args.len > 0 and args[0] == .map) {
-        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, "payload") and v == .string) {
-                json_str = v.string;
-                break;
-            }
-        }
-    }
-
-    // Replace Apex reserved keywords with _x suffix
-    const reserved = [_][]const u8{
-        "abstract",  "activate",   "and",      "any",        "array",      "as",
-        "asc",       "break",      "bulk",     "by",         "byte",       "case",
-        "cast",      "catch",      "char",     "class",      "collect",    "commit",
-        "const",     "continue",   "currency", "decimal",    "default",    "delete",
-        "desc",      "do",         "double",   "else",       "end",        "enum",
-        "exception", "exit",       "export",   "extends",    "false",      "final",
-        "finally",   "float",      "for",      "from",       "global",     "goto",
-        "group",     "having",     "hint",     "if",         "implements", "import",
-        "in",        "inner",      "insert",   "instanceof", "int",        "interface",
-        "into",      "join",       "like",     "limit",      "list",       "long",
-        "loop",      "map",        "merge",    "new",        "not",        "null",
-        "nulls",     "number",     "object",   "of",         "on",         "or",
-        "outer",     "override",   "package",  "parallel",   "private",    "protected",
-        "public",    "retrieve",   "return",   "rollback",   "select",     "set",
-        "short",     "sort",       "static",   "super",      "switch",     "synchronized",
-        "system",    "testmethod", "then",     "this",       "throw",      "transaction",
-        "trigger",   "true",       "try",      "undelete",   "update",     "upsert",
-        "using",     "virtual",    "void",     "webservice", "when",       "where",
-        "while",
-    };
-
-    // Simple string replacement: "keyword" → "keyword_x"
+    const json_str = reserved_keywords_extract_payload(args);
     var result: std.ArrayListUnmanaged(u8) = .empty;
     try result.appendSlice(ctx.arena, json_str);
-    for (reserved) |kw| {
-        // Replace "keyword" with "keyword_x" (as JSON property name)
-        const search = try std.fmt.allocPrint(ctx.arena, "\"{s}\"", .{kw});
-        const replace = try std.fmt.allocPrint(ctx.arena, "\"{s}_x\"", .{kw});
-        // Find and replace occurrences that are followed by : (JSON keys only)
-        var new_result: std.ArrayListUnmanaged(u8) = .empty;
-        var pos: usize = 0;
-        const haystack = result.items;
-        while (pos < haystack.len) {
-            if (pos + search.len <= haystack.len and
-                std.mem.eql(u8, haystack[pos .. pos + search.len], search))
-            {
-                // Check if followed by whitespace+colon (JSON key context)
-                var check = pos + search.len;
-                while (check < haystack.len and
-                    (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
-                if (check < haystack.len and haystack[check] == ':') {
-                    try new_result.appendSlice(ctx.arena, replace);
-                    pos += search.len;
-                    continue;
-                }
-            }
-            try new_result.append(ctx.arena, haystack[pos]);
-            pos += 1;
-        }
-        result = new_result;
+    for (apex_reserved_keywords_list()) |kw| {
+        try rewrite_json_key_with_suffix(ctx, &result, kw);
     }
     return result.items;
+}
+
+fn reserved_keywords_extract_payload(args: []const Value) []const u8 {
+    if (args.len == 0) return "[]";
+    if (args[0] == .object) {
+        if (args[0].object.fields.get("payload")) |payload| {
+            if (payload == .string) return payload.string;
+        }
+    } else if (args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, "payload") and v == .string) return v.string;
+        }
+    }
+    return "[]";
+}
+
+fn apex_reserved_keywords_list() []const []const u8 {
+    const list = struct {
+        const items = [_][]const u8{
+            "abstract",  "activate",   "and",      "any",        "array",      "as",
+            "asc",       "break",      "bulk",     "by",         "byte",       "case",
+            "cast",      "catch",      "char",     "class",      "collect",    "commit",
+            "const",     "continue",   "currency", "decimal",    "default",    "delete",
+            "desc",      "do",         "double",   "else",       "end",        "enum",
+            "exception", "exit",       "export",   "extends",    "false",      "final",
+            "finally",   "float",      "for",      "from",       "global",     "goto",
+            "group",     "having",     "hint",     "if",         "implements", "import",
+            "in",        "inner",      "insert",   "instanceof", "int",        "interface",
+            "into",      "join",       "like",     "limit",      "list",       "long",
+            "loop",      "map",        "merge",    "new",        "not",        "null",
+            "nulls",     "number",     "object",   "of",         "on",         "or",
+            "outer",     "override",   "package",  "parallel",   "private",    "protected",
+            "public",    "retrieve",   "return",   "rollback",   "select",     "set",
+            "short",     "sort",       "static",   "super",      "switch",     "synchronized",
+            "system",    "testmethod", "then",     "this",       "throw",      "transaction",
+            "trigger",   "true",       "try",      "undelete",   "update",     "upsert",
+            "using",     "virtual",    "void",     "webservice", "when",       "where",
+            "while",
+        };
+    };
+    return &list.items;
+}
+
+/// Replace `"kw"` with `"kw_x"` when followed by optional whitespace and a colon
+/// (i.e. the quoted string is a JSON key), in-place on `result`.
+fn rewrite_json_key_with_suffix(
+    ctx: *BuiltinContext,
+    result: *std.ArrayListUnmanaged(u8),
+    kw: []const u8,
+) !void {
+    const search = try std.fmt.allocPrint(ctx.arena, "\"{s}\"", .{kw});
+    const replace = try std.fmt.allocPrint(ctx.arena, "\"{s}_x\"", .{kw});
+    var new_result: std.ArrayListUnmanaged(u8) = .empty;
+    var pos: usize = 0;
+    const haystack = result.items;
+    while (pos < haystack.len) {
+        if (pos + search.len <= haystack.len and
+            std.mem.eql(u8, haystack[pos .. pos + search.len], search))
+        {
+            // Check if followed by whitespace+colon (JSON key context)
+            var check = pos + search.len;
+            while (check < haystack.len and
+                (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
+            if (check < haystack.len and haystack[check] == ':') {
+                try new_result.appendSlice(ctx.arena, replace);
+                pos += search.len;
+                continue;
+            }
+        }
+        try new_result.append(ctx.arena, haystack[pos]);
+        pos += 1;
+    }
+    result.* = new_result;
 }
 
 /// Handle DataWeave CSV to JSON conversion
