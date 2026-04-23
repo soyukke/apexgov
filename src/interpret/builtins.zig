@@ -4157,85 +4157,113 @@ fn create_field_describe_result_with_type(
     fdr.* = .{ .class_name = "DescribeFieldResult" };
     const canonical_name: []const u8 = canonical_field_api_name(ctx, object_type, field_name);
     const metadata = lookup_field_metadata(ctx, object_type, canonical_name);
-    try fdr.fields.put(ctx.arena, "name", Value{ .string = canonical_name });
-    try fdr.fields.put(
-        ctx.arena,
-        "localName",
-        Value{ .string = describe_local_name(canonical_name) },
+    try cfdr_put_identity_fields(ctx, fdr, object_type, canonical_name, field_name, metadata);
+    try cfdr_put_permission_fields(ctx, fdr, object_type, field_name);
+    try fdr.fields.put(ctx.arena, "length", Value{
+        .integer = cfdr_resolve_length(field_name, metadata),
+    });
+    try fdr.fields.put(ctx.arena, "isNillable", Value{
+        .boolean = if (metadata) |meta| !meta.is_required else default_field_is_nillable(object_type, field_name),
+    });
+    const ft: []const u8 = map_xml_type_to_display_type(
+        cfdr_resolve_raw_field_type(ctx, object_type, field_name, field_type),
     );
-    try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse default_field_label(field_name) else default_field_label(field_name) });
-    try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
-    try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try fdr.fields.put(
-        ctx.arena,
-        "isAccessible",
-        Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) },
-    );
-    // Id and system fields are not updateable/createable
-    const is_sys_field = is_system_field(field_name);
-    try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_sys_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "edit") });
-    try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_sys_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "create") });
-    try fdr.fields.put(
-        ctx.arena,
-        "isFilterable",
-        Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) },
-    );
-    // Set field length based on field type
-    const length: i64 = if (metadata != null and metadata.?.length != null)
-        metadata.?.length.?
-    else if (std.ascii.eqlIgnoreCase(field_name, "Id"))
-        18
-    else if (std.ascii.eqlIgnoreCase(field_name, "Name") or
-        std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
-        255
-    else
-        131072;
-    try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
-    try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = if (metadata) |meta| !meta.is_required else default_field_is_nillable(object_type, field_name) });
-    // Set field type — map XML type to DisplayType enum name, infer from field name if not provided
-    const raw_ft: []const u8 = field_type orelse blk: {
-        if (ctx.eval.field_types.get(object_type)) |type_map| {
-            for (type_map.keys(), type_map.values()) |known_field_name, known_type| {
-                if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) break :blk known_type;
-            }
-        }
-        break :blk infer_field_type_for_object(object_type, field_name);
-    };
-    const ft: []const u8 = map_xml_type_to_display_type(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
-    try fdr.fields.put(
-        ctx.arena,
-        "isSortable",
-        Value{ .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA") },
-    );
+    try fdr.fields.put(ctx.arena, "isSortable", Value{
+        .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA"),
+    });
     if (std.ascii.eqlIgnoreCase(ft, "REFERENCE")) {
         if (try default_relationship_name(ctx.arena, field_name)) |relationship_name| {
             try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
         }
     }
-    // Set SoapType based on field type
-    const soap: []const u8 = if (std.ascii.eqlIgnoreCase(ft, "Boolean"))
-        "BOOLEAN"
-    else if (std.ascii.eqlIgnoreCase(ft, "Integer") or std.ascii.eqlIgnoreCase(ft, "Long"))
-        "INTEGER"
-    else if (std.ascii.eqlIgnoreCase(ft, "Double") or
-        std.ascii.eqlIgnoreCase(ft, "Currency") or
-        std.ascii.eqlIgnoreCase(ft, "Percent"))
-        "DOUBLE"
-    else if (std.ascii.eqlIgnoreCase(ft, "Date"))
-        "DATE"
-    else if (std.ascii.eqlIgnoreCase(ft, "DateTime"))
-        "DATETIME"
-    else if (std.ascii.eqlIgnoreCase(ft, "ID") or std.ascii.eqlIgnoreCase(ft, "REFERENCE"))
-        "ID"
-    else
-        "STRING";
-    try fdr.fields.put(ctx.arena, "soapType", Value{ .string = soap });
+    try fdr.fields.put(ctx.arena, "soapType", Value{ .string = cfdr_soap_type(ft) });
     // getDefaultValue() support — look up from field_defaults if available
     // The field_defaults map is populated from field-meta.xml <default_value>
     // We don't set a default here because it depends on the SObject type context,
     // which is handled by the caller (create_describe_result).
     return Value{ .object = fdr };
+}
+
+fn cfdr_put_identity_fields(
+    ctx: *BuiltinContext,
+    fdr: *types.ObjectInstance,
+    object_type: []const u8,
+    canonical_name: []const u8,
+    field_name: []const u8,
+    metadata: ?evaluator_mod.FieldMetadata,
+) !void {
+    try fdr.fields.put(ctx.arena, "name", Value{ .string = canonical_name });
+    try fdr.fields.put(ctx.arena, "localName", Value{
+        .string = describe_local_name(canonical_name),
+    });
+    const label = if (metadata) |meta|
+        meta.label orelse default_field_label(field_name)
+    else
+        default_field_label(field_name);
+    try fdr.fields.put(ctx.arena, "label", Value{ .string = label });
+    try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
+    try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
+}
+
+fn cfdr_put_permission_fields(
+    ctx: *BuiltinContext,
+    fdr: *types.ObjectInstance,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    try fdr.fields.put(ctx.arena, "isAccessible", Value{
+        .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name),
+    });
+    // Id and system fields are not updateable/createable
+    const is_sys_field = is_system_field(field_name);
+    try fdr.fields.put(ctx.arena, "isUpdateable", Value{
+        .boolean = !is_sys_field and
+            resolve_field_write_permission(ctx.eval, object_type, field_name, "edit"),
+    });
+    try fdr.fields.put(ctx.arena, "isCreateable", Value{
+        .boolean = !is_sys_field and
+            resolve_field_write_permission(ctx.eval, object_type, field_name, "create"),
+    });
+    try fdr.fields.put(ctx.arena, "isFilterable", Value{
+        .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name),
+    });
+}
+
+fn cfdr_resolve_length(field_name: []const u8, metadata: ?evaluator_mod.FieldMetadata) i64 {
+    if (metadata) |meta| if (meta.length) |len| return len;
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(field_name, "Id")) return 18;
+    if (ci.eqlIgnoreCase(field_name, "Name") or ci.eqlIgnoreCase(field_name, "OwnerId")) return 255;
+    return 131072;
+}
+
+fn cfdr_resolve_raw_field_type(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+    field_type: ?[]const u8,
+) []const u8 {
+    if (field_type) |ft| return ft;
+    if (ctx.eval.field_types.get(object_type)) |type_map| {
+        for (type_map.keys(), type_map.values()) |known_field_name, known_type| {
+            if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) return known_type;
+        }
+    }
+    return infer_field_type_for_object(object_type, field_name);
+}
+
+fn cfdr_soap_type(ft: []const u8) []const u8 {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(ft, "Boolean")) return "BOOLEAN";
+    if (ci.eqlIgnoreCase(ft, "Integer") or ci.eqlIgnoreCase(ft, "Long")) return "INTEGER";
+    if (ci.eqlIgnoreCase(ft, "Double") or
+        ci.eqlIgnoreCase(ft, "Currency") or
+        ci.eqlIgnoreCase(ft, "Percent")) return "DOUBLE";
+    if (ci.eqlIgnoreCase(ft, "Date")) return "DATE";
+    if (ci.eqlIgnoreCase(ft, "DateTime")) return "DATETIME";
+    if (ci.eqlIgnoreCase(ft, "ID") or ci.eqlIgnoreCase(ft, "REFERENCE")) return "ID";
+    return "STRING";
 }
 
 /// field-meta.xml の <type> 値を Schema.DisplayType enum 名にマッピング。
