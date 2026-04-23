@@ -11422,6 +11422,76 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
+    fn throw_null_pointer_exception(self: *Evaluator) !void {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.NullPointerException" };
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = "Attempt to de-reference a null object" },
+        );
+        self.pending_exception = Value{ .object = exc };
+    }
+
+    fn eval_primitive_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) !?Value {
+        if (obj == .boolean) {
+            if (std.ascii.eqlIgnoreCase(method, "toString")) {
+                return Value{ .string = if (obj.boolean) "true" else "false" };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+                return Value{ .integer = if (obj.boolean) 1231 else 1237 };
+            }
+        }
+        if (obj == .integer) {
+            if (std.ascii.eqlIgnoreCase(method, "toString")) {
+                return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "hashCode")) return obj;
+        }
+        if (obj == .long) {
+            if (std.ascii.eqlIgnoreCase(method, "toString")) {
+                return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+                return Value{ .integer = @intCast(obj.long) };
+            }
+        }
+        if (obj == .double) {
+            if (std.ascii.eqlIgnoreCase(method, "toString")) {
+                return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
+            }
+            if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
+                return Value{ .integer = @intFromFloat(obj.double) };
+            }
+        }
+        return null;
+    }
+
+    fn eval_search_query_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (obj != .object) return null;
+        if (!(std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "System.Search")))
+        {
+            return null;
+        }
+        if (!std.ascii.eqlIgnoreCase(method, "query")) return null;
+        if (args.len > 0 and args[0] == .string) {
+            return try self.execute_sosl(args[0].string);
+        }
+        const outer = try self.arena.create(types.ListValue);
+        outer.* = .{};
+        return Value{ .list = outer };
+    }
+
     fn eval_instance_method(
         self: *Evaluator,
         obj: Value,
@@ -11430,55 +11500,11 @@ pub const Evaluator = struct {
         current_env: *Env,
     ) anyerror!Value {
         if (obj == .null_val) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "System.NullPointerException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = "Attempt to de-reference a null object" },
-            );
-            self.pending_exception = Value{ .object = exc };
+            try self.throw_null_pointer_exception();
             return error.ApexException;
         }
-        if (obj == .object and
-            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or std.ascii.eqlIgnoreCase(
-                obj.object.class_name,
-                "System.Search",
-            )) and
-            std.ascii.eqlIgnoreCase(method, "query"))
-        {
-            if (args.len > 0 and args[0] == .string) {
-                return self.execute_sosl(args[0].string);
-            }
-            const outer = try self.arena.create(types.ListValue);
-            outer.* = .{};
-            return Value{ .list = outer };
-        }
-
-        if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
-            return Value{ .string = if (obj.boolean) "true" else "false" };
-        }
-        if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "hashCode")) {
-            return Value{ .integer = if (obj.boolean) 1231 else 1237 };
-        }
-        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "toString")) {
-            return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
-        }
-        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "hashCode")) {
-            return obj;
-        }
-        if (obj == .long and std.ascii.eqlIgnoreCase(method, "toString")) {
-            return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
-        }
-        if (obj == .long and std.ascii.eqlIgnoreCase(method, "hashCode")) {
-            return Value{ .integer = @intCast(obj.long) };
-        }
-        if (obj == .double and std.ascii.eqlIgnoreCase(method, "toString")) {
-            return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
-        }
-        if (obj == .double and std.ascii.eqlIgnoreCase(method, "hashCode")) {
-            return Value{ .integer = @intFromFloat(obj.double) };
-        }
+        if (try self.eval_search_query_method(obj, method, args)) |v| return v;
+        if (try self.eval_primitive_instance_method(obj, method)) |v| return v;
 
         // Http.send() mock interception
         if (obj == .object and std.ascii.eqlIgnoreCase(method, "send") and
