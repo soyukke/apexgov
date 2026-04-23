@@ -3367,35 +3367,41 @@ pub const Evaluator = struct {
     }
 
     fn insert_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
-        if (obj.id != null) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_FIELD_FOR_INSERT_UPDATE: cannot specify Id in an insert call" });
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
-        }
-        if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-            if (id_val != .null_val) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_FIELD_FOR_INSERT_UPDATE: cannot specify Id in an insert call" });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-        }
-
+        try self.reject_insert_with_id(obj);
         try self.apply_missing_field_defaults(obj);
-
-        // Validate required fields — throw DmlException on failure
         if (try self.validate_required_fields(obj, false)) |err_msg| {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_dml_exception(err_msg);
         }
 
-        // Auto-assign Id using Salesforce-style key prefixes for known types
+        const id = try self.assign_new_sobject_id(obj);
+        const generated_flags = self.snapshot_generated_audit_flags(obj);
+        const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
+        try self.stamp_insert_audit_fields(obj);
+        try self.synthesize_default_name_field(obj, id);
+        try self.stamp_default_owner(obj);
+        try self.resolve_relationship_foreign_keys(obj);
+
+        if (self.find_unique_field_conflict(obj, false)) |field_name| {
+            obj.id = null;
+            try obj.fields.put(self.arena, "Id", Value.null_val);
+            return self.throw_duplicate_value(field_name);
+        }
+
+        const snapshot = try self.append_snapshot_to_store(obj, id, now_str, generated_flags);
+        try self.apply_insert_type_specific_defaults(obj, snapshot, id);
+    }
+
+    fn reject_insert_with_id(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        const msg = "INVALID_FIELD_FOR_INSERT_UPDATE: cannot specify Id in an insert call";
+        if (obj.id != null) return self.throw_dml_exception(msg);
+        if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
+            if (id_val != .null_val) return self.throw_dml_exception(msg);
+        }
+    }
+
+    /// Auto-assign an Id using Salesforce-style key prefixes, store the
+    /// Id → type_name mapping for `getSObjectType()` lookups, and return it.
+    fn assign_new_sobject_id(self: *Evaluator, obj: *types.SObject) ![]const u8 {
         const key_prefix = sobject_key_prefix(obj.type_name);
         const id = try std.fmt.allocPrint(
             self.arena,
@@ -3405,35 +3411,33 @@ pub const Evaluator = struct {
         self.next_id += 1;
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
-        // Register Id → type_name mapping for getSObjectType() lookups
         try self.id_type_map.put(self.arena, id, obj.type_name);
+        return id;
+    }
 
-        // Auto-generate system timestamp fields using current time. These are
-        // persisted immediately, but they do not become populated on the live
-        // in-memory SObject until a query or explicit test hook materializes them.
-        const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
-        const generated_created_date = utils.sobject_get(&obj.fields, "CreatedDate") == null;
-        const generated_last_modified_date = utils.sobject_get(
-            &obj.fields,
-            "LastModifiedDate",
-        ) == null;
-        const generated_system_modstamp = utils.sobject_get(&obj.fields, "SystemModstamp") == null;
+    const InsertAuditFlags = struct {
+        created_date: bool,
+        last_modified_date: bool,
+        system_modstamp: bool,
+    };
 
-        // Auto-set CreatedById and CreatedBy relationship
+    fn snapshot_generated_audit_flags(
+        _: *Evaluator,
+        obj: *types.SObject,
+    ) InsertAuditFlags {
+        return .{
+            .created_date = utils.sobject_get(&obj.fields, "CreatedDate") == null,
+            .last_modified_date = utils.sobject_get(&obj.fields, "LastModifiedDate") == null,
+            .system_modstamp = utils.sobject_get(&obj.fields, "SystemModstamp") == null,
+        };
+    }
+
+    fn stamp_insert_audit_fields(self: *Evaluator, obj: *types.SObject) !void {
         if (utils.sobject_get(&obj.fields, "CreatedById") == null) {
             try obj.fields.put(self.arena, "CreatedById", Value{ .string = "005000000000001" });
         }
         if (utils.sobject_get(&obj.fields, "CreatedBy") == null) {
-            const created_by = try self.arena.create(types.SObject);
-            created_by.* = .{ .type_name = "User", .id = "005000000000001" };
-            try created_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
-            try created_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-            try created_by.fields.put(
-                self.arena,
-                "Username",
-                Value{ .string = "testuser@example.com" },
-            );
-            try obj.fields.put(self.arena, "CreatedBy", Value{ .sobject = created_by });
+            try obj.fields.put(self.arena, "CreatedBy", try self.make_test_user_sobject());
         }
         if (utils.sobject_get(&obj.fields, "LastModifiedById") == null) {
             try obj.fields.put(
@@ -3443,63 +3447,72 @@ pub const Evaluator = struct {
             );
         }
         if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
-            const modified_by = try self.arena.create(types.SObject);
-            modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
-            try modified_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
-            try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-            try modified_by.fields.put(
-                self.arena,
-                "Username",
-                Value{ .string = "testuser@example.com" },
-            );
-            try obj.fields.put(self.arena, "LastModifiedBy", Value{ .sobject = modified_by });
+            try obj.fields.put(self.arena, "LastModifiedBy", try self.make_test_user_sobject());
         }
+    }
 
-        // Synthesize Name when it was omitted or explicitly set to null.
+    fn make_test_user_sobject(self: *Evaluator) !Value {
+        const u = try self.arena.create(types.SObject);
+        u.* = .{ .type_name = "User", .id = "005000000000001" };
+        try u.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+        try u.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        try u.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
+        return Value{ .sobject = u };
+    }
+
+    fn synthesize_default_name_field(
+        self: *Evaluator,
+        obj: *types.SObject,
+        id: []const u8,
+    ) !void {
         const existing_name = utils.sobject_get(&obj.fields, "Name");
-        if (has_implicit_name_field(obj.type_name) and
-            (existing_name == null or existing_name.? == .null_val))
+        if (!has_implicit_name_field(obj.type_name)) return;
+        if (existing_name != null and existing_name.? != .null_val) return;
+
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or
+            std.ascii.eqlIgnoreCase(obj.type_name, "Lead"))
         {
-            if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or
-                std.ascii.eqlIgnoreCase(obj.type_name, "Lead"))
-            {
-                const first = if (utils.sobject_get(
-                    &obj.fields,
-                    "FirstName",
-                )) |v| (if (v == .string) v.string else "") else "";
-                const last = if (utils.sobject_get(
-                    &obj.fields,
-                    "LastName",
-                )) |v| (if (v == .string) v.string else "") else "";
-                const name = if (first.len > 0 and last.len > 0)
-                    try std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last })
-                else if (last.len > 0)
-                    last
-                else if (first.len > 0)
-                    first
-                else
-                    try std.fmt.allocPrint(
-                        self.arena,
-                        "{s}-{d:0>4}",
-                        .{ obj.type_name, self.next_id - 1 },
-                    );
-                try obj.fields.put(self.arena, "Name", Value{ .string = name });
-            } else if (existing_name != null and existing_name.? == .null_val) {
-                try obj.fields.put(self.arena, "Name", Value{ .string = id });
-            } else {
-                // Auto-generate Name for other objects (simulates auto-number for custom objects)
-                const auto_name = try std.fmt.allocPrint(
+            const first = if (utils.sobject_get(&obj.fields, "FirstName")) |v|
+                (if (v == .string) v.string else "")
+            else
+                "";
+            const last = if (utils.sobject_get(&obj.fields, "LastName")) |v|
+                (if (v == .string) v.string else "")
+            else
+                "";
+            const name = if (first.len > 0 and last.len > 0)
+                try std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last })
+            else if (last.len > 0)
+                last
+            else if (first.len > 0)
+                first
+            else
+                try std.fmt.allocPrint(
                     self.arena,
                     "{s}-{d:0>4}",
                     .{ obj.type_name, self.next_id - 1 },
                 );
-                try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
-            }
+            try obj.fields.put(self.arena, "Name", Value{ .string = name });
+            return;
         }
+        if (existing_name != null and existing_name.? == .null_val) {
+            try obj.fields.put(self.arena, "Name", Value{ .string = id });
+            return;
+        }
+        const auto_name = try std.fmt.allocPrint(
+            self.arena,
+            "{s}-{d:0>4}",
+            .{ obj.type_name, self.next_id - 1 },
+        );
+        try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+    }
 
-        // Auto-set OwnerId to current user if not specified (Salesforce default)
+    fn stamp_default_owner(self: *Evaluator, obj: *types.SObject) !void {
         if (utils.sobject_get(&obj.fields, "OwnerId") == null) {
-            const default_owner_id = if (self.is_guest_user_id(self.current_user_id)) "005000000000001" else self.current_user_id;
+            const default_owner_id = if (self.is_guest_user_id(self.current_user_id))
+                "005000000000001"
+            else
+                self.current_user_id;
             try obj.fields.put(self.arena, "OwnerId", Value{ .string = default_owner_id });
         }
         if (utils.sobject_get(&obj.fields, "OwnerId")) |owner_val| {
@@ -3507,293 +3520,293 @@ pub const Evaluator = struct {
                 try obj.fields.put(self.arena, "OwnerId", Value{ .string = "005000000000001" });
             }
         }
+    }
 
-        // Resolve relationship fields → set foreign key Ids
-        // e.g., Contact.Account = accountRef → Contact.AccountId = accountRef.Id
-        {
-            var rel_keys_buf: [16][]const u8 = undefined;
-            var rel_vals_buf: [16]Value = undefined;
-            var rel_count: usize = 0;
-            for (obj.fields.keys(), obj.fields.values()) |k, v| {
-                if (v == .sobject and rel_count < rel_keys_buf.len) {
-                    const fk_name = try std.fmt.allocPrint(self.arena, "{s}Id", .{k});
-                    if (utils.sobject_get(&obj.fields, fk_name) == null) {
-                        if (v.sobject.id != null) {
-                            // Direct reference with Id
-                            rel_keys_buf[rel_count] = fk_name;
-                            rel_vals_buf[rel_count] = Value{ .string = v.sobject.id.? };
-                            rel_count += 1;
-                        } else {
-                            // External ID-based reference: find matching record in store
-                            const ref_type = v.sobject.type_name;
-                            // Look for external ID fields on the reference
-                            for (v.sobject.fields.keys(), v.sobject.fields.values()) |rk, rv| {
-                                if ((std.mem.endsWith(u8, rk, "__c") or std.mem.endsWith(
-                                    u8,
-                                    rk,
-                                    "Id__c",
-                                )) and rv == .string) {
-                                    // Search store for a record of this type with matching external
-                                    // ID
-                                    if (self.store.get(ref_type)) |records| {
-                                        for (records.items) |rec| {
-                                            if (rec == .sobject and rec.sobject.id != null) {
-                                                if (utils.sobject_get(
-                                                    &rec.sobject.fields,
-                                                    rk,
-                                                )) |stored_val| {
-                                                    if (stored_val == .string and std.mem.eql(
-                                                        u8,
-                                                        stored_val.string,
-                                                        rv.string,
-                                                    )) {
-                                                        rel_keys_buf[rel_count] = fk_name;
-                                                        rel_vals_buf[rel_count] = Value{ .string = rec.sobject.id.? };
-                                                        rel_count += 1;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    break; // Only check first external ID field
-                                }
-                            }
-                        }
-                    }
+    /// Resolve each `FieldName = someSObject` mapping into its corresponding
+    /// `FieldNameId` foreign key, following external-Id lookups when the
+    /// referenced record has no Id yet.
+    fn resolve_relationship_foreign_keys(
+        self: *Evaluator,
+        obj: *types.SObject,
+    ) !void {
+        var rel_keys_buf: [16][]const u8 = undefined;
+        var rel_vals_buf: [16]Value = undefined;
+        var rel_count: usize = 0;
+        for (obj.fields.keys(), obj.fields.values()) |k, v| {
+            if (v != .sobject) continue;
+            if (rel_count >= rel_keys_buf.len) continue;
+            const fk_name = try std.fmt.allocPrint(self.arena, "{s}Id", .{k});
+            if (utils.sobject_get(&obj.fields, fk_name) != null) continue;
+            if (v.sobject.id) |sid| {
+                rel_keys_buf[rel_count] = fk_name;
+                rel_vals_buf[rel_count] = Value{ .string = sid };
+                rel_count += 1;
+                continue;
+            }
+            if (self.resolve_external_id_reference(v.sobject)) |resolved_id| {
+                rel_keys_buf[rel_count] = fk_name;
+                rel_vals_buf[rel_count] = Value{ .string = resolved_id };
+                rel_count += 1;
+            }
+        }
+        for (rel_keys_buf[0..rel_count], rel_vals_buf[0..rel_count]) |rk, rv| {
+            try obj.fields.put(self.arena, rk, rv);
+        }
+    }
+
+    /// Look for an external-Id field (`*__c` / `*Id__c`) on `ref` and find a
+    /// stored record of the same type matching that value. Returns the stored
+    /// record's Id when a match is found.
+    fn resolve_external_id_reference(
+        self: *Evaluator,
+        ref: *types.SObject,
+    ) ?[]const u8 {
+        for (ref.fields.keys(), ref.fields.values()) |rk, rv| {
+            if (!(std.mem.endsWith(u8, rk, "__c") or std.mem.endsWith(u8, rk, "Id__c"))) continue;
+            if (rv != .string) continue;
+            const records = self.store.get(ref.type_name) orelse return null;
+            for (records.items) |rec| {
+                if (rec != .sobject or rec.sobject.id == null) continue;
+                const stored_val = utils.sobject_get(&rec.sobject.fields, rk) orelse continue;
+                if (stored_val == .string and std.mem.eql(u8, stored_val.string, rv.string)) {
+                    return rec.sobject.id.?;
                 }
             }
-            for (rel_keys_buf[0..rel_count], rel_vals_buf[0..rel_count]) |rk, rv| {
-                try obj.fields.put(self.arena, rk, rv);
-            }
+            return null; // Only check first external-Id field.
         }
+        return null;
+    }
 
-        if (self.find_unique_field_conflict(obj, false)) |field_name| {
-            obj.id = null;
-            try obj.fields.put(self.arena, "Id", Value.null_val);
-            return self.throw_duplicate_value(field_name);
-        }
-
-        // Add a snapshot copy to store (so later mutations to the live object don't affect stored
-        // records)
+    /// Append a shallow snapshot to the store so later mutations to the live
+    /// object don't affect the stored row. Auto-generated audit timestamps
+    /// are written directly onto the snapshot (not the live object), so the
+    /// caller observes system-set fields only via future queries.
+    fn append_snapshot_to_store(
+        self: *Evaluator,
+        obj: *types.SObject,
+        id: []const u8,
+        now_str: []const u8,
+        flags: InsertAuditFlags,
+    ) !*types.SObject {
         const snapshot = try self.arena.create(types.SObject);
         snapshot.* = .{ .type_name = obj.type_name, .id = id };
         for (obj.fields.keys(), obj.fields.values()) |k, v| {
             try snapshot.fields.put(self.arena, k, v);
         }
-        if (generated_created_date) {
+        if (flags.created_date) {
             try snapshot.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
         }
-        if (generated_last_modified_date) {
+        if (flags.last_modified_date) {
             try snapshot.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str });
         }
-        if (generated_system_modstamp) {
+        if (flags.system_modstamp) {
             try snapshot.fields.put(self.arena, "SystemModstamp", Value{ .string = now_str });
         }
         const gop = try self.store.getOrPut(self.arena, obj.type_name);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .empty;
-        }
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(self.arena, Value{ .sobject = snapshot });
+        return snapshot;
+    }
 
-        // Auto-generate ContentDownloadUrl for ContentDistribution
+    fn apply_insert_type_specific_defaults(
+        self: *Evaluator,
+        obj: *types.SObject,
+        snapshot: *types.SObject,
+        id: []const u8,
+    ) !void {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentDistribution")) {
             if (utils.sobject_get(&obj.fields, "ContentDownloadUrl") == null) {
-                try obj.fields.put(
-                    self.arena,
-                    "ContentDownloadUrl",
-                    Value{ .string = "https://mock.salesforce.com/content/download" },
-                );
-                try snapshot.fields.put(
-                    self.arena,
-                    "ContentDownloadUrl",
-                    Value{ .string = "https://mock.salesforce.com/content/download" },
-                );
+                const url = Value{ .string = "https://mock.salesforce.com/content/download" };
+                try obj.fields.put(self.arena, "ContentDownloadUrl", url);
+                try snapshot.fields.put(self.arena, "ContentDownloadUrl", url);
             }
         }
-
-        // Auto-set IsLatest for ContentVersion
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
             if (utils.sobject_get(&obj.fields, "IsLatest") == null) {
                 try obj.fields.put(self.arena, "IsLatest", Value{ .boolean = true });
                 try snapshot.fields.put(self.arena, "IsLatest", Value{ .boolean = true });
             }
+            try self.auto_create_content_document_for_version(obj, snapshot, id);
         }
-
-        // Auto-resolve ContentDocument reference on ContentDocumentLink insert
         if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentDocumentLink")) {
-            // Validate LinkedEntityId references an existing record
-            const linked_entity_id = utils.sobject_get(&obj.fields, "LinkedEntityId");
-            if (linked_entity_id != null and linked_entity_id.? == .string) {
-                const lid = linked_entity_id.?.string;
-                // Check if the record exists in any store
-                var found_linked = false;
-                var store_iter = self.store.iterator();
-                while (store_iter.next()) |entry| {
-                    for (entry.value_ptr.items) |rec| {
-                        if (rec == .sobject and rec.sobject.id != null) {
-                            if (std.mem.eql(u8, rec.sobject.id.?, lid)) {
-                                found_linked = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (found_linked) break;
-                }
-                if (!found_linked) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "DmlException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_FIELD_FOR_INSERT_UPDATE: LinkedEntityId does not reference a valid record" });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-            }
-            // Auto-attach ContentDocument nested reference from store
-            const cd_id_val = utils.sobject_get(&obj.fields, "ContentDocumentId");
-            if (cd_id_val != null and cd_id_val.? == .string) {
-                const cd_id_str = cd_id_val.?.string;
-                if (self.find_record_by_id("ContentDocument", cd_id_str)) |cd_rec| {
-                    if (cd_rec == .sobject) {
-                        try obj.fields.put(self.arena, "ContentDocument", cd_rec);
-                        try snapshot.fields.put(self.arena, "ContentDocument", cd_rec);
-                    }
-                }
-            }
+            try self.validate_and_attach_content_document_link(obj, snapshot);
         }
-
-        // Auto-create ContentDocument when ContentVersion is inserted (Salesforce always creates
-        // one)
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "ContentVersion")) {
-            const first_pub_loc = utils.sobject_get(&obj.fields, "FirstPublishLocationId");
-            {
-                // Create ContentDocument
-                const cd_id = try self.alloc_id();
-                const cd = try self.arena.create(types.SObject);
-                cd.* = .{ .type_name = "ContentDocument", .id = cd_id };
-                try cd.fields.put(self.arena, "Id", Value{ .string = cd_id });
-                try cd.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
-                try cd.fields.put(
-                    self.arena,
-                    "Title",
-                    utils.sobject_get(&obj.fields, "Title") orelse Value{ .string = "Untitled" },
-                );
-                // Derive FileType from PathOnClient extension
-                const path_on_client = if (utils.sobject_get(
-                    &obj.fields,
-                    "PathOnClient",
-                )) |poc| (if (poc == .string) poc.string else "") else "";
-                const ew = std.ascii.endsWithIgnoreCase;
-                const file_type: []const u8 = blk: {
-                    if (ew(path_on_client, ".png")) break :blk "PNG";
-                    if (ew(path_on_client, ".jpg") or ew(path_on_client, ".jpeg")) break :blk "JPG";
-                    if (ew(path_on_client, ".gif")) break :blk "GIF";
-                    if (ew(path_on_client, ".pdf")) break :blk "PDF";
-                    if (ew(path_on_client, ".docx")) break :blk "WORD_X";
-                    if (ew(path_on_client, ".xlsx")) break :blk "EXCEL_X";
-                    if (ew(path_on_client, ".pptx")) break :blk "POWER_POINT_X";
-                    if (ew(path_on_client, ".m4a")) break :blk "M4A";
-                    break :blk "UNKNOWN";
-                };
-                try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
-                const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
-                if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
-                try cd_gop.value_ptr.append(self.arena, Value{ .sobject = cd });
-                // Store ContentDocumentId on the ContentVersion
-                try obj.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
-                try snapshot.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
-                // Create ContentDocumentLink only if FirstPublishLocationId is set
-                if (first_pub_loc != null and first_pub_loc.? != .null_val) {
-                    const cdl_id = try self.alloc_id();
-                    const cdl = try self.arena.create(types.SObject);
-                    cdl.* = .{ .type_name = "ContentDocumentLink", .id = cdl_id };
-                    try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
-                    try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
-                    try cdl.fields.put(self.arena, "LinkedEntityId", first_pub_loc.?);
-                    // Nested ContentDocument reference for SOQL
-                    const cd_ref = try self.arena.create(types.SObject);
-                    cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
-                    try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
-                    try cd_ref.fields.put(
-                        self.arena,
-                        "LatestPublishedVersionId",
-                        Value{ .string = id },
-                    );
-                    try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
-                    try cdl.fields.put(self.arena, "ContentDocument", Value{ .sobject = cd_ref });
-                    const cdl_gop = try self.store.getOrPut(self.arena, "ContentDocumentLink");
-                    if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
-                    try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
-                }
-            }
-        }
-
-        // Auto-create the two default CampaignMemberStatus records (Sent, Responded)
-        // when a Campaign is inserted, matching Salesforce behavior.
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Campaign")) {
-            const default_statuses = [_]struct { label: []const u8, is_default: bool, has_responded: bool, sort_order: i64 }{
-                .{ .label = "Sent", .is_default = true, .has_responded = false, .sort_order = 1 },
-                .{ .label = "Responded", .is_default = false, .has_responded = true, .sort_order = 2 },
-            };
-            for (default_statuses) |ds| {
-                const cms_id = try self.alloc_id();
-                const cms = try self.arena.create(types.SObject);
-                cms.* = .{ .type_name = "CampaignMemberStatus", .id = cms_id };
-                try cms.fields.put(self.arena, "Id", Value{ .string = cms_id });
-                try cms.fields.put(self.arena, "CampaignId", Value{ .string = id });
-                try cms.fields.put(self.arena, "Label", Value{ .string = ds.label });
-                try cms.fields.put(self.arena, "IsDefault", Value{ .boolean = ds.is_default });
-                try cms.fields.put(
-                    self.arena,
-                    "HasResponded",
-                    Value{ .boolean = ds.has_responded },
-                );
-                try cms.fields.put(self.arena, "SortOrder", Value{ .integer = ds.sort_order });
-                const cms_gop = try self.store.getOrPut(self.arena, "CampaignMemberStatus");
-                if (!cms_gop.found_existing) cms_gop.value_ptr.* = .empty;
-                try cms_gop.value_ptr.append(self.arena, Value{ .sobject = cms });
-            }
+            try self.auto_create_campaign_member_statuses(id);
         }
-
-        // Auto-create EmailMessageRelation for each toId when EmailMessage is inserted
         if (std.ascii.eqlIgnoreCase(obj.type_name, "EmailMessage")) {
-            if (utils.sobject_get(&obj.fields, "toIds")) |to_ids_val| {
-                if (to_ids_val == .list) {
-                    for (to_ids_val.list.items.items) |to_id_item| {
-                        if (to_id_item == .string) {
-                            const emr_id = try self.alloc_id();
-                            const emr = try self.arena.create(types.SObject);
-                            emr.* = .{ .type_name = "EmailMessageRelation", .id = emr_id };
-                            try emr.fields.put(self.arena, "Id", Value{ .string = emr_id });
-                            try emr.fields.put(self.arena, "EmailMessageId", Value{ .string = id });
-                            try emr.fields.put(self.arena, "RelationId", to_id_item);
-                            try emr.fields.put(
-                                self.arena,
-                                "RelationType",
-                                Value{ .string = "ToAddress" },
-                            );
-                            const emr_gop = try self.store.getOrPut(
-                                self.arena,
-                                "EmailMessageRelation",
-                            );
-                            if (!emr_gop.found_existing) emr_gop.value_ptr.* = .empty;
-                            try emr_gop.value_ptr.append(self.arena, Value{ .sobject = emr });
-                        }
-                    }
-                }
-            }
+            try self.auto_create_email_message_relations(obj, id);
         }
-
-        // Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is inserted
         if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordItem")) {
             try self.update_duplicate_record_set_count(obj, 1);
         }
-
-        // Auto-initialize RecordCount to 0 on DuplicateRecordSet insert
         if (std.ascii.eqlIgnoreCase(obj.type_name, "DuplicateRecordSet")) {
             if (utils.sobject_get(&obj.fields, "RecordCount") == null) {
                 try obj.fields.put(self.arena, "RecordCount", Value{ .integer = 0 });
                 try snapshot.fields.put(self.arena, "RecordCount", Value{ .integer = 0 });
             }
+        }
+    }
+
+    /// Validate the LinkedEntityId references an existing record and attach a
+    /// nested ContentDocument reference from the store for SOQL projections.
+    fn validate_and_attach_content_document_link(
+        self: *Evaluator,
+        obj: *types.SObject,
+        snapshot: *types.SObject,
+    ) !void {
+        if (utils.sobject_get(&obj.fields, "LinkedEntityId")) |lid_val| {
+            if (lid_val == .string) {
+                const lid = lid_val.string;
+                var found_linked = false;
+                var store_iter = self.store.iterator();
+                while (store_iter.next()) |entry| {
+                    for (entry.value_ptr.items) |rec| {
+                        if (rec == .sobject and rec.sobject.id != null and
+                            std.mem.eql(u8, rec.sobject.id.?, lid))
+                        {
+                            found_linked = true;
+                            break;
+                        }
+                    }
+                    if (found_linked) break;
+                }
+                if (!found_linked) {
+                    return self.throw_dml_exception(
+                        "INVALID_FIELD_FOR_INSERT_UPDATE: LinkedEntityId does not " ++
+                            "reference a valid record",
+                    );
+                }
+            }
+        }
+        const cd_id_val = utils.sobject_get(&obj.fields, "ContentDocumentId") orelse return;
+        if (cd_id_val != .string) return;
+        const cd_rec = self.find_record_by_id("ContentDocument", cd_id_val.string) orelse return;
+        if (cd_rec != .sobject) return;
+        try obj.fields.put(self.arena, "ContentDocument", cd_rec);
+        try snapshot.fields.put(self.arena, "ContentDocument", cd_rec);
+    }
+
+    /// Salesforce always creates a ContentDocument + optional ContentDocumentLink
+    /// when a ContentVersion is inserted.
+    fn auto_create_content_document_for_version(
+        self: *Evaluator,
+        obj: *types.SObject,
+        snapshot: *types.SObject,
+        id: []const u8,
+    ) !void {
+        const first_pub_loc = utils.sobject_get(&obj.fields, "FirstPublishLocationId");
+        const cd_id = try self.alloc_id();
+        const cd = try self.arena.create(types.SObject);
+        cd.* = .{ .type_name = "ContentDocument", .id = cd_id };
+        try cd.fields.put(self.arena, "Id", Value{ .string = cd_id });
+        try cd.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = id });
+        try cd.fields.put(
+            self.arena,
+            "Title",
+            utils.sobject_get(&obj.fields, "Title") orelse Value{ .string = "Untitled" },
+        );
+        const path_on_client = if (utils.sobject_get(&obj.fields, "PathOnClient")) |poc|
+            (if (poc == .string) poc.string else "")
+        else
+            "";
+        const file_type = content_version_file_type(path_on_client);
+        try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
+        const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
+        if (!cd_gop.found_existing) cd_gop.value_ptr.* = .empty;
+        try cd_gop.value_ptr.append(self.arena, Value{ .sobject = cd });
+        try obj.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+        try snapshot.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+        if (first_pub_loc != null and first_pub_loc.? != .null_val) {
+            try self.auto_create_content_document_link(cd_id, id, file_type, first_pub_loc.?);
+        }
+    }
+
+    fn content_version_file_type(path_on_client: []const u8) []const u8 {
+        const ew = std.ascii.endsWithIgnoreCase;
+        if (ew(path_on_client, ".png")) return "PNG";
+        if (ew(path_on_client, ".jpg") or ew(path_on_client, ".jpeg")) return "JPG";
+        if (ew(path_on_client, ".gif")) return "GIF";
+        if (ew(path_on_client, ".pdf")) return "PDF";
+        if (ew(path_on_client, ".docx")) return "WORD_X";
+        if (ew(path_on_client, ".xlsx")) return "EXCEL_X";
+        if (ew(path_on_client, ".pptx")) return "POWER_POINT_X";
+        if (ew(path_on_client, ".m4a")) return "M4A";
+        return "UNKNOWN";
+    }
+
+    fn auto_create_content_document_link(
+        self: *Evaluator,
+        cd_id: []const u8,
+        cv_id: []const u8,
+        file_type: []const u8,
+        first_pub_loc: Value,
+    ) !void {
+        const cdl_id = try self.alloc_id();
+        const cdl = try self.arena.create(types.SObject);
+        cdl.* = .{ .type_name = "ContentDocumentLink", .id = cdl_id };
+        try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
+        try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
+        try cdl.fields.put(self.arena, "LinkedEntityId", first_pub_loc);
+        const cd_ref = try self.arena.create(types.SObject);
+        cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
+        try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
+        try cd_ref.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = cv_id });
+        try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
+        try cdl.fields.put(self.arena, "ContentDocument", Value{ .sobject = cd_ref });
+        const cdl_gop = try self.store.getOrPut(self.arena, "ContentDocumentLink");
+        if (!cdl_gop.found_existing) cdl_gop.value_ptr.* = .empty;
+        try cdl_gop.value_ptr.append(self.arena, Value{ .sobject = cdl });
+    }
+
+    fn auto_create_campaign_member_statuses(
+        self: *Evaluator,
+        campaign_id: []const u8,
+    ) !void {
+        const default_statuses = [_]struct {
+            label: []const u8,
+            is_default: bool,
+            has_responded: bool,
+            sort_order: i64,
+        }{
+            .{ .label = "Sent", .is_default = true, .has_responded = false, .sort_order = 1 },
+            .{ .label = "Responded", .is_default = false, .has_responded = true, .sort_order = 2 },
+        };
+        for (default_statuses) |ds| {
+            const cms_id = try self.alloc_id();
+            const cms = try self.arena.create(types.SObject);
+            cms.* = .{ .type_name = "CampaignMemberStatus", .id = cms_id };
+            try cms.fields.put(self.arena, "Id", Value{ .string = cms_id });
+            try cms.fields.put(self.arena, "CampaignId", Value{ .string = campaign_id });
+            try cms.fields.put(self.arena, "Label", Value{ .string = ds.label });
+            try cms.fields.put(self.arena, "IsDefault", Value{ .boolean = ds.is_default });
+            try cms.fields.put(self.arena, "HasResponded", Value{ .boolean = ds.has_responded });
+            try cms.fields.put(self.arena, "SortOrder", Value{ .integer = ds.sort_order });
+            const cms_gop = try self.store.getOrPut(self.arena, "CampaignMemberStatus");
+            if (!cms_gop.found_existing) cms_gop.value_ptr.* = .empty;
+            try cms_gop.value_ptr.append(self.arena, Value{ .sobject = cms });
+        }
+    }
+
+    fn auto_create_email_message_relations(
+        self: *Evaluator,
+        obj: *types.SObject,
+        message_id: []const u8,
+    ) !void {
+        const to_ids_val = utils.sobject_get(&obj.fields, "toIds") orelse return;
+        if (to_ids_val != .list) return;
+        for (to_ids_val.list.items.items) |to_id_item| {
+            if (to_id_item != .string) continue;
+            const emr_id = try self.alloc_id();
+            const emr = try self.arena.create(types.SObject);
+            emr.* = .{ .type_name = "EmailMessageRelation", .id = emr_id };
+            try emr.fields.put(self.arena, "Id", Value{ .string = emr_id });
+            try emr.fields.put(self.arena, "EmailMessageId", Value{ .string = message_id });
+            try emr.fields.put(self.arena, "RelationId", to_id_item);
+            try emr.fields.put(self.arena, "RelationType", Value{ .string = "ToAddress" });
+            const emr_gop = try self.store.getOrPut(self.arena, "EmailMessageRelation");
+            if (!emr_gop.found_existing) emr_gop.value_ptr.* = .empty;
+            try emr_gop.value_ptr.append(self.arena, Value{ .sobject = emr });
         }
     }
 
