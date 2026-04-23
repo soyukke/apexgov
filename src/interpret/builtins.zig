@@ -5609,83 +5609,95 @@ fn dispatch_obj_matcher(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "find")) {
-        const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
-        if (matches != .list) return Value{ .boolean = false };
-        const pos_val = obj.fields.get("pos") orelse Value{ .integer = 0 };
-        const pos: usize =
-            if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
-        if (pos < matches.list.items.items.len) {
-            try obj.fields.put(ctx.arena, "pos", Value{ .integer = @intCast(pos + 1) });
-            try obj.fields.put(ctx.arena, "currentMatch", matches.list.items.items[pos]);
-            return Value{ .boolean = true };
-        }
-        return Value{ .boolean = false };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "group")) {
-        const current = obj.fields.get("currentMatch") orelse return Value.null_val;
-        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
-        if (current == .object) {
-            if (current.object.fields.get("groups")) |groups| {
-                if (groups == .list and idx < groups.list.items.items.len)
-                    return groups.list.items.items[idx];
-            }
-        }
-        if (current == .list) {
-            if (idx < current.list.items.items.len) return current.list.items.items[idx];
-        }
-        if (current == .string) return current;
-        return Value.null_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "group_count")) {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "find")) return try matcher_find(ctx, obj);
+    if (ci.eqlIgnoreCase(method_name, "group")) return matcher_group(obj, args);
+    if (ci.eqlIgnoreCase(method_name, "group_count"))
         return obj.fields.get("group_count") orelse Value{ .integer = 0 };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "start") or
-        std.ascii.eqlIgnoreCase(method_name, "end"))
-    {
-        const current = obj.fields.get("currentMatch") orelse return Value.null_val;
-        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
-        if (current == .object) {
-            const key =
-                if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
-            if (current.object.fields.get(key)) |values| {
-                if (values == .list and idx < values.list.items.items.len)
-                    return values.list.items.items[idx];
-            }
-        }
-        return Value.null_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
-        const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
-        const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
-        if (pattern_value != .string or input_value != .string) return Value{ .boolean = false };
-        // Apex's Matcher.matches() not only returns true/false but also positions the matcher
-        // so that `group(n)` reports captures for the whole-input match. Pre-built matches
-        // always start at position 0; we expose the first whole-input match as `currentMatch`
-        // and reset `pos` so subsequent `find()` calls are consistent with Java semantics.
-        const whole_match = try regex.matches(ctx.arena, pattern_value.string, input_value.string);
-        if (!whole_match) return Value{ .boolean = false };
-        if (obj.fields.get("matches")) |existing| {
-            if (existing == .list and existing.list.items.items.len > 0) {
-                for (existing.list.items.items) |candidate| {
-                    if (candidate != .object) continue;
-                    if (candidate.object.fields.get("groups")) |groups| {
-                        if (groups != .list or groups.list.items.items.len == 0) continue;
-                        const whole = groups.list.items.items[0];
-                        if (whole == .string and
-                            std.mem.eql(u8, whole.string, input_value.string))
-                        {
-                            try obj.fields.put(ctx.arena, "currentMatch", candidate);
-                            try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
-                            return Value{ .boolean = true };
-                        }
-                    }
-                }
-            }
-        }
+    if (ci.eqlIgnoreCase(method_name, "start") or ci.eqlIgnoreCase(method_name, "end"))
+        return matcher_group_offset(obj, method_name, args);
+    if (ci.eqlIgnoreCase(method_name, "matches")) return try matcher_matches(ctx, obj);
+    return null;
+}
+
+fn matcher_find(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
+    if (matches != .list) return Value{ .boolean = false };
+    const pos_val = obj.fields.get("pos") orelse Value{ .integer = 0 };
+    const pos: usize =
+        if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+    if (pos < matches.list.items.items.len) {
+        try obj.fields.put(ctx.arena, "pos", Value{ .integer = @intCast(pos + 1) });
+        try obj.fields.put(ctx.arena, "currentMatch", matches.list.items.items[pos]);
         return Value{ .boolean = true };
     }
-    return null;
+    return Value{ .boolean = false };
+}
+
+fn matcher_group(obj: *types.ObjectInstance, args: []const Value) Value {
+    const current = obj.fields.get("currentMatch") orelse return Value.null_val;
+    const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0)
+        @intCast(args[0].integer)
+    else
+        0;
+    if (current == .object) {
+        if (current.object.fields.get("groups")) |groups| {
+            if (groups == .list and idx < groups.list.items.items.len)
+                return groups.list.items.items[idx];
+        }
+    }
+    if (current == .list) {
+        if (idx < current.list.items.items.len) return current.list.items.items[idx];
+    }
+    if (current == .string) return current;
+    return Value.null_val;
+}
+
+fn matcher_group_offset(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) Value {
+    const current = obj.fields.get("currentMatch") orelse return Value.null_val;
+    const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0)
+        @intCast(args[0].integer)
+    else
+        0;
+    if (current == .object) {
+        const key =
+            if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
+        if (current.object.fields.get(key)) |values| {
+            if (values == .list and idx < values.list.items.items.len)
+                return values.list.items.items[idx];
+        }
+    }
+    return Value.null_val;
+}
+
+fn matcher_matches(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const pattern_value = obj.fields.get("pattern") orelse return Value{ .boolean = false };
+    const input_value = obj.fields.get("input") orelse return Value{ .boolean = false };
+    if (pattern_value != .string or input_value != .string) return Value{ .boolean = false };
+    // Apex's Matcher.matches() not only returns true/false but also positions the matcher
+    // so that `group(n)` reports captures for the whole-input match. Pre-built matches
+    // always start at position 0; we expose the first whole-input match as `currentMatch`
+    // and reset `pos` so subsequent `find()` calls are consistent with Java semantics.
+    const whole_match = try regex.matches(ctx.arena, pattern_value.string, input_value.string);
+    if (!whole_match) return Value{ .boolean = false };
+    const existing = obj.fields.get("matches") orelse return Value{ .boolean = true };
+    if (existing != .list or existing.list.items.items.len == 0) return Value{ .boolean = true };
+    for (existing.list.items.items) |candidate| {
+        if (candidate != .object) continue;
+        const groups = candidate.object.fields.get("groups") orelse continue;
+        if (groups != .list or groups.list.items.items.len == 0) continue;
+        const whole = groups.list.items.items[0];
+        if (whole == .string and std.mem.eql(u8, whole.string, input_value.string)) {
+            try obj.fields.put(ctx.arena, "currentMatch", candidate);
+            try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
+            return Value{ .boolean = true };
+        }
+    }
+    return Value{ .boolean = true };
 }
 
 fn dispatch_obj_event_bus(
