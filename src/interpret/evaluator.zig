@@ -11851,84 +11851,90 @@ pub const Evaluator = struct {
             '}' => try self.json_parser_put_token(inst, "END_OBJECT", "}"),
             '[' => try self.json_parser_put_token(inst, "START_ARRAY", "["),
             ']' => try self.json_parser_put_token(inst, "END_ARRAY", "]"),
-            '"' => {
-                const start = pos + 1;
-                pos += 1;
-                while (pos < body.len and body[pos] != '"') : (pos += 1) {
-                    if (body[pos] == '\\') pos += 1;
-                }
-                const text = body[start..pos];
-                if (pos < body.len) pos += 1; // skip closing quote
-                var peek = pos;
-                while (peek < body.len and (body[peek] == ' ' or body[peek] == '\t')) {
-                    peek += 1;
-                }
-                if (peek < body.len and body[peek] == ':') {
-                    try inst.fields.put(
-                        self.arena,
-                        "__token__",
-                        Value{ .string = "FIELD_NAME" },
-                    );
-                    pos = peek + 1;
-                } else {
-                    try inst.fields.put(
-                        self.arena,
-                        "__token__",
-                        Value{ .string = "VALUE_STRING" },
-                    );
-                }
-                try inst.fields.put(self.arena, "__text__", Value{ .string = text });
-                try inst.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
-                return inst.fields.get("__token__") orelse Value.null_val;
-            },
+            '"' => return try self.json_parser_consume_string(inst, body, pos),
             else => {},
         }
         switch (ch) {
             '{', '}', '[', ']' => pos += 1,
-            't', 'f' => {
-                if (std.mem.startsWith(u8, body[pos..], "true")) {
-                    try self.json_parser_put_token(inst, "VALUE_TRUE", "true");
-                    pos += 4;
-                } else {
-                    try self.json_parser_put_token(inst, "VALUE_FALSE", "false");
-                    pos += 5;
-                }
-            },
+            't', 'f' => pos = try self.json_parser_consume_true_false(inst, body, pos),
             'n' => {
                 try self.json_parser_put_token(inst, "VALUE_NULL", "null");
                 pos += 4;
             },
-            else => {
-                if (std.ascii.isDigit(ch) or ch == '-') {
-                    const start = pos;
-                    while (pos < body.len and (std.ascii.isDigit(body[pos]) or
-                        body[pos] == '.' or body[pos] == '-' or
-                        body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+'))
-                    {
-                        pos += 1;
-                    }
-                    const number_text = body[start..pos];
-                    const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null)
-                        "VALUE_NUMBER_FLOAT"
-                    else
-                        "VALUE_NUMBER_INT";
-                    try inst.fields.put(
-                        self.arena,
-                        "__token__",
-                        Value{ .string = token_name },
-                    );
-                    try inst.fields.put(
-                        self.arena,
-                        "__text__",
-                        Value{ .string = number_text },
-                    );
-                } else {
-                    pos += 1;
-                }
-            },
+            else => pos = try self.json_parser_consume_number_or_skip(inst, body, pos, ch),
         }
         try inst.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
         return inst.fields.get("__token__") orelse Value.null_val;
+    }
+
+    /// Consume a `"..."` token, distinguishing FIELD_NAME (followed by `:`)
+    /// from VALUE_STRING. Returns the resulting token value.
+    fn json_parser_consume_string(
+        self: *Evaluator,
+        inst: *types.ObjectInstance,
+        body: []const u8,
+        start_quote: usize,
+    ) anyerror!Value {
+        const start = start_quote + 1;
+        var pos = start_quote + 1;
+        while (pos < body.len and body[pos] != '"') : (pos += 1) {
+            if (body[pos] == '\\') pos += 1;
+        }
+        const text = body[start..pos];
+        if (pos < body.len) pos += 1; // skip closing quote
+        var peek = pos;
+        while (peek < body.len and (body[peek] == ' ' or body[peek] == '\t')) {
+            peek += 1;
+        }
+        if (peek < body.len and body[peek] == ':') {
+            try inst.fields.put(self.arena, "__token__", Value{ .string = "FIELD_NAME" });
+            pos = peek + 1;
+        } else {
+            try inst.fields.put(self.arena, "__token__", Value{ .string = "VALUE_STRING" });
+        }
+        try inst.fields.put(self.arena, "__text__", Value{ .string = text });
+        try inst.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
+        return inst.fields.get("__token__") orelse Value.null_val;
+    }
+
+    fn json_parser_consume_true_false(
+        self: *Evaluator,
+        inst: *types.ObjectInstance,
+        body: []const u8,
+        pos: usize,
+    ) anyerror!usize {
+        if (std.mem.startsWith(u8, body[pos..], "true")) {
+            try self.json_parser_put_token(inst, "VALUE_TRUE", "true");
+            return pos + 4;
+        }
+        try self.json_parser_put_token(inst, "VALUE_FALSE", "false");
+        return pos + 5;
+    }
+
+    fn json_parser_consume_number_or_skip(
+        self: *Evaluator,
+        inst: *types.ObjectInstance,
+        body: []const u8,
+        start_pos: usize,
+        ch: u8,
+    ) anyerror!usize {
+        if (!(std.ascii.isDigit(ch) or ch == '-')) return start_pos + 1;
+        const start = start_pos;
+        var pos = start_pos;
+        while (pos < body.len and (std.ascii.isDigit(body[pos]) or
+            body[pos] == '.' or body[pos] == '-' or
+            body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+'))
+        {
+            pos += 1;
+        }
+        const number_text = body[start..pos];
+        const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null)
+            "VALUE_NUMBER_FLOAT"
+        else
+            "VALUE_NUMBER_INT";
+        try inst.fields.put(self.arena, "__token__", Value{ .string = token_name });
+        try inst.fields.put(self.arena, "__text__", Value{ .string = number_text });
+        return pos;
     }
 
     fn json_parser_put_token(
