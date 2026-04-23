@@ -912,31 +912,60 @@ pub const Evaluator = struct {
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
         const where_clause = extract_where_clause(soql) orelse return;
-        const requested_user_id = self.extract_where_field_value(
+        const requested_user_id = self.resolve_user_record_access_user_id(
             soql,
-            "UserId",
+            where_clause,
             current_env,
-        ) orelse blk: {
-            if (std.ascii.indexOfIgnoreCase(
-                where_clause,
-                "UserId = :System.UserInfo.getUserId()",
-            ) != null) {
-                break :blk self.current_user_id;
-            }
-            break :blk null;
-        };
+        );
         if (requested_user_id) |user_id| {
             if (!std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return;
         }
-
         var record_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+        try self.collect_user_record_access_ids(
+            soql,
+            where_clause,
+            current_env,
+            &record_ids,
+        );
+        for (record_ids.items) |record_id| {
+            const access_value = try self.build_user_record_access_value(record_id);
+            if (self.matches_where(access_value, soql, current_env)) {
+                try records.append(self.arena, access_value);
+            }
+        }
+    }
+
+    /// The UserId predicate may come as a bind variable, a string literal, or
+    /// `:System.UserInfo.getUserId()`. Return the matched value for later
+    /// comparison against the current user, or null when no constraint exists.
+    fn resolve_user_record_access_user_id(
+        self: *Evaluator,
+        soql: []const u8,
+        where_clause: []const u8,
+        current_env: *Env,
+    ) ?[]const u8 {
+        if (self.extract_where_field_value(soql, "UserId", current_env)) |value| return value;
+        if (std.ascii.indexOfIgnoreCase(
+            where_clause,
+            "UserId = :System.UserInfo.getUserId()",
+        ) != null) return self.current_user_id;
+        return null;
+    }
+
+    fn collect_user_record_access_ids(
+        self: *Evaluator,
+        soql: []const u8,
+        where_clause: []const u8,
+        current_env: *Env,
+        record_ids: *std.ArrayListUnmanaged([]const u8),
+    ) !void {
         if (std.ascii.indexOfIgnoreCase(where_clause, "RecordId IN :")) |in_pos| {
             var j = in_pos + "RecordId IN :".len;
             const start = j;
             j = scan_bind_expression_end(where_clause, j);
             if (j > start) {
                 if (self.lookup_bind_value(current_env, where_clause[start..j])) |bind_val| {
-                    try self.append_record_ids_from_value(bind_val, &record_ids);
+                    try self.append_record_ids_from_value(bind_val, record_ids);
                 }
             }
         }
@@ -945,36 +974,23 @@ pub const Evaluator = struct {
                 try record_ids.append(self.arena, record_id);
             }
         }
+    }
 
-        for (record_ids.items) |record_id| {
-            const access = try self.arena.create(types.SObject);
-            const access_id = try self.alloc_id();
-            const has_delete_access = self.can_delete_record_via_user_record_access(record_id);
-            access.* = .{ .type_name = "UserRecordAccess", .id = access_id };
-            try access.fields.put(self.arena, "Id", Value{ .string = access_id });
-            try access.fields.put(self.arena, "UserId", Value{ .string = self.current_user_id });
-            try access.fields.put(self.arena, "RecordId", Value{ .string = record_id });
-            try access.fields.put(
-                self.arena,
-                "HasReadAccess",
-                Value{ .boolean = has_delete_access },
-            );
-            try access.fields.put(
-                self.arena,
-                "HasEditAccess",
-                Value{ .boolean = has_delete_access },
-            );
-            try access.fields.put(
-                self.arena,
-                "HasDeleteAccess",
-                Value{ .boolean = has_delete_access },
-            );
-
-            const access_value = Value{ .sobject = access };
-            if (self.matches_where(access_value, soql, current_env)) {
-                try records.append(self.arena, access_value);
-            }
-        }
+    fn build_user_record_access_value(
+        self: *Evaluator,
+        record_id: []const u8,
+    ) !Value {
+        const access = try self.arena.create(types.SObject);
+        const access_id = try self.alloc_id();
+        const has_delete_access = self.can_delete_record_via_user_record_access(record_id);
+        access.* = .{ .type_name = "UserRecordAccess", .id = access_id };
+        try access.fields.put(self.arena, "Id", Value{ .string = access_id });
+        try access.fields.put(self.arena, "UserId", Value{ .string = self.current_user_id });
+        try access.fields.put(self.arena, "RecordId", Value{ .string = record_id });
+        try access.fields.put(self.arena, "HasReadAccess", Value{ .boolean = has_delete_access });
+        try access.fields.put(self.arena, "HasEditAccess", Value{ .boolean = has_delete_access });
+        try access.fields.put(self.arena, "HasDeleteAccess", Value{ .boolean = has_delete_access });
+        return Value{ .sobject = access };
     }
 
     /// Seed stub records for setup objects queried with IN clause (PermissionSet,
