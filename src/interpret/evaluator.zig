@@ -13142,164 +13142,135 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method(
+    fn eval_string_method_substring(s: []const u8, args: []const Value) !?Value {
+        if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
+            const s_len_i64: i64 = @intCast(s.len);
+            const start_i64 = @max(args[0].integer, 0);
+            const end_i64 = @max(@min(args[1].integer, s_len_i64), 0);
+            const start: usize = @intCast(start_i64);
+            const end: usize = @intCast(end_i64);
+            if (start <= end and end <= s.len) return Value{ .string = s[start..end] };
+        } else if (args.len >= 1 and args[0] == .integer) {
+            const start: usize = @intCast(@max(args[0].integer, 0));
+            if (start <= s.len) return Value{ .string = s[start..] };
+        }
+        return Value{ .string = s };
+    }
+
+    fn append_split_literal(
+        arena: std.mem.Allocator,
+        list: *types.ListValue,
+        s: []const u8,
+        pattern: []const u8,
+        split_limit: ?usize,
+    ) !void {
+        if (split_limit) |limit| {
+            if (limit <= 1) {
+                try list.items.append(arena, Value{ .string = s });
+                return;
+            }
+            var start: usize = 0;
+            var splits_done: usize = 0;
+            while (splits_done + 1 < limit) {
+                const next = std.mem.indexOfPos(u8, s, start, pattern) orelse break;
+                try list.items.append(arena, Value{ .string = s[start..next] });
+                start = next + pattern.len;
+                splits_done += 1;
+            }
+            try list.items.append(arena, Value{ .string = s[start..] });
+            return;
+        }
+        var iter = std.mem.splitSequence(u8, s, pattern);
+        while (iter.next()) |part| {
+            try list.items.append(arena, Value{ .string = part });
+        }
+    }
+
+    fn eval_string_method_split(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        const pattern = args[0].string;
+        const split_limit: ?usize =
+            if (args.len >= 2 and args[1] == .integer and args[1].integer > 0)
+                @intCast(args[1].integer)
+            else
+                null;
+        if (pattern.len == 0) {
+            for (0..s.len) |ci| {
+                try list.items.append(self.arena, Value{ .string = s[ci .. ci + 1] });
+            }
+            return Value{ .list = list };
+        }
+        // Apex's String.split(regex) treats the argument as a regex.
+        const regex_chars = "\\[].|?*+()^${}";
+        const has_regex_meta = std.mem.indexOfAny(u8, pattern, regex_chars) != null;
+        if (has_regex_meta) {
+            if (split_by_regex(self.arena, pattern, s, split_limit)) |parts| {
+                for (parts) |part| {
+                    try list.items.append(self.arena, Value{ .string = part });
+                }
+                return Value{ .list = list };
+            } else |_| {
+                // Regex engine rejected — fall through to literal split.
+            }
+        }
+        try append_split_literal(self.arena, list, s, pattern, split_limit);
+        return Value{ .list = list };
+    }
+
+    fn eval_string_method_replace_all_tail(trimmed_result: []const u8, trimmed_input: []const u8) ?Value {
+        if (std.mem.eql(u8, trimmed_result, trimmed_input)) return null;
+        if (std.mem.indexOf(u8, trimmed_input, "Class.") == null) return null;
+        const anonymous_tail = "AnonymousBlock: line 1, column 1";
+        if (std.mem.eql(u8, trimmed_result, anonymous_tail)) return Value{ .string = "" };
+        if (!std.mem.startsWith(u8, trimmed_result, "Class.")) return null;
+        const orphaned_tail = std.mem.trim(u8, trimmed_result["Class.".len..], " \t\r\n");
+        if (std.mem.eql(u8, orphaned_tail, anonymous_tail)) return Value{ .string = "" };
+        return null;
+    }
+
+    fn eval_string_method_replace_all(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+        const result = try regex.replace_all(self.arena, args[0].string, s, args[1].string);
+        const trimmed_result = std.mem.trim(u8, result, " \t\r\n");
+        const trimmed_input = std.mem.trim(u8, s, " \t\r\n");
+        if (eval_string_method_replace_all_tail(trimmed_result, trimmed_input)) |v| return v;
+        return Value{ .string = result };
+    }
+
+    fn parse_numeric_arg(arg: Value, arena: std.mem.Allocator) ?usize {
+        return switch (arg) {
+            .integer => |i| @intCast(@max(i, 0)),
+            .double => |d| if (d > 0) @intFromFloat(d) else 0,
+            .string => |arg_s| blk: {
+                if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
+                    break :blk @intCast(@max(parsed, 0));
+                } else |_| {}
+                if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
+                    break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
+                } else |_| {}
+                break :blk null;
+            },
+            else => blk: {
+                const arg_s = utils.coerce_to_string(arg, arena) catch break :blk null;
+                if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
+                    break :blk @intCast(@max(parsed, 0));
+                } else |_| {}
+                if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
+                    break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
+                } else |_| {}
+                break :blk null;
+            },
+        };
+    }
+
+    fn eval_string_method_pad_abbrev(
         self: *Evaluator,
         s: []const u8,
         method: []const u8,
         args: []const Value,
-    ) !Value {
-        if (try self.eval_string_method_basic(s, method, args)) |v| return v;
-        if (try self.eval_string_method_search(s, method, args)) |v| return v;
-        if (std.ascii.eqlIgnoreCase(method, "substring")) {
-            if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
-                const s_len_i64: i64 = @intCast(s.len);
-                // Clamp both ends into [0, s.len] so the usize cast cannot
-                // underflow when callers pass negative bounds.
-                const start_i64 = @max(args[0].integer, 0);
-                const end_i64 = @max(@min(args[1].integer, s_len_i64), 0);
-                const start: usize = @intCast(start_i64);
-                const end: usize = @intCast(end_i64);
-                if (start <= end and end <= s.len) return Value{ .string = s[start..end] };
-            } else if (args.len >= 1 and args[0] == .integer) {
-                const start: usize = @intCast(@max(args[0].integer, 0));
-                if (start <= s.len) return Value{ .string = s[start..] };
-            }
-            return Value{ .string = s };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "split") and args.len > 0 and args[0] == .string) {
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            const pattern = args[0].string;
-            const split_limit: ?usize =
-                if (args.len >= 2 and args[1] == .integer and args[1].integer > 0)
-                    @intCast(args[1].integer)
-                else
-                    null;
-            if (pattern.len == 0) {
-                // 空デリミタ: 各文字を要素として返す (Apex の String.split('') 挙動)
-                for (0..s.len) |ci| {
-                    try list.items.append(self.arena, Value{ .string = s[ci .. ci + 1] });
-                }
-                return Value{ .list = list };
-            }
-            // Apex's String.split(regex) treats the argument as a regex. We route through
-            // the regex engine whenever the pattern contains any regex metacharacters
-            // (backslash, character classes, alternation, quantifiers, anchors) so that
-            // common Apex idioms like `split('\\s+')` or `split('[.]')` behave correctly.
-            // For plain-text delimiters (e.g. ","), keep the faster literal path.
-            const regex_chars = "\\[].|?*+()^${}";
-            const has_regex_meta = std.mem.indexOfAny(u8, pattern, regex_chars) != null;
-            if (has_regex_meta) {
-                if (split_by_regex(self.arena, pattern, s, split_limit)) |parts| {
-                    for (parts) |part| {
-                        try list.items.append(self.arena, Value{ .string = part });
-                    }
-                    return Value{ .list = list };
-                } else |_| {
-                    // Regex engine rejected the pattern — fall through to literal split.
-                }
-            }
-            const split_str = pattern;
-            if (split_limit) |limit| {
-                if (limit <= 1) {
-                    try list.items.append(self.arena, Value{ .string = s });
-                } else {
-                    var start: usize = 0;
-                    var splits_done: usize = 0;
-                    while (splits_done + 1 < limit) {
-                        const next = std.mem.indexOfPos(u8, s, start, split_str) orelse break;
-                        try list.items.append(self.arena, Value{ .string = s[start..next] });
-                        start = next + split_str.len;
-                        splits_done += 1;
-                    }
-                    try list.items.append(self.arena, Value{ .string = s[start..] });
-                }
-            } else {
-                var iter = std.mem.splitSequence(u8, s, split_str);
-                while (iter.next()) |part| {
-                    try list.items.append(self.arena, Value{ .string = part });
-                }
-            }
-            return Value{ .list = list };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "replace") and
-            args.len >= 2 and
-            args[0] == .string and
-            args[1] == .string)
-        {
-            const result = try std.mem.replaceOwned(
-                u8,
-                self.arena,
-                s,
-                args[0].string,
-                args[1].string,
-            );
-            return Value{ .string = result };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "replace_all") and
-            args.len >= 2 and
-            args[0] == .string and
-            args[1] == .string)
-        {
-            const result = try regex.replace_all(self.arena, args[0].string, s, args[1].string);
-            const trimmed_result = std.mem.trim(u8, result, " \t\r\n");
-            const trimmed_input = std.mem.trim(u8, s, " \t\r\n");
-            if (!std.mem.eql(u8, trimmed_result, trimmed_input) and
-                std.mem.indexOf(u8, trimmed_input, "Class.") != null)
-            {
-                const anonymous_tail = "AnonymousBlock: line 1, column 1";
-                if (std.mem.eql(u8, trimmed_result, anonymous_tail)) {
-                    return Value{ .string = "" };
-                }
-                if (std.mem.startsWith(u8, trimmed_result, "Class.")) {
-                    const orphaned_tail = std.mem.trim(
-                        u8,
-                        trimmed_result["Class.".len..],
-                        " \t\r\n",
-                    );
-                    if (std.mem.eql(u8, orphaned_tail, anonymous_tail)) {
-                        return Value{ .string = "" };
-                    }
-                }
-            }
-            return Value{ .string = result };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0 and args[0] == .string) {
-            return Value{ .boolean = std.mem.eql(u8, s, args[0].string) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "equalsIgnoreCase") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            return Value{ .boolean = std.ascii.eqlIgnoreCase(s, args[0].string) };
-        }
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "left") and args.len > 0) {
-            const n: usize = switch (args[0]) {
-                .integer => |i| @intCast(@max(i, 0)),
-                .double => |d| if (d > 0) @intFromFloat(d) else 0,
-                .string => |arg_s| blk: {
-                    if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
-                        break :blk @intCast(@max(parsed, 0));
-                    } else |_| {}
-                    if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
-                        break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
-                    } else |_| {}
-                    return Value{ .string = s };
-                },
-                else => blk: {
-                    const arg_s = utils.coerce_to_string(
-                        args[0],
-                        self.arena,
-                    ) catch return Value{ .string = s };
-                    if (std.fmt.parseInt(i64, arg_s, 10)) |parsed| {
-                        break :blk @intCast(@max(parsed, 0));
-                    } else |_| {}
-                    if (std.fmt.parseFloat(f64, arg_s)) |parsed| {
-                        break :blk if (parsed > 0) @intFromFloat(parsed) else 0;
-                    } else |_| {}
-                    return Value{ .string = s };
-                },
-            };
+            const n: usize = parse_numeric_arg(args[0], self.arena) orelse return Value{ .string = s };
             const end = @min(n, s.len);
             return Value{ .string = s[0..end] };
         }
@@ -13309,39 +13280,39 @@ pub const Evaluator = struct {
             return Value{ .string = s[start..] };
         }
         if (std.ascii.eqlIgnoreCase(method, "abbreviate") and
-            args.len > 0 and
-            args[0] == .integer)
+            args.len > 0 and args[0] == .integer)
         {
             const max_width: usize = @intCast(@max(args[0].integer, 0));
             if (s.len <= max_width) return Value{ .string = s };
             if (max_width <= 3) return Value{ .string = s[0..max_width] };
-            return Value{ .string = try std.fmt.allocPrint(
-                self.arena,
-                "{s}...",
-                .{s[0 .. max_width - 3]},
-            ) };
+            const prefix = s[0 .. max_width - 3];
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}...", .{prefix}) };
         }
-        // leftPad(length) or leftPad(length, padStr)
         if (std.ascii.eqlIgnoreCase(method, "leftPad") and args.len > 0 and args[0] == .integer) {
             const target_len: usize = @intCast(@max(args[0].integer, 0));
             if (s.len >= target_len) return Value{ .string = s };
-            const pad_char: u8 = if (args.len > 1 and args[1] == .string and args[1].string.len > 0) args[1].string[0] else ' ';
+            const pad_char: u8 = if (args.len > 1 and args[1] == .string and
+                args[1].string.len > 0) args[1].string[0] else ' ';
             const result = try self.arena.alloc(u8, target_len);
             const pad_count = target_len - s.len;
             @memset(result[0..pad_count], pad_char);
             @memcpy(result[pad_count..], s);
             return Value{ .string = result };
         }
-        // rightPad(length) or rightPad(length, padStr)
         if (std.ascii.eqlIgnoreCase(method, "rightPad") and args.len > 0 and args[0] == .integer) {
             const target_len: usize = @intCast(@max(args[0].integer, 0));
             if (s.len >= target_len) return Value{ .string = s };
-            const pad_char: u8 = if (args.len > 1 and args[1] == .string and args[1].string.len > 0) args[1].string[0] else ' ';
+            const pad_char: u8 = if (args.len > 1 and args[1] == .string and
+                args[1].string.len > 0) args[1].string[0] else ' ';
             const result = try self.arena.alloc(u8, target_len);
             @memcpy(result[0..s.len], s);
             @memset(result[s.len..], pad_char);
             return Value{ .string = result };
         }
+        return null;
+    }
+
+    fn eval_string_method_predicates(s: []const u8, method: []const u8) ?Value {
         if (std.ascii.eqlIgnoreCase(method, "isBlank")) {
             return Value{ .boolean = std.mem.trim(u8, s, " \t\r\n").len == 0 };
         }
@@ -13354,26 +13325,26 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "isNotEmpty")) {
             return Value{ .boolean = s.len > 0 };
         }
+        return null;
+    }
+
+    fn all_chars_match(s: []const u8, pred: fn (u8) bool) bool {
+        if (s.len == 0) return false;
+        for (s) |ch| {
+            if (!pred(ch)) return false;
+        }
+        return true;
+    }
+
+    fn eval_string_method_char_class(self: *Evaluator, s: []const u8, method: []const u8) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "isNumeric")) {
-            if (s.len == 0) return Value{ .boolean = false };
-            for (s) |ch| {
-                if (!std.ascii.isDigit(ch)) return Value{ .boolean = false };
-            }
-            return Value{ .boolean = true };
+            return Value{ .boolean = all_chars_match(s, std.ascii.isDigit) };
         }
         if (std.ascii.eqlIgnoreCase(method, "isAlpha")) {
-            if (s.len == 0) return Value{ .boolean = false };
-            for (s) |ch| {
-                if (!std.ascii.isAlphabetic(ch)) return Value{ .boolean = false };
-            }
-            return Value{ .boolean = true };
+            return Value{ .boolean = all_chars_match(s, std.ascii.isAlphabetic) };
         }
         if (std.ascii.eqlIgnoreCase(method, "isAlphanumeric")) {
-            if (s.len == 0) return Value{ .boolean = false };
-            for (s) |ch| {
-                if (!std.ascii.isAlphanumeric(ch)) return Value{ .boolean = false };
-            }
-            return Value{ .boolean = true };
+            return Value{ .boolean = all_chars_match(s, std.ascii.isAlphanumeric) };
         }
         if (std.ascii.eqlIgnoreCase(method, "capitalize")) {
             if (s.len == 0) return Value{ .string = s };
@@ -13396,34 +13367,192 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "normalizeSpace")) {
             return Value{ .string = std.mem.trim(u8, s, " \t\r\n") };
         }
-        if (std.ascii.eqlIgnoreCase(method, "lastIndexOf") and
-            args.len > 0 and
-            args[0] == .string)
-        {
-            const target = args[0].string;
-            if (target.len == 0 or s.len == 0) return Value{ .integer = -1 };
-            var last: i64 = -1;
-            var k: usize = 0;
-            while (k + target.len <= s.len) : (k += 1) {
-                if (std.mem.eql(u8, s[k .. k + target.len], target)) last = @intCast(k);
-            }
-            return Value{ .integer = last };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "removeEnd") and args.len > 0 and args[0] == .string) {
+        return null;
+    }
+
+    fn eval_string_method_remove(s: []const u8, method: []const u8, args: []const Value) ?Value {
+        if (args.len == 0 or args[0] != .string) return null;
+        if (std.ascii.eqlIgnoreCase(method, "removeEnd")) {
             if (std.mem.endsWith(u8, s, args[0].string)) {
                 return Value{ .string = s[0 .. s.len - args[0].string.len] };
             }
             return Value{ .string = s };
         }
-        if (std.ascii.eqlIgnoreCase(method, "removeStart") and
-            args.len > 0 and
-            args[0] == .string)
-        {
+        if (std.ascii.eqlIgnoreCase(method, "removeStart")) {
             if (std.mem.startsWith(u8, s, args[0].string)) {
                 return Value{ .string = s[args[0].string.len..] };
             }
             return Value{ .string = s };
         }
+        return null;
+    }
+
+    fn eval_string_method_format(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+        if (args.len > 0 and args[0] == .list) {
+            var result = std.ArrayListUnmanaged(u8).empty;
+            const items = args[0].list.items.items;
+            var i: usize = 0;
+            while (i < s.len) {
+                if (s[i] == '{' and i + 1 < s.len) {
+                    if (std.mem.indexOfScalarPos(u8, s, i + 1, '}')) |close| {
+                        const idx_str = s[i + 1 .. close];
+                        if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
+                            if (idx < items.len) {
+                                const val_str: []const u8 = try utils.coerce_to_string(
+                                    items[idx],
+                                    self.arena,
+                                );
+                                try result.appendSlice(self.arena, val_str);
+                                i = close + 1;
+                                continue;
+                            }
+                        } else |_| {}
+                    }
+                }
+                try result.append(self.arena, s[i]);
+                i += 1;
+            }
+            return Value{ .string = result.items };
+        }
+        if (args.len > 0 and args[0] == .string) {
+            return self.format_date_time_pattern(s, args[0].string);
+        }
+        return Value{ .string = s };
+    }
+
+    fn eval_string_method_date_accessor(self: *Evaluator, s: []const u8, method: []const u8) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "date")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            return Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}",
+                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d },
+            ) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "time")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = "00:00:00" };
+            const time_str = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>2}:{d:0>2}:{d:0>2}.000",
+                .{ dt.h, dt.mi, dt.sec },
+            );
+            const time_obj = try self.arena.create(types.ObjectInstance);
+            time_obj.* = .{ .class_name = "Time" };
+            try time_obj.fields.put(self.arena, "value", Value{ .string = time_str });
+            try time_obj.fields.put(self.arena, "hour", Value{ .integer = @as(i64, dt.h) });
+            try time_obj.fields.put(self.arena, "minute", Value{ .integer = @as(i64, dt.mi) });
+            try time_obj.fields.put(self.arena, "second", Value{ .integer = @as(i64, dt.sec) });
+            try time_obj.fields.put(self.arena, "millisecond", Value{ .integer = 0 });
+            return Value{ .object = time_obj };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getTime")) {
+            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
+            const y = @as(i64, dt.y);
+            const doy = @as(i64, day_of_year(dt.m, dt.d));
+            const is_leap: i64 = if (@mod(y, 4) == 0 and
+                (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
+            const leap_adj: i64 = if (dt.m > 2) is_leap else 0;
+            const days_from_epoch = (y - 1970) * 365 +
+                @divFloor(y - 1969, 4) -
+                @divFloor(y - 1901, 100) +
+                @divFloor(y - 1601, 400) +
+                doy - 1 + leap_adj;
+            const secs = days_from_epoch * 86400 +
+                @as(i64, dt.h) * 3600 +
+                @as(i64, dt.mi) * 60 +
+                @as(i64, dt.sec);
+            return Value{ .integer = secs * 1000 };
+        }
+        return null;
+    }
+
+    fn coerce_i32_arg(args: []const Value) i32 {
+        if (args.len == 0) return 0;
+        return switch (args[0]) {
+            .integer => |iv| @intCast(iv),
+            .double => |dv| @intFromFloat(dv),
+            else => 0,
+        };
+    }
+
+    fn eval_string_method_add_hms(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(method, "addHours")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            const delta = coerce_i32_arg(args);
+            var h: i32 = @as(i32, dt.h) + delta;
+            var day_offset: i32 = 0;
+            while (h >= 24) {
+                h -= 24;
+                day_offset += 1;
+            }
+            while (h < 0) {
+                h += 24;
+                day_offset -= 1;
+            }
+            if (day_offset != 0) {
+                const base = try std.fmt.allocPrint(
+                    self.arena,
+                    "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                    .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec },
+                );
+                return try self.date_time_add(base, "addDays", &.{Value{ .integer = day_offset }});
+            }
+            return Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec },
+            ) };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            const delta = coerce_i32_arg(args);
+            var mi: i32 = @as(i32, dt.mi) + delta;
+            var hour_offset: i32 = 0;
+            while (mi >= 60) {
+                mi -= 60;
+                hour_offset += 1;
+            }
+            while (mi < 0) {
+                mi += 60;
+                hour_offset -= 1;
+            }
+            const base = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, @as(u8, @intCast(mi)), dt.sec },
+            );
+            if (hour_offset != 0) {
+                return try self.eval_string_method(base, "addHours", &.{Value{ .integer = hour_offset }});
+            }
+            return Value{ .string = base };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            const delta = coerce_i32_arg(args);
+            var sec: i32 = @as(i32, dt.sec) + delta;
+            var min_offset: i32 = 0;
+            while (sec >= 60) {
+                sec -= 60;
+                min_offset += 1;
+            }
+            while (sec < 0) {
+                sec += 60;
+                min_offset -= 1;
+            }
+            const base = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{ @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, dt.mi, @as(u8, @intCast(sec)) },
+            );
+            if (min_offset != 0) {
+                return try self.eval_string_method(base, "addMinutes", &.{Value{ .integer = min_offset }});
+            }
+            return Value{ .string = base };
+        }
+        return null;
+    }
+
+    fn eval_string_method_unescape(self: *Evaluator, s: []const u8, method: []const u8) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "unescapeJava")) {
             var buf = std.ArrayListUnmanaged(u8).empty;
             var i: usize = 0;
@@ -13455,184 +13584,76 @@ pub const Evaluator = struct {
             result = try std.mem.replaceOwned(u8, self.arena, result, "&amp;", "&");
             return Value{ .string = result };
         }
-        if (std.ascii.eqlIgnoreCase(method, "format")) {
-            // String.format(formatString, List<String>) — replace {0}, {1}, ... with args
-            if (args.len > 0 and args[0] == .list) {
-                var result = std.ArrayListUnmanaged(u8).empty;
-                const items = args[0].list.items.items;
-                var i: usize = 0;
-                while (i < s.len) {
-                    if (s[i] == '{' and i + 1 < s.len) {
-                        // Find closing brace
-                        if (std.mem.indexOfScalarPos(u8, s, i + 1, '}')) |close| {
-                            const idx_str = s[i + 1 .. close];
-                            if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
-                                if (idx < items.len) {
-                                    const val_str: []const u8 = try utils.coerce_to_string(
-                                        items[idx],
-                                        self.arena,
-                                    );
-                                    try result.appendSlice(self.arena, val_str);
-                                    i = close + 1;
-                                    continue;
-                                }
-                            } else |_| {}
-                        }
-                    }
-                    try result.append(self.arena, s[i]);
-                    i += 1;
-                }
-                return Value{ .string = result.items };
-            }
-            // Datetime.format(pattern) — 文字列引数の場合は日付フォーマット
-            if (args.len > 0 and args[0] == .string) {
-                return self.format_date_time_pattern(s, args[0].string);
-            }
-            return Value{ .string = s };
-        }
         if (std.ascii.eqlIgnoreCase(method, "escapeHtml4") or
-            std.ascii.eqlIgnoreCase(
-                method,
-                "escapeJava",
-            ) or std.ascii.eqlIgnoreCase(method, "escapeSingleQuotes"))
+            std.ascii.eqlIgnoreCase(method, "escapeJava") or
+            std.ascii.eqlIgnoreCase(method, "escapeSingleQuotes"))
         {
             return Value{ .string = s };
         }
-        // date() — Datetime から Date 部分を返す (YYYY-MM-DD)
-        if (std.ascii.eqlIgnoreCase(method, "date")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-                @as(u32, @intCast(dt.y)), dt.m, dt.d,
-            }) };
+        return null;
+    }
+
+    fn eval_string_method(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (try self.eval_string_method_basic(s, method, args)) |v| return v;
+        if (try self.eval_string_method_search(s, method, args)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(method, "substring")) {
+            return (try eval_string_method_substring(s, args)).?;
         }
-        // time() — Datetime から Time 部分を ObjectInstance として返す
-        if (std.ascii.eqlIgnoreCase(method, "time")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = "00:00:00" };
-            const time_str = try std.fmt.allocPrint(
+        if (std.ascii.eqlIgnoreCase(method, "split") and args.len > 0 and args[0] == .string) {
+            return self.eval_string_method_split(s, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "replace") and
+            args.len >= 2 and args[0] == .string and args[1] == .string)
+        {
+            const result = try std.mem.replaceOwned(
+                u8,
                 self.arena,
-                "{d:0>2}:{d:0>2}:{d:0>2}.000",
-                .{ dt.h, dt.mi, dt.sec },
+                s,
+                args[0].string,
+                args[1].string,
             );
-            const time_obj = try self.arena.create(types.ObjectInstance);
-            time_obj.* = .{ .class_name = "Time" };
-            try time_obj.fields.put(self.arena, "value", Value{ .string = time_str });
-            try time_obj.fields.put(self.arena, "hour", Value{ .integer = @as(i64, dt.h) });
-            try time_obj.fields.put(self.arena, "minute", Value{ .integer = @as(i64, dt.mi) });
-            try time_obj.fields.put(self.arena, "second", Value{ .integer = @as(i64, dt.sec) });
-            try time_obj.fields.put(self.arena, "millisecond", Value{ .integer = 0 });
-            return Value{ .object = time_obj };
+            return Value{ .string = result };
         }
-        // getTime() — Datetime からエポックミリ秒を返す
-        if (std.ascii.eqlIgnoreCase(method, "getTime")) {
-            const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
-            // エポック日数を計算（グレゴリオ暦）
-            const y = @as(i64, dt.y);
-            const doy = @as(i64, day_of_year(dt.m, dt.d));
-            // 閏年補正: 3月以降かつ閏年なら +1
-            const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(
-                y,
-                100,
-            ) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
-            const leap_adj: i64 = if (dt.m > 2) is_leap else 0;
-            const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(
-                y - 1901,
-                100,
-            ) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
-            const secs = days_from_epoch * 86400 + @as(
-                i64,
-                dt.h,
-            ) * 3600 + @as(i64, dt.mi) * 60 + @as(i64, dt.sec);
-            return Value{ .integer = secs * 1000 };
+        if (std.ascii.eqlIgnoreCase(method, "replace_all") and
+            args.len >= 2 and args[0] == .string and args[1] == .string)
+        {
+            return self.eval_string_method_replace_all(s, args);
         }
-        // addHours — Datetime に時間を加算
-        if (std.ascii.eqlIgnoreCase(method, "addHours")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta: i32 = if (args.len > 0) switch (args[0]) {
-                .integer => |iv| @intCast(iv),
-                .double => |dv| @intFromFloat(dv),
-                else => 0,
-            } else 0;
-            var h: i32 = @as(i32, dt.h) + delta;
-            var day_offset: i32 = 0;
-            while (h >= 24) {
-                h -= 24;
-                day_offset += 1;
-            }
-            while (h < 0) {
-                h += 24;
-                day_offset -= 1;
-            }
-            // 日のオーバーフローは簡易的に addDays で処理
-            if (day_offset != 0) {
-                const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                    @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec,
-                });
-                return self.date_time_add(base, "addDays", &.{Value{ .integer = day_offset }});
-            }
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(dt.y)), dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec,
-            }) };
+        if (std.ascii.eqlIgnoreCase(method, "equals") and args.len > 0 and args[0] == .string) {
+            return Value{ .boolean = std.mem.eql(u8, s, args[0].string) };
         }
-        // addMinutes — Datetime に分を加算
-        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta: i32 = if (args.len > 0) switch (args[0]) {
-                .integer => |iv| @intCast(iv),
-                .double => |dv| @intFromFloat(dv),
-                else => 0,
-            } else 0;
-            var mi: i32 = @as(i32, dt.mi) + delta;
-            var hour_offset: i32 = 0;
-            while (mi >= 60) {
-                mi -= 60;
-                hour_offset += 1;
-            }
-            while (mi < 0) {
-                mi += 60;
-                hour_offset -= 1;
-            }
-            const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, @as(u8, @intCast(mi)), dt.sec,
-            });
-            if (hour_offset != 0) {
-                return self.eval_string_method(
-                    base,
-                    "addHours",
-                    &.{Value{ .integer = hour_offset }},
-                );
-            }
-            return Value{ .string = base };
+        if (std.ascii.eqlIgnoreCase(method, "equalsIgnoreCase") and
+            args.len > 0 and args[0] == .string)
+        {
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(s, args[0].string) };
         }
-        // addSeconds — Datetime に秒を加算
-        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) {
-            const dt = parse_iso_date(s) orelse return Value{ .string = s };
-            const delta: i32 = if (args.len > 0) switch (args[0]) {
-                .integer => |iv| @intCast(iv),
-                .double => |dv| @intFromFloat(dv),
-                else => 0,
-            } else 0;
-            var sec: i32 = @as(i32, dt.sec) + delta;
-            var min_offset: i32 = 0;
-            while (sec >= 60) {
-                sec -= 60;
-                min_offset += 1;
+        if (try self.eval_string_method_pad_abbrev(s, method, args)) |v| return v;
+        if (eval_string_method_predicates(s, method)) |v| return v;
+        if (try self.eval_string_method_char_class(s, method)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(method, "lastIndexOf") and
+            args.len > 0 and args[0] == .string)
+        {
+            const target = args[0].string;
+            if (target.len == 0 or s.len == 0) return Value{ .integer = -1 };
+            var last: i64 = -1;
+            var k: usize = 0;
+            while (k + target.len <= s.len) : (k += 1) {
+                if (std.mem.eql(u8, s[k .. k + target.len], target)) last = @intCast(k);
             }
-            while (sec < 0) {
-                sec += 60;
-                min_offset -= 1;
-            }
-            const base = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(dt.y)), dt.m, dt.d, dt.h, dt.mi, @as(u8, @intCast(sec)),
-            });
-            if (min_offset != 0) {
-                return self.eval_string_method(
-                    base,
-                    "addMinutes",
-                    &.{Value{ .integer = min_offset }},
-                );
-            }
-            return Value{ .string = base };
+            return Value{ .integer = last };
         }
+        if (eval_string_method_remove(s, method, args)) |v| return v;
+        if (try self.eval_string_method_unescape(s, method)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(method, "format")) {
+            return self.eval_string_method_format(s, args);
+        }
+        if (try self.eval_string_method_date_accessor(s, method)) |v| return v;
+        if (try self.eval_string_method_add_hms(s, method, args)) |v| return v;
         // year() / month() / day() — ISO 日付文字列からコンポーネント抽出
         if (std.ascii.eqlIgnoreCase(method, "year") or
             std.ascii.eqlIgnoreCase(method, "month") or
