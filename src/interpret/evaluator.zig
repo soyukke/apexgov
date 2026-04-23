@@ -67,6 +67,9 @@ pub const FieldSetMetadata = struct {
     members: []const FieldSetMemberMetadata = &.{},
 };
 
+const invalid_sobject_type_fmt = "sObject type '{s}' is not supported. " ++
+    "If you are attempting to use a custom object, be sure to append the '__c' after the entity name.";
+
 pub const Evaluator = struct {
     arena: std.mem.Allocator,
     /// I/O 抽象 (0.16 Io refactor)。ファイル操作・乱数・時刻で利用する。
@@ -4540,7 +4543,8 @@ pub const Evaluator = struct {
             std.ascii.indexOfIgnoreCase(soql, "WITH USER_MODE") == null and
             std.ascii.indexOfIgnoreCase(soql, "USER_MODE") == null) return;
         const from_type_name = extract_from_type(soql) orelse "SObject";
-        const msg = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type_name});
+        const msg =
+            try std.fmt.allocPrint(self.arena, invalid_sobject_type_fmt, .{from_type_name});
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.QueryException" };
         try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -5171,7 +5175,8 @@ pub const Evaluator = struct {
         if (try self.generate_metadata_stub(from_type, soql, current_env)) |_| return;
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.QueryException" };
-        try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.", .{from_type}) });
+        const msg = try std.fmt.allocPrint(self.arena, invalid_sobject_type_fmt, .{from_type});
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
     }
