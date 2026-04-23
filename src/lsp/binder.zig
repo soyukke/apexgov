@@ -253,6 +253,36 @@ const Binder = struct {
     // Decl 走査
     // -----------------------------------------------------------------------
 
+    fn bind_params(self: *Binder, params: anytype, base_loc: SourceLoc, owner: SymbolId) !void {
+        for (params) |p| {
+            const param_loc = self.find_token_after(base_loc.offset, p.name) orelse base_loc;
+            _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, owner);
+        }
+    }
+
+    fn bind_body_scope(self: *Binder, body: []const ast.Stmt) !void {
+        for (body) |stmt| {
+            try self.bind_stmt(stmt);
+        }
+    }
+
+    fn bind_method_like(
+        self: *Binder,
+        name: []const u8,
+        kind: SymbolKind,
+        return_type: ?[]const u8,
+        loc: SourceLoc,
+        params: anytype,
+        body: []const ast.Stmt,
+        parent: ?SymbolId,
+    ) !void {
+        const sym_id = try self.add_symbol(name, kind, return_type, loc, parent);
+        _ = try self.push_scope();
+        try self.bind_params(params, loc, sym_id);
+        try self.bind_body_scope(body);
+        self.pop_scope();
+    }
+
     fn bind_decl(self: *Binder, decl: ast.Decl, parent: ?SymbolId, _: ScopeId) !void {
         switch (decl) {
             .class_decl => |cd| {
@@ -273,52 +303,34 @@ const Binder = struct {
                     _ = try self.add_symbol(v, .enum_value, ed.name, ed.loc, sym_id);
                 }
             },
-            .method_decl => |md| {
-                const sym_id = try self.add_symbol(
-                    md.name,
-                    .method,
-                    type_ref_to_string(md.return_type),
-                    md.loc,
-                    parent,
-                );
-                _ = try self.push_scope();
-                for (md.params) |p| {
-                    const param_loc = self.find_token_after(md.loc.offset, p.name) orelse md.loc;
-                    _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, sym_id);
-                }
-                for (md.body) |stmt| {
-                    try self.bind_stmt(stmt);
-                }
-                self.pop_scope();
-            },
-            .constructor_decl => |cd| {
-                const sym_id = try self.add_symbol("<constructor>", .constructor, null, cd.loc, parent);
-                _ = try self.push_scope();
-                for (cd.params) |p| {
-                    const param_loc = self.find_token_after(cd.loc.offset, p.name) orelse cd.loc;
-                    _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, sym_id);
-                }
-                for (cd.body) |stmt| {
-                    try self.bind_stmt(stmt);
-                }
-                self.pop_scope();
-            },
+            .method_decl => |md| try self.bind_method_like(
+                md.name,
+                .method,
+                type_ref_to_string(md.return_type),
+                md.loc,
+                md.params,
+                md.body,
+                parent,
+            ),
+            .constructor_decl => |cd| try self.bind_method_like(
+                "<constructor>",
+                .constructor,
+                null,
+                cd.loc,
+                cd.params,
+                cd.body,
+                parent,
+            ),
             .field_decl => |fd| {
                 _ = try self.add_symbol(fd.name, .field, type_ref_to_string(fd.type_ref), fd.loc, parent);
             },
             .trigger_decl => |td| {
                 _ = try self.add_symbol(td.name, .trigger, null, td.loc, parent);
                 _ = try self.push_scope();
-                for (td.body) |stmt| {
-                    try self.bind_stmt(stmt);
-                }
+                try self.bind_body_scope(td.body);
                 self.pop_scope();
             },
-            .static_init => |stmts| {
-                for (stmts) |stmt| {
-                    try self.bind_stmt(stmt);
-                }
-            },
+            .static_init => |stmts| try self.bind_body_scope(stmts),
         }
     }
 
@@ -361,14 +373,24 @@ const Binder = struct {
         }
     }
 
+    fn bind_var_decl(self: *Binder, vd: anytype) !void {
+        _ = try self.add_symbol(vd.name, .local_variable, type_ref_to_string(vd.type_ref), vd.loc, null);
+        if (vd.initializer) |init_expr| {
+            try self.bind_expr(init_expr.*);
+        }
+    }
+
+    fn bind_for_each_stmt(self: *Binder, fes: anytype) anyerror!void {
+        _ = try self.push_scope();
+        _ = try self.add_symbol(fes.elem_name, .for_each_variable, type_ref_to_string(fes.elem_type), fes.loc, null);
+        try self.bind_expr(fes.iterable.*);
+        for (fes.body) |s| try self.bind_stmt(s);
+        self.pop_scope();
+    }
+
     fn bind_stmt(self: *Binder, stmt: ast.Stmt) !void {
         switch (stmt) {
-            .var_decl => |vd| {
-                _ = try self.add_symbol(vd.name, .local_variable, type_ref_to_string(vd.type_ref), vd.loc, null);
-                if (vd.initializer) |init_expr| {
-                    try self.bind_expr(init_expr.*);
-                }
-            },
+            .var_decl => |vd| try self.bind_var_decl(vd),
             .block => |stmts| {
                 _ = try self.push_scope();
                 for (stmts) |s| try self.bind_stmt(s);
@@ -382,19 +404,7 @@ const Binder = struct {
                 }
             },
             .for_stmt => |fs| try self.bind_for_stmt(fs),
-            .for_each_stmt => |fes| {
-                _ = try self.push_scope();
-                _ = try self.add_symbol(
-                    fes.elem_name,
-                    .for_each_variable,
-                    type_ref_to_string(fes.elem_type),
-                    fes.loc,
-                    null,
-                );
-                try self.bind_expr(fes.iterable.*);
-                for (fes.body) |s| try self.bind_stmt(s);
-                self.pop_scope();
-            },
+            .for_each_stmt => |fes| try self.bind_for_each_stmt(fes),
             .while_stmt => |ws| {
                 try self.bind_expr(ws.condition.*);
                 for (ws.body) |s| try self.bind_stmt(s);
@@ -406,9 +416,7 @@ const Binder = struct {
             .return_stmt => |rs| {
                 if (rs.value) |val| try self.bind_expr(val.*);
             },
-            .throw_stmt => |ts| {
-                try self.bind_expr(ts.expr.*);
-            },
+            .throw_stmt => |ts| try self.bind_expr(ts.expr.*),
             .switch_stmt => |ss| {
                 try self.bind_expr(ss.subject.*);
                 for (ss.when_clauses) |wc| {
@@ -416,12 +424,8 @@ const Binder = struct {
                 }
             },
             .try_stmt => |ts| try self.bind_try_stmt(ts),
-            .expr_stmt => |expr| {
-                try self.bind_expr(expr.*);
-            },
-            .dml_stmt => |ds| {
-                try self.bind_expr(ds.target.*);
-            },
+            .expr_stmt => |expr| try self.bind_expr(expr.*),
+            .dml_stmt => |ds| try self.bind_expr(ds.target.*),
             .run_as_stmt => |ras| {
                 try self.bind_expr(ras.user_expr.*);
                 for (ras.body) |s| try self.bind_stmt(s);

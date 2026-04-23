@@ -147,7 +147,10 @@ test "identifier_at_offset finds class name" {
     const tokens = try lexer.tokenize(source, arena.allocator());
     // 'Foo' starts at offset 13
     try std.testing.expectEqualStrings("Foo", identifier_at_offset(tokens, 13).?);
-    try std.testing.expectEqualStrings("Foo", identifier_at_offset(tokens, 14).?); // middle of 'Foo'
+    try std.testing.expectEqualStrings(
+        "Foo",
+        identifier_at_offset(tokens, 14).?,
+    ); // middle of 'Foo'
 }
 
 test "identifier_at_offset returns null on keyword" {

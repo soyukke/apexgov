@@ -11,7 +11,11 @@ const utils = @import("utils.zig");
 const ApexFile = types.ApexFile;
 const is_apex_source = utils.is_apex_source;
 
-pub fn collect_apex_files(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.ArrayList(ApexFile) {
+pub fn collect_apex_files(
+    gpa: std.mem.Allocator,
+    io: Io,
+    roots: []const []const u8,
+) !std.ArrayList(ApexFile) {
     var files: std.ArrayList(ApexFile) = .empty;
     errdefer deinit_apex_files(gpa, &files);
     for (roots) |root| {
@@ -20,7 +24,12 @@ pub fn collect_apex_files(gpa: std.mem.Allocator, io: Io, roots: []const []const
     return files;
 }
 
-fn collect_path(gpa: std.mem.Allocator, io: Io, path: []const u8, files: *std.ArrayList(ApexFile)) !void {
+fn collect_path(
+    gpa: std.mem.Allocator,
+    io: Io,
+    path: []const u8,
+    files: *std.ArrayList(ApexFile),
+) !void {
     collect_directory(gpa, io, path, files) catch |err| switch (err) {
         error.NotDir => {
             if (is_apex_source(path)) {
@@ -31,7 +40,12 @@ fn collect_path(gpa: std.mem.Allocator, io: Io, path: []const u8, files: *std.Ar
     };
 }
 
-fn collect_directory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList(ApexFile)) !void {
+fn collect_directory(
+    gpa: std.mem.Allocator,
+    io: Io,
+    root: []const u8,
+    files: *std.ArrayList(ApexFile),
+) !void {
     var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -49,7 +63,12 @@ fn collect_directory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *s
     }
 }
 
-fn append_apex_file(gpa: std.mem.Allocator, io: Io, files: *std.ArrayList(ApexFile), path: []const u8) !void {
+fn append_apex_file(
+    gpa: std.mem.Allocator,
+    io: Io,
+    files: *std.ArrayList(ApexFile),
+    path: []const u8,
+) !void {
     const content = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
     errdefer gpa.free(content);
 

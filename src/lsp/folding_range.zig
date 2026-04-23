@@ -6,7 +6,10 @@ const parser_types = @import("../apex_parser/types.zig");
 const Token = parser_types.Token;
 const TokenKind = parser_types.TokenKind;
 
-pub fn get_folding_ranges(tokens: []const Token, allocator: std.mem.Allocator) ![]lsp_types.FoldingRange {
+pub fn get_folding_ranges(
+    tokens: []const Token,
+    allocator: std.mem.Allocator,
+) ![]lsp_types.FoldingRange {
     var ranges: std.ArrayList(lsp_types.FoldingRange) = .empty;
     var stack: std.ArrayList(u32) = .empty; // start line (0-indexed) のスタック
     defer stack.deinit(allocator);

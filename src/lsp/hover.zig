@@ -78,7 +78,10 @@ test "hover on variable shows type" {
 }
 
 test "hover on method shows signature" {
-    var ctx = try hover_at("public class Foo { public String getName() { return null; } }", "getName");
+    var ctx = try hover_at(
+        "public class Foo { public String getName() { return null; } }",
+        "getName",
+    );
     defer ctx.deinit();
 
     try std.testing.expect(ctx.result != null);

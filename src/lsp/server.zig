@@ -86,7 +86,12 @@ pub const Server = struct {
         return try self.dispatch_method(method, id, obj);
     }
 
-    fn dispatch_method(self: *Server, method: []const u8, id: types.RequestId, obj: JsonObjectMap) !bool {
+    fn dispatch_method(
+        self: *Server,
+        method: []const u8,
+        id: types.RequestId,
+        obj: JsonObjectMap,
+    ) !bool {
         if (std.mem.eql(u8, method, "initialize")) {
             try self.handle_initialize(id, obj);
         } else if (std.mem.eql(u8, method, "initialized")) {
@@ -138,7 +143,12 @@ pub const Server = struct {
             switch (id) {
                 .none => {},
                 .integer, .string => {
-                    try self.transport.send_error_response(self.allocator, id, -32601, "Method not found");
+                    try self.transport.send_error_response(
+                        self.allocator,
+                        id,
+                        -32601,
+                        "Method not found",
+                    );
                 },
             }
         }
@@ -340,7 +350,12 @@ pub const Server = struct {
         };
         const doc = self.store.get(uri) orelse return;
 
-        const formatted = try formatting_mod.format_source(cached.tokens, doc.text, .{}, self.allocator);
+        const formatted = try formatting_mod.format_source(
+            cached.tokens,
+            doc.text,
+            .{},
+            self.allocator,
+        );
         defer self.allocator.free(formatted);
 
         // 全文置換: end を十分大きな行番号に設定（LSP 仕様: ドキュメント末尾まで）
@@ -368,7 +383,10 @@ pub const Server = struct {
         try self.transport.send_response(self.allocator, id, results);
     }
 
-    fn extract_position_offset(self: *Server, obj: JsonObjectMap) ?struct { uri: []const u8, offset: u32 } {
+    fn extract_position_offset(
+        self: *Server,
+        obj: JsonObjectMap,
+    ) ?struct { uri: []const u8, offset: u32 } {
         const params = obj_get(obj, "params") orelse return null;
         const td = val_get_obj(params, "textDocument") orelse return null;
         const uri = obj_get_str(td, "uri") orelse return null;
@@ -377,7 +395,11 @@ pub const Server = struct {
         const character: u32 = @intCast(obj_get_int(pos_val, "character") orelse return null);
 
         const doc = self.store.get(uri) orelse return null;
-        const offset = position_mod.position_to_offset(doc.text, line, character) orelse return null;
+        const offset = position_mod.position_to_offset(
+            doc.text,
+            line,
+            character,
+        ) orelse return null;
         return .{ .uri = uri, .offset = offset };
     }
 
@@ -459,10 +481,20 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const items = try completion_mod.get_completions(br, doc.text, ctx.offset, self.allocator, &self.custom_fields);
+        const items = try completion_mod.get_completions(
+            br,
+            doc.text,
+            ctx.offset,
+            self.allocator,
+            &self.custom_fields,
+        );
         defer self.allocator.free(items);
 
-        try self.transport.send_response(self.allocator, id, types.CompletionList{ .items = items });
+        try self.transport.send_response(
+            self.allocator,
+            id,
+            types.CompletionList{ .items = items },
+        );
     }
 
     fn handle_signature_help(self: *Server, id: types.RequestId, obj: JsonObjectMap) !void {
@@ -475,7 +507,12 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const result = try signature_help_mod.get_signature_help(br, doc.text, ctx.offset, self.allocator);
+        const result = try signature_help_mod.get_signature_help(
+            br,
+            doc.text,
+            ctx.offset,
+            self.allocator,
+        );
         try self.transport.send_response(self.allocator, id, result);
     }
 
@@ -494,7 +531,14 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const edit = try rename_mod.get_rename_edits(br, doc.text, ctx.uri, ctx.offset, new_name, self.allocator);
+        const edit = try rename_mod.get_rename_edits(
+            br,
+            doc.text,
+            ctx.uri,
+            ctx.offset,
+            new_name,
+            self.allocator,
+        );
         try self.transport.send_response(self.allocator, id, edit);
     }
 
@@ -508,7 +552,12 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const hl = try document_highlight_mod.get_highlights(br, doc.text, ctx.offset, self.allocator);
+        const hl = try document_highlight_mod.get_highlights(
+            br,
+            doc.text,
+            ctx.offset,
+            self.allocator,
+        );
         defer self.allocator.free(hl);
 
         try self.transport.send_response(self.allocator, id, hl);
@@ -550,7 +599,12 @@ pub const Server = struct {
         };
         const doc = self.store.get(uri) orelse return;
 
-        const lenses = try code_lens_mod.get_code_lenses(cached.decls, doc.text, uri, self.allocator);
+        const lenses = try code_lens_mod.get_code_lenses(
+            cached.decls,
+            doc.text,
+            uri,
+            self.allocator,
+        );
         defer self.allocator.free(lenses);
 
         try self.transport.send_response(self.allocator, id, lenses);
@@ -657,7 +711,12 @@ pub const Server = struct {
         _ = ws_root;
         const sfdx_project = @import("sfdx_project.zig");
         for (&SUB_CANDIDATES) |sub| {
-            const sub_dirs = try sfdx_project.resolve_sub_dirs(self.allocator, self.io, pkg_dirs, sub);
+            const sub_dirs = try sfdx_project.resolve_sub_dirs(
+                self.allocator,
+                self.io,
+                pkg_dirs,
+                sub,
+            );
             defer self.allocator.free(sub_dirs);
 
             for (sub_dirs) |d| {
@@ -666,7 +725,12 @@ pub const Server = struct {
         }
     }
 
-    fn run_test_and_notify(self: *Server, ws_root: []const u8, class_name: []const u8, method_name: ?[]const u8) !void {
+    fn run_test_and_notify(
+        self: *Server,
+        ws_root: []const u8,
+        class_name: []const u8,
+        method_name: ?[]const u8,
+    ) !void {
         const interpret = @import("../interpret/root.zig");
         const sfdx_project = @import("sfdx_project.zig");
 
@@ -774,7 +838,11 @@ fn format_test_result_message(
         });
     }
     if (passed < total and failure_detail.len > 0) {
-        return std.fmt.allocPrint(gpa, "{s}: {d}/{d} passed\n{s}", .{ class_name, passed, total, failure_detail });
+        return std.fmt.allocPrint(
+            gpa,
+            "{s}: {d}/{d} passed\n{s}",
+            .{ class_name, passed, total, failure_detail },
+        );
     }
     return std.fmt.allocPrint(gpa, "{s}: {d}/{d} passed", .{ class_name, passed, total });
 }
@@ -852,7 +920,11 @@ const TestHarness = struct {
     /// JSON-RPC メッセージを Server に送信する。
     fn send(self: *TestHarness, body: []const u8) void {
         var header_buf: [64]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{body.len}) catch unreachable;
+        const header = std.fmt.bufPrint(
+            &header_buf,
+            "Content-Length: {d}\r\n\r\n",
+            .{body.len},
+        ) catch unreachable;
         self.client_writer.writeStreamingAll(std.testing.io, header) catch unreachable;
         self.client_writer.writeStreamingAll(std.testing.io, body) catch unreachable;
     }

@@ -5,7 +5,11 @@
 const std = @import("std");
 const model = @import("model.zig");
 
-pub fn write_check(writer: *std.Io.Writer, format: model.OutputFormat, findings: []const model.Finding) !void {
+pub fn write_check(
+    writer: *std.Io.Writer,
+    format: model.OutputFormat,
+    findings: []const model.Finding,
+) !void {
     switch (format) {
         .text => try write_check_text(writer, findings),
         .json => try write_check_json(writer, findings),
@@ -13,7 +17,11 @@ pub fn write_check(writer: *std.Io.Writer, format: model.OutputFormat, findings:
     }
 }
 
-pub fn write_profile(writer: *std.Io.Writer, format: model.OutputFormat, profiles: []const model.ProfileResult) !void {
+pub fn write_profile(
+    writer: *std.Io.Writer,
+    format: model.OutputFormat,
+    profiles: []const model.ProfileResult,
+) !void {
     switch (format) {
         .text => try write_profile_text(writer, profiles),
         .json => try write_profile_json(writer, profiles),

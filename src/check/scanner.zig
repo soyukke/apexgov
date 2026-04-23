@@ -229,6 +229,55 @@ fn run_detectors(trimmed: []const u8, type_env: *std.StringHashMap([]const u8)) 
 
 /// テーブル駆動でルール検出結果を Finding に変換する。
 /// `inline for` により comptime 展開され、各ルールに最適化されたコードが生成される。
+/// rule_specs のディスパッチで共有するコンテキスト。
+const RuleEmitCtx = struct {
+    gpa: std.mem.Allocator,
+    findings: *std.ArrayList(model.Finding),
+    path: []const u8,
+    line_no: usize,
+    loop_upper_bound: ?u64,
+    cpu_model: config.CpuModel,
+};
+
+fn emit_generic_finding(ctx: RuleEmitCtx, comptime spec: RuleSpec) !void {
+    try append_finding(
+        ctx.gpa,
+        ctx.findings,
+        ctx.path,
+        ctx.line_no,
+        spec.rule_id,
+        spec.title,
+        spec.message,
+        spec.severity,
+        spec.category,
+    );
+}
+
+fn emit_governor_for_spec(ctx: RuleEmitCtx, comptime spec: RuleSpec, count: u64) !void {
+    try append_governor_finding(
+        ctx.gpa,
+        ctx.findings,
+        ctx.path,
+        ctx.line_no,
+        spec.gov_kind,
+        ctx.loop_upper_bound,
+        count,
+    );
+}
+
+fn emit_cpu_for_spec(ctx: RuleEmitCtx, comptime spec: RuleSpec, count: u64) !void {
+    try append_cpu_estimate_finding(
+        ctx.gpa,
+        ctx.findings,
+        ctx.path,
+        ctx.line_no,
+        spec.cpu_label,
+        sat_mul(@field(ctx.cpu_model, spec.cpu_cost_field), count),
+        ctx.loop_upper_bound,
+        ctx.cpu_model.base_ms,
+    );
+}
+
 fn emit_rule_findings(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
@@ -239,62 +288,28 @@ fn emit_rule_findings(
     loop_upper_bound: ?u64,
     cpu_model: config.CpuModel,
 ) !void {
+    const ctx = RuleEmitCtx{
+        .gpa = gpa,
+        .findings = findings,
+        .path = path,
+        .line_no = line_no,
+        .loop_upper_bound = loop_upper_bound,
+        .cpu_model = cpu_model,
+    };
     inline for (rule_specs) |spec| {
         const count = sat_add(@field(direct, spec.field), @field(call_metrics, spec.field));
         if (count > 0) {
             switch (spec.emit) {
                 .governor_with_cpu => {
-                    try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
-                    try append_cpu_estimate_finding(
-                        gpa,
-                        findings,
-                        path,
-                        line_no,
-                        spec.cpu_label,
-                        sat_mul(@field(cpu_model, spec.cpu_cost_field), count),
-                        loop_upper_bound,
-                        cpu_model.base_ms,
-                    );
+                    try emit_governor_for_spec(ctx, spec, count);
+                    try emit_cpu_for_spec(ctx, spec, count);
                 },
-                .governor_only => {
-                    try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
-                },
+                .governor_only => try emit_governor_for_spec(ctx, spec, count),
                 .finding_with_cpu => {
-                    try append_finding(
-                        gpa,
-                        findings,
-                        path,
-                        line_no,
-                        spec.rule_id,
-                        spec.title,
-                        spec.message,
-                        spec.severity,
-                        spec.category,
-                    );
-                    try append_cpu_estimate_finding(
-                        gpa,
-                        findings,
-                        path,
-                        line_no,
-                        spec.cpu_label,
-                        sat_mul(@field(cpu_model, spec.cpu_cost_field), count),
-                        loop_upper_bound,
-                        cpu_model.base_ms,
-                    );
+                    try emit_generic_finding(ctx, spec);
+                    try emit_cpu_for_spec(ctx, spec, count);
                 },
-                .finding_only => {
-                    try append_finding(
-                        gpa,
-                        findings,
-                        path,
-                        line_no,
-                        spec.rule_id,
-                        spec.title,
-                        spec.message,
-                        spec.severity,
-                        spec.category,
-                    );
-                },
+                .finding_only => try emit_generic_finding(ctx, spec),
             }
         }
     }
@@ -395,7 +410,12 @@ fn finalize_line(state: *ScanState, code_line: []const u8) void {
     if (state.pending_loop_scope) |pending| {
         if (state.brace_depth < pending.expected_depth) state.pending_loop_scope = null;
     }
-    check_method_scope_end(&state.current_method, state.brace_depth, &state.type_env, state.arena_allocator);
+    check_method_scope_end(
+        &state.current_method,
+        state.brace_depth,
+        &state.type_env,
+        state.arena_allocator,
+    );
 }
 
 fn register_pending_loop_if_entering_block(state: *ScanState, trimmed: []const u8) !void {
@@ -409,7 +429,12 @@ fn register_pending_loop_if_entering_block(state: *ScanState, trimmed: []const u
     state.pending_loop_scope = null;
 }
 
-fn emit_ag001_if_nested(state: *ScanState, line_no: usize, loop_started: bool, loop_level: usize) !void {
+fn emit_ag001_if_nested(
+    state: *ScanState,
+    line_no: usize,
+    loop_started: bool,
+    loop_level: usize,
+) !void {
     if (state.skip_test_findings or !loop_started or loop_level == 0) return;
     try append_finding(
         state.gpa,
@@ -465,7 +490,11 @@ fn emit_ag002_to_ag011(
     );
 }
 
-fn register_new_loop_scope(state: *ScanState, trimmed: []const u8, loop_info: ?types.LoopInfo) !void {
+fn register_new_loop_scope(
+    state: *ScanState,
+    trimmed: []const u8,
+    loop_info: ?types.LoopInfo,
+) !void {
     const info = loop_info orelse return;
     if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
         try state.loop_scopes.append(state.gpa, .{
@@ -500,7 +529,12 @@ fn process_line(state: *ScanState, code_line: []const u8, line_no: usize) !void 
     try register_pending_loop_if_entering_block(state, trimmed);
     try apply_bound_updates(state.arena_allocator, &state.bounds, trimmed);
 
-    const loop_info = infer_loop_info_at_line(trimmed, &state.bounds, &state.do_while_conditions, line_no);
+    const loop_info = infer_loop_info_at_line(
+        trimmed,
+        &state.bounds,
+        &state.do_while_conditions,
+        line_no,
+    );
     const loop_level = state.loop_scopes.items.len;
 
     try emit_ag001_if_nested(state, line_no, loop_info != null, loop_level);
@@ -535,7 +569,10 @@ pub fn scan_content(
         .findings = findings,
         .bounds = std.StringHashMap(Bound).init(arena_allocator),
         .type_env = std.StringHashMap([]const u8).init(arena_allocator),
-        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content),
+        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(
+            arena_allocator,
+            stripped_content,
+        ),
         .skip_test_findings = !cfg.include_tests and is_test_class(stripped_content),
     };
     defer state.loop_scopes.deinit(gpa);

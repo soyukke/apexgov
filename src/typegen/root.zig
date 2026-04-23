@@ -37,8 +37,17 @@ pub fn xml_tag_value(xml: []const u8, tag: []const u8) ?[]const u8 {
             // 閉じタグを探す
             const value_start = open_end + 1;
             var close_pattern_buf: [128]u8 = undefined;
-            const close_pattern = std.fmt.bufPrint(&close_pattern_buf, "</{s}>", .{tag}) catch return null;
-            const close_start = std.mem.indexOfPos(u8, xml, value_start, close_pattern) orelse return null;
+            const close_pattern = std.fmt.bufPrint(
+                &close_pattern_buf,
+                "</{s}>",
+                .{tag},
+            ) catch return null;
+            const close_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                value_start,
+                close_pattern,
+            ) orelse return null;
             const value = std.mem.trim(u8, xml[value_start..close_start], " \t\r\n");
             return value;
         }
@@ -48,7 +57,11 @@ pub fn xml_tag_value(xml: []const u8, tag: []const u8) ?[]const u8 {
 }
 
 /// XML テキストから `<tag>value</tag>` を全て抽出する（複数マッチ対応）。
-pub fn xml_tag_values(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+pub fn xml_tag_values(
+    xml: []const u8,
+    tag: []const u8,
+    allocator: std.mem.Allocator,
+) ![]const []const u8 {
     var results: std.ArrayList([]const u8) = .empty;
     var pos: usize = 0;
 
@@ -71,7 +84,12 @@ pub fn xml_tag_values(xml: []const u8, tag: []const u8, allocator: std.mem.Alloc
 
         if (std.mem.eql(u8, tag_name, tag)) {
             const value_start = open_end + 1;
-            const close_start = std.mem.indexOfPos(u8, xml, value_start, close_pattern) orelse break;
+            const close_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                value_start,
+                close_pattern,
+            ) orelse break;
             const value = std.mem.trim(u8, xml[value_start..close_start], " \t\r\n");
             try results.append(allocator, value);
             pos = close_start + close_pattern.len;

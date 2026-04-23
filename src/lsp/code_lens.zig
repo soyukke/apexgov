@@ -173,7 +173,10 @@ test "クラスレベル Run All Tests レンズ" {
     // Last one should be Run All Tests
     const class_lens = r.lenses[2];
     try std.testing.expectEqualStrings("apexgov.runAllTests", class_lens.command.?.command);
-    try std.testing.expectEqualStrings("\u{25B6} Run All Tests (saved)", class_lens.command.?.title);
+    try std.testing.expectEqualStrings(
+        "\u{25B6} Run All Tests (saved)",
+        class_lens.command.?.title,
+    );
     const args = class_lens.command.?.arguments.?;
     try std.testing.expectEqual(@as(usize, 2), args.len);
     try std.testing.expectEqualStrings("MyTest", args[1]);

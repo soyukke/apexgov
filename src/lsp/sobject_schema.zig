@@ -164,7 +164,11 @@ pub const CustomFieldRegistry = struct {
     }
 
     /// ワークスペースの objects/ ディレクトリからカスタムフィールドを読み込む。
-    pub fn load_from_workspace(self: *CustomFieldRegistry, io: std.Io, workspace_path: []const u8) !void {
+    pub fn load_from_workspace(
+        self: *CustomFieldRegistry,
+        io: std.Io,
+        workspace_path: []const u8,
+    ) !void {
         const alloc = self.arena.allocator();
         const sfdx_project = @import("sfdx_project.zig");
 
@@ -172,10 +176,19 @@ pub const CustomFieldRegistry = struct {
         const pkg_dirs = try sfdx_project.resolve_package_dirs(alloc, io, workspace_path);
         // arena で確保しているため個別 free は不要
 
-        const objects_dirs = try sfdx_project.resolve_sub_dirs(alloc, io, pkg_dirs, "main/default/objects");
+        const objects_dirs = try sfdx_project.resolve_sub_dirs(
+            alloc,
+            io,
+            pkg_dirs,
+            "main/default/objects",
+        );
 
         for (objects_dirs) |objects_path| {
-            var dir = std.Io.Dir.openDirAbsolute(io, objects_path, .{ .iterate = true }) catch continue;
+            var dir = std.Io.Dir.openDirAbsolute(
+                io,
+                objects_path,
+                .{ .iterate = true },
+            ) catch continue;
             defer dir.close(io);
 
             var iter = dir.iterate();
@@ -196,7 +209,11 @@ pub const CustomFieldRegistry = struct {
         const alloc = self.arena.allocator();
         const fields_path = try std.fs.path.join(alloc, &.{ objects_path, obj_name, "fields" });
 
-        var fields_dir = std.Io.Dir.openDirAbsolute(io, fields_path, .{ .iterate = true }) catch return;
+        var fields_dir = std.Io.Dir.openDirAbsolute(
+            io,
+            fields_path,
+            .{ .iterate = true },
+        ) catch return;
         defer fields_dir.close(io);
 
         var fields: std.ArrayList(FieldInfo) = .empty;
@@ -206,7 +223,12 @@ pub const CustomFieldRegistry = struct {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".field-meta.xml")) continue;
 
-            const content = fields_dir.readFileAlloc(io, entry.name, alloc, .limited(64 * 1024)) catch continue;
+            const content = fields_dir.readFileAlloc(
+                io,
+                entry.name,
+                alloc,
+                .limited(64 * 1024),
+            ) catch continue;
             const parsed = parse_field_meta_xml(content, alloc) catch continue;
             if (parsed) |field| {
                 try fields.append(alloc, field);

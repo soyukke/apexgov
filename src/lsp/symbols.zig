@@ -13,7 +13,11 @@ const Position = types.Position;
 const SourceLoc = parser_types.SourceLoc;
 
 /// AST 宣言リストから DocumentSymbol 配列を生成する。
-pub fn collect_symbols(decls: []const ast.Decl, source: []const u8, allocator: std.mem.Allocator) ![]DocumentSymbol {
+pub fn collect_symbols(
+    decls: []const ast.Decl,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+) ![]DocumentSymbol {
     var result: std.ArrayList(DocumentSymbol) = .empty;
     for (decls) |decl| {
         try collect_decl(decl, source, allocator, &result);

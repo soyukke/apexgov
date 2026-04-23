@@ -87,7 +87,11 @@ pub fn compare_with_baseline(
         const baseline = find_baseline(curr, parsed.value.profiles) orelse continue;
 
         const cpu_regressed = exceeds_percent(curr.cpu_ms, baseline.cpu_ms, threshold_percent);
-        const heap_regressed = exceeds_percent(curr.heap_bytes, baseline.heap_bytes, threshold_percent);
+        const heap_regressed = exceeds_percent(
+            curr.heap_bytes,
+            baseline.heap_bytes,
+            threshold_percent,
+        );
         if (!cpu_regressed and !heap_regressed) continue;
 
         try regressions.append(gpa, .{
@@ -114,7 +118,10 @@ pub fn deinit_regressions(gpa: std.mem.Allocator, regressions: *std.ArrayList(Re
     regressions.deinit(gpa);
 }
 
-fn find_baseline(curr: model.ProfileResult, baseline_profiles: []const BaselineProfile) ?BaselineProfile {
+fn find_baseline(
+    curr: model.ProfileResult,
+    baseline_profiles: []const BaselineProfile,
+) ?BaselineProfile {
     const curr_mode = if (curr.is_async) "async" else "sync";
     const curr_label_known = !is_unknown(curr.label);
     const curr_base = std.fs.path.basename(curr.source);
@@ -147,7 +154,12 @@ fn exceeds_percent(current: u64, baseline: u64, threshold_percent: u8) bool {
     return lhs > rhs;
 }
 
-fn collect_logs(gpa: std.mem.Allocator, io: Io, input: []const u8, files: *std.ArrayList([]const u8)) !void {
+fn collect_logs(
+    gpa: std.mem.Allocator,
+    io: Io,
+    input: []const u8,
+    files: *std.ArrayList([]const u8),
+) !void {
     collect_logs_in_directory(gpa, io, input, files) catch |err| switch (err) {
         error.NotDir => {
             try files.append(gpa, try gpa.dupe(u8, input));
@@ -365,7 +377,12 @@ test "run splits multi-transaction log file" {
     defer std.testing.allocator.free(log_path);
 
     const inputs = [_][]const u8{log_path};
-    var profiles = try run(std.testing.allocator, std.testing.io, &inputs, config.Config.defaults());
+    var profiles = try run(
+        std.testing.allocator,
+        std.testing.io,
+        &inputs,
+        config.Config.defaults(),
+    );
     defer model.deinit_profiles(std.testing.allocator, &profiles);
 
     try std.testing.expectEqual(@as(usize, 2), profiles.items.len);
@@ -434,7 +451,13 @@ test "compare_with_baseline reports regression by label and mode" {
         },
     };
 
-    var regressions = try compare_with_baseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
     defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -490,7 +513,13 @@ test "compare_with_baseline can disambiguate by transaction index" {
         },
     };
 
-    var regressions = try compare_with_baseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
     defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
@@ -512,7 +541,13 @@ test "compare_with_baseline returns empty when baseline path is null" {
         },
     };
 
-    var regressions = try compare_with_baseline(std.testing.allocator, std.testing.io, &current, null, 15);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        null,
+        15,
+    );
     defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
@@ -556,7 +591,13 @@ test "compare_with_baseline matches by basename when label is unknown" {
         },
     };
 
-    var regressions = try compare_with_baseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
     defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);

@@ -165,7 +165,13 @@ fn collect_method_names(
             if (owner_scopes.items.len > 0) {
                 const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
                 if (parse_method_start(trimmed)) |decl| {
-                    _ = try ensure_method_summary(arena_allocator, summaries, owner, decl.name, decl.params_raw);
+                    _ = try ensure_method_summary(
+                        arena_allocator,
+                        summaries,
+                        owner,
+                        decl.name,
+                        decl.params_raw,
+                    );
                 }
             }
         }
@@ -249,7 +255,12 @@ fn register_new_method_loop_scope(
     }
 }
 
-fn record_method_line(state: *MetricsScanState, scope: MethodScope, trimmed: []const u8, line_no: usize) !void {
+fn record_method_line(
+    state: *MetricsScanState,
+    scope: MethodScope,
+    trimmed: []const u8,
+    line_no: usize,
+) !void {
     pop_closed_scopes(&state.method_loop_scopes, state.brace_depth);
     try register_method_loop_scope_on_brace(state, trimmed);
     try apply_bound_updates(state.arena_allocator, &state.method_bounds, trimmed);
@@ -293,7 +304,12 @@ fn process_metrics_line(state: *MetricsScanState, code_line: []const u8, line_no
     pop_closed_owners(&state.owner_scopes, state.brace_depth);
 
     if (trimmed.len > 0) {
-        try maybe_enter_owner_scope(state.arena_allocator, &state.owner_scopes, state.brace_depth, trimmed);
+        try maybe_enter_owner_scope(
+            state.arena_allocator,
+            &state.owner_scopes,
+            state.brace_depth,
+            trimmed,
+        );
         const started_method = try begin_metrics_method(state, trimmed);
         if (!started_method) {
             if (state.current_method) |scope| try record_method_line(state, scope, trimmed, line_no);
@@ -330,7 +346,10 @@ fn collect_method_direct_metrics_and_calls(
         .type_relations = type_relations,
         .method_bounds = std.StringHashMap(Bound).init(arena_allocator),
         .type_env = std.StringHashMap([]const u8).init(arena_allocator),
-        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content),
+        .do_while_conditions = try collect_do_while_start_conditions_from_stripped(
+            arena_allocator,
+            stripped_content,
+        ),
     };
     defer state.owner_scopes.deinit(arena_allocator);
     defer state.method_loop_scopes.deinit(arena_allocator);
@@ -376,7 +395,11 @@ fn find_method_summary_by_owner_name_signature(
     param_signature: []const u8,
 ) ?*MethodSummary {
     var buf: [512]u8 = undefined;
-    const key = std.fmt.bufPrint(&buf, "{s}.{s}/{s}", .{ owner, name, param_signature }) catch return null;
+    const key = std.fmt.bufPrint(
+        &buf,
+        "{s}.{s}/{s}",
+        .{ owner, name, param_signature },
+    ) catch return null;
     return summaries.getPtr(key);
 }
 
@@ -389,7 +412,10 @@ fn format_method_key(
     return std.fmt.allocPrint(arena_allocator, "{s}.{s}/{s}", .{ owner, name, param_signature });
 }
 
-fn resolve_method_total(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
+fn resolve_method_total(
+    summaries: *std.StringHashMap(MethodSummary),
+    name: []const u8,
+) MethodMetrics {
     const summary = summaries.getPtr(name) orelse return .{};
     switch (summary.state) {
         .resolved => return summary.total,

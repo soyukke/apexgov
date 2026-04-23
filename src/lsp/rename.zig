@@ -66,7 +66,14 @@ test "renames variable at all sites" {
         break :blk null;
     } orelse unreachable;
 
-    const edit = try get_rename_edits(&br, source, "file:///t.cls", sym.loc.offset, "newName", alloc);
+    const edit = try get_rename_edits(
+        &br,
+        source,
+        "file:///t.cls",
+        sym.loc.offset,
+        "newName",
+        alloc,
+    );
     try std.testing.expect(edit != null);
     try std.testing.expect(edit.?.changes != null);
     try std.testing.expectEqual(@as(usize, 2), edit.?.changes.?.edits.len);

@@ -10,7 +10,11 @@ const Io = std.Io;
 /// sfdx-project.json の packageDirectories[].path を解決する。
 /// 戻り値のスライス要素は allocator で確保済み。呼び出し側で解放すること。
 /// sfdx-project.json が無い/パース不能の場合はフォールバックパスを返す。
-pub fn resolve_package_dirs(allocator: std.mem.Allocator, io: Io, workspace_root: []const u8) ![]const []const u8 {
+pub fn resolve_package_dirs(
+    allocator: std.mem.Allocator,
+    io: Io,
+    workspace_root: []const u8,
+) ![]const []const u8 {
     const json_path = try std.fs.path.join(allocator, &.{ workspace_root, "sfdx-project.json" });
     defer allocator.free(json_path);
 
@@ -68,7 +72,11 @@ pub fn resolve_package_dirs(allocator: std.mem.Allocator, io: Io, workspace_root
 /// sfdx-project.json が無い場合のフォールバック。
 /// 従来のハードコードパスのうち実在するものを返す。
 /// どれも無ければ workspace_root 自体を返す。
-fn fallback_dirs(allocator: std.mem.Allocator, io: Io, workspace_root: []const u8) ![]const []const u8 {
+fn fallback_dirs(
+    allocator: std.mem.Allocator,
+    io: Io,
+    workspace_root: []const u8,
+) ![]const []const u8 {
     const candidates = [_][]const u8{
         "force-app",
         "src",

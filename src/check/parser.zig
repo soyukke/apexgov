@@ -108,7 +108,10 @@ pub fn count_parameters(params_raw: []const u8) ?u16 {
     return count;
 }
 
-pub fn build_param_type_signature(arena_allocator: std.mem.Allocator, params_raw: []const u8) ![]const u8 {
+pub fn build_param_type_signature(
+    arena_allocator: std.mem.Allocator,
+    params_raw: []const u8,
+) ![]const u8 {
     const params = std.mem.trim(u8, params_raw, " \t");
     if (params.len == 0) return try arena_allocator.dupe(u8, "");
 
@@ -154,7 +157,10 @@ pub fn build_param_type_signature(arena_allocator: std.mem.Allocator, params_raw
             }
         }
 
-        if (c == ',' and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+        if (c == ',' and
+            angle_depth == 0 and paren_depth == 0 and
+            bracket_depth == 0 and brace_depth == 0)
+        {
             const segment = std.mem.trim(u8, params[seg_start..i], " \t");
             const type_part = extract_parameter_type_part(segment);
             if (out.items.len > 0) try out.append(arena_allocator, '|');

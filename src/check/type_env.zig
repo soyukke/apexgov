@@ -64,7 +64,10 @@ pub fn register_method_param_types(
             }
         }
 
-        if (c == ',' and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+        if (c == ',' and
+            angle_depth == 0 and paren_depth == 0 and
+            bracket_depth == 0 and brace_depth == 0)
+        {
             const segment = std.mem.trim(u8, params[seg_start..i], " \t");
             if (parse_typed_binding(segment)) |binding| {
                 try bind_type(arena_allocator, type_env, binding);

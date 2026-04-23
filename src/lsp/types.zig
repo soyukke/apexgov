@@ -54,7 +54,10 @@ pub const DiagnosticSeverity = enum(u32) {
     information = 3,
     hint = 4,
 
-    pub fn jsonStringify(self: DiagnosticSeverity, jw: *std.json.Stringify) std.json.Stringify.Error!void {
+    pub fn jsonStringify(
+        self: DiagnosticSeverity,
+        jw: *std.json.Stringify,
+    ) std.json.Stringify.Error!void {
         try jw.write(@intFromEnum(self));
     }
 };
@@ -132,7 +135,10 @@ pub const TextDocumentSyncKind = enum(u32) {
     full = 1,
     incremental = 2,
 
-    pub fn jsonStringify(self: TextDocumentSyncKind, jw: *std.json.Stringify) std.json.Stringify.Error!void {
+    pub fn jsonStringify(
+        self: TextDocumentSyncKind,
+        jw: *std.json.Stringify,
+    ) std.json.Stringify.Error!void {
         try jw.write(@intFromEnum(self));
     }
 };
@@ -283,7 +289,10 @@ pub const CompletionItemKind = enum(u32) {
     enum_member = 20,
     constant = 21,
 
-    pub fn jsonStringify(self: CompletionItemKind, jw: *std.json.Stringify) std.json.Stringify.Error!void {
+    pub fn jsonStringify(
+        self: CompletionItemKind,
+        jw: *std.json.Stringify,
+    ) std.json.Stringify.Error!void {
         try jw.write(@intFromEnum(self));
     }
 };
@@ -337,7 +346,10 @@ pub const WorkspaceEdit = struct {
         uri: []const u8 = "",
         edits: []const TextEdit = &.{},
 
-        pub fn jsonStringify(self: ChangeMap, jw: *std.json.Stringify) std.json.Stringify.Error!void {
+        pub fn jsonStringify(
+            self: ChangeMap,
+            jw: *std.json.Stringify,
+        ) std.json.Stringify.Error!void {
             try jw.beginObject();
             try jw.objectField(self.uri);
             try jw.write(self.edits);
@@ -355,7 +367,10 @@ pub const DocumentHighlightKind = enum(u32) {
     read = 2,
     write = 3,
 
-    pub fn jsonStringify(self: DocumentHighlightKind, jw: *std.json.Stringify) std.json.Stringify.Error!void {
+    pub fn jsonStringify(
+        self: DocumentHighlightKind,
+        jw: *std.json.Stringify,
+    ) std.json.Stringify.Error!void {
         try jw.write(@intFromEnum(self));
     }
 };

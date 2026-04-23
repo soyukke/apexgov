@@ -14,7 +14,12 @@ pub const Transport = struct {
     allocator: std.mem.Allocator,
     read_buf: std.ArrayList(u8) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, io: Io, in_file: Io.File, out_file: Io.File) Transport {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        io: Io,
+        in_file: Io.File,
+        out_file: Io.File,
+    ) Transport {
         return .{
             .in_file = in_file,
             .out_file = out_file,
@@ -53,13 +58,22 @@ pub const Transport = struct {
     /// JSON-RPC メッセージを書き出す。
     pub fn write_message(self: *Transport, body: []const u8) !void {
         var header_buf: [64]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{body.len}) catch unreachable;
+        const header = std.fmt.bufPrint(
+            &header_buf,
+            "Content-Length: {d}\r\n\r\n",
+            .{body.len},
+        ) catch unreachable;
         try self.out_file.writeStreamingAll(self.io, header);
         try self.out_file.writeStreamingAll(self.io, body);
     }
 
     /// JSON-RPC レスポンスを送信する。
-    pub fn send_response(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, result: anytype) !void {
+    pub fn send_response(
+        self: *Transport,
+        allocator: std.mem.Allocator,
+        id: types.RequestId,
+        result: anytype,
+    ) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 

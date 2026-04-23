@@ -20,7 +20,10 @@ pub fn get_definition(
         .uri = uri,
         .range = .{
             .start = pos,
-            .end = .{ .line = pos.line, .character = pos.character + @as(u32, @intCast(sym.name.len)) },
+            .end = .{ .line = pos.line, .character = pos.character + @as(
+                u32,
+                @intCast(sym.name.len),
+            ) },
         },
     };
 }
@@ -47,7 +50,10 @@ pub fn get_definition_cross_file(
         .uri = match.uri,
         .range = .{
             .start = pos,
-            .end = .{ .line = pos.line, .character = pos.character + @as(u32, @intCast(match.symbol.name.len)) },
+            .end = .{ .line = pos.line, .character = pos.character + @as(
+                u32,
+                @intCast(match.symbol.name.len),
+            ) },
         },
     };
 }
@@ -127,7 +133,14 @@ test "cross-file: same-file symbol takes priority" {
 
     // 'x' の使用位置
     const use_offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "x;").?);
-    const loc = get_definition_cross_file(br, cached.tokens, source, "file:///Foo.cls", use_offset, &store);
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        use_offset,
+        &store,
+    );
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri); // 同じファイル
 }
@@ -142,6 +155,13 @@ test "cross-file: returns null when symbol not found anywhere" {
     const br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
 
     const offset: u32 = @intCast(std.mem.indexOf(u8, source, "Unknown").?);
-    const loc = get_definition_cross_file(br, cached.tokens, source, "file:///Main.cls", offset, &store);
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
     try std.testing.expect(loc == null);
 }

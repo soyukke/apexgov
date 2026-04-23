@@ -128,7 +128,12 @@ fn run_check(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     var findings = try apexgov.check.run_with_config(gpa, io, opts.paths.items, cfg);
     defer apexgov.model.deinit_findings(gpa, &findings);
 
-    try emit_output(io, opts.out_path, apexgov.report.write_check, .{ opts.format, findings.items });
+    try emit_output(
+        io,
+        opts.out_path,
+        apexgov.report.write_check,
+        .{ opts.format, findings.items },
+    );
 
     if (opts.threshold) |threshold| {
         const fail_count = count_findings_at_or_above(findings.items, threshold);
@@ -156,7 +161,12 @@ fn run_profile(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     );
     defer apexgov.profile.deinit_regressions(gpa, &regressions);
 
-    try emit_output(io, opts.out_path, apexgov.report.write_profile, .{ opts.format, profiles.items });
+    try emit_output(
+        io,
+        opts.out_path,
+        apexgov.report.write_profile,
+        .{ opts.format, profiles.items },
+    );
 
     var has_violation = false;
     for (profiles.items) |profile| {
@@ -213,7 +223,11 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
     // 出力ディレクトリを作成
     Io.Dir.cwd().createDirPath(io, out_dir) catch |err| {
-        print_stderr(io, "error: cannot create output directory '{s}': {s}\n", .{ out_dir, @errorName(err) });
+        print_stderr(
+            io,
+            "error: cannot create output directory '{s}': {s}\n",
+            .{ out_dir, @errorName(err) },
+        );
         return 2;
     };
 
@@ -260,7 +274,12 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
             if (!std.mem.endsWith(u8, basename, ".field-meta.xml")) continue;
 
             const object_name = extract_object_name(entry_path) orelse continue;
-            const field_xml = root_dir.readFileAlloc(io, entry_path, gpa, .limited(64 * 1024)) catch continue;
+            const field_xml = root_dir.readFileAlloc(
+                io,
+                entry_path,
+                gpa,
+                .limited(64 * 1024),
+            ) catch continue;
             defer gpa.free(field_xml);
 
             if (typegen.parse_field_meta(field_xml, object_name)) |field| {
@@ -272,7 +291,11 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
         if (schema_count > 0) {
             var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/schema.d.ts", .{out_dir}) catch unreachable;
+            const out_path = std.fmt.bufPrint(
+                &path_buf,
+                "{s}/schema.d.ts",
+                .{out_dir},
+            ) catch unreachable;
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
             print_stdout(io, "  schema.d.ts: {d} fields\n", .{schema_count});
             total_files += 1;
@@ -287,7 +310,12 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
             const basename = std.fs.path.basename(entry_path);
             if (!std.mem.endsWith(u8, basename, ".labels-meta.xml")) continue;
 
-            const xml = root_dir.readFileAlloc(io, entry_path, gpa, .limited(4 * 1024 * 1024)) catch continue;
+            const xml = root_dir.readFileAlloc(
+                io,
+                entry_path,
+                gpa,
+                .limited(4 * 1024 * 1024),
+            ) catch continue;
             defer gpa.free(xml);
 
             const names = try typegen.parse_label_names(xml, gpa);
@@ -302,7 +330,11 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
         if (label_count > 0) {
             var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/customlabels.d.ts", .{out_dir}) catch unreachable;
+            const out_path = std.fmt.bufPrint(
+                &path_buf,
+                "{s}/customlabels.d.ts",
+                .{out_dir},
+            ) catch unreachable;
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
             print_stdout(io, "  customlabels.d.ts: {d} labels\n", .{label_count});
             total_files += 1;
@@ -346,7 +378,12 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
             const class_name = basename[0 .. basename.len - ".cls".len];
             if (class_name.len == 0) continue;
 
-            const source = root_dir.readFileAlloc(io, entry_path, gpa, .limited(1024 * 1024)) catch continue;
+            const source = root_dir.readFileAlloc(
+                io,
+                entry_path,
+                gpa,
+                .limited(1024 * 1024),
+            ) catch continue;
             defer gpa.free(source);
 
             if (std.ascii.indexOfIgnoreCase(source, "@AuraEnabled") == null) continue;
@@ -363,14 +400,22 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
         if (method_count > 0) {
             var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/apex.d.ts", .{out_dir}) catch unreachable;
+            const out_path = std.fmt.bufPrint(
+                &path_buf,
+                "{s}/apex.d.ts",
+                .{out_dir},
+            ) catch unreachable;
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
             print_stdout(io, "  apex.d.ts: {d} @AuraEnabled methods\n", .{method_count});
             total_files += 1;
         }
     }
 
-    print_stdout(io, "typegen: generated {d} type definition file(s) in {s}\n", .{ total_files, out_dir });
+    print_stdout(
+        io,
+        "typegen: generated {d} type definition file(s) in {s}\n",
+        .{ total_files, out_dir },
+    );
     return 0;
 }
 
@@ -568,7 +613,10 @@ fn parse_threshold(value: []const u8) !?apexgov.model.Severity {
     return apexgov.model.Severity.from_string(value) orelse error.InvalidSeverity;
 }
 
-fn count_findings_at_or_above(findings: []const apexgov.model.Finding, threshold: apexgov.model.Severity) usize {
+fn count_findings_at_or_above(
+    findings: []const apexgov.model.Finding,
+    threshold: apexgov.model.Severity,
+) usize {
     var count: usize = 0;
     for (findings) |finding| {
         if (finding.severity.rank() >= threshold.rank()) count += 1;
@@ -649,7 +697,11 @@ fn create_output_file(io: Io, path: []const u8) !Io.File {
     return Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
 }
 
-fn print_regressions(io: Io, regressions: []const apexgov.profile.Regression, threshold_percent: u8) void {
+fn print_regressions(
+    io: Io,
+    regressions: []const apexgov.profile.Regression,
+    threshold_percent: u8,
+) void {
     print_stderr(
         io,
         "regression: {d} transaction(s) exceeded baseline by >{d}%\n",

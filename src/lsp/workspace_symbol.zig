@@ -32,22 +32,27 @@ pub fn search(
     return results.toOwnedSlice(allocator);
 }
 
-fn emit_symbol(
-    name: []const u8,
-    kind: lsp_types.SymbolKind,
+/// collect_from_decls が再利用する呼び出しコンテキスト。
+const CollectCtx = struct {
     uri: []const u8,
-    loc: parser_types.SourceLoc,
     source: []const u8,
     query: []const u8,
     allocator: std.mem.Allocator,
     out: *std.ArrayList(WorkspaceSymbol),
+};
+
+fn emit_symbol(
+    ctx: CollectCtx,
+    name: []const u8,
+    kind: lsp_types.SymbolKind,
+    loc: parser_types.SourceLoc,
 ) !void {
-    if (!matches_query(name, query)) return;
-    try out.append(allocator, .{
+    if (!matches_query(name, ctx.query)) return;
+    try ctx.out.append(ctx.allocator, .{
         .name = name,
         .kind = kind,
-        .uri = uri,
-        .range = position_mod.loc_to_range(loc, source),
+        .uri = ctx.uri,
+        .range = position_mod.loc_to_range(loc, ctx.source),
     });
 }
 
@@ -59,27 +64,35 @@ fn collect_from_decls(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(WorkspaceSymbol),
 ) !void {
+    const ctx = CollectCtx{
+        .uri = uri,
+        .source = source,
+        .query = query,
+        .allocator = allocator,
+        .out = out,
+    };
     for (decls) |decl| {
         switch (decl) {
             .class_decl => |cd| {
-                try emit_symbol(cd.name, .class, uri, cd.loc, source, query, allocator, out);
-                // クラスメンバーも走査
+                try emit_symbol(ctx, cd.name, .class, cd.loc);
                 try collect_from_decls(cd.members, uri, source, query, allocator, out);
             },
-            .interface_decl => |id| try emit_symbol(id.name, .interface, uri, id.loc, source, query, allocator, out),
-            .enum_decl => |ed| try emit_symbol(ed.name, .@"enum", uri, ed.loc, source, query, allocator, out),
-            .method_decl => |md| try emit_symbol(md.name, .method, uri, md.loc, source, query, allocator, out),
-            .field_decl => |fd| try emit_symbol(fd.name, .field, uri, fd.loc, source, query, allocator, out),
+            .interface_decl => |id| try emit_symbol(ctx, id.name, .interface, id.loc),
+            .enum_decl => |ed| try emit_symbol(ctx, ed.name, .@"enum", ed.loc),
+            .method_decl => |md| try emit_symbol(ctx, md.name, .method, md.loc),
+            .field_decl => |fd| try emit_symbol(ctx, fd.name, .field, fd.loc),
             .constructor_decl => |cd| {
                 _ = cd;
                 if (matches_query("<constructor>", query)) {
-                    try out.append(
-                        allocator,
-                        .{ .name = "<constructor>", .kind = .constructor, .uri = uri, .range = .{} },
-                    );
+                    try out.append(allocator, .{
+                        .name = "<constructor>",
+                        .kind = .constructor,
+                        .uri = uri,
+                        .range = .{},
+                    });
                 }
             },
-            .trigger_decl => |td| try emit_symbol(td.name, .event, uri, td.loc, source, query, allocator, out),
+            .trigger_decl => |td| try emit_symbol(ctx, td.name, .event, td.loc),
             .static_init => {},
         }
     }

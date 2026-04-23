@@ -40,7 +40,11 @@ pub fn append_cpu_estimate_finding(
     var message_buffer: [420]u8 = undefined;
     var severity: model.Severity = .info;
     const message = if (loop_upper_bound) |upper| blk: {
-        const total = estimate_cpu_total_ms(base_cost_ms, upper, per_iter_ms) orelse std.math.maxInt(u64);
+        const total = estimate_cpu_total_ms(
+            base_cost_ms,
+            upper,
+            per_iter_ms,
+        ) orelse std.math.maxInt(u64);
         if (total > sync_cpu_budget_ms) {
             severity = .err;
             break :blk try std.fmt.bufPrint(
@@ -203,7 +207,13 @@ pub fn append_governor_finding(
     const per_iter = if (operations_per_iteration == 0) @as(u64, 1) else operations_per_iteration;
     var message_buffer: [520]u8 = undefined;
     var severity: model.Severity = .warning;
-    const message = try format_governor_message(&message_buffer, meta, loop_upper_bound, per_iter, &severity);
+    const message = try format_governor_message(
+        &message_buffer,
+        meta,
+        loop_upper_bound,
+        per_iter,
+        &severity,
+    );
 
     try append_finding(
         gpa,

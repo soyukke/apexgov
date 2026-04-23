@@ -178,7 +178,11 @@ pub fn extract_parameter_type_part(segment_raw: []const u8) []const u8 {
     return "?";
 }
 
-pub fn append_canonical_type(arena_allocator: std.mem.Allocator, out: *std.ArrayList(u8), type_part: []const u8) !void {
+pub fn append_canonical_type(
+    arena_allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    type_part: []const u8,
+) !void {
     if (type_part.len == 0) {
         try out.append(arena_allocator, '?');
         return;

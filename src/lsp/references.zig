@@ -47,7 +47,14 @@ pub fn get_references_cross_file(
     allocator: std.mem.Allocator,
 ) ![]lsp_types.Location {
     // 1. 同一ファイル内の参照を取得
-    const same_file = try get_references(result, source, uri, offset, include_declaration, allocator);
+    const same_file = try get_references(
+        result,
+        source,
+        uri,
+        offset,
+        include_declaration,
+        allocator,
+    );
 
     // 2. カーソル位置のシンボル名を特定
     const sym = binder_mod.symbol_at_position(result, offset);

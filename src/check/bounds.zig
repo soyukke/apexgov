@@ -153,7 +153,10 @@ fn parse_query_limit_bound(line: []const u8) ?BoundUpdate {
     };
 }
 
-fn parse_derived_assignment_bound(bounds: *std.StringHashMap(Bound), line: []const u8) ?BoundUpdate {
+fn parse_derived_assignment_bound(
+    bounds: *std.StringHashMap(Bound),
+    line: []const u8,
+) ?BoundUpdate {
     if (std.mem.startsWith(u8, line, "if")) return null;
     if (std.mem.startsWith(u8, line, "for")) return null;
     if (std.mem.startsWith(u8, line, "while")) return null;
@@ -282,7 +285,8 @@ fn parse_guard_op(segment: []const u8, op: []const u8) ?struct { name: []const u
 
 pub fn infer_loop_info(line: []const u8, bounds: *std.StringHashMap(Bound)) ?LoopInfo {
     const open_idx = std.mem.indexOfScalar(u8, line, '(') orelse return .{ .max_iterations = null };
-    const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse return .{ .max_iterations = null };
+    const close_idx = std.mem.lastIndexOfScalar(u8, line, ')') orelse
+        return .{ .max_iterations = null };
     if (close_idx <= open_idx) return .{ .max_iterations = null };
 
     const inside = std.mem.trim(u8, line[(open_idx + 1)..close_idx], " \t");
@@ -399,7 +403,10 @@ fn parse_add_sub_upper_bound(expr: []const u8, bounds: *std.StringHashMap(Bound)
         const term_raw = std.mem.trim(u8, expr[term_start..i], " \t");
         if (term_raw.len == 0) return null;
 
-        const term_max = infer_simple_expression_term_upper_bound(term_raw, bounds) orelse return null;
+        const term_max = infer_simple_expression_term_upper_bound(
+            term_raw,
+            bounds,
+        ) orelse return null;
         if (total == null) {
             total = term_max;
         } else if (next_is_add) {
@@ -416,7 +423,10 @@ fn parse_add_sub_upper_bound(expr: []const u8, bounds: *std.StringHashMap(Bound)
     return total;
 }
 
-fn infer_simple_expression_term_upper_bound(term: []const u8, bounds: *std.StringHashMap(Bound)) ?u64 {
+fn infer_simple_expression_term_upper_bound(
+    term: []const u8,
+    bounds: *std.StringHashMap(Bound),
+) ?u64 {
     if (parse_leading_unsigned(term)) |literal| return literal;
     if (std.mem.lastIndexOf(u8, term, ".size()")) |size_idx| {
         const collection = std.mem.trim(u8, term[0..size_idx], " \t");

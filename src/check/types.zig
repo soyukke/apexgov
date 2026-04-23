@@ -81,7 +81,10 @@ pub const MethodMetrics = struct {
         self.messaging = sat_add(self.messaging, sat_mul(other.messaging, multiplier));
         self.json = sat_add(self.json, sat_mul(other.json, multiplier));
         self.clone = sat_add(self.clone, sat_mul(other.clone, multiplier));
-        self.collection_alloc = sat_add(self.collection_alloc, sat_mul(other.collection_alloc, multiplier));
+        self.collection_alloc = sat_add(
+            self.collection_alloc,
+            sat_mul(other.collection_alloc, multiplier),
+        );
         self.string_append = sat_add(self.string_append, sat_mul(other.string_append, multiplier));
     }
 };

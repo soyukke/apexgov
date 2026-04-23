@@ -91,7 +91,11 @@ pub const DocumentStore = struct {
             range.start.line,
             range.start.character,
         ) orelse return;
-        const end_offset = position_mod.position_to_offset(doc.text, range.end.line, range.end.character) orelse return;
+        const end_offset = position_mod.position_to_offset(
+            doc.text,
+            range.end.line,
+            range.end.character,
+        ) orelse return;
 
         // 新しいテキストを構築: [0..start_offset] + text + [end_offset..]
         const old = doc.text;
@@ -168,7 +172,11 @@ pub const DocumentStore = struct {
         source: []const u8,
     };
 
-    pub fn resolve_symbol_across_files(self: *DocumentStore, name: []const u8, exclude_uri: []const u8) ?SymbolMatch {
+    pub fn resolve_symbol_across_files(
+        self: *DocumentStore,
+        name: []const u8,
+        exclude_uri: []const u8,
+    ) ?SymbolMatch {
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, exclude_uri)) continue;
