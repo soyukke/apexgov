@@ -22046,21 +22046,39 @@ pub const Evaluator = struct {
         if (self.store.get(name) != null) return true;
         // Known standard SObject types
         const known = [_][]const u8{
-            "Account",                 "Contact",                "Opportunity",         "Case",                   "Lead",                 "Task",                 "Event",
-            "Campaign",                "User",                   "ContentVersion",      "ContentDocument",        "ContentDocumentLink",  "ContentDistribution",  "PermissionSet",
-            "PermissionSetAssignment", "ObjectPermissions",      "Profile",             "Organization",           "ApexClass",            "StaticResource",       "FieldPermissions",
-            "PermissionSetGroup",      "PlatformCachePartition", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",      "AggregateResult",
-            "RecordType",              "DuplicateRule",          "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",          "LoginHistory",
-            "TaskStatus",              "BusinessHours",          "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",          "Group",
-            "Attachment",              "Note",                   "EmailMessage",        "CaseComment",            "Solution",             "Contract",             "Product2",
-            "Pricebook2",              "PricebookEntry",         "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense", "EmailTemplate",
-            "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
-            "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowDefinitionView",
-            "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",              "BatchApexErrorEvent",
-            "AsyncOperationEvent",     "AsyncOperationStatus",   "EventBusSubscriber",  "LeadStatus",             "UserPreference",       "UserLogin",            "LoginIp",
+            "Account",                "Contact",                "Opportunity",
+            "Case",                   "Lead",                   "Task",
+            "Event",                  "Campaign",               "User",
+            "ContentVersion",         "ContentDocument",        "ContentDocumentLink",
+            "ContentDistribution",    "PermissionSet",          "PermissionSetAssignment",
+            "ObjectPermissions",      "Profile",                "Organization",
+            "ApexClass",              "StaticResource",         "FieldPermissions",
+            "PermissionSetGroup",     "PlatformCachePartition", "CronTrigger",
+            "AsyncApexJob",           "EntityDefinition",       "FieldDefinition",
+            "AggregateResult",        "RecordType",             "DuplicateRule",
+            "DuplicateRecordSet",     "DuplicateRecordItem",    "UserRecordAccess",
+            "AuthSession",            "LoginHistory",           "TaskStatus",
+            "BusinessHours",          "FeedItem",               "CollaborationGroup",
+            "UserRole",               "GroupMember",            "Group",
+            "Attachment",             "Note",                   "EmailMessage",
+            "CaseComment",            "Solution",               "Contract",
+            "Product2",               "Pricebook2",             "PricebookEntry",
+            "OpportunityLineItem",    "Quote",                  "QuoteLineItem",
+            "PermissionSetLicense",   "EmailTemplate",          "Folder",
+            "Document",               "CampaignMember",         "CampaignMemberStatus",
+            "EmailMessageRelation",   "OrgWideEmailAddress",    "PermissionSetLicenseAssign",
+            "ServiceResource",        "AssignedResource",       "ServiceTerritory",
+            "ServiceTerritoryMember", "ApexTrigger",            "CustomPermission",
+            "FlowDefinitionView",     "FlowVersionView",        "ApexEmailNotification",
+            "Network",                "Topic",                  "OmniProcess",
+            "SObject",                "BatchApexErrorEvent",    "AsyncOperationEvent",
+            "AsyncOperationStatus",   "EventBusSubscriber",     "LeadStatus",
+            "UserPreference",         "UserLogin",              "LoginIp",
             // Standard object-Share sharing tables.
-            "AccountShare",            "OpportunityShare",       "CaseShare",           "LeadShare",              "ContactShare",         "CampaignShare",        "ContractShare",
-            "ProductShare",            "AssetShare",             "OrderShare",          "QuoteShare",
+            "AccountShare",           "OpportunityShare",       "CaseShare",
+            "LeadShare",              "ContactShare",           "CampaignShare",
+            "ContractShare",          "ProductShare",           "AssetShare",
+            "OrderShare",             "QuoteShare",
         };
         for (known) |kt| {
             if (std.ascii.eqlIgnoreCase(name, kt)) return true;
@@ -22163,7 +22181,16 @@ fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
     const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
     const access_types = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
     const access_levels = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
-    const quiddity_vals = [_][]const u8{ "ANONYMOUS", "AURA", "BATCH_APEX", "BATCH_CHUNK_PARALLEL", "BATCH_CHUNK_SERIAL", "BULK_API", "FUTURE", "INVOCABLE_ACTION", "IOT", "LIGHTNING_OUT", "QUEUEABLE", "QUICK_ACTION", "REMOTE_ACTION", "REST", "RUNTEST_ASYNC", "RUNTEST_DEPLOY", "RUNTEST_SYNC", "SCHEDULED", "SOAP", "SYNCHRONOUS", "VF", "WAVE" };
+    const quiddity_vals = [_][]const u8{
+        "ANONYMOUS",            "AURA",               "BATCH_APEX",
+        "BATCH_CHUNK_PARALLEL", "BATCH_CHUNK_SERIAL", "BULK_API",
+        "FUTURE",               "INVOCABLE_ACTION",   "IOT",
+        "LIGHTNING_OUT",        "QUEUEABLE",          "QUICK_ACTION",
+        "REMOTE_ACTION",        "REST",               "RUNTEST_ASYNC",
+        "RUNTEST_DEPLOY",       "RUNTEST_SYNC",       "SCHEDULED",
+        "SOAP",                 "SYNCHRONOUS",        "VF",
+        "WAVE",
+    };
     const system_mode = [_][]const u8{ "SANDBOX", "PROD", "DEVELOPER", "TRIAL", "SCRATCH_ORG" };
     if (std.ascii.eqlIgnoreCase(enum_simple, "TriggerOperation")) {
         for (trigger_ops) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
