@@ -3181,76 +3181,56 @@ fn dispatch_static_can_the_user(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "read") or
-        std.ascii.eqlIgnoreCase(method_name, "flsAccessible"))
-    {
-        const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(
-            ctx.eval,
-            sot,
-            "read",
-        ) };
-        return Value{ .boolean = !ctx.eval.is_restricted_user };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "create") or
-        std.ascii.eqlIgnoreCase(method_name, "edit") or
-        std.ascii.eqlIgnoreCase(method_name, "crud"))
-    {
-        const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(
-            ctx.eval,
-            sot,
-            method_name,
-        ) };
-        return Value{ .boolean = !ctx.eval.is_restricted_user };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "destroy")) {
-        const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(
-            ctx.eval,
-            sot,
-            "destroy",
-        ) };
-        return Value{ .boolean = !ctx.eval.is_restricted_user };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "read") or ci.eqlIgnoreCase(method_name, "flsAccessible"))
+        return ctu_crud_answer(ctx, args, "read");
+    if (ci.eqlIgnoreCase(method_name, "create") or
+        ci.eqlIgnoreCase(method_name, "edit") or
+        ci.eqlIgnoreCase(method_name, "crud"))
+        return ctu_crud_answer(ctx, args, method_name);
+    if (ci.eqlIgnoreCase(method_name, "destroy")) return ctu_crud_answer(ctx, args, "destroy");
+    if (ci.eqlIgnoreCase(method_name, "flsUpdatable")) {
         if (args.len >= 2 and args[1] == .string) {
-            return Value{ .boolean = resolve_field_write_permission(
-                ctx.eval,
-                null,
-                args[1].string,
-                "edit",
-            ) };
+            return Value{
+                .boolean = resolve_field_write_permission(ctx.eval, null, args[1].string, "edit"),
+            };
         }
         return Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
-        std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
-    {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        if (args.len >= 2 and args[1] == .set) {
-            for (args[1].set.entries.keys()) |field_name| {
-                try map.entries.put(
-                    ctx.arena,
-                    field_name,
-                    Value{ .boolean = resolve_field_read_permission(ctx.eval, null, field_name) },
-                );
-            }
-        }
-        return Value{ .map = map };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSUpdatable")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        if (args.len >= 2 and args[1] == .set) {
-            for (args[1].set.entries.keys()) |field_name| {
-                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolve_field_write_permission(ctx.eval, null, field_name, "edit") });
-            }
-        }
-        return Value{ .map = map };
-    }
+    if (ci.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
+        ci.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
+        return try ctu_bulk_fls(ctx, args, "read");
+    if (ci.eqlIgnoreCase(method_name, "bulkFLSUpdatable"))
+        return try ctu_bulk_fls(ctx, args, "edit");
     return null;
+}
+
+fn ctu_crud_answer(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    op: []const u8,
+) Value {
+    if (get_s_object_type_from_args(args)) |sot|
+        return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, op) };
+    return Value{ .boolean = !ctx.eval.is_restricted_user };
+}
+
+fn ctu_bulk_fls(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    op: []const u8,
+) !Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    if (args.len < 2 or args[1] != .set) return Value{ .map = map };
+    for (args[1].set.entries.keys()) |field_name| {
+        const allowed = if (std.mem.eql(u8, op, "read"))
+            resolve_field_read_permission(ctx.eval, null, field_name)
+        else
+            resolve_field_write_permission(ctx.eval, null, field_name, op);
+        try map.entries.put(ctx.arena, field_name, Value{ .boolean = allowed });
+    }
+    return Value{ .map = map };
 }
 
 fn dispatch_static_apex_pages(
