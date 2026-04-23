@@ -6158,10 +6158,9 @@ pub const Evaluator = struct {
         sob.id = id;
         try sob.fields.put(self.arena, "Id", Value{ .string = id });
 
-        // Simple XML parser: find <values><field>...</field><value ...>...</value></values> pairs
+        // Simple XML parser: find <values><field>...</field><value ...>...</value></values> pairs.
         var pos: usize = 0;
         while (pos < xml.len) {
-            // Find <field>...</field>
             const field_start_tag = std.mem.indexOfPos(u8, xml, pos, "<field>") orelse break;
             const field_content_start = field_start_tag + "<field>".len;
             const field_end_tag = std.mem.indexOfPos(
@@ -6172,93 +6171,96 @@ pub const Evaluator = struct {
             ) orelse break;
             const field_name = std.mem.trim(u8, xml[field_content_start..field_end_tag], " \t\n\r");
 
-            // Find corresponding <value ...>...</value>
             const value_search_start = field_end_tag + "</field>".len;
-            const values_end = std.mem.indexOfPos(
-                u8,
+            const values_end = std.mem.indexOfPos(u8, xml, value_search_start, "</values>") orelse
+                break;
+
+            try self.parse_custom_metadata_value(
+                sob,
                 xml,
+                field_name,
                 value_search_start,
-                "</values>",
-            ) orelse break;
-
-            // Look for <value ...>content</value> within this <values> block
-            // First check for xsi:nil="true" (self-closing tag: <value xsi:nil="true"/>)
-            const val_region = xml[value_search_start..values_end];
-            if (std.mem.indexOf(u8, val_region, "xsi:nil") != null) {
-                // Field is explicitly null — skip it
-                pos = values_end + "</values>".len;
-                continue;
-            }
-            if (std.mem.indexOfPos(u8, xml, value_search_start, ">")) |val_tag_end| {
-                if (val_tag_end < values_end) {
-                    const val_content_start = val_tag_end + 1;
-                    if (std.mem.indexOfPos(u8, xml, val_content_start, "</value>")) |val_end| {
-                        if (val_end <= values_end) {
-                            const field_value = std.mem.trim(
-                                u8,
-                                xml[val_content_start..val_end],
-                                " \t\n\r",
-                            );
-                            // Determine value type from xsi:type attribute in the <value> tag
-                            const val_tag = xml[value_search_start..val_tag_end];
-                            const typed_value: Value =
-                                if (std.mem.indexOf(u8, val_tag, "xsd:boolean") != null)
-                                    Value{ .boolean = std.ascii.eqlIgnoreCase(field_value, "true") }
-                                else if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or
-                                std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
-                                    if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value }
-                                else if (std.mem.indexOf(u8, val_tag, "xsd:int") != null)
-                                    if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value }
-                                else
-                                    Value{ .string = field_value };
-                            try sob.fields.put(self.arena, field_name, typed_value);
-                            // Also create __r relationship for fields that reference
-                            // FieldDefinitions
-                            // Convention: Customer_Name__c → value is the API name of a field
-                            // Create Customer_Name__r as a FieldDefinition with QualifiedAPIName =
-                            // value
-                            if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
-                                const base = field_name[0 .. field_name.len - 3];
-                                const rel_name = try std.fmt.allocPrint(
-                                    self.arena,
-                                    "{s}__r",
-                                    .{base},
-                                );
-                                const fd = try self.arena.create(types.SObject);
-                                fd.* = .{ .type_name = "FieldDefinition" };
-                                try fd.fields.put(
-                                    self.arena,
-                                    "QualifiedAPIName",
-                                    Value{ .string = field_value },
-                                );
-                                try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
-                            }
-                        }
-                    }
-                }
-            }
-
+                values_end,
+            );
             pos = values_end + "</values>".len;
         }
 
-        // Extract label
-        if (std.mem.indexOf(u8, xml, "<label>")) |label_start| {
-            const label_content = label_start + "<label>".len;
-            if (std.mem.indexOfPos(u8, xml, label_content, "</label>")) |label_end| {
-                try sob.fields.put(
-                    self.arena,
-                    "Label",
-                    Value{ .string = std.mem.trim(u8, xml[label_content..label_end], " \t\n\r") },
-                );
-                try sob.fields.put(
-                    self.arena,
-                    "MasterLabel",
-                    Value{ .string = std.mem.trim(u8, xml[label_content..label_end], " \t\n\r") },
-                );
-            }
-        }
-
+        try self.parse_custom_metadata_label(sob, xml);
         return sob;
+    }
+
+    /// Parse one `<values>` block: either record the typed value (and
+    /// __c/__r relationship) on `sob`, or skip when `xsi:nil="true"`.
+    fn parse_custom_metadata_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        xml: []const u8,
+        field_name: []const u8,
+        value_search_start: usize,
+        values_end: usize,
+    ) !void {
+        const val_region = xml[value_search_start..values_end];
+        if (std.mem.indexOf(u8, val_region, "xsi:nil") != null) return;
+        const val_tag_end = std.mem.indexOfPos(u8, xml, value_search_start, ">") orelse return;
+        if (val_tag_end >= values_end) return;
+        const val_content_start = val_tag_end + 1;
+        const val_end = std.mem.indexOfPos(u8, xml, val_content_start, "</value>") orelse return;
+        if (val_end > values_end) return;
+        const field_value = std.mem.trim(u8, xml[val_content_start..val_end], " \t\n\r");
+        const val_tag = xml[value_search_start..val_tag_end];
+        const typed_value = decode_custom_metadata_value(val_tag, field_value);
+        try sob.fields.put(self.arena, field_name, typed_value);
+        try self.maybe_attach_custom_metadata_relationship(sob, field_name, field_value);
+    }
+
+    /// Choose the Value representation for a `<value xsi:type="...">...`
+    /// based on the attribute namespace.
+    fn decode_custom_metadata_value(val_tag: []const u8, field_value: []const u8) Value {
+        if (std.mem.indexOf(u8, val_tag, "xsd:boolean") != null) {
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(field_value, "true") };
+        }
+        if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or
+            std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
+        {
+            return if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value };
+        }
+        if (std.mem.indexOf(u8, val_tag, "xsd:int") != null) {
+            return if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value };
+        }
+        return Value{ .string = field_value };
+    }
+
+    /// Convention: `Customer_Name__c` → the value is the API name of a field,
+    /// so create `Customer_Name__r` as a FieldDefinition stub with
+    /// `QualifiedAPIName = value`. This matches how Apex surfaces field-
+    /// reference Custom Metadata values through the relationship field.
+    fn maybe_attach_custom_metadata_relationship(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+        field_value: []const u8,
+    ) !void {
+        if (!std.mem.endsWith(u8, field_name, "__c")) return;
+        if (field_name.len <= 3) return;
+        const base = field_name[0 .. field_name.len - 3];
+        const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
+        const fd = try self.arena.create(types.SObject);
+        fd.* = .{ .type_name = "FieldDefinition" };
+        try fd.fields.put(self.arena, "QualifiedAPIName", Value{ .string = field_value });
+        try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+    }
+
+    fn parse_custom_metadata_label(
+        self: *Evaluator,
+        sob: *types.SObject,
+        xml: []const u8,
+    ) !void {
+        const label_start = std.mem.indexOf(u8, xml, "<label>") orelse return;
+        const label_content = label_start + "<label>".len;
+        const label_end = std.mem.indexOfPos(u8, xml, label_content, "</label>") orelse return;
+        const trimmed = std.mem.trim(u8, xml[label_content..label_end], " \t\n\r");
+        try sob.fields.put(self.arena, "Label", Value{ .string = trimmed });
+        try sob.fields.put(self.arena, "MasterLabel", Value{ .string = trimmed });
     }
 
     fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
