@@ -5302,76 +5302,98 @@ pub const Evaluator = struct {
                 const xml = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(1024 * 1024)) catch continue;
                 if (self.find_permission_set_record_by_name(permission_set_name) != null) return;
 
-                const permission_set = try self.arena.create(types.SObject);
-                const permission_set_id = try self.alloc_id();
-                permission_set.* = .{ .type_name = "PermissionSet", .id = permission_set_id };
-                try permission_set.fields.put(self.arena, "Id", Value{ .string = permission_set_id });
-                try permission_set.fields.put(self.arena, "Name", Value{ .string = try self.arena.dupe(u8, permission_set_name) });
-                try permission_set.fields.put(
-                    self.arena,
-                    "Label",
-                    Value{ .string = try self.arena.dupe(u8, self.xml_tag_value(xml, "label") orelse permission_set_name) },
-                );
-                try self.append_store_record("PermissionSet", permission_set);
-
-                var object_pos: usize = 0;
-                while (object_pos < xml.len) {
-                    const block_start = std.mem.indexOfPos(u8, xml, object_pos, "<objectPermissions>") orelse break;
-                    const block_content_start = block_start + "<objectPermissions>".len;
-                    const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</objectPermissions>") orelse break;
-                    const block = xml[block_content_start..block_end];
-
-                    const object_name = self.xml_tag_value(block, "object") orelse {
-                        object_pos = block_end + "</objectPermissions>".len;
-                        continue;
-                    };
-
-                    const object_permission = try self.arena.create(types.SObject);
-                    object_permission.* = .{ .type_name = "ObjectPermissions", .id = try self.alloc_id() };
-                    try object_permission.fields.put(self.arena, "Id", Value{ .string = object_permission.id.? });
-                    try object_permission.fields.put(self.arena, "ParentId", Value{ .string = permission_set_id });
-                    try object_permission.fields.put(self.arena, "SobjectType", Value{ .string = try self.arena.dupe(u8, object_name) });
-                    try object_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false });
-                    try object_permission.fields.put(self.arena, "PermissionsDelete", Value{ .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false });
-                    try self.append_store_record("ObjectPermissions", object_permission);
-
-                    object_pos = block_end + "</objectPermissions>".len;
-                }
-
-                var field_pos: usize = 0;
-                while (field_pos < xml.len) {
-                    const block_start = std.mem.indexOfPos(u8, xml, field_pos, "<fieldPermissions>") orelse break;
-                    const block_content_start = block_start + "<fieldPermissions>".len;
-                    const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</fieldPermissions>") orelse break;
-                    const block = xml[block_content_start..block_end];
-
-                    const full_field_name = self.xml_tag_value(block, "field") orelse {
-                        field_pos = block_end + "</fieldPermissions>".len;
-                        continue;
-                    };
-
-                    var expanded_fields: std.ArrayListUnmanaged([]const u8) = .empty;
-                    try self.append_expanded_permission_fields(&expanded_fields, full_field_name);
-                    for (expanded_fields.items) |expanded_field_name| {
-                        const field_permission = try self.arena.create(types.SObject);
-                        field_permission.* = .{ .type_name = "FieldPermissions", .id = try self.alloc_id() };
-                        try field_permission.fields.put(self.arena, "Id", Value{ .string = field_permission.id.? });
-                        try field_permission.fields.put(self.arena, "ParentId", Value{ .string = permission_set_id });
-                        try field_permission.fields.put(self.arena, "Field", Value{ .string = try self.arena.dupe(u8, expanded_field_name) });
-                        try field_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "readable") orelse false });
-                        try field_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
-                        try field_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
-                        try self.append_store_record("FieldPermissions", field_permission);
-                    }
-
-                    field_pos = block_end + "</fieldPermissions>".len;
-                }
-
+                try self.load_permission_set_metadata_xml(permission_set_name, xml);
                 return;
             }
         }
+    }
+
+    fn load_permission_set_metadata_xml(
+        self: *Evaluator,
+        permission_set_name: []const u8,
+        xml: []const u8,
+    ) !void {
+        const permission_set = try self.arena.create(types.SObject);
+        const permission_set_id = try self.alloc_id();
+        permission_set.* = .{ .type_name = "PermissionSet", .id = permission_set_id };
+        try permission_set.fields.put(self.arena, "Id", Value{ .string = permission_set_id });
+        try permission_set.fields.put(self.arena, "Name", Value{ .string = try self.arena.dupe(u8, permission_set_name) });
+        try permission_set.fields.put(
+            self.arena,
+            "Label",
+            Value{ .string = try self.arena.dupe(u8, self.xml_tag_value(xml, "label") orelse permission_set_name) },
+        );
+        try self.append_store_record("PermissionSet", permission_set);
+        try self.load_object_permission_metadata(xml, permission_set_id);
+        try self.load_field_permission_metadata(xml, permission_set_id);
+    }
+
+    fn load_object_permission_metadata(self: *Evaluator, xml: []const u8, permission_set_id: []const u8) !void {
+        var object_pos: usize = 0;
+        while (object_pos < xml.len) {
+            const block_start = std.mem.indexOfPos(u8, xml, object_pos, "<objectPermissions>") orelse break;
+            const block_content_start = block_start + "<objectPermissions>".len;
+            const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</objectPermissions>") orelse break;
+            const block = xml[block_content_start..block_end];
+
+            const object_name = self.xml_tag_value(block, "object") orelse {
+                object_pos = block_end + "</objectPermissions>".len;
+                continue;
+            };
+
+            const object_permission = try self.arena.create(types.SObject);
+            object_permission.* = .{ .type_name = "ObjectPermissions", .id = try self.alloc_id() };
+            try object_permission.fields.put(self.arena, "Id", Value{ .string = object_permission.id.? });
+            try object_permission.fields.put(self.arena, "ParentId", Value{ .string = permission_set_id });
+            try object_permission.fields.put(self.arena, "SobjectType", Value{ .string = try self.arena.dupe(u8, object_name) });
+            try object_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false });
+            try object_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false });
+            try object_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false });
+            try object_permission.fields.put(self.arena, "PermissionsDelete", Value{ .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false });
+            try self.append_store_record("ObjectPermissions", object_permission);
+
+            object_pos = block_end + "</objectPermissions>".len;
+        }
+    }
+
+    fn load_field_permission_metadata(self: *Evaluator, xml: []const u8, permission_set_id: []const u8) !void {
+        var field_pos: usize = 0;
+        while (field_pos < xml.len) {
+            const block_start = std.mem.indexOfPos(u8, xml, field_pos, "<fieldPermissions>") orelse break;
+            const block_content_start = block_start + "<fieldPermissions>".len;
+            const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</fieldPermissions>") orelse break;
+            const block = xml[block_content_start..block_end];
+
+            const full_field_name = self.xml_tag_value(block, "field") orelse {
+                field_pos = block_end + "</fieldPermissions>".len;
+                continue;
+            };
+
+            var expanded_fields: std.ArrayListUnmanaged([]const u8) = .empty;
+            try self.append_expanded_permission_fields(&expanded_fields, full_field_name);
+            for (expanded_fields.items) |expanded_field_name| {
+                try self.append_field_permission_metadata(permission_set_id, block, expanded_field_name);
+            }
+
+            field_pos = block_end + "</fieldPermissions>".len;
+        }
+    }
+
+    fn append_field_permission_metadata(
+        self: *Evaluator,
+        permission_set_id: []const u8,
+        block: []const u8,
+        expanded_field_name: []const u8,
+    ) !void {
+        const field_permission = try self.arena.create(types.SObject);
+        field_permission.* = .{ .type_name = "FieldPermissions", .id = try self.alloc_id() };
+        try field_permission.fields.put(self.arena, "Id", Value{ .string = field_permission.id.? });
+        try field_permission.fields.put(self.arena, "ParentId", Value{ .string = permission_set_id });
+        try field_permission.fields.put(self.arena, "Field", Value{ .string = try self.arena.dupe(u8, expanded_field_name) });
+        try field_permission.fields.put(self.arena, "PermissionsRead", Value{ .boolean = self.xml_tag_bool_value(block, "readable") orelse false });
+        try field_permission.fields.put(self.arena, "PermissionsCreate", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
+        try field_permission.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = self.xml_tag_bool_value(block, "editable") orelse false });
+        try self.append_store_record("FieldPermissions", field_permission);
     }
 
     /// Execute an aggregate SOQL query (with SUM/AVG/MIN/MAX/COUNT and optional GROUP BY).
@@ -9367,19 +9389,7 @@ pub const Evaluator = struct {
             }
 
             if (connect_api_class_name_equals(class_name, "MentionSegmentInput")) {
-                const mention_id = utils.sobject_get(&segment_input.object.fields, "id") orelse Value.null_val;
-                if (mention_id == .string) {
-                    if (!self.is_connect_api_mention_id(mention_id.string)) {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "ConnectApi.ConnectApiException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = "Only user and group IDs may be used in inline mentions." });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    const mention = try self.connect_api_create_object("ConnectApi.MentionSegment");
-                    try mention.fields.put(self.arena, "record", try self.connect_api_create_record_ref(mention_id.string));
-                    try self.connect_api_append_output_segment(output, mention);
-                }
+                try self.connect_api_append_mention_segment_input(output, segment_input.object);
                 continue;
             }
 
@@ -9404,20 +9414,12 @@ pub const Evaluator = struct {
             }
 
             if (connect_api_class_name_equals(class_name, "MarkupBeginSegmentInput")) {
-                const markup = try self.connect_api_create_object("ConnectApi.MarkupBeginSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "markupType")) |markup_type| {
-                    try markup.fields.put(self.arena, "markupType", markup_type);
-                }
-                try self.connect_api_append_output_segment(output, markup);
+                try self.connect_api_append_markup_segment_input(output, segment_input.object, "ConnectApi.MarkupBeginSegment");
                 continue;
             }
 
             if (connect_api_class_name_equals(class_name, "MarkupEndSegmentInput")) {
-                const markup = try self.connect_api_create_object("ConnectApi.MarkupEndSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "markupType")) |markup_type| {
-                    try markup.fields.put(self.arena, "markupType", markup_type);
-                }
-                try self.connect_api_append_output_segment(output, markup);
+                try self.connect_api_append_markup_segment_input(output, segment_input.object, "ConnectApi.MarkupEndSegment");
                 continue;
             }
 
@@ -9431,21 +9433,65 @@ pub const Evaluator = struct {
             }
 
             if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
-                const image = try self.connect_api_create_object("ConnectApi.InlineImageSegment");
-                const thumbnails = try self.connect_api_create_object("ConnectApi.InlineImageThumbnails");
-                if (utils.sobject_get(&segment_input.object.fields, "fileId")) |file_id| {
-                    try thumbnails.fields.put(self.arena, "fileId", file_id);
-                }
-                try image.fields.put(self.arena, "thumbnails", Value{ .object = thumbnails });
-                if (utils.sobject_get(&segment_input.object.fields, "altText")) |alt_text| {
-                    try image.fields.put(self.arena, "altText", alt_text);
-                }
-                try self.connect_api_append_output_segment(output, image);
+                try self.connect_api_append_inline_image_segment_input(output, segment_input.object);
                 continue;
             }
         }
 
         return output;
+    }
+
+    fn connect_api_append_mention_segment_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        input: *types.ObjectInstance,
+    ) !void {
+        const mention_id = utils.sobject_get(&input.fields, "id") orelse Value.null_val;
+        if (mention_id != .string) return;
+        if (!self.is_connect_api_mention_id(mention_id.string)) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "ConnectApi.ConnectApiException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "Only user and group IDs may be used in inline mentions." },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        const mention = try self.connect_api_create_object("ConnectApi.MentionSegment");
+        try mention.fields.put(self.arena, "record", try self.connect_api_create_record_ref(mention_id.string));
+        try self.connect_api_append_output_segment(output, mention);
+    }
+
+    fn connect_api_append_markup_segment_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        input: *types.ObjectInstance,
+        output_class_name: []const u8,
+    ) !void {
+        const markup = try self.connect_api_create_object(output_class_name);
+        if (utils.sobject_get(&input.fields, "markupType")) |markup_type| {
+            try markup.fields.put(self.arena, "markupType", markup_type);
+        }
+        try self.connect_api_append_output_segment(output, markup);
+    }
+
+    fn connect_api_append_inline_image_segment_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        input: *types.ObjectInstance,
+    ) !void {
+        const image = try self.connect_api_create_object("ConnectApi.InlineImageSegment");
+        const thumbnails = try self.connect_api_create_object("ConnectApi.InlineImageThumbnails");
+        if (utils.sobject_get(&input.fields, "fileId")) |file_id| {
+            try thumbnails.fields.put(self.arena, "fileId", file_id);
+        }
+        try image.fields.put(self.arena, "thumbnails", Value{ .object = thumbnails });
+        if (utils.sobject_get(&input.fields, "altText")) |alt_text| {
+            try image.fields.put(self.arena, "altText", alt_text);
+        }
+        try self.connect_api_append_output_segment(output, image);
     }
 
     fn connect_api_render_body_text(self: *Evaluator, output_segments: *types.ListValue) ![]const u8 {
@@ -10651,21 +10697,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "size")) return Value{ .integer = @intCast(map.entries.count()) };
         if (std.ascii.eqlIgnoreCase(method, "isEmpty")) return Value{ .boolean = map.entries.count() == 0 };
         if (std.ascii.eqlIgnoreCase(method, "keySet")) {
-            const set = try self.arena.create(types.SetValue);
-            set.* = .{};
-            for (map.entries.keys()) |key| {
-                const original_key = map.key_values.get(key) orelse Value{ .string = key };
-                try set.entries.put(self.arena, key, original_key);
-            }
-            return Value{ .set = set };
+            return try self.eval_map_key_set(map);
         }
         if (std.ascii.eqlIgnoreCase(method, "values")) {
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{};
-            for (map.entries.values()) |val| {
-                try list.items.append(self.arena, val);
-            }
-            return Value{ .list = list };
+            return try self.eval_map_values(map);
         }
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0) {
             if (self.find_map_entry_key(map, args[0])) |key| {
@@ -10677,21 +10712,7 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "putAll") and args.len > 0) {
-            if (args[0] == .map) {
-                for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-                    try map.entries.put(self.arena, k, v);
-                    const original_key = args[0].map.key_values.get(k) orelse Value{ .string = k };
-                    try map.key_values.put(self.arena, k, original_key);
-                }
-            } else if (args[0] == .list) {
-                // putAll from list of SObjects: key=Id, value=record
-                for (args[0].list.items.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                        try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
-                    }
-                }
-            }
+            try self.eval_map_put_all(map, args[0]);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clear")) {
@@ -10700,18 +10721,7 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
-            const new_map = try self.arena.create(types.MapValue);
-            new_map.* = .{};
-            for (map.entries.keys(), map.entries.values()) |k, v| {
-                const cloned_val = if (std.ascii.eqlIgnoreCase(method, "deepClone") and v == .sobject) blk: {
-                    const clone = try self.clone_s_object(v.sobject);
-                    break :blk Value{ .sobject = clone };
-                } else v;
-                try new_map.entries.put(self.arena, k, cloned_val);
-                const original_key = map.key_values.get(k) orelse Value{ .string = k };
-                try new_map.key_values.put(self.arena, k, original_key);
-            }
-            return Value{ .map = new_map };
+            return try self.eval_map_clone(map, std.ascii.eqlIgnoreCase(method, "deepClone"));
         }
         if (args.len == 0 and std.mem.startsWith(u8, method, "get") and method.len > 3) {
             const field_name = method[3..];
@@ -10721,6 +10731,58 @@ pub const Evaluator = struct {
             return Value.null_val;
         }
         return Value.null_val;
+    }
+
+    fn eval_map_key_set(self: *Evaluator, map: *types.MapValue) !Value {
+        const set = try self.arena.create(types.SetValue);
+        set.* = .{};
+        for (map.entries.keys()) |key| {
+            const original_key = map.key_values.get(key) orelse Value{ .string = key };
+            try set.entries.put(self.arena, key, original_key);
+        }
+        return Value{ .set = set };
+    }
+
+    fn eval_map_values(self: *Evaluator, map: *types.MapValue) !Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        for (map.entries.values()) |val| {
+            try list.items.append(self.arena, val);
+        }
+        return Value{ .list = list };
+    }
+
+    fn eval_map_put_all(self: *Evaluator, map: *types.MapValue, source: Value) !void {
+        if (source == .map) {
+            for (source.map.entries.keys(), source.map.entries.values()) |k, v| {
+                try map.entries.put(self.arena, k, v);
+                const original_key = source.map.key_values.get(k) orelse Value{ .string = k };
+                try map.key_values.put(self.arena, k, original_key);
+            }
+        } else if (source == .list) {
+            // putAll from list of SObjects: key=Id, value=record
+            for (source.list.items.items) |item| {
+                if (item == .sobject and item.sobject.id != null) {
+                    try map.entries.put(self.arena, item.sobject.id.?, item);
+                    try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
+                }
+            }
+        }
+    }
+
+    fn eval_map_clone(self: *Evaluator, map: *types.MapValue, deep_clone: bool) !Value {
+        const new_map = try self.arena.create(types.MapValue);
+        new_map.* = .{};
+        for (map.entries.keys(), map.entries.values()) |k, v| {
+            const cloned_val = if (deep_clone and v == .sobject) blk: {
+                const clone = try self.clone_s_object(v.sobject);
+                break :blk Value{ .sobject = clone };
+            } else v;
+            try new_map.entries.put(self.arena, k, cloned_val);
+            const original_key = map.key_values.get(k) orelse Value{ .string = k };
+            try new_map.key_values.put(self.arena, k, original_key);
+        }
+        return Value{ .map = new_map };
     }
 
     fn set_entry_key(self: *Evaluator, value: Value) ![]const u8 {
@@ -13423,18 +13485,7 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "stopTest")) {
-            // Execute any Schedulable instances queued via System.schedule between startTest/stopTest.
-            while (self.pending_schedulables.items.len > 0) {
-                const sched = self.pending_schedulables.orderedRemove(0);
-                if (sched == .object) {
-                    if (self.find_class(sched.object.class_name)) |class_decl| {
-                        const ctx_obj = try self.arena.create(types.ObjectInstance);
-                        ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
-                        try ctx_obj.fields.put(self.arena, "triggerId", Value{ .string = "08e000000000001" });
-                        _ = self.call_instance_method(class_decl, sched.object, "execute", &.{Value{ .object = ctx_obj }}) catch {};
-                    }
-                }
-            }
+            try self.handle_test_stop_test();
             return .void_val;
         }
         // Test.setFixedSearchResults(List<Id>)
@@ -13451,16 +13502,7 @@ pub const Evaluator = struct {
             return Value{ .boolean = true };
         }
         if (std.ascii.eqlIgnoreCase(method, "testInstall") and args.len >= 1 and args[0] == .object) {
-            if (self.find_class(args[0].object.class_name)) |install_handler_class| {
-                const install_context = try self.arena.create(types.ObjectInstance);
-                install_context.* = .{ .class_name = "System.InstallContext" };
-                if (args.len >= 2) try install_context.fields.put(self.arena, "previousVersion", args[1]);
-                if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
-                if (args.len >= 3 and args[2] == .boolean) {
-                    try install_context.fields.put(self.arena, "firstInstall", Value{ .boolean = !args[2].boolean });
-                }
-                _ = try self.call_instance_method(install_handler_class, args[0].object, "onInstall", &.{Value{ .object = install_context }});
-            }
+            try self.handle_test_install(args);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setCreatedDate")) {
@@ -13476,29 +13518,74 @@ pub const Evaluator = struct {
         }
         // Test.createStub(Type, StubProvider) → create a stub proxy
         if (std.ascii.eqlIgnoreCase(method, "createStub") and args.len >= 2) {
-            const type_val = args[0]; // Type object
-            const provider = args[1]; // StubProvider instance
-            const type_name: []const u8 = if (type_val == .object)
-                (if (type_val.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object")
-            else
-                "Object";
-            // Create a stub instance that records the provider for method dispatch
-            const stub = try self.arena.create(types.ObjectInstance);
-            stub.* = .{ .class_name = type_name };
-            try stub.fields.put(self.arena, "__stubProvider__", provider);
-            try stub.fields.put(self.arena, "__stubDisplayClassName__", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}__sfdc_ApexStub", .{type_name}) });
-            // Initialize instance fields from the class if it exists
-            if (self.find_class(type_name)) |class_decl| {
-                self.init_instance_fields(class_decl, stub) catch {};
-                if (class_decl.super_class) |sc| {
-                    if (self.find_class(sc.name)) |parent| {
-                        self.init_instance_fields(parent, stub) catch {};
-                    }
-                }
-            }
-            return Value{ .object = stub };
+            return try self.handle_test_create_stub(args);
         }
         return .void_val;
+    }
+
+    fn handle_test_stop_test(self: *Evaluator) !void {
+        // Execute any Schedulable instances queued via System.schedule between startTest/stopTest.
+        while (self.pending_schedulables.items.len > 0) {
+            const sched = self.pending_schedulables.orderedRemove(0);
+            if (sched == .object) {
+                if (self.find_class(sched.object.class_name)) |class_decl| {
+                    const ctx_obj = try self.arena.create(types.ObjectInstance);
+                    ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
+                    try ctx_obj.fields.put(self.arena, "triggerId", Value{ .string = "08e000000000001" });
+                    _ = self.call_instance_method(class_decl, sched.object, "execute", &.{Value{ .object = ctx_obj }}) catch {};
+                }
+            }
+        }
+    }
+
+    fn handle_test_install(self: *Evaluator, args: []const Value) !void {
+        const install_handler_class = self.find_class(args[0].object.class_name) orelse return;
+        const install_context = try self.arena.create(types.ObjectInstance);
+        install_context.* = .{ .class_name = "System.InstallContext" };
+        if (args.len >= 2) try install_context.fields.put(self.arena, "previousVersion", args[1]);
+        if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
+        if (args.len >= 3 and args[2] == .boolean) {
+            try install_context.fields.put(self.arena, "firstInstall", Value{ .boolean = !args[2].boolean });
+        }
+        _ = try self.call_instance_method(
+            install_handler_class,
+            args[0].object,
+            "onInstall",
+            &.{Value{ .object = install_context }},
+        );
+    }
+
+    fn handle_test_create_stub(self: *Evaluator, args: []const Value) !Value {
+        const type_val = args[0]; // Type object
+        const provider = args[1]; // StubProvider instance
+        const type_name: []const u8 = if (type_val == .object)
+            (if (type_val.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object")
+        else
+            "Object";
+        const stub = try self.arena.create(types.ObjectInstance);
+        stub.* = .{ .class_name = type_name };
+        try stub.fields.put(self.arena, "__stubProvider__", provider);
+        try stub.fields.put(
+            self.arena,
+            "__stubDisplayClassName__",
+            Value{ .string = try std.fmt.allocPrint(self.arena, "{s}__sfdc_ApexStub", .{type_name}) },
+        );
+        self.initialize_stub_instance_fields(type_name, stub);
+        return Value{ .object = stub };
+    }
+
+    fn initialize_stub_instance_fields(
+        self: *Evaluator,
+        type_name: []const u8,
+        stub: *types.ObjectInstance,
+    ) void {
+        const class_decl = self.find_class(type_name) orelse return;
+        self.init_instance_fields(class_decl, stub) catch {};
+        if (class_decl.super_class) |sc| {
+            if (self.find_class(sc.name)) |parent| {
+                self.init_instance_fields(parent, stub) catch {};
+            }
+        }
     }
 
     fn handle_trigger_handler(self: *Evaluator, method: []const u8, args: []const Value) !Value {
