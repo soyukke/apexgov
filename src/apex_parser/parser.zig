@@ -1484,19 +1484,7 @@ const Parser = struct {
         const type_name = try self.parse_type_ref();
 
         // Array size: new Type[size] — e.g. new String[0], new Account[n]
-        if (self.match_kind(.lbracket)) {
-            const size_expr = try self.expression();
-            try self.expect(.rbracket);
-            var arr_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
-            try arr_args.append(self.arena, size_expr.*);
-            const node = try self.arena.create(ast.NewExpr);
-            node.* = .{ .type_name = type_name, .args = try arr_args.toOwnedSlice(
-                self.arena,
-            ), .loc = loc };
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .new_expr = node };
-            return result;
-        }
+        if (self.match_kind(.lbracket)) return try self.parse_new_array_size(type_name, loc);
 
         var args: []ast.Expr = &.{};
         var is_brace_initializer = false;
@@ -1508,47 +1496,73 @@ const Parser = struct {
         // Brace initializer: new List<T>{ item1, item2 } or new Map<K,V>{ key => value, ... }
         if (self.match_kind(.lbrace)) {
             is_brace_initializer = true;
-            var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
-            if (!self.check(.rbrace)) {
-                const first_expr = try self.expression();
-                // Check if this is a map initializer with =>
-                if (self.match_kind(.arrow)) {
-                    // Map literal: key => value pairs
-                    const first_val = try self.expression();
-                    // Store as assignment: key = value
-                    const asgn = try self.arena.create(ast.Assignment);
-                    asgn.* = .{ .target = first_expr, .op = .assign, .value = first_val };
-                    const pair = try self.arena.create(ast.Expr);
-                    pair.* = .{ .assignment = asgn };
-                    try brace_args.append(self.arena, pair.*);
-                    while (self.match_kind(.comma)) {
-                        if (self.check(.rbrace)) break;
-                        const k = try self.expression();
-                        _ = self.match_kind(.arrow);
-                        const v = try self.expression();
-                        const a2 = try self.arena.create(ast.Assignment);
-                        a2.* = .{ .target = k, .op = .assign, .value = v };
-                        const p2 = try self.arena.create(ast.Expr);
-                        p2.* = .{ .assignment = a2 };
-                        try brace_args.append(self.arena, p2.*);
-                    }
-                } else {
-                    try brace_args.append(self.arena, first_expr.*);
-                    while (self.match_kind(.comma)) {
-                        if (self.check(.rbrace)) break;
-                        try brace_args.append(self.arena, (try self.expression()).*);
-                    }
-                }
-            }
+            args = try self.parse_new_brace_initializer_args();
             try self.expect(.rbrace);
-            args = try brace_args.toOwnedSlice(self.arena);
         }
 
         const node = try self.arena.create(ast.NewExpr);
-        node.* = .{ .type_name = type_name, .args = args, .is_brace_initializer = is_brace_initializer, .loc = loc };
+        node.* = .{
+            .type_name = type_name,
+            .args = args,
+            .is_brace_initializer = is_brace_initializer,
+            .loc = loc,
+        };
         const result = try self.arena.create(ast.Expr);
         result.* = .{ .new_expr = node };
         return result;
+    }
+
+    fn parse_new_array_size(self: *Parser, type_name: types.TypeRef, loc: SourceLoc) !*ast.Expr {
+        const size_expr = try self.expression();
+        try self.expect(.rbracket);
+        var arr_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
+        try arr_args.append(self.arena, size_expr.*);
+        const node = try self.arena.create(ast.NewExpr);
+        node.* = .{
+            .type_name = type_name,
+            .args = try arr_args.toOwnedSlice(self.arena),
+            .loc = loc,
+        };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .new_expr = node };
+        return result;
+    }
+
+    fn parse_new_brace_initializer_args(self: *Parser) ![]ast.Expr {
+        var brace_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
+        if (self.check(.rbrace)) return try brace_args.toOwnedSlice(self.arena);
+        const first_expr = try self.expression();
+        if (self.match_kind(.arrow)) {
+            // Map literal: key => value pairs
+            try self.append_map_pair_expr(&brace_args, first_expr, try self.expression());
+            while (self.match_kind(.comma)) {
+                if (self.check(.rbrace)) break;
+                const k = try self.expression();
+                _ = self.match_kind(.arrow);
+                const v = try self.expression();
+                try self.append_map_pair_expr(&brace_args, k, v);
+            }
+        } else {
+            try brace_args.append(self.arena, first_expr.*);
+            while (self.match_kind(.comma)) {
+                if (self.check(.rbrace)) break;
+                try brace_args.append(self.arena, (try self.expression()).*);
+            }
+        }
+        return try brace_args.toOwnedSlice(self.arena);
+    }
+
+    fn append_map_pair_expr(
+        self: *Parser,
+        brace_args: *std.ArrayListUnmanaged(ast.Expr),
+        key: *ast.Expr,
+        value: *ast.Expr,
+    ) !void {
+        const asgn = try self.arena.create(ast.Assignment);
+        asgn.* = .{ .target = key, .op = .assign, .value = value };
+        const pair = try self.arena.create(ast.Expr);
+        pair.* = .{ .assignment = asgn };
+        try brace_args.append(self.arena, pair.*);
     }
 
     fn parse_arg_list(self: *Parser) ![]ast.Expr {
