@@ -1874,7 +1874,9 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     const source =
         \\public class JsonStreamingProbe {
         \\    public static String run() {
-        \\        JSONParser parser = JSON.createParser('[{"Name":"Acme","Count":2,"Flag":true,"Missing":null}]');
+        \\        String src_json =
+        \\            '[{"Name":"Acme","Count":2,"Flag":true,"Missing":null}]';
+        \\        JSONParser parser = JSON.createParser(src_json);
         \\        JSONGenerator generator = JSON.createGenerator(false);
         \\        while (parser.nextToken() != null) {
         \\            switch on parser.getCurrentToken() {
@@ -2528,7 +2530,8 @@ test "E2E: fixture Flow.Interview plugin mock exposes input and output variables
         \\        Map<String, Object> inputs = new Map<String, Object>();
         \\        inputs.put('pluginConfiguration', 'cfg');
         \\        inputs.put('pluginInput', 'input');
-        \\        Flow.Interview interview = Flow.Interview.createInterview('MockLogBatchPurgerPlugin', inputs);
+        \\        Flow.Interview interview =
+        \\            Flow.Interview.createInterview('MockLogBatchPurgerPlugin', inputs);
         \\        interview.start();
         \\        return (String) interview.getVariableValue('pluginConfiguration') + ':' +
         \\            (String) interview.getVariableValue('pluginInput') + ':' +
@@ -4150,7 +4153,8 @@ test "E2E: getFilteredAttachments full flow" {
         \\        }
         \\        // queryWithBinds to get CDLs
         \\        Map<String, Object> recordBind = new Map<String, Object>{ 'recordId' => acct.Id };
-        \\        String qs = 'SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = :recordId';
+        \\        String qs = 'SELECT ContentDocumentId FROM ContentDocumentLink ' +
+        \\            'WHERE LinkedEntityId = :recordId';
         \\        List<ContentDocumentLink> links = Database.queryWithBinds(qs, recordBind,
         \\ AccessLevel.USER_MODE);
         \\        Set<Id> fileIds = new Set<Id>();
@@ -5388,7 +5392,8 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         \\        Schema.DisplayType dt = d.getType();
         \\        String rel = d.getRelationshipName();
         \\        List<Schema.SObjectType> refs = d.getReferenceTo();
-        \\        String refName = (refs != null && refs.size() > 0) ? refs[0].getDescribe().getName() : 'none';
+        \\        Boolean has_refs = (refs != null && refs.size() > 0);
+        \\        String refName = has_refs ? refs[0].getDescribe().getName() : 'none';
         \\        return String.valueOf(dt) + '|' + rel + '|' + refName;
         \\    }
         \\}
@@ -7048,7 +7053,8 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
         \\    public static String test() {
         \\        Type inner_t = Type.forName(HandlerHostA.getInnerHandlerName());
         \\        SharedHandlerBase inside = (SharedHandlerBase) inner_t.newInstance();
-        \\        SharedHandlerBase outside = (SharedHandlerBase) Type.forName(HandlerHostA.SharedHandler.class.getName()).newInstance();
+        \\        Type shared_t = Type.forName(HandlerHostA.SharedHandler.class.getName());
+        \\        SharedHandlerBase outside = (SharedHandlerBase) shared_t.newInstance();
         \\        return inside.whoAmI() + outside.whoAmI();
         \\    }
         \\}
@@ -7185,8 +7191,10 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
         \\        return (TriggerableHost) Type.forName(className)?.newInstance();
         \\    }
         \\    public static String test() {
-        \\        getHandler(TriggerableFactoryHost.EventTriggerable.class.getName())?.overrideContext('x').execute();
-        \\        return String.valueOf(TriggerableHost.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\        String ev_name = TriggerableFactoryHost.EventTriggerable.class.getName();
+        \\        getHandler(ev_name)?.overrideContext('x').execute();
+        \\        Integer t_count = TriggerableHost.getExecutionCount(Schema.LogEntryEvent__e.SObjectType);
+        \\        return String.valueOf(t_count);
         \\    }
         \\}
     ;
@@ -7224,7 +7232,8 @@ test "E2E: parent constructors can read overridden type getters before child ini
         \\}
         \\public class ParentCtorTypeFactoryTest {
         \\    public static String test() {
-        \\        ParentCtorTypeHost child = (ParentCtorTypeHost) Type.forName(ParentCtorTypeFactory.EventChild.class.getName()).newInstance();
+        \\        Type pctor_t = Type.forName(ParentCtorTypeFactory.EventChild.class.getName());
+        \\        ParentCtorTypeHost child = (ParentCtorTypeHost) pctor_t.newInstance();
         \\        return ParentCtorTypeHost.getReading('duringParentCtor') + '|' +
         \\ String.valueOf(child.getSObjectType());
         \\    }
@@ -7253,7 +7262,9 @@ test "E2E: static method returned map supports chained get size and index access
         \\}
         \\public class StaticMapChainTest {
         \\    public static String test() {
-        \\        return String.valueOf(StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).size()) +
+        \\        Integer acct_size =
+        \\            StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).size();
+        \\        return String.valueOf(acct_size) +
         \\            '|' +
         \\            StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).get(0);
         \\    }
@@ -7306,7 +7317,8 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\        if (sobjectType == Schema.User.SObjectType) {
         \\            return Schema.User.Username.toString();
         \\        }
-        \\        List<String> educatedGuesses = new List<String>{ 'Name', 'DeveloperName', 'ApiName', 'Title', 'Subject' };
+        \\        List<String> educatedGuesses = new List<String>{
+        \\            'Name', 'DeveloperName', 'ApiName', 'Title', 'Subject' };
         \\        String displayFieldApiName;
         \\        List<String> fallbackFieldApiNames = new List<String>();
         \\        for (String fieldName : educatedGuesses) {
@@ -7379,7 +7391,9 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         \\}
         \\public class ChainedHandlerStoreTest {
         \\    public static String test() {
-        \\        return String.valueOf(ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).size()) +
+        \\        Integer ev_size =
+        \\            ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).size();
+        \\        return String.valueOf(ev_size) +
         \\            '|' +
         \\            ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).get(1).name;
         \\    }
@@ -7424,7 +7438,8 @@ test "E2E: overridden methods persist List<SObject> fields on handler instances"
         \\public class HandlerExecutionChildTest {
         \\    public static String test() {
         \\        new HandlerExecutionChild().execute();
-        \\        HandlerExecutionChild child = (HandlerExecutionChild) HandlerExecutionBase.getExecuted().get(0);
+        \\        HandlerExecutionBase raw_child = HandlerExecutionBase.getExecuted().get(0);
+        \\        HandlerExecutionChild child = (HandlerExecutionChild) raw_child;
         \\        return child.executedOperation + '|' +
         \\            String.valueOf(child.executedTriggerNew.size()) + '|' +
         \\            String.valueOf(child.executedTriggerNew.get(0).get('Name'));
@@ -7609,7 +7624,8 @@ test "E2E: SObject.getSObject resolves unsaved relationship records assigned via
     const source =
         \\public class GetUnsavedParentTest {
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord =
+        \\            new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
         \\        SObject parentRecord = sessionRecord.getSObject(Schema.Session__c.Experience__c);
         \\        return String.valueOf(parentRecord.get('Name'));
         \\    }
@@ -7628,7 +7644,8 @@ test "E2E: direct property access resolves unsaved relationship records assigned
     const source =
         \\public class DirectUnsavedParentTest {
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord =
+        \\            new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
         \\        return sessionRecord.Experience__r.Name;
         \\    }
         \\}
@@ -7653,7 +7670,8 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
         \\        return this.sessionRecord.Experience__r.Name;
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord =
+        \\            new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
         \\        return new MemberHeldUnsavedParentTest(sessionRecord).getName();
         \\    }
         \\}
