@@ -1300,7 +1300,15 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
     try dir.createDirPath(tio, "objects/Parent__c/fields");
     try dir.createDirPath(tio, "objects/Child__c/fields");
     try dir.createDirPath(tio, "objects/Grandchild__c/fields");
-    try dir.writeFile(tio, .{
+    try write_rollup_child_parent_field(dir);
+    try write_rollup_open_children_field(dir);
+    try write_rollup_closed_children_field(dir);
+    try write_rollup_total_children_field(dir);
+    try write_rollup_grandchild_child_field(dir);
+}
+
+fn write_rollup_child_parent_field(dir: anytype) !void {
+    try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
@@ -1312,6 +1320,9 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
+}
+
+fn write_rollup_open_children_field(dir: anytype) !void {
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Parent__c/fields/OpenChildren__c.field-meta.xml",
         .data =
@@ -1329,6 +1340,9 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
+}
+
+fn write_rollup_closed_children_field(dir: anytype) !void {
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Parent__c/fields/ClosedChildren__c.field-meta.xml",
         .data =
@@ -1346,6 +1360,9 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
+}
+
+fn write_rollup_total_children_field(dir: anytype) !void {
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Parent__c/fields/TotalChildren__c.field-meta.xml",
         .data =
@@ -1359,6 +1376,9 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
+}
+
+fn write_rollup_grandchild_child_field(dir: anytype) !void {
     try dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Grandchild__c/fields/Child__c.field-meta.xml",
         .data =
