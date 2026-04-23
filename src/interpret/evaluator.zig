@@ -5339,6 +5339,165 @@ pub const Evaluator = struct {
         return Value{ .sobject = sob };
     }
 
+    /// Synthesize a FlowDefinitionView row (or return the stored record when
+    /// one exists). Only synthesises when the query explicitly filters for
+    /// active flows; otherwise returns null.
+    fn generate_flow_definition_view_stub(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        name_val: []const u8,
+    ) !?Value {
+        const api_name = self.extract_where_field_value(soql, "ApiName", current_env) orelse
+            name_val;
+        if (std.mem.indexOfScalar(u8, api_name, ' ') != null) return null;
+        const has_active_true_literal =
+            std.ascii.indexOfIgnoreCase(soql, "IsActive = TRUE") != null or
+            std.ascii.indexOfIgnoreCase(soql, "IsActive=TRUE") != null;
+        const is_active_filter = self.extract_where_field_value(soql, "IsActive", current_env);
+        const should_synthesize = has_active_true_literal or
+            if (is_active_filter) |filter_value|
+                std.ascii.eqlIgnoreCase(filter_value, "TRUE")
+            else
+                false;
+
+        if (self.store.get(from_type)) |records| {
+            for (records.items) |record| {
+                if (record != .sobject) continue;
+                const stored_api_name =
+                    utils.sobject_get(&record.sobject.fields, "ApiName") orelse continue;
+                if (stored_api_name == .string and
+                    std.ascii.eqlIgnoreCase(stored_api_name.string, api_name))
+                {
+                    return record;
+                }
+            }
+        }
+        if (!should_synthesize) return null;
+
+        const durable_id = try std.fmt.allocPrint(self.arena, "300{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        const active_version_id = try std.fmt.allocPrint(
+            self.arena,
+            "301{d:0>15}",
+            .{self.next_id},
+        );
+        self.next_id += 1;
+        const trigger_object = try self.arena.create(types.SObject);
+        trigger_object.* = .{ .type_name = "EntityDefinition" };
+        try trigger_object.fields.put(self.arena, "QualifiedApiName", Value{ .string = "Log__c" });
+
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = from_type, .id = durable_id };
+        try sob.fields.put(self.arena, "Id", Value{ .string = durable_id });
+        try sob.fields.put(self.arena, "ActiveVersionId", Value{ .string = active_version_id });
+        try sob.fields.put(self.arena, "ApiName", Value{ .string = api_name });
+        try sob.fields.put(
+            self.arena,
+            "Description",
+            Value{ .string = try std.fmt.allocPrint(self.arena, "{s} flow", .{api_name}) },
+        );
+        try sob.fields.put(self.arena, "DurableId", Value{ .string = durable_id });
+        try sob.fields.put(self.arena, "Label", Value{ .string = api_name });
+        try sob.fields.put(self.arena, "LastModifiedBy", Value{ .string = "Test User" });
+        try sob.fields.put(
+            self.arena,
+            "LastModifiedDate",
+            Value{ .string = "2026-01-01T00:00:00Z" },
+        );
+        try sob.fields.put(self.arena, "ManageableState", Value{ .string = "unmanaged" });
+        try sob.fields.put(self.arena, "ProcessType", Value{ .string = "Flow" });
+        try sob.fields.put(self.arena, "RecordTriggerType", Value{ .string = "RecordAfterSave" });
+        try sob.fields.put(self.arena, "TriggerObjectOrEvent", Value{ .sobject = trigger_object });
+        try sob.fields.put(self.arena, "TriggerOrder", Value{ .integer = 1 });
+        try sob.fields.put(self.arena, "TriggerType", Value{ .string = "RecordAfterSave" });
+        try sob.fields.put(self.arena, "VersionNumber", Value{ .integer = 1 });
+        try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+        const gop = try self.store.getOrPut(self.arena, from_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+        try self.id_type_map.put(self.arena, durable_id, from_type);
+        return Value{ .sobject = sob };
+    }
+
+    fn generate_flow_version_view_stub(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        const durable_id = self.extract_where_field_value(soql, "DurableId", current_env) orelse
+            return null;
+        if (std.mem.indexOfScalar(u8, durable_id, ' ') != null) return null;
+
+        if (self.store.get(from_type)) |records| {
+            for (records.items) |record| {
+                if (record != .sobject) continue;
+                const stored_durable_id =
+                    utils.sobject_get(&record.sobject.fields, "DurableId") orelse continue;
+                if (stored_durable_id == .string and
+                    std.ascii.eqlIgnoreCase(stored_durable_id.string, durable_id))
+                {
+                    return record;
+                }
+            }
+        }
+
+        var flow_definition_id: []const u8 = "300000000000000001";
+        if (self.store.get("FlowDefinitionView")) |records| {
+            for (records.items) |record| {
+                if (record != .sobject) continue;
+                const active_version_id =
+                    utils.sobject_get(&record.sobject.fields, "ActiveVersionId") orelse continue;
+                if (active_version_id != .string) continue;
+                if (!std.ascii.eqlIgnoreCase(active_version_id.string, durable_id)) continue;
+                if (utils.sobject_get(&record.sobject.fields, "DurableId")) |definition_id| {
+                    if (definition_id == .string) flow_definition_id = definition_id.string;
+                }
+                break;
+            }
+        }
+
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = from_type, .id = durable_id };
+        try sob.fields.put(self.arena, "Id", Value{ .string = durable_id });
+        try sob.fields.put(self.arena, "DurableId", Value{ .string = durable_id });
+        try sob.fields.put(self.arena, "ApiVersionRuntime", Value{ .double = 62.0 });
+        try sob.fields.put(
+            self.arena,
+            "FlowDefinitionViewId",
+            Value{ .string = flow_definition_id },
+        );
+        try sob.fields.put(self.arena, "RunInMode", Value{ .string = "SystemMode" });
+        try sob.fields.put(self.arena, "Status", Value{ .string = "Active" });
+        try sob.fields.put(self.arena, "VersionNumber", Value{ .integer = 1 });
+        const gop = try self.store.getOrPut(self.arena, from_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+        try self.id_type_map.put(self.arena, durable_id, from_type);
+        return Value{ .sobject = sob };
+    }
+
+    fn generate_permission_set_stub(
+        self: *Evaluator,
+        name_val: []const u8,
+    ) !?Value {
+        if (name_val.len > 0) {
+            try self.load_permission_set_metadata_from_files(name_val);
+            if (self.find_permission_set_record_by_name(name_val)) |existing| return existing;
+        }
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "PermissionSet" };
+        const id = try self.alloc_id();
+        sob.id = id;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
+        try sob.fields.put(self.arena, "Label", Value{ .string = name_val });
+        try self.append_store_record("PermissionSet", sob);
+        return Value{ .sobject = sob };
+    }
+
     fn generate_metadata_stub(
         self: *Evaluator,
         from_type: []const u8,
@@ -5355,188 +5514,13 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "FlowDefinitionView")) {
-            const api_name = self.extract_where_field_value(
-                soql,
-                "ApiName",
-                current_env,
-            ) orelse name_val;
-            if (std.mem.indexOfScalar(u8, api_name, ' ') != null) return null;
-            const has_active_true_literal = std.ascii.indexOfIgnoreCase(
-                soql,
-                "IsActive = TRUE",
-            ) != null or
-                std.ascii.indexOfIgnoreCase(soql, "IsActive=TRUE") != null;
-            const is_active_filter = self.extract_where_field_value(soql, "IsActive", current_env);
-            const should_synthesize =
-                has_active_true_literal or if (is_active_filter) |filter_value|
-                    std.ascii.eqlIgnoreCase(filter_value, "TRUE")
-                else
-                    false;
-
-            if (self.store.get(from_type)) |records| {
-                for (records.items) |record| {
-                    if (record == .sobject) {
-                        if (utils.sobject_get(
-                            &record.sobject.fields,
-                            "ApiName",
-                        )) |stored_api_name| {
-                            if (stored_api_name == .string and
-                                std.ascii.eqlIgnoreCase(stored_api_name.string, api_name))
-                            {
-                                return record;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!should_synthesize) return null;
-
-            const durable_id = try std.fmt.allocPrint(self.arena, "300{d:0>15}", .{self.next_id});
-            self.next_id += 1;
-            const active_version_id = try std.fmt.allocPrint(
-                self.arena,
-                "301{d:0>15}",
-                .{self.next_id},
-            );
-            self.next_id += 1;
-
-            const trigger_object = try self.arena.create(types.SObject);
-            trigger_object.* = .{ .type_name = "EntityDefinition" };
-            try trigger_object.fields.put(
-                self.arena,
-                "QualifiedApiName",
-                Value{ .string = "Log__c" },
-            );
-
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = from_type, .id = durable_id };
-            try sob.fields.put(self.arena, "Id", Value{ .string = durable_id });
-            try sob.fields.put(self.arena, "ActiveVersionId", Value{ .string = active_version_id });
-            try sob.fields.put(self.arena, "ApiName", Value{ .string = api_name });
-            try sob.fields.put(
-                self.arena,
-                "Description",
-                Value{ .string = try std.fmt.allocPrint(self.arena, "{s} flow", .{api_name}) },
-            );
-            try sob.fields.put(self.arena, "DurableId", Value{ .string = durable_id });
-            try sob.fields.put(self.arena, "Label", Value{ .string = api_name });
-            try sob.fields.put(self.arena, "LastModifiedBy", Value{ .string = "Test User" });
-            try sob.fields.put(
-                self.arena,
-                "LastModifiedDate",
-                Value{ .string = "2026-01-01T00:00:00Z" },
-            );
-            try sob.fields.put(self.arena, "ManageableState", Value{ .string = "unmanaged" });
-            try sob.fields.put(self.arena, "ProcessType", Value{ .string = "Flow" });
-            try sob.fields.put(
-                self.arena,
-                "RecordTriggerType",
-                Value{ .string = "RecordAfterSave" },
-            );
-            try sob.fields.put(
-                self.arena,
-                "TriggerObjectOrEvent",
-                Value{ .sobject = trigger_object },
-            );
-            try sob.fields.put(self.arena, "TriggerOrder", Value{ .integer = 1 });
-            try sob.fields.put(self.arena, "TriggerType", Value{ .string = "RecordAfterSave" });
-            try sob.fields.put(self.arena, "VersionNumber", Value{ .integer = 1 });
-            try sob.fields.put(self.arena, "IsActive", Value{ .boolean = true });
-
-            const gop = try self.store.getOrPut(self.arena, from_type);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            try self.id_type_map.put(self.arena, durable_id, from_type);
-            return Value{ .sobject = sob };
+            return try self.generate_flow_definition_view_stub(from_type, soql, current_env, name_val);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "FlowVersionView")) {
-            const durable_id = self.extract_where_field_value(
-                soql,
-                "DurableId",
-                current_env,
-            ) orelse return null;
-            if (std.mem.indexOfScalar(u8, durable_id, ' ') != null) return null;
-
-            if (self.store.get(from_type)) |records| {
-                for (records.items) |record| {
-                    if (record == .sobject) {
-                        if (utils.sobject_get(
-                            &record.sobject.fields,
-                            "DurableId",
-                        )) |stored_durable_id| {
-                            if (stored_durable_id == .string and
-                                std.ascii.eqlIgnoreCase(stored_durable_id.string, durable_id))
-                            {
-                                return record;
-                            }
-                        }
-                    }
-                }
-            }
-
-            var flow_definition_id: []const u8 = "300000000000000001";
-            if (self.store.get("FlowDefinitionView")) |records| {
-                for (records.items) |record| {
-                    if (record != .sobject) continue;
-                    if (utils.sobject_get(
-                        &record.sobject.fields,
-                        "ActiveVersionId",
-                    )) |active_version_id| {
-                        if (active_version_id == .string and
-                            std.ascii.eqlIgnoreCase(active_version_id.string, durable_id))
-                        {
-                            if (utils.sobject_get(
-                                &record.sobject.fields,
-                                "DurableId",
-                            )) |definition_id| {
-                                if (definition_id == .string)
-                                    flow_definition_id = definition_id.string;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = from_type, .id = durable_id };
-            try sob.fields.put(self.arena, "Id", Value{ .string = durable_id });
-            try sob.fields.put(self.arena, "DurableId", Value{ .string = durable_id });
-            try sob.fields.put(self.arena, "ApiVersionRuntime", Value{ .double = 62.0 });
-            try sob.fields.put(
-                self.arena,
-                "FlowDefinitionViewId",
-                Value{ .string = flow_definition_id },
-            );
-            try sob.fields.put(self.arena, "RunInMode", Value{ .string = "SystemMode" });
-            try sob.fields.put(self.arena, "Status", Value{ .string = "Active" });
-            try sob.fields.put(self.arena, "VersionNumber", Value{ .integer = 1 });
-
-            const gop = try self.store.getOrPut(self.arena, from_type);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
-            try self.id_type_map.put(self.arena, durable_id, from_type);
-            return Value{ .sobject = sob };
+            return try self.generate_flow_version_view_stub(from_type, soql, current_env);
         }
-
         if (std.ascii.eqlIgnoreCase(from_type, "PermissionSet")) {
-            if (name_val.len > 0) {
-                try self.load_permission_set_metadata_from_files(name_val);
-                if (self.find_permission_set_record_by_name(name_val)) |existing| {
-                    return existing;
-                }
-            }
-            const sob = try self.arena.create(types.SObject);
-            sob.* = .{ .type_name = "PermissionSet" };
-            const id = try self.alloc_id();
-            sob.id = id;
-            try sob.fields.put(self.arena, "Id", Value{ .string = id });
-            try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
-            try sob.fields.put(self.arena, "Label", Value{ .string = name_val });
-            try self.append_store_record("PermissionSet", sob);
-            return Value{ .sobject = sob };
+            return try self.generate_permission_set_stub(name_val);
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "CustomPermission")) {
