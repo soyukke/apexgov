@@ -1145,61 +1145,70 @@ pub const Evaluator = struct {
                     self.call_stack.items[self.call_stack.items.len - 1].line = tl;
             }
         }
-        // Initialize static fields in declaration order, then re-run any initializer
-        // whose result was `null_val` in case it referenced a later-declared field.
-        // This matches Apex's behaviour where `X = Y.method()` pairs with a later
-        // `Y = ...` declaration without a compile error.
+        // Initialise static fields in declaration order, then retry those that
+        // produced null (they may depend on a later-declared field). Apex lets
+        // `X = Y.method()` pair with a later `Y = ...` without a compile error.
+        self.init_static_fields_first_pass(cd);
+        self.retry_null_static_fields(cd);
+    }
+
+    fn init_static_fields_first_pass(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
-                    if (fd.modifiers.is_static) {
-                        const val = if (fd.initializer) |init_expr|
-                            self.eval_expr(init_expr, self.global_env) catch Value.null_val
-                        else
-                            default_value(fd.type_ref);
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
-                        self.global_env.set(key, val) catch {
-                            self.global_env.define(key, val) catch {};
-                        };
-                    }
+                    if (!fd.modifiers.is_static) continue;
+                    const val = if (fd.initializer) |init_expr|
+                        self.eval_expr(init_expr, self.global_env) catch Value.null_val
+                    else
+                        default_value(fd.type_ref);
+                    const key = std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ cd.name, fd.name },
+                    ) catch continue;
+                    self.global_env.set(key, val) catch {
+                        self.global_env.define(key, val) catch {};
+                    };
                 },
                 else => {},
             }
         }
-        // Second pass: retry initializers that produced null but had a real expression.
-        // Bounded retry guards against circular references.
-        var retry_attempts: u8 = 0;
+    }
 
+    /// Retry initialisers whose first pass produced null but had a real expression.
+    /// Bounded retry count guards against circular references.
+    fn retry_null_static_fields(self: *Evaluator, cd: *ast.ClassDecl) void {
+        var retry_attempts: u8 = 0;
         while (retry_attempts < 4) : (retry_attempts += 1) {
-            var made_progress = false;
-            for (cd.members) |member| {
-                switch (member) {
-                    .field_decl => |fd| {
-                        if (!fd.modifiers.is_static) continue;
-                        const init_expr = fd.initializer orelse continue;
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
-                        const current = self.global_env.get(key) orelse Value.null_val;
-                        if (current != .null_val) continue;
-                        const val = self.eval_expr(init_expr, self.global_env) catch Value.null_val;
-                        if (val == .null_val) continue;
-                        self.global_env.set(key, val) catch {
-                            self.global_env.define(key, val) catch {};
-                        };
-                        made_progress = true;
-                    },
-                    else => {},
-                }
-            }
-            if (!made_progress) break;
+            if (!self.retry_null_static_fields_once(cd)) break;
         }
+    }
+
+    fn retry_null_static_fields_once(self: *Evaluator, cd: *ast.ClassDecl) bool {
+        var made_progress = false;
+        for (cd.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (!fd.modifiers.is_static) continue;
+                    const init_expr = fd.initializer orelse continue;
+                    const key = std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ cd.name, fd.name },
+                    ) catch continue;
+                    const current = self.global_env.get(key) orelse Value.null_val;
+                    if (current != .null_val) continue;
+                    const val = self.eval_expr(init_expr, self.global_env) catch Value.null_val;
+                    if (val == .null_val) continue;
+                    self.global_env.set(key, val) catch {
+                        self.global_env.define(key, val) catch {};
+                    };
+                    made_progress = true;
+                },
+                else => {},
+            }
+        }
+        return made_progress;
     }
 
     /// Register static field placeholders (null values) without evaluating initializers.
