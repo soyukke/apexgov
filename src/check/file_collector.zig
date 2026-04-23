@@ -9,29 +9,29 @@ const types = @import("types.zig");
 const utils = @import("utils.zig");
 
 const ApexFile = types.ApexFile;
-const isApexSource = utils.isApexSource;
+const is_apex_source = utils.is_apex_source;
 
-pub fn collectApexFiles(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.ArrayList(ApexFile) {
+pub fn collect_apex_files(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.ArrayList(ApexFile) {
     var files: std.ArrayList(ApexFile) = .empty;
-    errdefer deinitApexFiles(gpa, &files);
+    errdefer deinit_apex_files(gpa, &files);
     for (roots) |root| {
-        try collectPath(gpa, io, root, &files);
+        try collect_path(gpa, io, root, &files);
     }
     return files;
 }
 
-fn collectPath(gpa: std.mem.Allocator, io: Io, path: []const u8, files: *std.ArrayList(ApexFile)) !void {
-    collectDirectory(gpa, io, path, files) catch |err| switch (err) {
+fn collect_path(gpa: std.mem.Allocator, io: Io, path: []const u8, files: *std.ArrayList(ApexFile)) !void {
+    collect_directory(gpa, io, path, files) catch |err| switch (err) {
         error.NotDir => {
-            if (isApexSource(path)) {
-                try appendApexFile(gpa, io, files, path);
+            if (is_apex_source(path)) {
+                try append_apex_file(gpa, io, files, path);
             }
         },
         else => return err,
     };
 }
 
-fn collectDirectory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList(ApexFile)) !void {
+fn collect_directory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList(ApexFile)) !void {
     var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -40,16 +40,16 @@ fn collectDirectory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *st
 
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        if (!isApexSource(entry.path)) continue;
+        if (!is_apex_source(entry.path)) continue;
 
         const joined = try std.fs.path.join(gpa, &.{ root, entry.path });
         defer gpa.free(joined);
 
-        try appendApexFile(gpa, io, files, joined);
+        try append_apex_file(gpa, io, files, joined);
     }
 }
 
-fn appendApexFile(gpa: std.mem.Allocator, io: Io, files: *std.ArrayList(ApexFile), path: []const u8) !void {
+fn append_apex_file(gpa: std.mem.Allocator, io: Io, files: *std.ArrayList(ApexFile), path: []const u8) !void {
     const content = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
     errdefer gpa.free(content);
 
@@ -62,7 +62,7 @@ fn appendApexFile(gpa: std.mem.Allocator, io: Io, files: *std.ArrayList(ApexFile
     });
 }
 
-pub fn deinitApexFiles(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile)) void {
+pub fn deinit_apex_files(gpa: std.mem.Allocator, files: *std.ArrayList(ApexFile)) void {
     for (files.items) |file| {
         gpa.free(file.path);
         gpa.free(file.content);

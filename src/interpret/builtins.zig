@@ -1877,7 +1877,7 @@ fn dispatchStaticPattern(ctx: *BuiltinContext, method_name: []const u8, args: []
 fn schemaSObjectTypeValue(ctx: *BuiltinContext, lookup_name: []const u8, inner_name: []const u8) ?Value {
     if (!std.ascii.eqlIgnoreCase(lookup_name, "Schema")) return null;
     if (std.ascii.eqlIgnoreCase(inner_name, "Network")) return null;
-    if (!ctx.eval.isSObjectTypeNamePublic(inner_name)) return null;
+    if (!ctx.eval.is_s_objectTypeNamePublic(inner_name)) return null;
     const obj = ctx.arena.create(types.ObjectInstance) catch return null;
     obj.* = .{ .class_name = "Type" };
     // Store the bare SObject name so newInstance() produces an .sobject value.
@@ -1963,7 +1963,7 @@ fn isResolvableTypeName(ctx: *BuiltinContext, name: []const u8) bool {
     while (it.next()) |e| {
         if (std.ascii.eqlIgnoreCase(e.key_ptr.*, name)) return true;
     }
-    if (ctx.eval.isSObjectTypeNamePublic(name)) return true;
+    if (ctx.eval.is_s_objectTypeNamePublic(name)) return true;
     const primitives = [_][]const u8{
         "String",       "Integer",           "Long",      "Double",   "Decimal",      "Boolean", "Date",
         "Datetime",     "Time",              "Id",        "Blob",     "Object",       "Schema",  "System",
@@ -3882,7 +3882,7 @@ fn dispatchObjectInstance(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
         }
     }
     if (ci.eqlIgnoreCase(cn, "Schema.FieldSet") or ci.eqlIgnoreCase(cn, "FieldSet")) {
-        if (ci.eqlIgnoreCase(method_name, "getFields")) {
+        if (ci.eqlIgnoreCase(method_name, "get_fields")) {
             return obj.fields.get("fields") orelse blk: {
                 const empty = try ctx.arena.create(types.ListValue);
                 empty.* = .{};
@@ -4057,7 +4057,7 @@ fn dispatchObjCommon(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         return obj.fields.get("inaccessibleFields") orelse Value.null_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getFields")) return obj.fields.get("fields") orelse blk: {
+    if (std.ascii.eqlIgnoreCase(method_name, "get_fields")) return obj.fields.get("fields") orelse blk: {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         break :blk Value{ .list = list };

@@ -169,7 +169,7 @@ const all_types = [_]TypeDef{
 };
 
 /// 型名からメンバー一覧を取得する。
-pub fn getMembers(type_name: []const u8) ?[]const MemberInfo {
+pub fn get_members(type_name: []const u8) ?[]const MemberInfo {
     for (&all_types) |td| {
         if (std.ascii.eqlIgnoreCase(td.name, type_name)) {
             return td.members;
@@ -179,8 +179,8 @@ pub fn getMembers(type_name: []const u8) ?[]const MemberInfo {
 }
 
 /// 型名が Apex 標準ライブラリ型かどうか。
-pub fn isStdlibType(type_name: []const u8) bool {
-    return getMembers(type_name) != null;
+pub fn is_stdlib_type(type_name: []const u8) bool {
+    return get_members(type_name) != null;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ pub fn isStdlibType(type_name: []const u8) bool {
 // ---------------------------------------------------------------------------
 
 test "String has length method" {
-    const members = getMembers("String");
+    const members = get_members("String");
     try std.testing.expect(members != null);
     var found = false;
     for (members.?) |m| {
@@ -201,7 +201,7 @@ test "String has length method" {
 }
 
 test "List has add and size" {
-    const members = getMembers("List");
+    const members = get_members("List");
     try std.testing.expect(members != null);
     var has_add = false;
     var has_size = false;
@@ -214,7 +214,7 @@ test "List has add and size" {
 }
 
 test "System has debug" {
-    const members = getMembers("System");
+    const members = get_members("System");
     try std.testing.expect(members != null);
     var found = false;
     for (members.?) |m| {
@@ -224,7 +224,7 @@ test "System has debug" {
 }
 
 test "Database has query" {
-    const members = getMembers("Database");
+    const members = get_members("Database");
     try std.testing.expect(members != null);
     var found = false;
     for (members.?) |m| {
@@ -234,16 +234,16 @@ test "Database has query" {
 }
 
 test "case-insensitive lookup" {
-    try std.testing.expect(getMembers("string") != null);
-    try std.testing.expect(getMembers("STRING") != null);
+    try std.testing.expect(get_members("string") != null);
+    try std.testing.expect(get_members("STRING") != null);
 }
 
 test "unknown type returns null" {
-    try std.testing.expect(getMembers("FooBar") == null);
+    try std.testing.expect(get_members("FooBar") == null);
 }
 
-test "isStdlibType" {
-    try std.testing.expect(isStdlibType("String"));
-    try std.testing.expect(isStdlibType("List"));
-    try std.testing.expect(!isStdlibType("Account"));
+test "is_stdlib_type" {
+    try std.testing.expect(is_stdlib_type("String"));
+    try std.testing.expect(is_stdlib_type("List"));
+    try std.testing.expect(!is_stdlib_type("Account"));
 }

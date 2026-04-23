@@ -28,7 +28,7 @@ fn find_enclosing_open_paren(source: []const u8, offset: u32) ?OpenParen {
     return null;
 }
 
-pub fn getSignatureHelp(
+pub fn get_signature_help(
     result: *const binder_mod.BindResult,
     source: []const u8,
     offset: u32,
@@ -44,7 +44,7 @@ pub fn getSignatureHelp(
     if (name_end == 0) return null;
 
     // binder でシンボル解決
-    const sym = binder_mod.symbolAtPosition(result, name_end - 1) orelse return null;
+    const sym = binder_mod.symbol_at_position(result, name_end - 1) orelse return null;
     if (sym.kind != .method and sym.kind != .constructor) return null;
 
     // パラメータ情報を構築
@@ -98,7 +98,7 @@ test "inside method call shows params" {
 
     // 'run(' の後にカーソル
     const call_pos = std.mem.indexOf(u8, source, "run();").? + 4; // after '('
-    const result = try getSignatureHelp(&br, source, @intCast(call_pos), alloc);
+    const result = try get_signature_help(&br, source, @intCast(call_pos), alloc);
     try std.testing.expect(result != null);
     try std.testing.expect(result.?.signatures.len > 0);
 }
@@ -114,6 +114,6 @@ test "outside call returns null" {
     const decls = try parser.parse(tokens, alloc);
     const br = try binder_mod.bind(decls, tokens, source, alloc);
 
-    const result = try getSignatureHelp(&br, source, 0, alloc);
+    const result = try get_signature_help(&br, source, 0, alloc);
     try std.testing.expect(result == null);
 }

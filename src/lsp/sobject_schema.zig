@@ -164,15 +164,15 @@ pub const CustomFieldRegistry = struct {
     }
 
     /// ワークスペースの objects/ ディレクトリからカスタムフィールドを読み込む。
-    pub fn loadFromWorkspace(self: *CustomFieldRegistry, io: std.Io, workspace_path: []const u8) !void {
+    pub fn load_from_workspace(self: *CustomFieldRegistry, io: std.Io, workspace_path: []const u8) !void {
         const alloc = self.arena.allocator();
         const sfdx_project = @import("sfdx_project.zig");
 
         // sfdx-project.json の packageDirectories からソースルートを動的に解決
-        const pkg_dirs = try sfdx_project.resolvePackageDirs(alloc, io, workspace_path);
+        const pkg_dirs = try sfdx_project.resolve_package_dirs(alloc, io, workspace_path);
         // arena で確保しているため個別 free は不要
 
-        const objects_dirs = try sfdx_project.resolveSubDirs(alloc, io, pkg_dirs, "main/default/objects");
+        const objects_dirs = try sfdx_project.resolve_sub_dirs(alloc, io, pkg_dirs, "main/default/objects");
 
         for (objects_dirs) |objects_path| {
             var dir = std.Io.Dir.openDirAbsolute(io, objects_path, .{ .iterate = true }) catch continue;
@@ -182,12 +182,12 @@ pub const CustomFieldRegistry = struct {
             while (try iter.next(io)) |entry| {
                 if (entry.kind != .directory) continue;
                 const obj_name = try alloc.dupe(u8, entry.name);
-                try self.loadObjectFields(io, objects_path, obj_name);
+                try self.load_object_fields(io, objects_path, obj_name);
             }
         }
     }
 
-    fn loadObjectFields(self: *CustomFieldRegistry, io: std.Io, objects_path: []const u8, obj_name: []const u8) !void {
+    fn load_object_fields(self: *CustomFieldRegistry, io: std.Io, objects_path: []const u8, obj_name: []const u8) !void {
         const alloc = self.arena.allocator();
         const fields_path = try std.fs.path.join(alloc, &.{ objects_path, obj_name, "fields" });
 
@@ -202,7 +202,7 @@ pub const CustomFieldRegistry = struct {
             if (!std.mem.endsWith(u8, entry.name, ".field-meta.xml")) continue;
 
             const content = fields_dir.readFileAlloc(io, entry.name, alloc, .limited(64 * 1024)) catch continue;
-            const parsed = parseFieldMetaXml(content, alloc) catch continue;
+            const parsed = parse_field_meta_xml(content, alloc) catch continue;
             if (parsed) |field| {
                 try fields.append(alloc, field);
             }
@@ -214,7 +214,7 @@ pub const CustomFieldRegistry = struct {
         }
     }
 
-    pub fn getFields(self: *const CustomFieldRegistry, type_name: []const u8) ?[]const FieldInfo {
+    pub fn get_fields(self: *const CustomFieldRegistry, type_name: []const u8) ?[]const FieldInfo {
         // 完全一致
         if (self.objects.get(type_name)) |fields| return fields;
         // 大文字小文字を無視してサーチ
@@ -227,23 +227,23 @@ pub const CustomFieldRegistry = struct {
         return null;
     }
 
-    pub fn isSObject(self: *const CustomFieldRegistry, type_name: []const u8) bool {
-        return self.getFields(type_name) != null;
+    pub fn is_s_object(self: *const CustomFieldRegistry, type_name: []const u8) bool {
+        return self.get_fields(type_name) != null;
     }
 };
 
 /// .field-meta.xml (個別フィールドファイル) から 1 フィールドを抽出する。
-fn parseFieldMetaXml(content: []const u8, allocator: std.mem.Allocator) !?FieldInfo {
-    const name = extractTag(content, "fullName") orelse return null;
-    const field_type = extractTag(content, "type");
+fn parse_field_meta_xml(content: []const u8, allocator: std.mem.Allocator) !?FieldInfo {
+    const name = extract_tag(content, "fullName") orelse return null;
+    const field_type = extract_tag(content, "type");
     return .{
         .name = try allocator.dupe(u8, name),
-        .type_name = mapSfFieldType(field_type),
+        .type_name = map_sf_field_type(field_type),
     };
 }
 
 /// 型名から SObject フィールド一覧を取得する。
-pub fn getFields(type_name: []const u8) ?[]const FieldInfo {
+pub fn get_fields(type_name: []const u8) ?[]const FieldInfo {
     // ビルトイン検索
     for (&builtin_schemas) |schema| {
         if (std.ascii.eqlIgnoreCase(schema.name, type_name)) {
@@ -254,13 +254,13 @@ pub fn getFields(type_name: []const u8) ?[]const FieldInfo {
 }
 
 /// 型名が既知の SObject かどうか。
-pub fn isSObject(type_name: []const u8) bool {
-    return getFields(type_name) != null;
+pub fn is_s_object(type_name: []const u8) bool {
+    return get_fields(type_name) != null;
 }
 
 /// .object-meta.xml からカスタムフィールドをパースする。
 /// 簡易 XML パーサー: <fullName>FieldName__c</fullName> と <type>Text</type> を抽出。
-pub fn parseObjectMetaXml(content: []const u8, allocator: std.mem.Allocator) ![]FieldInfo {
+pub fn parse_object_meta_xml(content: []const u8, allocator: std.mem.Allocator) ![]FieldInfo {
     var fields: std.ArrayList(FieldInfo) = .empty;
 
     // <fields> ブロックから fullName と type を抽出
@@ -269,12 +269,12 @@ pub fn parseObjectMetaXml(content: []const u8, allocator: std.mem.Allocator) ![]
         const fields_end = std.mem.indexOfPos(u8, content, fields_start, "</fields>") orelse break;
         const block = content[fields_start..fields_end];
 
-        const name = extractTag(block, "fullName");
-        const field_type = extractTag(block, "type");
+        const name = extract_tag(block, "fullName");
+        const field_type = extract_tag(block, "type");
 
         if (name) |n| {
             const name_copy = try allocator.dupe(u8, n);
-            const type_str = mapSfFieldType(field_type);
+            const type_str = map_sf_field_type(field_type);
             try fields.append(allocator, .{
                 .name = name_copy,
                 .type_name = type_str,
@@ -287,7 +287,7 @@ pub fn parseObjectMetaXml(content: []const u8, allocator: std.mem.Allocator) ![]
     return fields.toOwnedSlice(allocator);
 }
 
-fn extractTag(block: []const u8, tag: []const u8) ?[]const u8 {
+fn extract_tag(block: []const u8, tag: []const u8) ?[]const u8 {
     const open_start = std.mem.indexOf(u8, block, "<") orelse return null;
     _ = open_start;
     // <tag>value</tag> を探す
@@ -303,7 +303,7 @@ fn extractTag(block: []const u8, tag: []const u8) ?[]const u8 {
     return block[value_start..end];
 }
 
-fn mapSfFieldType(sf_type: ?[]const u8) []const u8 {
+fn map_sf_field_type(sf_type: ?[]const u8) []const u8 {
     const t = sf_type orelse return "String";
     if (std.ascii.eqlIgnoreCase(t, "Text") or std.ascii.eqlIgnoreCase(t, "TextArea") or std.ascii.eqlIgnoreCase(t, "LongTextArea") or std.ascii.eqlIgnoreCase(t, "RichTextArea") or std.ascii.eqlIgnoreCase(t, "Email") or std.ascii.eqlIgnoreCase(t, "Phone") or std.ascii.eqlIgnoreCase(t, "Url") or std.ascii.eqlIgnoreCase(t, "Picklist") or std.ascii.eqlIgnoreCase(t, "MultiselectPicklist")) return "String";
     if (std.ascii.eqlIgnoreCase(t, "Number") or std.ascii.eqlIgnoreCase(t, "Currency") or std.ascii.eqlIgnoreCase(t, "Percent")) return "Decimal";
@@ -319,7 +319,7 @@ fn mapSfFieldType(sf_type: ?[]const u8) []const u8 {
 // ---------------------------------------------------------------------------
 
 test "Account has standard fields" {
-    const fields = getFields("Account");
+    const fields = get_fields("Account");
     try std.testing.expect(fields != null);
 
     var has_id = false;
@@ -336,7 +336,7 @@ test "Account has standard fields" {
 }
 
 test "Contact has LastName field" {
-    const fields = getFields("Contact");
+    const fields = get_fields("Contact");
     try std.testing.expect(fields != null);
     var has_last = false;
     for (fields.?) |f| {
@@ -346,22 +346,22 @@ test "Contact has LastName field" {
 }
 
 test "case-insensitive lookup" {
-    try std.testing.expect(getFields("account") != null);
-    try std.testing.expect(getFields("ACCOUNT") != null);
+    try std.testing.expect(get_fields("account") != null);
+    try std.testing.expect(get_fields("ACCOUNT") != null);
 }
 
 test "unknown type returns null" {
-    try std.testing.expect(getFields("NonExistent") == null);
+    try std.testing.expect(get_fields("NonExistent") == null);
 }
 
-test "isSObject" {
-    try std.testing.expect(isSObject("Account"));
-    try std.testing.expect(isSObject("Contact"));
-    try std.testing.expect(!isSObject("String"));
-    try std.testing.expect(!isSObject("Integer"));
+test "is_s_object" {
+    try std.testing.expect(is_s_object("Account"));
+    try std.testing.expect(is_s_object("Contact"));
+    try std.testing.expect(!is_s_object("String"));
+    try std.testing.expect(!is_s_object("Integer"));
 }
 
-test "parseObjectMetaXml extracts custom fields" {
+test "parse_object_meta_xml extracts custom fields" {
     const xml =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomObject>
@@ -375,7 +375,7 @@ test "parseObjectMetaXml extracts custom fields" {
         \\    </fields>
         \\</CustomObject>
     ;
-    const fields = try parseObjectMetaXml(xml, std.testing.allocator);
+    const fields = try parse_object_meta_xml(xml, std.testing.allocator);
     defer {
         for (fields) |f| std.testing.allocator.free(f.name);
         std.testing.allocator.free(fields);
@@ -388,7 +388,7 @@ test "parseObjectMetaXml extracts custom fields" {
     try std.testing.expectEqualStrings("Decimal", fields[1].type_name);
 }
 
-test "parseFieldMetaXml extracts single field" {
+test "parse_field_meta_xml extracts single field" {
     const xml =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -397,24 +397,24 @@ test "parseFieldMetaXml extracts single field" {
         \\  <length>18</length>
         \\</CustomField>
     ;
-    const field = try parseFieldMetaXml(xml, std.testing.allocator);
+    const field = try parse_field_meta_xml(xml, std.testing.allocator);
     try std.testing.expect(field != null);
     try std.testing.expectEqualStrings("ExternalId__c", field.?.name);
     try std.testing.expectEqualStrings("String", field.?.type_name);
     std.testing.allocator.free(field.?.name);
 }
 
-test "parseFieldMetaXml returns null for missing fullName" {
+test "parse_field_meta_xml returns null for missing fullName" {
     const xml =
         \\<CustomField>
         \\  <type>Text</type>
         \\</CustomField>
     ;
-    const field = try parseFieldMetaXml(xml, std.testing.allocator);
+    const field = try parse_field_meta_xml(xml, std.testing.allocator);
     try std.testing.expect(field == null);
 }
 
-test "CustomFieldRegistry getFields and isSObject" {
+test "CustomFieldRegistry get_fields and is_s_object" {
     var registry = CustomFieldRegistry.init(std.testing.allocator);
     defer registry.deinit();
 
@@ -423,8 +423,8 @@ test "CustomFieldRegistry getFields and isSObject" {
     fields[0] = .{ .name = "MyField__c", .type_name = "String" };
     try registry.objects.put(try alloc.dupe(u8, "MyCustom__c"), fields);
 
-    try std.testing.expect(registry.getFields("MyCustom__c") != null);
-    try std.testing.expectEqual(@as(usize, 1), registry.getFields("MyCustom__c").?.len);
-    try std.testing.expect(registry.isSObject("MyCustom__c"));
-    try std.testing.expect(!registry.isSObject("NonExistent__c"));
+    try std.testing.expect(registry.get_fields("MyCustom__c") != null);
+    try std.testing.expectEqual(@as(usize, 1), registry.get_fields("MyCustom__c").?.len);
+    try std.testing.expect(registry.is_s_object("MyCustom__c"));
+    try std.testing.expect(!registry.is_s_object("NonExistent__c"));
 }

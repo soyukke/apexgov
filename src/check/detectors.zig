@@ -7,13 +7,13 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 
-const indexOfCaseInsensitive = utils.indexOfCaseInsensitive;
-const containsAnyCaseInsensitive = utils.containsAnyCaseInsensitive;
-const startsWithIgnoreCase = utils.startsWithIgnoreCase;
-const extractLastIdentifier = utils.extractLastIdentifier;
-const equalsCanonicalType = utils.equalsCanonicalType;
+const index_of_case_insensitive = utils.index_of_case_insensitive;
+const contains_any_case_insensitive = utils.contains_any_case_insensitive;
+const starts_with_ignore_case = utils.starts_with_ignore_case;
+const extract_last_identifier = utils.extract_last_identifier;
+const equals_canonical_type = utils.equals_canonical_type;
 
-pub fn containsSoql(line: []const u8) bool {
+pub fn contains_soql(line: []const u8) bool {
     const needles = [_][]const u8{
         "[select ",
         "database.query(",
@@ -21,17 +21,17 @@ pub fn containsSoql(line: []const u8) bool {
         "database.countquery(",
         "database.getquerylocator(",
     };
-    return containsAnyCaseInsensitive(line, &needles);
+    return contains_any_case_insensitive(line, &needles);
 }
 
-pub fn containsDml(line: []const u8) bool {
+pub fn contains_dml(line: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, line, " \t");
-    if (startsWithIgnoreCase(trimmed, "insert ") or
-        startsWithIgnoreCase(trimmed, "update ") or
-        startsWithIgnoreCase(trimmed, "upsert ") or
-        startsWithIgnoreCase(trimmed, "delete ") or
-        startsWithIgnoreCase(trimmed, "undelete ") or
-        startsWithIgnoreCase(trimmed, "merge "))
+    if (starts_with_ignore_case(trimmed, "insert ") or
+        starts_with_ignore_case(trimmed, "update ") or
+        starts_with_ignore_case(trimmed, "upsert ") or
+        starts_with_ignore_case(trimmed, "delete ") or
+        starts_with_ignore_case(trimmed, "undelete ") or
+        starts_with_ignore_case(trimmed, "merge "))
     {
         return true;
     }
@@ -46,41 +46,41 @@ pub fn containsDml(line: []const u8) bool {
         "database.emptyrecyclebin(",
         "database.convertlead(",
     };
-    return containsAnyCaseInsensitive(line, &db_dml_calls);
+    return contains_any_case_insensitive(line, &db_dml_calls);
 }
 
-pub fn containsSosl(line: []const u8) bool {
+pub fn contains_sosl(line: []const u8) bool {
     const needles = [_][]const u8{
         "[find ",
         "search.query(",
     };
-    return containsAnyCaseInsensitive(line, &needles);
+    return contains_any_case_insensitive(line, &needles);
 }
 
-pub fn containsCallout(line: []const u8, type_env: *std.StringHashMap([]const u8)) bool {
+pub fn contains_callout(line: []const u8, type_env: *std.StringHashMap([]const u8)) bool {
     const direct_needles = [_][]const u8{
         "http.send(",
         "webservicecallout.invoke(",
         "continuation.addhttprequest(",
     };
-    if (containsAnyCaseInsensitive(line, &direct_needles)) return true;
+    if (contains_any_case_insensitive(line, &direct_needles)) return true;
 
-    const send_idx = indexOfCaseInsensitive(line, ".send(") orelse return false;
-    const receiver = extractLastIdentifier(std.mem.trimEnd(u8, line[0..send_idx], " \t")) orelse return false;
+    const send_idx = index_of_case_insensitive(line, ".send(") orelse return false;
+    const receiver = extract_last_identifier(std.mem.trimEnd(u8, line[0..send_idx], " \t")) orelse return false;
     const bound_type = type_env.get(receiver) orelse return false;
-    return equalsCanonicalType(bound_type, "Http");
+    return equals_canonical_type(bound_type, "Http");
 }
 
-pub fn containsMessaging(line: []const u8) bool {
+pub fn contains_messaging(line: []const u8) bool {
     const needles = [_][]const u8{
         "messaging.sendemail(",
         "messaging.sendemailmessage(",
         "messaging.sendnotification(",
     };
-    return containsAnyCaseInsensitive(line, &needles);
+    return contains_any_case_insensitive(line, &needles);
 }
 
-pub fn containsJsonWork(line: []const u8) bool {
+pub fn contains_json_work(line: []const u8) bool {
     const needles = [_][]const u8{
         "json.serialize(",
         "json.serializepretty(",
@@ -90,21 +90,21 @@ pub fn containsJsonWork(line: []const u8) bool {
         "json.createparser(",
         "json.creategenerator(",
     };
-    return containsAnyCaseInsensitive(line, &needles);
+    return contains_any_case_insensitive(line, &needles);
 }
 
-pub fn containsCloneWork(line: []const u8) bool {
+pub fn contains_clone_work(line: []const u8) bool {
     return std.mem.indexOf(u8, line, ".clone(") != null or
         std.mem.indexOf(u8, line, ".deepClone(") != null;
 }
 
-pub fn containsCollectionAlloc(line: []const u8) bool {
+pub fn contains_collection_alloc(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "new List<") != null or
         std.mem.indexOf(u8, line, "new Map<") != null or
         std.mem.indexOf(u8, line, "new Set<") != null;
 }
 
-pub fn containsStringAppend(line: []const u8) bool {
+pub fn contains_string_append(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "+=") != null and
         (std.mem.indexOf(u8, line, "\"") != null or
             std.mem.indexOf(u8, line, "String") != null);

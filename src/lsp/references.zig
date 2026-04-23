@@ -7,7 +7,7 @@ const position_mod = @import("position.zig");
 const DocumentStore = @import("document_store.zig").DocumentStore;
 const parser_types = @import("../apex_parser/types.zig");
 
-pub fn getReferences(
+pub fn get_references(
     result: *const binder_mod.BindResult,
     source: []const u8,
     uri: []const u8,
@@ -15,14 +15,14 @@ pub fn getReferences(
     include_declaration: bool,
     allocator: std.mem.Allocator,
 ) ![]lsp_types.Location {
-    const sym = binder_mod.symbolAtPosition(result, offset) orelse return &.{};
-    const refs = try binder_mod.filterReferences(result, sym.id, allocator);
+    const sym = binder_mod.symbol_at_position(result, offset) orelse return &.{};
+    const refs = try binder_mod.filter_references(result, sym.id, allocator);
     defer allocator.free(refs);
 
     var locations: std.ArrayList(lsp_types.Location) = .empty;
     for (refs) |ref| {
         if (!include_declaration and ref.is_definition) continue;
-        const pos = position_mod.offsetToPosition(source, ref.offset);
+        const pos = position_mod.offset_to_position(source, ref.offset);
         try locations.append(allocator, .{
             .uri = uri,
             .range = .{
@@ -36,7 +36,7 @@ pub fn getReferences(
 
 /// クロスファイル対応版。同一ファイル内の参照に加え、ワークスペース内の他ファイルでの
 /// 同名トップレベルシンボルの定義+参照も収集する。
-pub fn getReferencesCrossFile(
+pub fn get_references_cross_file(
     result: *const binder_mod.BindResult,
     tokens: []const parser_types.Token,
     source: []const u8,
@@ -47,14 +47,14 @@ pub fn getReferencesCrossFile(
     allocator: std.mem.Allocator,
 ) ![]lsp_types.Location {
     // 1. 同一ファイル内の参照を取得
-    const same_file = try getReferences(result, source, uri, offset, include_declaration, allocator);
+    const same_file = try get_references(result, source, uri, offset, include_declaration, allocator);
 
     // 2. カーソル位置のシンボル名を特定
-    const sym = binder_mod.symbolAtPosition(result, offset);
+    const sym = binder_mod.symbol_at_position(result, offset);
     const name = if (sym) |s|
         s.name
     else
-        position_mod.identifierAtOffset(tokens, offset) orelse return same_file;
+        position_mod.identifier_at_offset(tokens, offset) orelse return same_file;
 
     // 3. 他ファイルから同名シンボルの参照を収集
     var locations = std.ArrayList(lsp_types.Location).fromOwnedSlice(same_file);
@@ -67,12 +67,12 @@ pub fn getReferencesCrossFile(
         for (br.symbols) |other_sym| {
             if (!std.mem.eql(u8, other_sym.name, name)) continue;
             // 同名シンボルの参照を収集
-            const other_refs = try binder_mod.filterReferences(&br, other_sym.id, allocator);
+            const other_refs = try binder_mod.filter_references(&br, other_sym.id, allocator);
             defer allocator.free(other_refs);
 
             for (other_refs) |ref| {
                 if (!include_declaration and ref.is_definition) continue;
-                const pos = position_mod.offsetToPosition(doc.text, ref.offset);
+                const pos = position_mod.offset_to_position(doc.text, ref.offset);
                 try locations.append(allocator, .{
                     .uri = entry.key_ptr.*,
                     .range = .{
@@ -112,7 +112,7 @@ test "finds all uses of local variable" {
         break :blk null;
     } orelse unreachable;
 
-    const locs = try getReferences(&br, source, "file:///t.cls", sym.loc.offset, true, alloc);
+    const locs = try get_references(&br, source, "file:///t.cls", sym.loc.offset, true, alloc);
     try std.testing.expectEqual(@as(usize, 2), locs.len); // definition + usage
 }
 
@@ -134,7 +134,7 @@ test "include_declaration=false excludes definition" {
         break :blk null;
     } orelse unreachable;
 
-    const locs = try getReferences(&br, source, "file:///t.cls", sym.loc.offset, false, alloc);
+    const locs = try get_references(&br, source, "file:///t.cls", sym.loc.offset, false, alloc);
     try std.testing.expectEqual(@as(usize, 1), locs.len); // usage only
 }
 
@@ -148,8 +148,8 @@ test "cross-file: finds references in other files" {
     try store.open("file:///Helper.cls", 1, "public class Helper { public void doWork() {} }");
     try store.open("file:///Main.cls", 1, "public class Main { }");
 
-    _ = try store.ensureBound("file:///Helper.cls");
-    _ = try store.ensureBound("file:///Main.cls");
+    _ = try store.ensure_bound("file:///Helper.cls");
+    _ = try store.ensure_bound("file:///Main.cls");
 
     const helper_doc = store.get("file:///Helper.cls").?;
     const cached = helper_doc.parse_result.?;
@@ -158,7 +158,7 @@ test "cross-file: finds references in other files" {
     // Helper クラス名の位置
     const offset: u32 = @intCast(std.mem.indexOf(u8, helper_doc.text, "Helper").?);
 
-    const locs = try getReferencesCrossFile(
+    const locs = try get_references_cross_file(
         &br,
         cached.tokens,
         helper_doc.text,

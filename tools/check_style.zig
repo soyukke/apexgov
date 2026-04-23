@@ -301,6 +301,7 @@ fn checkNodes(
                 }
                 const name_token = fn_proto.name_token orelse continue;
                 const name = tree.tokenSlice(name_token);
+                if (isStdConventionalName(name)) continue;
                 if (!isSnakeCase(name)) {
                     try counter.bump(path, .function_not_snake_case);
                 }
@@ -324,12 +325,12 @@ fn checkNodes(
     if (!want_fn_len) return;
 
     const Ctx = struct {
-        fn lessThan(_: void, a: FnRange, b: FnRange) bool {
+        fn less_than(_: void, a: FnRange, b: FnRange) bool {
             if (a.line_opening != b.line_opening) return a.line_opening < b.line_opening;
             return a.line_closing < b.line_closing;
         }
     };
-    std.mem.sort(FnRange, functions.items, {}, Ctx.lessThan);
+    std.mem.sort(FnRange, functions.items, {}, Ctx.less_than);
 
     for (functions.items, 0..) |fn_range, i| {
         // Match TigerBeetle's behavior: skip outer function when nested fn exists inside.
@@ -342,6 +343,22 @@ fn checkNodes(
             try counter.bump(path, .function_too_long);
         }
     }
+}
+
+/// Names reserved by Zig std library conventions. Defining these as snake_case
+/// would break the stdlib's duck-typed dispatch (e.g. std.json.Stringify calls
+/// `jsonStringify`, std.json.parse calls `jsonParse`).
+const std_conventional_names = [_][]const u8{
+    "jsonStringify",
+    "jsonParse",
+    "jsonParseFromValue",
+};
+
+fn isStdConventionalName(name: []const u8) bool {
+    for (std_conventional_names) |conv| {
+        if (mem.eql(u8, name, conv)) return true;
+    }
+    return false;
 }
 
 fn isSnakeCase(name: []const u8) bool {
@@ -573,13 +590,13 @@ fn writeBaseline(counter: *const Counter, io: Io, path: []const u8) !void {
     }
 
     const Ctx = struct {
-        fn lessThan(_: void, a: Entry, b: Entry) bool {
+        fn less_than(_: void, a: Entry, b: Entry) bool {
             const cmp = mem.order(u8, a.path, b.path);
             if (cmp != .eq) return cmp == .lt;
             return @intFromEnum(a.rule) < @intFromEnum(b.rule);
         }
     };
-    std.mem.sort(Entry, entries.items, {}, Ctx.lessThan);
+    std.mem.sort(Entry, entries.items, {}, Ctx.less_than);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(allocator);
@@ -828,13 +845,13 @@ pub fn main(init: std.process.Init) !void {
 
             try printLine(io, stdout, "style: {d} new violation(s) above baseline:\n", .{regressions.items.len});
             const Ctx = struct {
-                fn lessThan(_: void, a: Regression, b: Regression) bool {
+                fn less_than(_: void, a: Regression, b: Regression) bool {
                     const cmp = mem.order(u8, a.path, b.path);
                     if (cmp != .eq) return cmp == .lt;
                     return @intFromEnum(a.rule) < @intFromEnum(b.rule);
                 }
             };
-            std.mem.sort(Regression, regressions.items, {}, Ctx.lessThan);
+            std.mem.sort(Regression, regressions.items, {}, Ctx.less_than);
             for (regressions.items) |r| {
                 try printLine(
                     io,

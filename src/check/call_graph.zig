@@ -27,36 +27,36 @@ const Bound = types.Bound;
 const ApexFile = types.ApexFile;
 const MethodIndexEntry = types.MethodIndexEntry;
 const MethodNameIndex = types.MethodNameIndex;
-const isIdentChar = utils.isIdentChar;
-const isIdentStart = utils.isIdentStart;
-const satAdd = utils.satAdd;
-const satAddU16 = utils.satAddU16;
-const equalsCanonicalType = utils.equalsCanonicalType;
-const extractTypeFromNewExpression = utils.extractTypeFromNewExpression;
-const parseMethodStart = parser.parseMethodStart;
-const buildParamTypeSignature = parser.buildParamTypeSignature;
-const countSignatureParams = parser.countSignatureParams;
-const registerTypeDecl = parser.registerTypeDecl;
-const parseTypeDecl = parser.parseTypeDecl;
-const maybeEnterOwnerScope = scope_mod.maybeEnterOwnerScope;
-const popClosedOwners = scope_mod.popClosedOwners;
-const popClosedScopes = scope_mod.popClosedScopes;
-const updateBraceDepth = utils.updateBraceDepth;
-const registerMethodParamTypes = type_env_mod.registerMethodParamTypes;
-const applyLocalTypeUpdates = type_env_mod.applyLocalTypeUpdates;
-const applyBoundUpdates = bounds_mod.applyBoundUpdates;
-const inferLoopInfoAtLine = bounds_mod.inferLoopInfoAtLine;
-const effectiveLoopUpperBound = bounds_mod.effectiveLoopUpperBound;
-const collectDoWhileStartConditions = preprocessor.collectDoWhileStartConditions;
-const collectDoWhileStartConditionsFromStripped = preprocessor.collectDoWhileStartConditionsFromStripped;
-const isDoLoopStart = preprocessor.isDoLoopStart;
+const is_ident_char = utils.is_ident_char;
+const is_ident_start = utils.is_ident_start;
+const sat_add = utils.sat_add;
+const sat_add_u16 = utils.sat_add_u16;
+const equals_canonical_type = utils.equals_canonical_type;
+const extract_type_from_new_expression = utils.extract_type_from_new_expression;
+const parse_method_start = parser.parse_method_start;
+const build_param_type_signature = parser.build_param_type_signature;
+const count_signature_params = parser.count_signature_params;
+const register_type_decl = parser.register_type_decl;
+const parse_type_decl = parser.parse_type_decl;
+const maybe_enter_owner_scope = scope_mod.maybe_enter_owner_scope;
+const pop_closed_owners = scope_mod.pop_closed_owners;
+const pop_closed_scopes = scope_mod.pop_closed_scopes;
+const update_brace_depth = utils.update_brace_depth;
+const register_method_param_types = type_env_mod.register_method_param_types;
+const apply_local_type_updates = type_env_mod.apply_local_type_updates;
+const apply_bound_updates = bounds_mod.apply_bound_updates;
+const infer_loop_info_at_line = bounds_mod.infer_loop_info_at_line;
+const effective_loop_upper_bound = bounds_mod.effective_loop_upper_bound;
+const collect_do_while_start_conditions = preprocessor.collect_do_while_start_conditions;
+const collect_do_while_start_conditions_from_stripped = preprocessor.collect_do_while_start_conditions_from_stripped;
+const is_do_loop_start = preprocessor.is_do_loop_start;
 
 pub const BuildResult = struct {
     summaries: std.StringHashMap(MethodSummary),
     name_index: MethodNameIndex,
 };
 
-pub fn buildMethodSummaries(
+pub fn build_method_summaries(
     arena_allocator: std.mem.Allocator,
     files: []const ApexFile,
     type_relations: *const TypeRelations,
@@ -64,18 +64,18 @@ pub fn buildMethodSummaries(
     var summaries = std.StringHashMap(MethodSummary).init(arena_allocator);
 
     for (files) |file| {
-        try collectMethodNames(arena_allocator, file.stripped_content, &summaries);
+        try collect_method_names(arena_allocator, file.stripped_content, &summaries);
     }
 
     // Phase 3a 完了後にインデックス構築（Phase 3b で使用）
-    var name_index = try buildMethodNameIndex(arena_allocator, &summaries);
+    var name_index = try build_method_name_index(arena_allocator, &summaries);
 
     for (files) |file| {
-        try collectMethodDirectMetricsAndCalls(arena_allocator, file.stripped_content, &summaries, &name_index, type_relations);
+        try collect_method_direct_metrics_and_calls(arena_allocator, file.stripped_content, &summaries, &name_index, type_relations);
     }
 
     // Phase 3b で新たに追加されたサマリーがあればインデックスを再構築
-    name_index = try buildMethodNameIndex(arena_allocator, &summaries);
+    name_index = try build_method_name_index(arena_allocator, &summaries);
 
     var keys: std.ArrayList([]const u8) = .empty;
     var it = summaries.iterator();
@@ -83,13 +83,13 @@ pub fn buildMethodSummaries(
         try keys.append(arena_allocator, entry.key_ptr.*);
     }
     for (keys.items) |name| {
-        _ = resolveMethodTotal(&summaries, name);
+        _ = resolve_method_total(&summaries, name);
     }
 
     return .{ .summaries = summaries, .name_index = name_index };
 }
 
-fn buildMethodNameIndex(
+fn build_method_name_index(
     arena_allocator: std.mem.Allocator,
     summaries: *std.StringHashMap(MethodSummary),
 ) !MethodNameIndex {
@@ -109,7 +109,7 @@ fn buildMethodNameIndex(
     return index;
 }
 
-pub fn collectTypeRelations(
+pub fn collect_type_relations(
     arena_allocator: std.mem.Allocator,
     files: []const ApexFile,
 ) !TypeRelations {
@@ -119,13 +119,13 @@ pub fn collectTypeRelations(
     };
 
     for (files) |file| {
-        try collectTypeRelationsFromContent(arena_allocator, file.stripped_content, &relations);
+        try collect_type_relations_from_content(arena_allocator, file.stripped_content, &relations);
     }
 
     return relations;
 }
 
-fn collectTypeRelationsFromContent(
+fn collect_type_relations_from_content(
     arena_allocator: std.mem.Allocator,
     stripped_content: []const u8,
     relations: *TypeRelations,
@@ -134,12 +134,12 @@ fn collectTypeRelationsFromContent(
     while (lines.next()) |raw| {
         const trimmed = std.mem.trim(u8, raw, " \t\r");
         if (trimmed.len == 0) continue;
-        const decl = parseTypeDecl(trimmed) orelse continue;
-        try registerTypeDecl(arena_allocator, relations, decl);
+        const decl = parse_type_decl(trimmed) orelse continue;
+        try register_type_decl(arena_allocator, relations, decl);
     }
 }
 
-fn collectMethodNames(
+fn collect_method_names(
     arena_allocator: std.mem.Allocator,
     stripped_content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
@@ -152,24 +152,24 @@ fn collectMethodNames(
     while (lines.next()) |raw| {
         const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
-        popClosedOwners(&owner_scopes, brace_depth);
+        pop_closed_owners(&owner_scopes, brace_depth);
 
         if (trimmed.len > 0) {
-            try maybeEnterOwnerScope(arena_allocator, &owner_scopes, brace_depth, trimmed);
+            try maybe_enter_owner_scope(arena_allocator, &owner_scopes, brace_depth, trimmed);
             if (owner_scopes.items.len > 0) {
                 const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
-                if (parseMethodStart(trimmed)) |decl| {
-                    _ = try ensureMethodSummary(arena_allocator, summaries, owner, decl.name, decl.params_raw);
+                if (parse_method_start(trimmed)) |decl| {
+                    _ = try ensure_method_summary(arena_allocator, summaries, owner, decl.name, decl.params_raw);
                 }
             }
         }
 
-        brace_depth = updateBraceDepth(brace_depth, code_line);
-        popClosedOwners(&owner_scopes, brace_depth);
+        brace_depth = update_brace_depth(brace_depth, code_line);
+        pop_closed_owners(&owner_scopes, brace_depth);
     }
 }
 
-fn collectMethodDirectMetricsAndCalls(
+fn collect_method_direct_metrics_and_calls(
     arena_allocator: std.mem.Allocator,
     stripped_content: []const u8,
     summaries: *std.StringHashMap(MethodSummary),
@@ -186,7 +186,7 @@ fn collectMethodDirectMetricsAndCalls(
 
     var method_bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
-    var do_while_conditions = try collectDoWhileStartConditionsFromStripped(arena_allocator, stripped_content);
+    var do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content);
 
     var brace_depth: i32 = 0;
     var current_method: ?MethodScope = null;
@@ -197,16 +197,16 @@ fn collectMethodDirectMetricsAndCalls(
         line_no += 1;
         const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
-        popClosedOwners(&owner_scopes, brace_depth);
+        pop_closed_owners(&owner_scopes, brace_depth);
 
         var started_method = false;
         if (trimmed.len > 0) {
-            try maybeEnterOwnerScope(arena_allocator, &owner_scopes, brace_depth, trimmed);
+            try maybe_enter_owner_scope(arena_allocator, &owner_scopes, brace_depth, trimmed);
             const owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
 
             if (current_method == null and owner != null) {
-                if (parseMethodStart(trimmed)) |decl| {
-                    const summary = try ensureMethodSummary(
+                if (parse_method_start(trimmed)) |decl| {
+                    const summary = try ensure_method_summary(
                         arena_allocator,
                         summaries,
                         owner.?,
@@ -216,7 +216,7 @@ fn collectMethodDirectMetricsAndCalls(
                     method_loop_scopes.clearRetainingCapacity();
                     method_bounds = std.StringHashMap(Bound).init(arena_allocator);
                     type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                    try registerMethodParamTypes(arena_allocator, &type_env, decl.params_raw);
+                    try register_method_param_types(arena_allocator, &type_env, decl.params_raw);
                     current_method = .{
                         .owner = owner.?,
                         .name = summary.name,
@@ -232,7 +232,7 @@ fn collectMethodDirectMetricsAndCalls(
 
             if (!started_method) {
                 if (current_method) |scope| {
-                    popClosedScopes(&method_loop_scopes, brace_depth);
+                    pop_closed_scopes(&method_loop_scopes, brace_depth);
                     if (pending_method_loop_scope) |pending| {
                         if (trimmed[0] == '{' and brace_depth == pending.expected_depth) {
                             try method_loop_scopes.append(arena_allocator, .{
@@ -242,24 +242,24 @@ fn collectMethodDirectMetricsAndCalls(
                         }
                         pending_method_loop_scope = null;
                     }
-                    try applyBoundUpdates(arena_allocator, &method_bounds, trimmed);
-                    try applyLocalTypeUpdates(arena_allocator, &type_env, trimmed);
-                    const local_loop_info = inferLoopInfoAtLine(
+                    try apply_bound_updates(arena_allocator, &method_bounds, trimmed);
+                    try apply_local_type_updates(arena_allocator, &type_env, trimmed);
+                    const local_loop_info = infer_loop_info_at_line(
                         trimmed,
                         &method_bounds,
                         &do_while_conditions,
                         line_no,
                     );
-                    const local_loop_multiplier = effectiveLoopUpperBound(method_loop_scopes.items, local_loop_info) orelse 1;
+                    const local_loop_multiplier = effective_loop_upper_bound(method_loop_scopes.items, local_loop_info) orelse 1;
 
-                    const summary = findMethodSummaryByOwnerNameSignature(
+                    const summary = find_method_summary_by_owner_name_signature(
                         summaries,
                         scope.owner,
                         scope.name,
                         scope.param_signature,
                     ) orelse unreachable;
-                    applyDirectLineMetrics(&summary.direct, trimmed, local_loop_multiplier, &type_env);
-                    try recordCalledMethods(
+                    apply_direct_line_metrics(&summary.direct, trimmed, local_loop_multiplier, &type_env);
+                    try record_called_methods(
                         arena_allocator,
                         &summary.calls,
                         name_index,
@@ -276,7 +276,7 @@ fn collectMethodDirectMetricsAndCalls(
                             .end_depth = brace_depth + 1,
                             .max_iterations = local_loop_info.?.max_iterations,
                         });
-                    } else if (local_loop_info != null and isDoLoopStart(trimmed)) {
+                    } else if (local_loop_info != null and is_do_loop_start(trimmed)) {
                         pending_method_loop_scope = .{
                             .expected_depth = brace_depth,
                             .max_iterations = local_loop_info.?.max_iterations,
@@ -286,12 +286,12 @@ fn collectMethodDirectMetricsAndCalls(
             }
         }
 
-        brace_depth = updateBraceDepth(brace_depth, code_line);
+        brace_depth = update_brace_depth(brace_depth, code_line);
         if (pending_method_loop_scope) |pending| {
             if (brace_depth < pending.expected_depth) pending_method_loop_scope = null;
         }
         if (current_method) |*scope| {
-            popClosedScopes(&method_loop_scopes, brace_depth);
+            pop_closed_scopes(&method_loop_scopes, brace_depth);
             if (!scope.entered_body and brace_depth >= scope.end_depth) {
                 scope.entered_body = true;
             }
@@ -301,25 +301,25 @@ fn collectMethodDirectMetricsAndCalls(
                 pending_method_loop_scope = null;
             }
         }
-        popClosedOwners(&owner_scopes, brace_depth);
+        pop_closed_owners(&owner_scopes, brace_depth);
     }
 }
 
-pub fn ensureMethodSummary(
+pub fn ensure_method_summary(
     arena_allocator: std.mem.Allocator,
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
     params_raw: []const u8,
 ) !*MethodSummary {
-    const param_signature = try buildParamTypeSignature(arena_allocator, params_raw);
-    const param_count = countSignatureParams(param_signature);
-    if (findMethodSummaryByOwnerNameSignature(summaries, owner, name, param_signature)) |existing| return existing;
+    const param_signature = try build_param_type_signature(arena_allocator, params_raw);
+    const param_count = count_signature_params(param_signature);
+    if (find_method_summary_by_owner_name_signature(summaries, owner, name, param_signature)) |existing| return existing;
 
     const owner_copy = try arena_allocator.dupe(u8, owner);
     const name_copy = try arena_allocator.dupe(u8, name);
     const signature_copy = try arena_allocator.dupe(u8, param_signature);
-    const key = try formatMethodKey(arena_allocator, owner_copy, name_copy, signature_copy);
+    const key = try format_method_key(arena_allocator, owner_copy, name_copy, signature_copy);
     try summaries.put(key, .{
         .owner = owner_copy,
         .name = name_copy,
@@ -329,7 +329,7 @@ pub fn ensureMethodSummary(
     return summaries.getPtr(key).?;
 }
 
-fn findMethodSummaryByOwnerNameSignature(
+fn find_method_summary_by_owner_name_signature(
     summaries: *std.StringHashMap(MethodSummary),
     owner: []const u8,
     name: []const u8,
@@ -340,7 +340,7 @@ fn findMethodSummaryByOwnerNameSignature(
     return summaries.getPtr(key);
 }
 
-fn formatMethodKey(
+fn format_method_key(
     arena_allocator: std.mem.Allocator,
     owner: []const u8,
     name: []const u8,
@@ -349,7 +349,7 @@ fn formatMethodKey(
     return std.fmt.allocPrint(arena_allocator, "{s}.{s}/{s}", .{ owner, name, param_signature });
 }
 
-fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
+fn resolve_method_total(summaries: *std.StringHashMap(MethodSummary), name: []const u8) MethodMetrics {
     const summary = summaries.getPtr(name) orelse return .{};
     switch (summary.state) {
         .resolved => return summary.total,
@@ -360,33 +360,33 @@ fn resolveMethodTotal(summaries: *std.StringHashMap(MethodSummary), name: []cons
     summary.state = .resolving;
     var total = summary.direct;
     for (summary.calls.items) |call| {
-        const callee_total = resolveMethodTotal(summaries, call.callee_key);
-        total.addScaled(callee_total, call.multiplier);
+        const callee_total = resolve_method_total(summaries, call.callee_key);
+        total.add_scaled(callee_total, call.multiplier);
     }
     summary.total = total;
     summary.state = .resolved;
     return total;
 }
 
-fn applyDirectLineMetrics(
+fn apply_direct_line_metrics(
     metrics: *MethodMetrics,
     line: []const u8,
     multiplier: u64,
     type_env: *std.StringHashMap([]const u8),
 ) void {
     const weight = if (multiplier == 0) @as(u64, 1) else multiplier;
-    if (detectors.containsSoql(line)) metrics.soql = satAdd(metrics.soql, weight);
-    if (detectors.containsDml(line)) metrics.dml = satAdd(metrics.dml, weight);
-    if (detectors.containsSosl(line)) metrics.sosl = satAdd(metrics.sosl, weight);
-    if (detectors.containsCallout(line, type_env)) metrics.callout = satAdd(metrics.callout, weight);
-    if (detectors.containsMessaging(line)) metrics.messaging = satAdd(metrics.messaging, weight);
-    if (detectors.containsJsonWork(line)) metrics.json = satAdd(metrics.json, weight);
-    if (detectors.containsCloneWork(line)) metrics.clone = satAdd(metrics.clone, weight);
-    if (detectors.containsCollectionAlloc(line)) metrics.collection_alloc = satAdd(metrics.collection_alloc, weight);
-    if (detectors.containsStringAppend(line)) metrics.string_append = satAdd(metrics.string_append, weight);
+    if (detectors.contains_soql(line)) metrics.soql = sat_add(metrics.soql, weight);
+    if (detectors.contains_dml(line)) metrics.dml = sat_add(metrics.dml, weight);
+    if (detectors.contains_sosl(line)) metrics.sosl = sat_add(metrics.sosl, weight);
+    if (detectors.contains_callout(line, type_env)) metrics.callout = sat_add(metrics.callout, weight);
+    if (detectors.contains_messaging(line)) metrics.messaging = sat_add(metrics.messaging, weight);
+    if (detectors.contains_json_work(line)) metrics.json = sat_add(metrics.json, weight);
+    if (detectors.contains_clone_work(line)) metrics.clone = sat_add(metrics.clone, weight);
+    if (detectors.contains_collection_alloc(line)) metrics.collection_alloc = sat_add(metrics.collection_alloc, weight);
+    if (detectors.contains_string_append(line)) metrics.string_append = sat_add(metrics.string_append, weight);
 }
 
-fn recordCalledMethods(
+fn record_called_methods(
     arena_allocator: std.mem.Allocator,
     calls: *std.ArrayListUnmanaged(MethodCall),
     name_index: *const MethodNameIndex,
@@ -401,13 +401,13 @@ fn recordCalledMethods(
     if (std.mem.indexOfScalar(u8, line, '(') == null) return;
 
     // 行内の識別子候補を抽出し、逆引きインデックスで候補を絞る
-    var candidates = extractCallCandidates(line);
+    var candidates = extract_call_candidates(line);
     for (candidates.slice()) |candidate_name| {
         const entries = name_index.get(candidate_name) orelse continue;
         for (entries.items) |ie| {
             const callee = ie.summary.*;
             if (std.mem.eql(u8, callee.owner, caller_owner) and std.mem.eql(u8, callee.name, caller_name)) continue;
-            if (!lineCallsMethod(
+            if (!line_calls_method(
                 line,
                 caller_owner,
                 callee.owner,
@@ -417,12 +417,12 @@ fn recordCalledMethods(
                 type_env,
                 type_relations,
             )) continue;
-            try appendOrAccumulateCall(arena_allocator, calls, ie.key, multiplier);
+            try append_or_accumulate_call(arena_allocator, calls, ie.key, multiplier);
         }
     }
 }
 
-fn appendOrAccumulateCall(
+fn append_or_accumulate_call(
     arena_allocator: std.mem.Allocator,
     calls: *std.ArrayListUnmanaged(MethodCall),
     callee_key: []const u8,
@@ -431,7 +431,7 @@ fn appendOrAccumulateCall(
     const weight = if (multiplier == 0) @as(u64, 1) else multiplier;
     for (calls.items) |*existing| {
         if (!std.mem.eql(u8, existing.callee_key, callee_key)) continue;
-        existing.multiplier = satAdd(existing.multiplier, weight);
+        existing.multiplier = sat_add(existing.multiplier, weight);
         return;
     }
     try calls.append(arena_allocator, .{
@@ -440,7 +440,7 @@ fn appendOrAccumulateCall(
     });
 }
 
-pub fn inferCalledMethodMetrics(
+pub fn infer_called_method_metrics(
     line: []const u8,
     current_owner: ?[]const u8,
     type_env: *std.StringHashMap([]const u8),
@@ -451,12 +451,12 @@ pub fn inferCalledMethodMetrics(
     // 早期リターン: '(' がなければメソッド呼び出しは不可能
     if (std.mem.indexOfScalar(u8, line, '(') == null) return metrics;
 
-    var candidates = extractCallCandidates(line);
+    var candidates = extract_call_candidates(line);
     for (candidates.slice()) |candidate_name| {
         const entries = name_index.get(candidate_name) orelse continue;
         for (entries.items) |ie| {
             const callee = ie.summary.*;
-            if (!lineCallsMethod(
+            if (!line_calls_method(
                 line,
                 current_owner orelse "",
                 callee.owner,
@@ -496,18 +496,18 @@ const CallCandidates = struct {
 
 /// 行内の `ident(` パターンからメソッド呼び出し候補名を抽出する。
 /// ドット付きの `receiver.method(` の場合は method 部分を返す。
-fn extractCallCandidates(line: []const u8) CallCandidates {
+fn extract_call_candidates(line: []const u8) CallCandidates {
     var result = CallCandidates{};
     var i: usize = 0;
     while (i < line.len) {
         // 識別子の開始を探す
-        if (!isIdentStart(line[i])) {
+        if (!is_ident_start(line[i])) {
             i += 1;
             continue;
         }
         const start = i;
         i += 1;
-        while (i < line.len and isIdentChar(line[i])) : (i += 1) {}
+        while (i < line.len and is_ident_char(line[i])) : (i += 1) {}
         const ident = line[start..i];
 
         // 空白をスキップ
@@ -526,7 +526,7 @@ fn extractCallCandidates(line: []const u8) CallCandidates {
     return result;
 }
 
-fn lineCallsMethod(
+fn line_calls_method(
     line: []const u8,
     caller_owner: []const u8,
     callee_owner: []const u8,
@@ -536,7 +536,7 @@ fn lineCallsMethod(
     type_env: *std.StringHashMap([]const u8),
     type_relations: *const TypeRelations,
 ) bool {
-    if (containsQualifiedMethodCall(
+    if (contains_qualified_method_call(
         line,
         callee_owner,
         callee_name,
@@ -545,7 +545,7 @@ fn lineCallsMethod(
         type_env,
         type_relations,
     )) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsBareMethodCall(
+    if (std.mem.eql(u8, caller_owner, callee_owner) and contains_bare_method_call(
         line,
         callee_name,
         callee_param_count,
@@ -553,7 +553,7 @@ fn lineCallsMethod(
         type_env,
         type_relations,
     )) return true;
-    if (std.mem.eql(u8, caller_owner, callee_owner) and containsQualifiedMethodCall(
+    if (std.mem.eql(u8, caller_owner, callee_owner) and contains_qualified_method_call(
         line,
         "this",
         callee_name,
@@ -562,7 +562,7 @@ fn lineCallsMethod(
         type_env,
         type_relations,
     )) return true;
-    if (containsTypedReceiverMethodCall(
+    if (contains_typed_receiver_method_call(
         line,
         callee_owner,
         callee_name,
@@ -574,7 +574,7 @@ fn lineCallsMethod(
     return false;
 }
 
-fn containsBareMethodCall(
+fn contains_bare_method_call(
     line: []const u8,
     method_name: []const u8,
     expected_param_count: u16,
@@ -586,16 +586,16 @@ fn containsBareMethodCall(
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, line, start, method_name)) |idx| {
-        const before_ok = idx == 0 or (!isIdentChar(line[idx - 1]) and line[idx - 1] != '.');
+        const before_ok = idx == 0 or (!is_ident_char(line[idx - 1]) and line[idx - 1] != '.');
         var end = idx + method_name.len;
         while (end < line.len and (line[end] == ' ' or line[end] == '\t')) : (end += 1) {}
         const after_ok = end < line.len and line[end] == '(';
         if (before_ok and after_ok) {
-            const arg_count = countCallArguments(line, end) orelse {
+            const arg_count = count_call_arguments(line, end) orelse {
                 start = idx + method_name.len;
                 continue;
             };
-            if (arg_count == expected_param_count and argumentsMatchParamSignature(
+            if (arg_count == expected_param_count and arguments_match_param_signature(
                 line,
                 end,
                 expected_param_signature,
@@ -608,7 +608,7 @@ fn containsBareMethodCall(
     return false;
 }
 
-fn containsQualifiedMethodCall(
+fn contains_qualified_method_call(
     line: []const u8,
     owner: []const u8,
     method_name: []const u8,
@@ -621,7 +621,7 @@ fn containsQualifiedMethodCall(
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, line, start, owner)) |owner_idx| {
-        const owner_before_ok = owner_idx == 0 or !isIdentChar(line[owner_idx - 1]);
+        const owner_before_ok = owner_idx == 0 or !is_ident_char(line[owner_idx - 1]);
         if (!owner_before_ok) {
             start = owner_idx + owner.len;
             continue;
@@ -648,11 +648,11 @@ fn containsQualifiedMethodCall(
         var open_idx = method_idx + method_name.len;
         while (open_idx < line.len and (line[open_idx] == ' ' or line[open_idx] == '\t')) : (open_idx += 1) {}
         if (open_idx < line.len and line[open_idx] == '(') {
-            const arg_count = countCallArguments(line, open_idx) orelse {
+            const arg_count = count_call_arguments(line, open_idx) orelse {
                 start = owner_idx + owner.len;
                 continue;
             };
-            if (arg_count == expected_param_count and argumentsMatchParamSignature(
+            if (arg_count == expected_param_count and arguments_match_param_signature(
                 line,
                 open_idx,
                 expected_param_signature,
@@ -667,7 +667,7 @@ fn containsQualifiedMethodCall(
     return false;
 }
 
-fn containsTypedReceiverMethodCall(
+fn contains_typed_receiver_method_call(
     line: []const u8,
     callee_owner: []const u8,
     method_name: []const u8,
@@ -680,7 +680,7 @@ fn containsTypedReceiverMethodCall(
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, line, start, method_name)) |method_idx| {
-        const method_before_ok = method_idx == 0 or !isIdentChar(line[method_idx - 1]);
+        const method_before_ok = method_idx == 0 or !is_ident_char(line[method_idx - 1]);
         if (!method_before_ok) {
             start = method_idx + method_name.len;
             continue;
@@ -696,7 +696,7 @@ fn containsTypedReceiverMethodCall(
         var receiver_end = dot_idx - 1;
         while (receiver_end > 0 and (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1) {}
         var receiver_start = receiver_end;
-        while (receiver_start > 0 and isIdentChar(line[receiver_start - 1])) : (receiver_start -= 1) {}
+        while (receiver_start > 0 and is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1) {}
         if (receiver_start == receiver_end) {
             start = method_idx + method_name.len;
             continue;
@@ -707,7 +707,7 @@ fn containsTypedReceiverMethodCall(
             start = method_idx + method_name.len;
             continue;
         };
-        if (!boundTypeMatchesOwner(bound_type, callee_owner, type_relations)) {
+        if (!bound_type_matches_owner(bound_type, callee_owner, type_relations)) {
             start = method_idx + method_name.len;
             continue;
         }
@@ -719,11 +719,11 @@ fn containsTypedReceiverMethodCall(
             continue;
         }
 
-        const arg_count = countCallArguments(line, open_idx) orelse {
+        const arg_count = count_call_arguments(line, open_idx) orelse {
             start = method_idx + method_name.len;
             continue;
         };
-        if (arg_count == expected_param_count and argumentsMatchParamSignature(
+        if (arg_count == expected_param_count and arguments_match_param_signature(
             line,
             open_idx,
             expected_param_signature,
@@ -739,16 +739,16 @@ fn containsTypedReceiverMethodCall(
     return false;
 }
 
-fn boundTypeMatchesOwner(
+fn bound_type_matches_owner(
     bound_type_raw: []const u8,
     owner: []const u8,
     type_relations: *const TypeRelations,
 ) bool {
-    const primary = extractPrimaryTypeName(bound_type_raw) orelse return false;
-    return typeSatisfiesConstraint(owner, primary, type_relations);
+    const primary = extract_primary_type_name(bound_type_raw) orelse return false;
+    return type_satisfies_constraint(owner, primary, type_relations);
 }
 
-fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
+fn extract_primary_type_name(type_raw: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, type_raw, " \t");
     if (trimmed.len == 0) return null;
 
@@ -756,7 +756,7 @@ fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
     while (end < trimmed.len) : (end += 1) {
         const c = trimmed[end];
         if (c == '<' or c == '[') break;
-        if (!(isIdentChar(c) or c == '.')) break;
+        if (!(is_ident_char(c) or c == '.')) break;
     }
     if (end == 0) return null;
 
@@ -768,15 +768,15 @@ fn extractPrimaryTypeName(type_raw: []const u8) ?[]const u8 {
     return qualified;
 }
 
-fn typeSatisfiesConstraint(
+fn type_satisfies_constraint(
     candidate_type: []const u8,
     expected_type: []const u8,
     type_relations: *const TypeRelations,
 ) bool {
-    return typeSatisfiesConstraintDepth(candidate_type, expected_type, type_relations, 0);
+    return type_satisfies_constraint_depth(candidate_type, expected_type, type_relations, 0);
 }
 
-fn typeSatisfiesConstraintDepth(
+fn type_satisfies_constraint_depth(
     candidate_type: []const u8,
     expected_type: []const u8,
     type_relations: *const TypeRelations,
@@ -786,14 +786,14 @@ fn typeSatisfiesConstraintDepth(
     if (std.mem.eql(u8, candidate_type, expected_type)) return true;
 
     if (type_relations.extends_by_type.get(candidate_type)) |parent| {
-        if (typeSatisfiesConstraintDepth(parent, expected_type, type_relations, depth + 1)) {
+        if (type_satisfies_constraint_depth(parent, expected_type, type_relations, depth + 1)) {
             return true;
         }
     }
 
     if (type_relations.interfaces_by_type.get(candidate_type)) |interfaces| {
         for (interfaces.items) |iface| {
-            if (typeSatisfiesConstraintDepth(iface, expected_type, type_relations, depth + 1)) {
+            if (type_satisfies_constraint_depth(iface, expected_type, type_relations, depth + 1)) {
                 return true;
             }
         }
@@ -802,7 +802,7 @@ fn typeSatisfiesConstraintDepth(
     return false;
 }
 
-fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
+fn count_call_arguments(line: []const u8, open_paren_idx: usize) ?u16 {
     if (open_paren_idx >= line.len or line[open_paren_idx] != '(') return null;
 
     var count: u16 = 0;
@@ -842,7 +842,7 @@ fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
             },
             ')' => {
                 if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-                    if (has_token) count = satAddU16(count, 1);
+                    if (has_token) count = sat_add_u16(count, 1);
                     return count;
                 }
                 if (paren_depth > 0) paren_depth -= 1;
@@ -874,7 +874,7 @@ fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
             ',' => {
                 if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     if (has_token) {
-                        count = satAddU16(count, 1);
+                        count = sat_add_u16(count, 1);
                         has_token = false;
                     }
                 } else {
@@ -892,7 +892,7 @@ fn countCallArguments(line: []const u8, open_paren_idx: usize) ?u16 {
     return null;
 }
 
-fn argumentsMatchParamSignature(
+fn arguments_match_param_signature(
     line: []const u8,
     open_paren_idx: usize,
     expected_signature: []const u8,
@@ -939,7 +939,7 @@ fn argumentsMatchParamSignature(
                         return expected_signature.len == 0 or (expected_iter.next() == null and expected_signature.len == 0);
                     }
                     const expected = expected_iter.next() orelse return false;
-                    if (!argumentExprMatchesType(segment, expected, type_env, type_relations)) return false;
+                    if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
                     return expected_iter.next() == null;
                 }
                 if (paren_depth > 0) paren_depth -= 1;
@@ -966,7 +966,7 @@ fn argumentsMatchParamSignature(
                 if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     const segment = std.mem.trim(u8, line[arg_start..i], " \t");
                     const expected = expected_iter.next() orelse return false;
-                    if (!argumentExprMatchesType(segment, expected, type_env, type_relations)) return false;
+                    if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;
                     arg_start = i + 1;
                 }
             },
@@ -977,7 +977,7 @@ fn argumentsMatchParamSignature(
     return false;
 }
 
-fn argumentExprMatchesType(
+fn argument_expr_matches_type(
     expr_raw: []const u8,
     expected_type: []const u8,
     type_env: *std.StringHashMap([]const u8),
@@ -993,7 +993,7 @@ fn argumentExprMatchesType(
     if ((expr[0] == '\'' and expr[expr.len - 1] == '\'') or (expr[0] == '"' and expr[expr.len - 1] == '"')) {
         return std.mem.eql(u8, expected_type, "String");
     }
-    if (looksNumericLiteral(expr)) {
+    if (looks_numeric_literal(expr)) {
         if (std.mem.indexOfScalar(u8, expr, '.')) |_| {
             return std.mem.eql(u8, expected_type, "Decimal") or
                 std.mem.eql(u8, expected_type, "Double");
@@ -1002,21 +1002,21 @@ fn argumentExprMatchesType(
             std.mem.eql(u8, expected_type, "Long");
     }
     if (std.mem.startsWith(u8, expr, "new ")) {
-        const type_raw = extractTypeFromNewExpression(expr[4..]) orelse return true;
-        return isTypeAssignable(type_raw, expected_type, type_relations);
+        const type_raw = extract_type_from_new_expression(expr[4..]) orelse return true;
+        return is_type_assignable(type_raw, expected_type, type_relations);
     }
 
-    if (extractRootIdentifier(expr)) |root| {
+    if (extract_root_identifier(expr)) |root| {
         if (type_env.get(root)) |bound_type| {
-            if (isIndexedAccess(expr)) {
-                if (!isPureIndexedAccess(expr)) return true;
-                if (extractListElementType(bound_type)) |element_type| {
-                    return isTypeAssignable(element_type, expected_type, type_relations);
+            if (is_indexed_access(expr)) {
+                if (!is_pure_indexed_access(expr)) return true;
+                if (extract_list_element_type(bound_type)) |element_type| {
+                    return is_type_assignable(element_type, expected_type, type_relations);
                 }
                 return false;
             }
-            if (isSimpleIdentifier(expr)) {
-                return isTypeAssignable(bound_type, expected_type, type_relations);
+            if (is_simple_identifier(expr)) {
+                return is_type_assignable(bound_type, expected_type, type_relations);
             }
         }
     }
@@ -1025,34 +1025,34 @@ fn argumentExprMatchesType(
     return true;
 }
 
-fn extractRootIdentifier(expr_raw: []const u8) ?[]const u8 {
+fn extract_root_identifier(expr_raw: []const u8) ?[]const u8 {
     const expr = std.mem.trim(u8, expr_raw, " \t");
     if (expr.len == 0) return null;
-    if (!isIdentStart(expr[0])) return null;
+    if (!is_ident_start(expr[0])) return null;
     var end: usize = 1;
-    while (end < expr.len and isIdentChar(expr[end])) : (end += 1) {}
+    while (end < expr.len and is_ident_char(expr[end])) : (end += 1) {}
     return expr[0..end];
 }
 
-fn isSimpleIdentifier(expr_raw: []const u8) bool {
+fn is_simple_identifier(expr_raw: []const u8) bool {
     const expr = std.mem.trim(u8, expr_raw, " \t");
-    const root = extractRootIdentifier(expr) orelse return false;
+    const root = extract_root_identifier(expr) orelse return false;
     return root.len == expr.len;
 }
 
-fn isIndexedAccess(expr_raw: []const u8) bool {
+fn is_indexed_access(expr_raw: []const u8) bool {
     const expr = std.mem.trim(u8, expr_raw, " \t");
     return std.mem.indexOfScalar(u8, expr, '[') != null;
 }
 
-fn isPureIndexedAccess(expr_raw: []const u8) bool {
+fn is_pure_indexed_access(expr_raw: []const u8) bool {
     const expr = std.mem.trim(u8, expr_raw, " \t");
     const close_idx = std.mem.lastIndexOfScalar(u8, expr, ']') orelse return false;
     const tail = std.mem.trim(u8, expr[(close_idx + 1)..], " \t");
     return tail.len == 0;
 }
 
-fn extractListElementType(type_raw: []const u8) ?[]const u8 {
+fn extract_list_element_type(type_raw: []const u8) ?[]const u8 {
     const canonical = std.mem.trim(u8, type_raw, " \t");
     const list_idx = std.mem.indexOf(u8, canonical, "List<") orelse return null;
     const start = list_idx + 5;
@@ -1063,25 +1063,25 @@ fn extractListElementType(type_raw: []const u8) ?[]const u8 {
     return inner;
 }
 
-fn isTypeAssignable(
+fn is_type_assignable(
     actual_type_raw: []const u8,
     expected_type_raw: []const u8,
     type_relations: *const TypeRelations,
 ) bool {
-    if (equalsCanonicalType(actual_type_raw, expected_type_raw)) return true;
-    if (isGenericLikeType(actual_type_raw) or isGenericLikeType(expected_type_raw)) return false;
+    if (equals_canonical_type(actual_type_raw, expected_type_raw)) return true;
+    if (is_generic_like_type(actual_type_raw) or is_generic_like_type(expected_type_raw)) return false;
 
-    const actual_primary = extractPrimaryTypeName(actual_type_raw) orelse return false;
-    const expected_primary = extractPrimaryTypeName(expected_type_raw) orelse return false;
-    return typeSatisfiesConstraint(actual_primary, expected_primary, type_relations);
+    const actual_primary = extract_primary_type_name(actual_type_raw) orelse return false;
+    const expected_primary = extract_primary_type_name(expected_type_raw) orelse return false;
+    return type_satisfies_constraint(actual_primary, expected_primary, type_relations);
 }
 
-fn isGenericLikeType(type_raw: []const u8) bool {
+fn is_generic_like_type(type_raw: []const u8) bool {
     return std.mem.indexOfScalar(u8, type_raw, '<') != null or
         std.mem.indexOfScalar(u8, type_raw, '[') != null;
 }
 
-fn looksNumericLiteral(expr: []const u8) bool {
+fn looks_numeric_literal(expr: []const u8) bool {
     if (expr.len == 0) return false;
     var i: usize = 0;
     if (expr[0] == '-' and expr.len > 1) i = 1;

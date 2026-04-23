@@ -3,7 +3,7 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 
-pub fn getCodeActions(
+pub fn get_code_actions(
     diagnostics: []const lsp_types.Diagnostic,
     range: lsp_types.Range,
     allocator: std.mem.Allocator,
@@ -51,7 +51,7 @@ test "SOQL in loop suggests extraction" {
         .source = "apexgov-governor",
         .message = "SOQL in loop",
     }};
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 3 }, .end = .{ .line = 3 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 3 }, .end = .{ .line = 3 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 1), actions.len);
@@ -66,7 +66,7 @@ test "DML in loop suggests bulk pattern" {
         .source = "apexgov-governor",
         .message = "DML in loop",
     }};
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 5 }, .end = .{ .line = 5 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 5 }, .end = .{ .line = 5 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 1), actions.len);
@@ -75,7 +75,7 @@ test "DML in loop suggests bulk pattern" {
 
 test "clean code produces no actions" {
     const diags = [_]lsp_types.Diagnostic{};
-    const actions = try getCodeActions(&diags, .{}, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{}, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 0), actions.len);
@@ -89,7 +89,7 @@ test "HTTP callout in loop suggests extraction" {
         .source = "apexgov-governor",
         .message = "HTTP callout in loop",
     }};
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 7 }, .end = .{ .line = 7 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 7 }, .end = .{ .line = 7 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 1), actions.len);
@@ -114,7 +114,7 @@ test "diagnostics outside range are excluded" {
         },
     };
     // range は line 3 のみ → AG002 だけマッチ
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 3 }, .end = .{ .line = 3 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 3 }, .end = .{ .line = 3 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 1), actions.len);
@@ -138,7 +138,7 @@ test "multiple diagnostics on same range produce multiple actions" {
             .message = "DML in loop",
         },
     };
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 5 }, .end = .{ .line = 6 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 5 }, .end = .{ .line = 6 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 2), actions.len);
@@ -152,7 +152,7 @@ test "non-governor diagnostics are ignored" {
         .source = "apexgov",
         .message = "syntax error",
     }};
-    const actions = try getCodeActions(&diags, .{ .start = .{ .line = 1 }, .end = .{ .line = 1 } }, std.testing.allocator);
+    const actions = try get_code_actions(&diags, .{ .start = .{ .line = 1 }, .end = .{ .line = 1 } }, std.testing.allocator);
     defer std.testing.allocator.free(actions);
 
     try std.testing.expectEqual(@as(usize, 0), actions.len);

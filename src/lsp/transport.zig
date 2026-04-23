@@ -29,8 +29,8 @@ pub const Transport = struct {
 
     /// 1 つの JSON-RPC メッセージを読み取る。
     /// 接続終了時は null を返す。
-    pub fn readMessage(self: *Transport) !?[]const u8 {
-        const content_length = self.readHeaders() catch |err| {
+    pub fn read_message(self: *Transport) !?[]const u8 {
+        const content_length = self.read_headers() catch |err| {
             if (err == error.EndOfStream) return null;
             return err;
         } orelse return null;
@@ -51,7 +51,7 @@ pub const Transport = struct {
     }
 
     /// JSON-RPC メッセージを書き出す。
-    pub fn writeMessage(self: *Transport, body: []const u8) !void {
+    pub fn write_message(self: *Transport, body: []const u8) !void {
         var header_buf: [64]u8 = undefined;
         const header = std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{body.len}) catch unreachable;
         try self.out_file.writeStreamingAll(self.io, header);
@@ -59,7 +59,7 @@ pub const Transport = struct {
     }
 
     /// JSON-RPC レスポンスを送信する。
-    pub fn sendResponse(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, result: anytype) !void {
+    pub fn send_response(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, result: anytype) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 
@@ -73,11 +73,11 @@ pub const Transport = struct {
         try jw.write(result);
         try jw.endObject();
 
-        try self.writeMessage(aw.written());
+        try self.write_message(aw.written());
     }
 
     /// JSON-RPC エラーレスポンスを送信する。
-    pub fn sendErrorResponse(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, code: i32, message: []const u8) !void {
+    pub fn send_error_response(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, code: i32, message: []const u8) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 
@@ -96,11 +96,11 @@ pub const Transport = struct {
         try jw.endObject();
         try jw.endObject();
 
-        try self.writeMessage(aw.written());
+        try self.write_message(aw.written());
     }
 
     /// JSON-RPC 通知を送信する。
-    pub fn sendNotification(self: *Transport, allocator: std.mem.Allocator, method: []const u8, params: anytype) !void {
+    pub fn send_notification(self: *Transport, allocator: std.mem.Allocator, method: []const u8, params: anytype) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 
@@ -114,19 +114,19 @@ pub const Transport = struct {
         try jw.write(params);
         try jw.endObject();
 
-        try self.writeMessage(aw.written());
+        try self.write_message(aw.written());
     }
 
     // -- internal --
 
     const ReadError = Io.File.ReadStreamingError || error{EndOfStream};
 
-    fn readHeaders(self: *Transport) ReadError!?usize {
+    fn read_headers(self: *Transport) ReadError!?usize {
         var content_length: ?usize = null;
         var line_buf: [1024]u8 = undefined;
 
         while (true) {
-            const line = try self.readLine(&line_buf) orelse return error.EndOfStream;
+            const line = try self.read_line(&line_buf) orelse return error.EndOfStream;
 
             if (line.len == 0) break;
 
@@ -139,7 +139,7 @@ pub const Transport = struct {
         return content_length;
     }
 
-    fn readLine(self: *Transport, buf: []u8) ReadError!?[]const u8 {
+    fn read_line(self: *Transport, buf: []u8) ReadError!?[]const u8 {
         var i: usize = 0;
         while (i < buf.len) {
             var byte_buf: [1]u8 = undefined;

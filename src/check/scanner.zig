@@ -2,7 +2,7 @@
 //!
 //! 前処理済みソースを1行ずつ走査し、スコープ追跡・ループ検出・
 //! Governor 制限パターンマッチング・メソッド呼び出しグラフ構築を
-//! オーケストレーションする。`scanContent` が解析のエントリポイント。
+//! オーケストレーションする。`scan_content` が解析のエントリポイント。
 
 const std = @import("std");
 const model = @import("../model.zig");
@@ -27,32 +27,32 @@ const Bound = types.Bound;
 const MethodMetrics = types.MethodMetrics;
 const TypeRelations = types.TypeRelations;
 
-const updateBraceDepth = utils.updateBraceDepth;
-const satAdd = utils.satAdd;
-const satMul = utils.satMul;
+const update_brace_depth = utils.update_brace_depth;
+const sat_add = utils.sat_add;
+const sat_mul = utils.sat_mul;
 
-const collectDoWhileStartConditionsFromStripped = preprocessor.collectDoWhileStartConditionsFromStripped;
-const isDoLoopStart = preprocessor.isDoLoopStart;
+const collect_do_while_start_conditions_from_stripped = preprocessor.collect_do_while_start_conditions_from_stripped;
+const is_do_loop_start = preprocessor.is_do_loop_start;
 
-const popClosedScopes = scope_mod.popClosedScopes;
-const popClosedOwners = scope_mod.popClosedOwners;
-const maybeEnterOwnerScope = scope_mod.maybeEnterOwnerScope;
+const pop_closed_scopes = scope_mod.pop_closed_scopes;
+const pop_closed_owners = scope_mod.pop_closed_owners;
+const maybe_enter_owner_scope = scope_mod.maybe_enter_owner_scope;
 
-const parseMethodStart = parser.parseMethodStart;
+const parse_method_start = parser.parse_method_start;
 
-const registerMethodParamTypes = type_env_mod.registerMethodParamTypes;
-const applyLocalTypeUpdates = type_env_mod.applyLocalTypeUpdates;
+const register_method_param_types = type_env_mod.register_method_param_types;
+const apply_local_type_updates = type_env_mod.apply_local_type_updates;
 
-const applyBoundUpdates = bounds_mod.applyBoundUpdates;
-const inferLoopInfoAtLine = bounds_mod.inferLoopInfoAtLine;
-const effectiveLoopUpperBound = bounds_mod.effectiveLoopUpperBound;
+const apply_bound_updates = bounds_mod.apply_bound_updates;
+const infer_loop_info_at_line = bounds_mod.infer_loop_info_at_line;
+const effective_loop_upper_bound = bounds_mod.effective_loop_upper_bound;
 
-const ensureMethodSummary = call_graph.ensureMethodSummary;
-const inferCalledMethodMetrics = call_graph.inferCalledMethodMetrics;
+const ensure_method_summary = call_graph.ensure_method_summary;
+const infer_called_method_metrics = call_graph.infer_called_method_metrics;
 
-const appendFinding = rules.appendFinding;
-const appendGovernorFinding = rules.appendGovernorFinding;
-const appendCpuEstimateFinding = rules.appendCpuEstimateFinding;
+const append_finding = rules.append_finding;
+const append_governor_finding = rules.append_governor_finding;
+const append_cpu_estimate_finding = rules.append_cpu_estimate_finding;
 
 // ---------------------------------------------------------------------------
 // ルール検出テーブル
@@ -111,7 +111,7 @@ const rule_specs = [_]RuleSpec{
 // ---------------------------------------------------------------------------
 
 /// ファイル内容がテストクラス（クラス定義前に `@isTest` アノテーション）かどうかを判定する。
-fn isTestClass(content: []const u8) bool {
+fn is_test_class(content: []const u8) bool {
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
         const trimmed = std.mem.trim(u8, raw, " \t\r");
@@ -125,12 +125,12 @@ fn isTestClass(content: []const u8) bool {
             }
         }
         // class/interface/trigger 宣言に到達したらアノテーション探索を終了
-        if (containsClassDecl(trimmed)) return false;
+        if (contains_class_decl(trimmed)) return false;
     }
     return false;
 }
 
-fn containsClassDecl(line: []const u8) bool {
+fn contains_class_decl(line: []const u8) bool {
     const keywords = [_][]const u8{ "class ", "interface ", "trigger " };
     for (keywords) |kw| {
         if (std.mem.indexOf(u8, line, kw) != null) return true;
@@ -140,7 +140,7 @@ fn containsClassDecl(line: []const u8) bool {
 
 /// SOQL for ループ (`for (X : [SELECT ...])`) かどうかを判定する。
 /// `Database.query()` 等は対象外（チャンク取得されないため）。
-fn isSoqlForLoop(trimmed: []const u8) bool {
+fn is_soql_for_loop(trimmed: []const u8) bool {
     const lower = blk: {
         var buf: [512]u8 = undefined;
         if (trimmed.len > buf.len) break :blk trimmed;
@@ -159,23 +159,23 @@ fn isSoqlForLoop(trimmed: []const u8) bool {
 
 /// 全検出器を実行し、各操作の直接検出カウント (0 or 1) を返す。
 /// MethodMetrics と同じフィールド構造を再利用して `@field` アクセスを可能にする。
-fn runDetectors(trimmed: []const u8, type_env: *std.StringHashMap([]const u8)) MethodMetrics {
+fn run_detectors(trimmed: []const u8, type_env: *std.StringHashMap([]const u8)) MethodMetrics {
     return .{
-        .soql = if (detectors.containsSoql(trimmed)) 1 else 0,
-        .dml = if (detectors.containsDml(trimmed)) 1 else 0,
-        .sosl = if (detectors.containsSosl(trimmed)) 1 else 0,
-        .callout = if (detectors.containsCallout(trimmed, type_env)) 1 else 0,
-        .messaging = if (detectors.containsMessaging(trimmed)) 1 else 0,
-        .json = if (detectors.containsJsonWork(trimmed)) 1 else 0,
-        .clone = if (detectors.containsCloneWork(trimmed)) 1 else 0,
-        .collection_alloc = if (detectors.containsCollectionAlloc(trimmed)) 1 else 0,
-        .string_append = if (detectors.containsStringAppend(trimmed)) 1 else 0,
+        .soql = if (detectors.contains_soql(trimmed)) 1 else 0,
+        .dml = if (detectors.contains_dml(trimmed)) 1 else 0,
+        .sosl = if (detectors.contains_sosl(trimmed)) 1 else 0,
+        .callout = if (detectors.contains_callout(trimmed, type_env)) 1 else 0,
+        .messaging = if (detectors.contains_messaging(trimmed)) 1 else 0,
+        .json = if (detectors.contains_json_work(trimmed)) 1 else 0,
+        .clone = if (detectors.contains_clone_work(trimmed)) 1 else 0,
+        .collection_alloc = if (detectors.contains_collection_alloc(trimmed)) 1 else 0,
+        .string_append = if (detectors.contains_string_append(trimmed)) 1 else 0,
     };
 }
 
 /// テーブル駆動でルール検出結果を Finding に変換する。
 /// `inline for` により comptime 展開され、各ルールに最適化されたコードが生成される。
-fn emitRuleFindings(
+fn emit_rule_findings(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
     path: []const u8,
@@ -186,22 +186,22 @@ fn emitRuleFindings(
     cpu_model: config.CpuModel,
 ) !void {
     inline for (rule_specs) |spec| {
-        const count = satAdd(@field(direct, spec.field), @field(call_metrics, spec.field));
+        const count = sat_add(@field(direct, spec.field), @field(call_metrics, spec.field));
         if (count > 0) {
             switch (spec.emit) {
                 .governor_with_cpu => {
-                    try appendGovernorFinding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
-                    try appendCpuEstimateFinding(gpa, findings, path, line_no, spec.cpu_label, satMul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                    try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
+                    try append_cpu_estimate_finding(gpa, findings, path, line_no, spec.cpu_label, sat_mul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
                 },
                 .governor_only => {
-                    try appendGovernorFinding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
+                    try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
                 },
                 .finding_with_cpu => {
-                    try appendFinding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
-                    try appendCpuEstimateFinding(gpa, findings, path, line_no, spec.cpu_label, satMul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                    try append_finding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
+                    try append_cpu_estimate_finding(gpa, findings, path, line_no, spec.cpu_label, sat_mul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
                 },
                 .finding_only => {
-                    try appendFinding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
+                    try append_finding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
                 },
             }
         }
@@ -214,7 +214,7 @@ fn emitRuleFindings(
 
 /// メソッドスコープの終了判定と後処理。
 /// brace_depth の変化後に呼び出し、メソッド本体を抜けた場合にスコープをクリアする。
-fn checkMethodScopeEnd(
+fn check_method_scope_end(
     current_method: *?MethodScope,
     brace_depth: i32,
     type_env: *std.StringHashMap([]const u8),
@@ -235,7 +235,7 @@ fn checkMethodScopeEnd(
 // メイン解析エントリポイント
 // ---------------------------------------------------------------------------
 
-pub fn scanContent(
+pub fn scan_content(
     gpa: std.mem.Allocator,
     path: []const u8,
     stripped_content: []const u8,
@@ -253,10 +253,10 @@ pub fn scanContent(
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
     var type_env = std.StringHashMap([]const u8).init(arena_allocator);
     var current_method: ?MethodScope = null;
-    var do_while_conditions = try collectDoWhileStartConditionsFromStripped(arena_allocator, stripped_content);
+    var do_while_conditions = try collect_do_while_start_conditions_from_stripped(arena_allocator, stripped_content);
 
     // @isTest クラスの findings をスキップ（method_summaries 登録は維持）
-    const is_test_class = !cfg.include_tests and isTestClass(stripped_content);
+    const skip_test_findings = !cfg.include_tests and is_test_class(stripped_content);
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
@@ -272,18 +272,18 @@ pub fn scanContent(
     while (lines.next()) |raw| {
         line_no += 1;
 
-        popClosedScopes(&loop_scopes, brace_depth);
-        popClosedOwners(&owner_scopes, brace_depth);
+        pop_closed_scopes(&loop_scopes, brace_depth);
+        pop_closed_owners(&owner_scopes, brace_depth);
 
         const code_line = raw;
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
         var started_method = false;
         if (trimmed.len > 0) {
-            try maybeEnterOwnerScope(gpa, &owner_scopes, brace_depth, trimmed);
+            try maybe_enter_owner_scope(gpa, &owner_scopes, brace_depth, trimmed);
             if (current_method == null and owner_scopes.items.len > 0) {
                 const owner = owner_scopes.items[owner_scopes.items.len - 1].name;
-                if (parseMethodStart(trimmed)) |decl| {
-                    const summary = try ensureMethodSummary(
+                if (parse_method_start(trimmed)) |decl| {
+                    const summary = try ensure_method_summary(
                         arena_allocator,
                         method_summaries,
                         owner,
@@ -291,7 +291,7 @@ pub fn scanContent(
                         decl.params_raw,
                     );
                     type_env = std.StringHashMap([]const u8).init(arena_allocator);
-                    try registerMethodParamTypes(arena_allocator, &type_env, decl.params_raw);
+                    try register_method_param_types(arena_allocator, &type_env, decl.params_raw);
                     current_method = .{
                         .owner = owner,
                         .name = summary.name,
@@ -304,18 +304,18 @@ pub fn scanContent(
                 }
             }
             if (!started_method and current_method != null) {
-                try applyLocalTypeUpdates(arena_allocator, &type_env, trimmed);
+                try apply_local_type_updates(arena_allocator, &type_env, trimmed);
             }
         }
         const current_owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
         if (trimmed.len == 0) {
-            brace_depth = updateBraceDepth(brace_depth, code_line);
-            popClosedScopes(&loop_scopes, brace_depth);
-            popClosedOwners(&owner_scopes, brace_depth);
+            brace_depth = update_brace_depth(brace_depth, code_line);
+            pop_closed_scopes(&loop_scopes, brace_depth);
+            pop_closed_owners(&owner_scopes, brace_depth);
             if (pending_loop_scope) |pending| {
                 if (brace_depth < pending.expected_depth) pending_loop_scope = null;
             }
-            checkMethodScopeEnd(&current_method, brace_depth, &type_env, arena_allocator);
+            check_method_scope_end(&current_method, brace_depth, &type_env, arena_allocator);
             continue;
         }
 
@@ -329,16 +329,16 @@ pub fn scanContent(
             pending_loop_scope = null;
         }
 
-        try applyBoundUpdates(arena_allocator, &bounds, trimmed);
+        try apply_bound_updates(arena_allocator, &bounds, trimmed);
 
-        const loop_info = inferLoopInfoAtLine(trimmed, &bounds, &do_while_conditions, line_no);
+        const loop_info = infer_loop_info_at_line(trimmed, &bounds, &do_while_conditions, line_no);
         const loop_started = loop_info != null;
         const loop_level = loop_scopes.items.len;
         const in_loop = loop_started or loop_level > 0;
 
         // AG001: ネストされたループ検出（他ルールとパターンが異なるため個別処理）
-        if (!is_test_class and loop_started and loop_level > 0) {
-            try appendFinding(
+        if (!skip_test_findings and loop_started and loop_level > 0) {
+            try append_finding(
                 gpa,
                 findings,
                 path,
@@ -352,19 +352,19 @@ pub fn scanContent(
         }
 
         // AG002–AG011: テーブル駆動ルール検出
-        if (!is_test_class and in_loop) {
-            const loop_upper_bound = effectiveLoopUpperBound(loop_scopes.items, loop_info);
-            const call_metrics = inferCalledMethodMetrics(trimmed, current_owner, &type_env, name_index, type_relations);
-            var direct = runDetectors(trimmed, &type_env);
+        if (!skip_test_findings and in_loop) {
+            const loop_upper_bound = effective_loop_upper_bound(loop_scopes.items, loop_info);
+            const call_metrics = infer_called_method_metrics(trimmed, current_owner, &type_env, name_index, type_relations);
+            var direct = run_detectors(trimmed, &type_env);
 
             // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では
             // iterable の SOQL はループ本体内の SOQL ではない（1回だけ発行される）。
             // ただしネスト（loop_level > 0）の場合は外側ループ内の SOQL なので除外しない。
-            if (loop_started and direct.soql > 0 and loop_level == 0 and isSoqlForLoop(trimmed)) {
+            if (loop_started and direct.soql > 0 and loop_level == 0 and is_soql_for_loop(trimmed)) {
                 direct.soql = 0;
             }
 
-            try emitRuleFindings(gpa, findings, path, line_no, direct, call_metrics, loop_upper_bound, cfg.cpu_model);
+            try emit_rule_findings(gpa, findings, path, line_no, direct, call_metrics, loop_upper_bound, cfg.cpu_model);
         }
 
         if (loop_started and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
@@ -372,19 +372,19 @@ pub fn scanContent(
                 .end_depth = brace_depth + 1,
                 .max_iterations = loop_info.?.max_iterations,
             });
-        } else if (loop_started and isDoLoopStart(trimmed)) {
+        } else if (loop_started and is_do_loop_start(trimmed)) {
             pending_loop_scope = .{
                 .expected_depth = brace_depth,
                 .max_iterations = loop_info.?.max_iterations,
             };
         }
 
-        brace_depth = updateBraceDepth(brace_depth, code_line);
-        popClosedScopes(&loop_scopes, brace_depth);
-        popClosedOwners(&owner_scopes, brace_depth);
+        brace_depth = update_brace_depth(brace_depth, code_line);
+        pop_closed_scopes(&loop_scopes, brace_depth);
+        pop_closed_owners(&owner_scopes, brace_depth);
         if (pending_loop_scope) |pending| {
             if (brace_depth < pending.expected_depth) pending_loop_scope = null;
         }
-        checkMethodScopeEnd(&current_method, brace_depth, &type_env, arena_allocator);
+        check_method_scope_end(&current_method, brace_depth, &type_env, arena_allocator);
     }
 }

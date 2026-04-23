@@ -1,19 +1,19 @@
 //! preprocessor — ソースコードの前処理。
 //!
 //! 解析前にコメント（行コメント・ブロックコメント）を除去しつつ
-//! 行番号を保持する `stripCommentsPreserveLines` と、do-while ループの
-//! 条件式位置を事前収集する `collectDoWhileStartConditions` を提供する。
+//! 行番号を保持する `strip_comments_preserve_lines` と、do-while ループの
+//! 条件式位置を事前収集する `collect_do_while_start_conditions` を提供する。
 
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
 
 const DoLoopStart = types.DoLoopStart;
-const updateBraceDepth = utils.updateBraceDepth;
-const startsWithIgnoreCase = utils.startsWithIgnoreCase;
-const findMatchingParen = utils.findMatchingParen;
+const update_brace_depth = utils.update_brace_depth;
+const starts_with_ignore_case = utils.starts_with_ignore_case;
+const find_matching_paren = utils.find_matching_paren;
 
-pub fn stripCommentsPreserveLines(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn strip_comments_preserve_lines(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
@@ -52,15 +52,15 @@ pub fn stripCommentsPreserveLines(allocator: std.mem.Allocator, content: []const
     return try out.toOwnedSlice(allocator);
 }
 
-pub fn collectDoWhileStartConditions(
+pub fn collect_do_while_start_conditions(
     allocator: std.mem.Allocator,
     content: []const u8,
 ) !std.AutoHashMap(usize, []const u8) {
-    const stripped_content = try stripCommentsPreserveLines(allocator, content);
-    return collectDoWhileStartConditionsFromStripped(allocator, stripped_content);
+    const stripped_content = try strip_comments_preserve_lines(allocator, content);
+    return collect_do_while_start_conditions_from_stripped(allocator, stripped_content);
 }
 
-pub fn collectDoWhileStartConditionsFromStripped(
+pub fn collect_do_while_start_conditions_from_stripped(
     allocator: std.mem.Allocator,
     stripped_content: []const u8,
 ) !std.AutoHashMap(usize, []const u8) {
@@ -81,7 +81,7 @@ pub fn collectDoWhileStartConditionsFromStripped(
         const trimmed = std.mem.trim(u8, code_line, " \t\r");
 
         if (trimmed.len > 0) {
-            if (isDoLoopStart(trimmed)) {
+            if (is_do_loop_start(trimmed)) {
                 if (std.mem.indexOfScalar(u8, trimmed, '{') != null) {
                     try do_stack.append(allocator, .{
                         .start_line = line_no,
@@ -104,7 +104,7 @@ pub fn collectDoWhileStartConditionsFromStripped(
                 pending_do_start = null;
             }
 
-            if (try parseDoWhileTailCondition(allocator, trimmed)) |condition| {
+            if (try parse_do_while_tail_condition(allocator, trimmed)) |condition| {
                 errdefer allocator.free(condition);
                 if (do_stack.items.len > 0 and do_stack.items[do_stack.items.len - 1].end_depth == brace_depth) {
                     const do_start = do_stack.pop().?;
@@ -115,7 +115,7 @@ pub fn collectDoWhileStartConditionsFromStripped(
             }
         }
 
-        brace_depth = updateBraceDepth(brace_depth, code_line);
+        brace_depth = update_brace_depth(brace_depth, code_line);
         if (pending_do_start) |pending| {
             if (brace_depth < pending.end_depth) {
                 pending_do_start = null;
@@ -129,20 +129,20 @@ pub fn collectDoWhileStartConditionsFromStripped(
     return out;
 }
 
-pub fn isDoLoopStart(line: []const u8) bool {
+pub fn is_do_loop_start(line: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, line, " \t");
-    if (!startsWithIgnoreCase(trimmed, "do")) return false;
+    if (!starts_with_ignore_case(trimmed, "do")) return false;
     if (trimmed.len == 2) return true;
     const next = trimmed[2];
     return next == ' ' or next == '\t' or next == '{';
 }
 
-pub fn parseDoWhileTailCondition(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+pub fn parse_do_while_tail_condition(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
     var trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 8 or trimmed[0] != '}') return null;
 
     trimmed = std.mem.trimStart(u8, trimmed[1..], " \t");
-    if (!startsWithIgnoreCase(trimmed, "while")) return null;
+    if (!starts_with_ignore_case(trimmed, "while")) return null;
     if (trimmed.len > "while".len) {
         const next = trimmed["while".len];
         if (!(next == ' ' or next == '\t' or next == '(')) return null;
@@ -151,7 +151,7 @@ pub fn parseDoWhileTailCondition(allocator: std.mem.Allocator, line: []const u8)
     var rest = std.mem.trimStart(u8, trimmed["while".len..], " \t");
     if (rest.len == 0 or rest[0] != '(') return null;
 
-    const close = findMatchingParen(rest, 0) orelse return null;
+    const close = find_matching_paren(rest, 0) orelse return null;
     const after = std.mem.trim(u8, rest[(close + 1)..], " \t");
     if (after.len > 0 and !std.mem.eql(u8, after, ";")) return null;
 
@@ -160,10 +160,10 @@ pub fn parseDoWhileTailCondition(allocator: std.mem.Allocator, line: []const u8)
     return try allocator.dupe(u8, cond);
 }
 
-pub fn isLoopStart(line: []const u8) bool {
+pub fn is_loop_start(line: []const u8) bool {
     return std.mem.startsWith(u8, line, "for(") or
         std.mem.startsWith(u8, line, "for (") or
         std.mem.startsWith(u8, line, "while(") or
         std.mem.startsWith(u8, line, "while (") or
-        isDoLoopStart(line);
+        is_do_loop_start(line);
 }

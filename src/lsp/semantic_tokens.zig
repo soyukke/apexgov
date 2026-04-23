@@ -32,7 +32,7 @@ pub fn encode(tokens: []const Token, source: []const u8, allocator: std.mem.Allo
     for (tokens) |tok| {
         if (tok.kind == .eof) continue;
 
-        const token_type = classifyToken(tok) orelse continue;
+        const token_type = classify_token(tok) orelse continue;
 
         const line = if (tok.loc.line > 0) tok.loc.line - 1 else 0;
         const char = tok.loc.utf16Col(source);
@@ -54,7 +54,7 @@ pub fn encode(tokens: []const Token, source: []const u8, allocator: std.mem.Allo
     return data.toOwnedSlice(allocator);
 }
 
-fn classifyToken(tok: Token) ?u32 {
+fn classify_token(tok: Token) ?u32 {
     return switch (tok.kind) {
         // キーワード
         .if_kw, .else_kw, .for_kw, .while_kw, .do_kw, .return_kw, .break_kw, .continue_kw, .switch_kw, .when_kw, .try_kw, .catch_kw, .finally_kw, .throw_kw, .new_kw, .this_kw, .super_kw, .instanceof_kw, .void_kw => TT.keyword,

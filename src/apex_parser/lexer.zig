@@ -50,7 +50,7 @@ const Lexer = struct {
         if (std.ascii.isDigit(c)) return self.scanNumber(start, start_loc);
 
         // 識別子・キーワード
-        if (isIdentStart(c)) return self.scanIdentifier(start, start_loc);
+        if (is_ident_start(c)) return self.scanIdentifier(start, start_loc);
 
         // アノテーション
         if (c == '@') return self.scanAnnotation(start, start_loc);
@@ -398,7 +398,7 @@ const Lexer = struct {
     }
 };
 
-fn isIdentStart(c: u8) bool {
+fn is_ident_start(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_';
 }
 

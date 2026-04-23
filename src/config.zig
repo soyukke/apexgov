@@ -79,7 +79,7 @@ pub fn parse(raw: []const u8) !Config {
 
     var lines = std.mem.splitScalar(u8, raw, '\n');
     while (lines.next()) |raw_line| {
-        const no_comment = stripInlineComment(raw_line);
+        const no_comment = strip_inline_comment(raw_line);
         const line = std.mem.trim(u8, no_comment, " \t\r");
         if (line.len == 0) continue;
 
@@ -113,54 +113,54 @@ fn apply_key(cfg: *Config, section: Section, key: []const u8, value: []const u8)
     switch (section) {
         .budget_sync => {
             if (std.ascii.eqlIgnoreCase(key, "cpu_ms")) {
-                cfg.budget_sync.cpu_ms = try parseUnsigned(u32, value);
+                cfg.budget_sync.cpu_ms = try parse_unsigned(u32, value);
             } else if (std.ascii.eqlIgnoreCase(key, "heap_bytes")) {
-                cfg.budget_sync.heap_bytes = try parseUnsigned(u64, value);
+                cfg.budget_sync.heap_bytes = try parse_unsigned(u64, value);
             }
         },
         .budget_async => {
             if (std.ascii.eqlIgnoreCase(key, "cpu_ms")) {
-                cfg.budget_async.cpu_ms = try parseUnsigned(u32, value);
+                cfg.budget_async.cpu_ms = try parse_unsigned(u32, value);
             } else if (std.ascii.eqlIgnoreCase(key, "heap_bytes")) {
-                cfg.budget_async.heap_bytes = try parseUnsigned(u64, value);
+                cfg.budget_async.heap_bytes = try parse_unsigned(u64, value);
             }
         },
         .cpu_model => {
             if (std.ascii.eqlIgnoreCase(key, "base_ms")) {
-                cfg.cpu_model.base_ms = try parseUnsigned(u64, value);
+                cfg.cpu_model.base_ms = try parse_unsigned(u64, value);
             } else if (std.ascii.eqlIgnoreCase(key, "soql_ms")) {
-                cfg.cpu_model.soql_ms = try parseUnsigned(u64, value);
+                cfg.cpu_model.soql_ms = try parse_unsigned(u64, value);
             } else if (std.ascii.eqlIgnoreCase(key, "dml_ms")) {
-                cfg.cpu_model.dml_ms = try parseUnsigned(u64, value);
+                cfg.cpu_model.dml_ms = try parse_unsigned(u64, value);
             } else if (std.ascii.eqlIgnoreCase(key, "json_ms")) {
-                cfg.cpu_model.json_ms = try parseUnsigned(u64, value);
+                cfg.cpu_model.json_ms = try parse_unsigned(u64, value);
             } else if (std.ascii.eqlIgnoreCase(key, "clone_ms")) {
-                cfg.cpu_model.clone_ms = try parseUnsigned(u64, value);
+                cfg.cpu_model.clone_ms = try parse_unsigned(u64, value);
             }
         },
         .ci => {
             if (std.ascii.eqlIgnoreCase(key, "fail_on_regression")) {
-                cfg.ci.fail_on_regression = try parseBool(value);
+                cfg.ci.fail_on_regression = try parse_bool(value);
             } else if (std.ascii.eqlIgnoreCase(key, "regression_percent")) {
-                cfg.ci.regression_percent = try parseUnsigned(u8, value);
+                cfg.ci.regression_percent = try parse_unsigned(u8, value);
             }
         },
         .none => {},
     }
 }
 
-fn stripInlineComment(raw: []const u8) []const u8 {
+fn strip_inline_comment(raw: []const u8) []const u8 {
     const idx = std.mem.indexOfScalar(u8, raw, '#') orelse return raw;
     return raw[0..idx];
 }
 
-fn parseBool(raw: []const u8) !bool {
+fn parse_bool(raw: []const u8) !bool {
     if (std.ascii.eqlIgnoreCase(raw, "true")) return true;
     if (std.ascii.eqlIgnoreCase(raw, "false")) return false;
     return error.InvalidBoolean;
 }
 
-fn parseUnsigned(comptime T: type, raw: []const u8) !T {
+fn parse_unsigned(comptime T: type, raw: []const u8) !T {
     return std.fmt.parseUnsigned(T, raw, 10);
 }
 

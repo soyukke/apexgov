@@ -5180,7 +5180,7 @@ pub const Evaluator = struct {
         return sob;
     }
 
-    fn xmlTagValue(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
+    fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
         const start_tag = std.fmt.allocPrint(self.arena, "<{s}>", .{tag_name}) catch return null;
         const end_tag = std.fmt.allocPrint(self.arena, "</{s}>", .{tag_name}) catch return null;
         const start = std.mem.indexOf(u8, xml, start_tag) orelse return null;
@@ -5190,7 +5190,7 @@ pub const Evaluator = struct {
     }
 
     fn xmlTagBoolValue(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?bool {
-        const raw = self.xmlTagValue(xml, tag_name) orelse return null;
+        const raw = self.xml_tag_value(xml, tag_name) orelse return null;
         if (std.ascii.eqlIgnoreCase(raw, "true")) return true;
         if (std.ascii.eqlIgnoreCase(raw, "false")) return false;
         return null;
@@ -5276,7 +5276,7 @@ pub const Evaluator = struct {
                 try permission_set.fields.put(
                     self.arena,
                     "Label",
-                    Value{ .string = try self.arena.dupe(u8, self.xmlTagValue(xml, "label") orelse permission_set_name) },
+                    Value{ .string = try self.arena.dupe(u8, self.xml_tag_value(xml, "label") orelse permission_set_name) },
                 );
                 try self.appendStoreRecord("PermissionSet", permission_set);
 
@@ -5287,7 +5287,7 @@ pub const Evaluator = struct {
                     const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</objectPermissions>") orelse break;
                     const block = xml[block_content_start..block_end];
 
-                    const object_name = self.xmlTagValue(block, "object") orelse {
+                    const object_name = self.xml_tag_value(block, "object") orelse {
                         object_pos = block_end + "</objectPermissions>".len;
                         continue;
                     };
@@ -5313,7 +5313,7 @@ pub const Evaluator = struct {
                     const block_end = std.mem.indexOfPos(u8, xml, block_content_start, "</fieldPermissions>") orelse break;
                     const block = xml[block_content_start..block_end];
 
-                    const full_field_name = self.xmlTagValue(block, "field") orelse {
+                    const full_field_name = self.xml_tag_value(block, "field") orelse {
                         field_pos = block_end + "</fieldPermissions>".len;
                         continue;
                     };
@@ -7537,7 +7537,7 @@ pub const Evaluator = struct {
                         try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
                         return Value{ .object = sot };
                     }
-                    if (self.isSObjectTypeName(schema_name) and !std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                    if (self.is_s_objectTypeName(schema_name) and !std.ascii.eqlIgnoreCase(fa.field, "class")) {
                         return self.makeSObjectFieldToken(schema_name, fa.field);
                     }
                 }
@@ -7585,7 +7585,7 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
                             !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
                             !std.ascii.eqlIgnoreCase(inner_name, "SObjectType") and
-                            self.isSObjectTypeName(inner_name))
+                            self.is_s_objectTypeName(inner_name))
                         {
                             if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
                                 const sot = try self.arena.create(types.ObjectInstance);
@@ -8020,14 +8020,14 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(param_elem_base, "SObject")) {
             if (actual_items_are_sobjects or
                 std.ascii.eqlIgnoreCase(actual_elem_base, "SObject") or
-                self.isSObjectTypeName(actual_elem_base))
+                self.is_s_objectTypeName(actual_elem_base))
             {
                 return 3;
             }
             return 0;
         }
         if (namesMatchBySimpleName(actual_elem_base, param_elem_base)) return 3;
-        if (self.isSObjectTypeName(actual_elem_base) and self.isSObjectTypeName(param_elem_base) and self.isSubclassOf(actual_elem_base, param_elem_base)) {
+        if (self.is_s_objectTypeName(actual_elem_base) and self.is_s_objectTypeName(param_elem_base) and self.isSubclassOf(actual_elem_base, param_elem_base)) {
             return 2;
         }
         return 0;
@@ -9662,7 +9662,7 @@ pub const Evaluator = struct {
                 return Value{ .set = set };
             }
             // SObject type name → return .sobject directly
-            if (self.isSObjectTypeName(type_name)) {
+            if (self.is_s_objectTypeName(type_name)) {
                 const sob = try self.arena.create(types.SObject);
                 sob.* = .{ .type_name = type_name };
                 return Value{ .sobject = sob };
@@ -10193,7 +10193,7 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
                 return self.getSObjectFieldValueCaseInsensitive(obj.sobject, "statusCode") orelse Value.null_val;
             }
-            if (std.ascii.eqlIgnoreCase(method, "getFields")) {
+            if (std.ascii.eqlIgnoreCase(method, "get_fields")) {
                 return self.getSObjectFieldValueCaseInsensitive(obj.sobject, "fields") orelse try self.makeEmptyList();
             }
             // getPopulatedFieldsAsMap()
@@ -11430,7 +11430,7 @@ pub const Evaluator = struct {
             if (s.len > other.len) return Value{ .integer = 1 };
             return Value{ .integer = 0 };
         }
-        if (std.ascii.eqlIgnoreCase(method, "startsWithIgnoreCase") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "starts_with_ignore_case") and args.len > 0 and args[0] == .string) {
             return Value{ .boolean = std.ascii.startsWithIgnoreCase(s, args[0].string) };
         }
         if (std.ascii.eqlIgnoreCase(method, "endsWithIgnoreCase") and args.len > 0 and args[0] == .string) {
@@ -12532,7 +12532,7 @@ pub const Evaluator = struct {
                 return Value{ .object = type_obj };
             }
 
-            if (self.isSObjectTypeName(class_name)) {
+            if (self.is_s_objectTypeName(class_name)) {
                 return try self.makeSObjectFieldToken(class_name, fa.field);
             }
 
@@ -15340,14 +15340,14 @@ pub const Evaluator = struct {
                     const hint_value = stripTypeNamespace(hint_args.?.value);
                     const param_value = stripTypeNamespace(param_args.?.value);
                     if (namesMatchBySimpleName(hint_value, param_value)) return 3;
-                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_value), "SObject") and self.isSObjectTypeName(typeBaseName(hint_value))) return 3;
+                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_value), "SObject") and self.is_s_objectTypeName(typeBaseName(hint_value))) return 3;
                 }
             } else if (extractCollectionElementTypeName(hint)) |hint_elem_type| {
                 if (extractCollectionElementTypeName(pt)) |param_elem_type| {
                     const hint_elem = stripTypeNamespace(hint_elem_type);
                     const param_elem = stripTypeNamespace(param_elem_type);
                     if (namesMatchBySimpleName(hint_elem, param_elem)) return 3;
-                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_elem), "SObject") and self.isSObjectTypeName(typeBaseName(hint_elem))) return 3;
+                    if (std.ascii.eqlIgnoreCase(typeBaseName(param_elem), "SObject") and self.is_s_objectTypeName(typeBaseName(hint_elem))) return 3;
                 }
             }
         }
@@ -15381,7 +15381,7 @@ pub const Evaluator = struct {
             return 0;
         }
 
-        if (self.isSObjectTypeName(hint_base) and
+        if (self.is_s_objectTypeName(hint_base) and
             (std.ascii.eqlIgnoreCase(pt_base, "SObject") or
                 std.ascii.eqlIgnoreCase(pt_base, "sObject") or
                 std.ascii.eqlIgnoreCase(pt_base, "Sobject")))
@@ -15691,9 +15691,9 @@ pub const Evaluator = struct {
     }
 
     /// True for a bare SObject simple name (e.g. "Account", "MyObject__c").
-    /// Public wrapper around the internal `isSObjectTypeName` used by builtin dispatch.
-    pub fn isSObjectTypeNamePublic(self: *Evaluator, name: []const u8) bool {
-        return self.isSObjectTypeName(name);
+    /// Public wrapper around the internal `is_s_objectTypeName` used by builtin dispatch.
+    pub fn is_s_objectTypeNamePublic(self: *Evaluator, name: []const u8) bool {
+        return self.is_s_objectTypeName(name);
     }
 
     /// Returns true when `name` matches an interface declaration loaded from the source
@@ -16731,7 +16731,7 @@ pub const Evaluator = struct {
     }
 
     /// Determine whether a type name represents a Salesforce SObject type.
-    fn isSObjectTypeName(self: *Evaluator, name: []const u8) bool {
+    fn is_s_objectTypeName(self: *Evaluator, name: []const u8) bool {
         // Custom suffixes: __c, __e, __mdt, __b
         if (std.mem.endsWith(u8, name, "__c") or std.mem.endsWith(u8, name, "__e") or
             std.mem.endsWith(u8, name, "__mdt") or std.mem.endsWith(u8, name, "__b"))
@@ -16797,7 +16797,7 @@ pub const Evaluator = struct {
             return Value{ .object = instance };
         }
         // SObject type name → return .sobject instead of .object
-        if (self.isSObjectTypeName(class_name)) {
+        if (self.is_s_objectTypeName(class_name)) {
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = class_name };
             return Value{ .sobject = sob };

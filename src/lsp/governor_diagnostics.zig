@@ -42,10 +42,10 @@ pub fn collect(
         .interfaces_by_type = interfaces,
     };
 
-    const stripped_content = try preprocessor.stripCommentsPreserveLines(allocator, content);
+    const stripped_content = try preprocessor.strip_comments_preserve_lines(allocator, content);
     defer allocator.free(stripped_content);
 
-    try check_scanner.scanContent(
+    try check_scanner.scan_content(
         allocator,
         path,
         stripped_content,
@@ -65,7 +65,7 @@ pub fn collect(
                 .start = .{ .line = line, .character = 0 },
                 .end = .{ .line = line, .character = 0 },
             },
-            .severity = mapSeverity(f.severity),
+            .severity = map_severity(f.severity),
             .code = f.rule_id,
             .source = "apexgov-governor",
             .message = try allocator.dupe(u8, f.message),
@@ -75,7 +75,7 @@ pub fn collect(
     return diags.toOwnedSlice(allocator);
 }
 
-fn mapSeverity(s: model.Severity) lsp_types.DiagnosticSeverity {
+fn map_severity(s: model.Severity) lsp_types.DiagnosticSeverity {
     return switch (s) {
         .err => .@"error",
         .warning => .warning,
@@ -170,7 +170,7 @@ test "clean code produces no governor diagnostics" {
 }
 
 test "severity mapping" {
-    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.@"error", mapSeverity(.err));
-    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.warning, mapSeverity(.warning));
-    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.information, mapSeverity(.info));
+    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.@"error", map_severity(.err));
+    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.warning, map_severity(.warning));
+    try std.testing.expectEqual(lsp_types.DiagnosticSeverity.information, map_severity(.info));
 }

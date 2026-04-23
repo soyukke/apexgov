@@ -6,7 +6,7 @@ const parser_types = @import("../apex_parser/types.zig");
 const Token = parser_types.Token;
 const TokenKind = parser_types.TokenKind;
 
-pub fn getFoldingRanges(tokens: []const Token, allocator: std.mem.Allocator) ![]lsp_types.FoldingRange {
+pub fn get_folding_ranges(tokens: []const Token, allocator: std.mem.Allocator) ![]lsp_types.FoldingRange {
     var ranges: std.ArrayList(lsp_types.FoldingRange) = .empty;
     var stack: std.ArrayList(u32) = .empty; // start line (0-indexed) のスタック
     defer stack.deinit(allocator);
@@ -39,16 +39,16 @@ pub fn getFoldingRanges(tokens: []const Token, allocator: std.mem.Allocator) ![]
 
 const lexer = @import("../apex_parser/lexer.zig");
 
-fn tokenizeAndFold(source: []const u8) ![]lsp_types.FoldingRange {
+fn tokenize_and_fold(source: []const u8) ![]lsp_types.FoldingRange {
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
 
-    return getFoldingRanges(tokens, std.testing.allocator);
+    return get_folding_ranges(tokens, std.testing.allocator);
 }
 
 test "class body is foldable" {
     const source = "public class Foo {\n    Integer x;\n}";
-    const ranges = try tokenizeAndFold(source);
+    const ranges = try tokenize_and_fold(source);
     defer std.testing.allocator.free(ranges);
 
     try std.testing.expectEqual(@as(usize, 1), ranges.len);
@@ -58,7 +58,7 @@ test "class body is foldable" {
 
 test "method body is foldable" {
     const source = "public class Foo {\n    public void run() {\n        return;\n    }\n}";
-    const ranges = try tokenizeAndFold(source);
+    const ranges = try tokenize_and_fold(source);
     defer std.testing.allocator.free(ranges);
 
     // 2 ranges: method body + class body
@@ -67,7 +67,7 @@ test "method body is foldable" {
 
 test "single-line block not foldable" {
     const source = "public class Foo { Integer x; }";
-    const ranges = try tokenizeAndFold(source);
+    const ranges = try tokenize_and_fold(source);
     defer std.testing.allocator.free(ranges);
 
     try std.testing.expectEqual(@as(usize, 0), ranges.len);
@@ -75,7 +75,7 @@ test "single-line block not foldable" {
 
 test "nested blocks create nested ranges" {
     const source = "public class Foo {\n    public void run() {\n        if (true) {\n            return;\n        }\n    }\n}";
-    const ranges = try tokenizeAndFold(source);
+    const ranges = try tokenize_and_fold(source);
     defer std.testing.allocator.free(ranges);
 
     // 3 ranges: if block + method + class

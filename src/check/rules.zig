@@ -8,7 +8,7 @@ const std = @import("std");
 const model = @import("../model.zig");
 const utils = @import("utils.zig");
 
-const satMul = utils.satMul;
+const sat_mul = utils.sat_mul;
 
 pub const soql_limit: u64 = 100;
 pub const dml_limit: u64 = 150;
@@ -25,7 +25,7 @@ pub const GovernorKind = enum {
     messaging,
 };
 
-pub fn appendCpuEstimateFinding(
+pub fn append_cpu_estimate_finding(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
     path: []const u8,
@@ -35,12 +35,12 @@ pub fn appendCpuEstimateFinding(
     loop_upper_bound: ?u64,
     base_cost_ms: u64,
 ) !void {
-    const n_limit = computeCpuLimitN(base_cost_ms, per_iter_ms);
+    const n_limit = compute_cpu_limit_n(base_cost_ms, per_iter_ms);
 
     var message_buffer: [420]u8 = undefined;
     var severity: model.Severity = .info;
     const message = if (loop_upper_bound) |upper| blk: {
-        const total = estimateCpuTotalMs(base_cost_ms, upper, per_iter_ms) orelse std.math.maxInt(u64);
+        const total = estimate_cpu_total_ms(base_cost_ms, upper, per_iter_ms) orelse std.math.maxInt(u64);
         if (total > sync_cpu_budget_ms) {
             severity = .err;
             break :blk try std.fmt.bufPrint(
@@ -73,7 +73,7 @@ pub fn appendCpuEstimateFinding(
         .{operation_label},
     );
 
-    try appendFinding(
+    try append_finding(
         gpa,
         findings,
         path,
@@ -86,13 +86,13 @@ pub fn appendCpuEstimateFinding(
     );
 }
 
-pub fn computeCpuLimitN(base_cost_ms: u64, per_iter_ms: u64) u64 {
+pub fn compute_cpu_limit_n(base_cost_ms: u64, per_iter_ms: u64) u64 {
     if (per_iter_ms == 0) return std.math.maxInt(u64);
     if (sync_cpu_budget_ms <= base_cost_ms) return 0;
     return (sync_cpu_budget_ms - base_cost_ms) / per_iter_ms;
 }
 
-pub fn estimateCpuTotalMs(base_cost_ms: u64, n: u64, per_iter_ms: u64) ?u64 {
+pub fn estimate_cpu_total_ms(base_cost_ms: u64, n: u64, per_iter_ms: u64) ?u64 {
     if (per_iter_ms == 0) return base_cost_ms;
     const mul = std.math.mul(u64, n, per_iter_ms) catch return null;
     return std.math.add(u64, base_cost_ms, mul) catch return null;
@@ -124,7 +124,7 @@ fn format_governor_message(
     severity: *model.Severity,
 ) ![]u8 {
     if (loop_upper_bound) |upper| {
-        const estimated_total = satMul(upper, per_iter);
+        const estimated_total = sat_mul(upper, per_iter);
         if (estimated_total > meta.limit) {
             severity.* = .err;
             return try std.fmt.bufPrint(
@@ -153,7 +153,7 @@ fn format_governor_message(
     );
 }
 
-pub fn appendGovernorFinding(
+pub fn append_governor_finding(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
     path: []const u8,
@@ -168,7 +168,7 @@ pub fn appendGovernorFinding(
     var severity: model.Severity = .warning;
     const message = try format_governor_message(&message_buffer, meta, loop_upper_bound, per_iter, &severity);
 
-    try appendFinding(
+    try append_finding(
         gpa,
         findings,
         path,
@@ -181,7 +181,7 @@ pub fn appendGovernorFinding(
     );
 }
 
-pub fn appendFinding(
+pub fn append_finding(
     gpa: std.mem.Allocator,
     findings: *std.ArrayList(model.Finding),
     path: []const u8,

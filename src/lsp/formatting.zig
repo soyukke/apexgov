@@ -13,7 +13,7 @@ pub const FormattingOptions = struct {
 };
 
 /// ソースコードをフォーマットし、結果のテキストを返す。
-pub fn formatSource(tokens: []const Token, source: []const u8, opts: FormattingOptions, allocator: std.mem.Allocator) ![]const u8 {
+pub fn format_source(tokens: []const Token, source: []const u8, opts: FormattingOptions, allocator: std.mem.Allocator) ![]const u8 {
     _ = tokens; // 将来的にトークン情報も活用
 
     var result: std.ArrayList(u8) = .empty;
@@ -71,7 +71,7 @@ fn format(source: []const u8) ![]const u8 {
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
 
-    return formatSource(tokens, source, .{}, std.testing.allocator);
+    return format_source(tokens, source, .{}, std.testing.allocator);
 }
 
 test "indents class body" {

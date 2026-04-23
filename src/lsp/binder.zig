@@ -67,17 +67,17 @@ pub fn bind(decls: []const ast.Decl, tokens: []const Token, source: []const u8, 
         .tokens = tokens,
     };
     for (decls) |decl| {
-        try b.bindDecl(decl, null, b.current_scope);
+        try b.bind_decl(decl, null, b.current_scope);
     }
     return .{
         .symbols = try b.symbols.toOwnedSlice(allocator),
         .scopes = try b.scopes.toOwnedSlice(allocator),
-        .references = try b.sortedReferences(),
+        .references = try b.sorted_references(),
     };
 }
 
 /// offset 位置にあるシンボルを探す（参照テーブルを線形探索）。
-pub fn symbolAtPosition(result: *const BindResult, offset: u32) ?*const Symbol {
+pub fn symbol_at_position(result: *const BindResult, offset: u32) ?*const Symbol {
     // references は offset 順にソート済み
     for (result.references) |ref| {
         if (offset >= ref.offset and offset < ref.end_offset) {
@@ -88,7 +88,7 @@ pub fn symbolAtPosition(result: *const BindResult, offset: u32) ?*const Symbol {
 }
 
 /// symbol_id に一致する参照をフィルタして返す。
-pub fn filterReferences(result: *const BindResult, symbol_id: SymbolId, allocator: std.mem.Allocator) ![]const Reference {
+pub fn filter_references(result: *const BindResult, symbol_id: SymbolId, allocator: std.mem.Allocator) ![]const Reference {
     var out: std.ArrayList(Reference) = .empty;
     for (result.references) |ref| {
         if (ref.symbol_id == symbol_id) {
@@ -110,7 +110,7 @@ const Binder = struct {
     references: std.ArrayListUnmanaged(Reference) = .empty,
     current_scope: ScopeId = 0,
 
-    fn addSymbol(self: *Binder, name: []const u8, kind: SymbolKind, type_name: ?[]const u8, loc: SourceLoc, parent: ?SymbolId) !SymbolId {
+    fn add_symbol(self: *Binder, name: []const u8, kind: SymbolKind, type_name: ?[]const u8, loc: SourceLoc, parent: ?SymbolId) !SymbolId {
         const id: SymbolId = @intCast(self.symbols.items.len);
 
         // スコープが無ければルートスコープを作成
@@ -123,7 +123,7 @@ const Binder = struct {
         }
 
         // 名前の正確なトークン位置を探す（loc はしばしば宣言の先頭を指す）
-        const name_loc = self.findTokenAfter(loc.offset, name) orelse loc;
+        const name_loc = self.find_token_after(loc.offset, name) orelse loc;
 
         try self.symbols.append(self.allocator, .{
             .id = id,
@@ -153,7 +153,7 @@ const Binder = struct {
 
     /// loc 以降のトークンから name に一致する identifier を探す。
     /// loc.offset 以降のトークンから name に一致する identifier を探す。
-    fn findTokenAfter(self: *Binder, min_offset: u32, name: []const u8) ?SourceLoc {
+    fn find_token_after(self: *Binder, min_offset: u32, name: []const u8) ?SourceLoc {
         for (self.tokens) |tok| {
             if (tok.loc.offset < min_offset) continue;
             if (tok.kind == .identifier and std.mem.eql(u8, tok.lexeme, name)) {
@@ -163,7 +163,7 @@ const Binder = struct {
         return null;
     }
 
-    fn pushScope(self: *Binder) !ScopeId {
+    fn push_scope(self: *Binder) !ScopeId {
         const id: ScopeId = @intCast(self.scopes.items.len);
         try self.scopes.append(self.allocator, .{
             .id = id,
@@ -174,7 +174,7 @@ const Binder = struct {
         return id;
     }
 
-    fn popScope(self: *Binder) void {
+    fn pop_scope(self: *Binder) void {
         if (self.current_scope < self.scopes.items.len) {
             if (self.scopes.items[self.current_scope].parent) |p| {
                 self.current_scope = p;
@@ -207,7 +207,7 @@ const Binder = struct {
         return null;
     }
 
-    fn addReference(self: *Binder, offset: u32, name: []const u8) !void {
+    fn add_reference(self: *Binder, offset: u32, name: []const u8) !void {
         if (self.resolve(name)) |sym_id| {
             try self.references.append(self.allocator, .{
                 .offset = offset,
@@ -218,17 +218,17 @@ const Binder = struct {
         }
     }
 
-    fn sortedReferences(self: *Binder) ![]Reference {
+    fn sorted_references(self: *Binder) ![]Reference {
         const slice = try self.references.toOwnedSlice(self.allocator);
         std.mem.sort(Reference, slice, {}, struct {
-            fn lessThan(_: void, a: Reference, b_ref: Reference) bool {
+            fn less_than(_: void, a: Reference, b_ref: Reference) bool {
                 return a.offset < b_ref.offset;
             }
-        }.lessThan);
+        }.less_than);
         return slice;
     }
 
-    fn typeRefToString(tr: TypeRef) ?[]const u8 {
+    fn type_ref_to_string(tr: TypeRef) ?[]const u8 {
         if (tr.name.len == 0) return null;
         return tr.name;
     }
@@ -237,64 +237,64 @@ const Binder = struct {
     // Decl 走査
     // -----------------------------------------------------------------------
 
-    fn bindDecl(self: *Binder, decl: ast.Decl, parent: ?SymbolId, _: ScopeId) !void {
+    fn bind_decl(self: *Binder, decl: ast.Decl, parent: ?SymbolId, _: ScopeId) !void {
         switch (decl) {
             .class_decl => |cd| {
-                const sym_id = try self.addSymbol(cd.name, .class, null, cd.loc, parent);
-                _ = try self.pushScope();
+                const sym_id = try self.add_symbol(cd.name, .class, null, cd.loc, parent);
+                _ = try self.push_scope();
                 for (cd.members) |member| {
-                    try self.bindDecl(member, sym_id, self.current_scope);
+                    try self.bind_decl(member, sym_id, self.current_scope);
                 }
-                self.popScope();
+                self.pop_scope();
             },
             .interface_decl => |id| {
-                _ = try self.addSymbol(id.name, .interface, null, id.loc, parent);
+                _ = try self.add_symbol(id.name, .interface, null, id.loc, parent);
             },
             .enum_decl => |ed| {
-                const sym_id = try self.addSymbol(ed.name, .enum_type, null, ed.loc, parent);
+                const sym_id = try self.add_symbol(ed.name, .enum_type, null, ed.loc, parent);
                 for (ed.values) |v| {
                     // enum values の正確な位置はトークンから探す必要があるが、簡易版では enum の loc を使用
-                    _ = try self.addSymbol(v, .enum_value, ed.name, ed.loc, sym_id);
+                    _ = try self.add_symbol(v, .enum_value, ed.name, ed.loc, sym_id);
                 }
             },
             .method_decl => |md| {
-                const sym_id = try self.addSymbol(md.name, .method, typeRefToString(md.return_type), md.loc, parent);
-                _ = try self.pushScope();
+                const sym_id = try self.add_symbol(md.name, .method, type_ref_to_string(md.return_type), md.loc, parent);
+                _ = try self.push_scope();
                 for (md.params) |p| {
-                    const param_loc = self.findTokenAfter(md.loc.offset, p.name) orelse md.loc;
-                    _ = try self.addSymbol(p.name, .parameter, typeRefToString(p.type_ref), param_loc, sym_id);
+                    const param_loc = self.find_token_after(md.loc.offset, p.name) orelse md.loc;
+                    _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, sym_id);
                 }
                 for (md.body) |stmt| {
-                    try self.bindStmt(stmt);
+                    try self.bind_stmt(stmt);
                 }
-                self.popScope();
+                self.pop_scope();
             },
             .constructor_decl => |cd| {
-                const sym_id = try self.addSymbol("<constructor>", .constructor, null, cd.loc, parent);
-                _ = try self.pushScope();
+                const sym_id = try self.add_symbol("<constructor>", .constructor, null, cd.loc, parent);
+                _ = try self.push_scope();
                 for (cd.params) |p| {
-                    const param_loc = self.findTokenAfter(cd.loc.offset, p.name) orelse cd.loc;
-                    _ = try self.addSymbol(p.name, .parameter, typeRefToString(p.type_ref), param_loc, sym_id);
+                    const param_loc = self.find_token_after(cd.loc.offset, p.name) orelse cd.loc;
+                    _ = try self.add_symbol(p.name, .parameter, type_ref_to_string(p.type_ref), param_loc, sym_id);
                 }
                 for (cd.body) |stmt| {
-                    try self.bindStmt(stmt);
+                    try self.bind_stmt(stmt);
                 }
-                self.popScope();
+                self.pop_scope();
             },
             .field_decl => |fd| {
-                _ = try self.addSymbol(fd.name, .field, typeRefToString(fd.type_ref), fd.loc, parent);
+                _ = try self.add_symbol(fd.name, .field, type_ref_to_string(fd.type_ref), fd.loc, parent);
             },
             .trigger_decl => |td| {
-                _ = try self.addSymbol(td.name, .trigger, null, td.loc, parent);
-                _ = try self.pushScope();
+                _ = try self.add_symbol(td.name, .trigger, null, td.loc, parent);
+                _ = try self.push_scope();
                 for (td.body) |stmt| {
-                    try self.bindStmt(stmt);
+                    try self.bind_stmt(stmt);
                 }
-                self.popScope();
+                self.pop_scope();
             },
             .static_init => |stmts| {
                 for (stmts) |stmt| {
-                    try self.bindStmt(stmt);
+                    try self.bind_stmt(stmt);
                 }
             },
         }
@@ -305,92 +305,92 @@ const Binder = struct {
     // -----------------------------------------------------------------------
 
     fn bind_for_stmt(self: *Binder, fs: anytype) anyerror!void {
-        _ = try self.pushScope();
+        _ = try self.push_scope();
         if (fs.init) |init_stmt| {
             switch (init_stmt.*) {
                 .block => |init_stmts| {
-                    for (init_stmts) |init_item| try self.bindStmt(init_item);
+                    for (init_stmts) |init_item| try self.bind_stmt(init_item);
                 },
-                else => try self.bindStmt(init_stmt.*),
+                else => try self.bind_stmt(init_stmt.*),
             }
         }
-        if (fs.condition) |cond| try self.bindExpr(cond.*);
-        if (fs.update) |upd| try self.bindExpr(upd.*);
-        for (fs.body) |s| try self.bindStmt(s);
-        self.popScope();
+        if (fs.condition) |cond| try self.bind_expr(cond.*);
+        if (fs.update) |upd| try self.bind_expr(upd.*);
+        for (fs.body) |s| try self.bind_stmt(s);
+        self.pop_scope();
     }
 
     fn bind_try_stmt(self: *Binder, ts: anytype) anyerror!void {
-        for (ts.body) |s| try self.bindStmt(s);
+        for (ts.body) |s| try self.bind_stmt(s);
         for (ts.catches) |cc| {
-            _ = try self.pushScope();
-            _ = try self.addSymbol(cc.name, .catch_variable, typeRefToString(cc.exception_type), SourceLoc.zero, null);
-            for (cc.body) |s| try self.bindStmt(s);
-            self.popScope();
+            _ = try self.push_scope();
+            _ = try self.add_symbol(cc.name, .catch_variable, type_ref_to_string(cc.exception_type), SourceLoc.zero, null);
+            for (cc.body) |s| try self.bind_stmt(s);
+            self.pop_scope();
         }
         if (ts.finally_body) |fb| {
-            for (fb) |s| try self.bindStmt(s);
+            for (fb) |s| try self.bind_stmt(s);
         }
     }
 
-    fn bindStmt(self: *Binder, stmt: ast.Stmt) !void {
+    fn bind_stmt(self: *Binder, stmt: ast.Stmt) !void {
         switch (stmt) {
             .var_decl => |vd| {
-                _ = try self.addSymbol(vd.name, .local_variable, typeRefToString(vd.type_ref), vd.loc, null);
+                _ = try self.add_symbol(vd.name, .local_variable, type_ref_to_string(vd.type_ref), vd.loc, null);
                 if (vd.initializer) |init_expr| {
-                    try self.bindExpr(init_expr.*);
+                    try self.bind_expr(init_expr.*);
                 }
             },
             .block => |stmts| {
-                _ = try self.pushScope();
-                for (stmts) |s| try self.bindStmt(s);
-                self.popScope();
+                _ = try self.push_scope();
+                for (stmts) |s| try self.bind_stmt(s);
+                self.pop_scope();
             },
             .if_stmt => |is| {
-                try self.bindExpr(is.condition.*);
-                for (is.then_body) |s| try self.bindStmt(s);
+                try self.bind_expr(is.condition.*);
+                for (is.then_body) |s| try self.bind_stmt(s);
                 if (is.else_body) |eb| {
-                    for (eb) |s| try self.bindStmt(s);
+                    for (eb) |s| try self.bind_stmt(s);
                 }
             },
             .for_stmt => |fs| try self.bind_for_stmt(fs),
             .for_each_stmt => |fes| {
-                _ = try self.pushScope();
-                _ = try self.addSymbol(fes.elem_name, .for_each_variable, typeRefToString(fes.elem_type), fes.loc, null);
-                try self.bindExpr(fes.iterable.*);
-                for (fes.body) |s| try self.bindStmt(s);
-                self.popScope();
+                _ = try self.push_scope();
+                _ = try self.add_symbol(fes.elem_name, .for_each_variable, type_ref_to_string(fes.elem_type), fes.loc, null);
+                try self.bind_expr(fes.iterable.*);
+                for (fes.body) |s| try self.bind_stmt(s);
+                self.pop_scope();
             },
             .while_stmt => |ws| {
-                try self.bindExpr(ws.condition.*);
-                for (ws.body) |s| try self.bindStmt(s);
+                try self.bind_expr(ws.condition.*);
+                for (ws.body) |s| try self.bind_stmt(s);
             },
             .do_while => |dw| {
-                for (dw.body) |s| try self.bindStmt(s);
-                try self.bindExpr(dw.condition.*);
+                for (dw.body) |s| try self.bind_stmt(s);
+                try self.bind_expr(dw.condition.*);
             },
             .return_stmt => |rs| {
-                if (rs.value) |val| try self.bindExpr(val.*);
+                if (rs.value) |val| try self.bind_expr(val.*);
             },
             .throw_stmt => |ts| {
-                try self.bindExpr(ts.expr.*);
+                try self.bind_expr(ts.expr.*);
             },
             .switch_stmt => |ss| {
-                try self.bindExpr(ss.subject.*);
+                try self.bind_expr(ss.subject.*);
                 for (ss.when_clauses) |wc| {
-                    for (wc.body) |s| try self.bindStmt(s);
+                    for (wc.body) |s| try self.bind_stmt(s);
                 }
             },
             .try_stmt => |ts| try self.bind_try_stmt(ts),
             .expr_stmt => |expr| {
-                try self.bindExpr(expr.*);
+                try self.bind_expr(expr.*);
             },
             .dml_stmt => |ds| {
-                try self.bindExpr(ds.target.*);
+                try self.bind_expr(ds.target.*);
             },
             .run_as_stmt => |ras| {
-                try self.bindExpr(ras.user_expr.*);
-                for (ras.body) |s| try self.bindStmt(s);
+                try self.bind_expr(ras.user_expr.*);
+                for (ras.body) |s| try self.bind_stmt(s);
             },
             .break_stmt, .continue_stmt => {},
         }
@@ -400,55 +400,55 @@ const Binder = struct {
     // Expr 走査
     // -----------------------------------------------------------------------
 
-    fn bindExpr(self: *Binder, expr: ast.Expr) !void {
+    fn bind_expr(self: *Binder, expr: ast.Expr) !void {
         switch (expr) {
             .integer_literal, .long_literal, .double_literal, .string_literal, .boolean_literal, .null_literal, .this_expr, .super_expr, .soql => {},
             .identifier => |id| {
-                try self.addReference(id.loc.offset, id.name);
+                try self.add_reference(id.loc.offset, id.name);
             },
             .binary => |be| {
-                try self.bindExpr(be.left.*);
-                try self.bindExpr(be.right.*);
+                try self.bind_expr(be.left.*);
+                try self.bind_expr(be.right.*);
             },
             .unary => |ue| {
-                try self.bindExpr(ue.operand.*);
+                try self.bind_expr(ue.operand.*);
             },
             .call => |ce| {
                 // 関数名を参照として登録
-                try self.addReference(ce.loc.offset, ce.callee);
-                for (ce.args) |arg| try self.bindExpr(arg);
+                try self.add_reference(ce.loc.offset, ce.callee);
+                for (ce.args) |arg| try self.bind_expr(arg);
             },
             .method_call => |mc| {
-                try self.bindExpr(mc.object.*);
-                for (mc.args) |arg| try self.bindExpr(arg);
+                try self.bind_expr(mc.object.*);
+                for (mc.args) |arg| try self.bind_expr(arg);
             },
             .field_access => |fa| {
-                try self.bindExpr(fa.object.*);
+                try self.bind_expr(fa.object.*);
             },
             .index_access => |ia| {
-                try self.bindExpr(ia.object.*);
-                try self.bindExpr(ia.index.*);
+                try self.bind_expr(ia.object.*);
+                try self.bind_expr(ia.index.*);
             },
             .assignment => |a| {
-                try self.bindExpr(a.target.*);
-                try self.bindExpr(a.value.*);
+                try self.bind_expr(a.target.*);
+                try self.bind_expr(a.value.*);
             },
             .new_expr => |ne| {
-                for (ne.args) |arg| try self.bindExpr(arg);
+                for (ne.args) |arg| try self.bind_expr(arg);
             },
             .cast_expr => |ce| {
-                try self.bindExpr(ce.operand.*);
+                try self.bind_expr(ce.operand.*);
             },
             .ternary => |te| {
-                try self.bindExpr(te.condition.*);
-                try self.bindExpr(te.then_expr.*);
-                try self.bindExpr(te.else_expr.*);
+                try self.bind_expr(te.condition.*);
+                try self.bind_expr(te.then_expr.*);
+                try self.bind_expr(te.else_expr.*);
             },
             .instanceof => |ie| {
-                try self.bindExpr(ie.operand.*);
+                try self.bind_expr(ie.operand.*);
             },
             .grouped => |inner| {
-                try self.bindExpr(inner.*);
+                try self.bind_expr(inner.*);
             },
         }
     }
@@ -481,7 +481,7 @@ const TestCtx = struct {
     }
 };
 
-fn bindSource(source: []const u8) !TestCtx {
+fn bind_source(source: []const u8) !TestCtx {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     const alloc = arena.allocator();
     const tokens = try lexer.tokenize(source, alloc);
@@ -490,14 +490,14 @@ fn bindSource(source: []const u8) !TestCtx {
     return .{ .result = result, .arena = arena };
 }
 
-fn findSymbol(result: *const BindResult, name: []const u8) ?*const Symbol {
+fn find_symbol(result: *const BindResult, name: []const u8) ?*const Symbol {
     for (result.symbols) |*s| {
         if (std.mem.eql(u8, s.name, name)) return s;
     }
     return null;
 }
 
-fn countSymbolsByKind(result: *const BindResult, kind: SymbolKind) usize {
+fn count_symbols_by_kind(result: *const BindResult, kind: SymbolKind) usize {
     var count: usize = 0;
     for (result.symbols) |s| {
         if (s.kind == kind) count += 1;
@@ -508,19 +508,19 @@ fn countSymbolsByKind(result: *const BindResult, kind: SymbolKind) usize {
 // -- シンボル生成テスト --
 
 test "creates symbol for class" {
-    var ctx = try bindSource("public class Foo {}");
+    var ctx = try bind_source("public class Foo {}");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "Foo");
+    const sym = find_symbol(&ctx.result, "Foo");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.class, sym.?.kind);
 }
 
 test "creates symbol for method with return type" {
-    var ctx = try bindSource("public class Foo { public String getName() { return null; } }");
+    var ctx = try bind_source("public class Foo { public String getName() { return null; } }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "getName");
+    const sym = find_symbol(&ctx.result, "getName");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.method, sym.?.kind);
     try std.testing.expect(sym.?.type_name != null);
@@ -528,60 +528,60 @@ test "creates symbol for method with return type" {
 }
 
 test "creates symbol for field with type" {
-    var ctx = try bindSource("public class Foo { private Integer count; }");
+    var ctx = try bind_source("public class Foo { private Integer count; }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "count");
+    const sym = find_symbol(&ctx.result, "count");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.field, sym.?.kind);
     try std.testing.expectEqualStrings("Integer", sym.?.type_name.?);
 }
 
 test "creates symbol for parameter" {
-    var ctx = try bindSource("public class Foo { public void run(String name) {} }");
+    var ctx = try bind_source("public class Foo { public void run(String name) {} }");
     defer ctx.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), countSymbolsByKind(&ctx.result, .parameter));
-    const sym = findSymbol(&ctx.result, "name");
+    try std.testing.expectEqual(@as(usize, 1), count_symbols_by_kind(&ctx.result, .parameter));
+    const sym = find_symbol(&ctx.result, "name");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.parameter, sym.?.kind);
     try std.testing.expectEqualStrings("String", sym.?.type_name.?);
 }
 
 test "creates symbol for local variable with type" {
-    var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; } }");
+    var ctx = try bind_source("public class Foo { public void run() { Integer x = 1; } }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "x");
+    const sym = find_symbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.local_variable, sym.?.kind);
     try std.testing.expectEqualStrings("Integer", sym.?.type_name.?);
 }
 
 test "creates symbol for enum values" {
-    var ctx = try bindSource("public enum Season { SPRING, SUMMER }");
+    var ctx = try bind_source("public enum Season { SPRING, SUMMER }");
     defer ctx.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), countSymbolsByKind(&ctx.result, .enum_value));
+    try std.testing.expectEqual(@as(usize, 2), count_symbols_by_kind(&ctx.result, .enum_value));
 }
 
 // -- 参照追跡テスト --
 
 test "identifier creates reference to variable" {
-    var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
+    var ctx = try bind_source("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "x");
+    const sym = find_symbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     // x の定義 + 使用 = 2 references
-    const refs = try filterReferences(&ctx.result, sym.?.id, std.testing.allocator);
+    const refs = try filter_references(&ctx.result, sym.?.id, std.testing.allocator);
     defer std.testing.allocator.free(refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.len);
 }
 
 test "references sorted by offset" {
-    var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
+    var ctx = try bind_source("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
     defer ctx.deinit();
 
     for (ctx.result.references[1..], 0..) |ref, i| {
@@ -592,31 +592,31 @@ test "references sorted by offset" {
 
 // -- Position lookup テスト --
 
-test "symbolAtPosition finds variable" {
+test "symbol_at_position finds variable" {
     const source = "public class Foo { public void run() { Integer x = 1; } }";
-    var ctx = try bindSource(source);
+    var ctx = try bind_source(source);
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "x");
+    const sym = find_symbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
-    const found = symbolAtPosition(&ctx.result, sym.?.loc.offset);
+    const found = symbol_at_position(&ctx.result, sym.?.loc.offset);
     try std.testing.expect(found != null);
     try std.testing.expectEqualStrings("x", found.?.name);
 }
 
-test "symbolAtPosition returns null between tokens" {
+test "symbol_at_position returns null between tokens" {
     const source = "public class Foo {}";
-    var ctx = try bindSource(source);
+    var ctx = try bind_source(source);
     defer ctx.deinit();
     // offset 6 = space between 'public' and 'class'
-    const found = symbolAtPosition(&ctx.result, 6);
+    const found = symbol_at_position(&ctx.result, 6);
     try std.testing.expect(found == null);
 }
 
 // -- Edge case テスト --
 
 test "empty class" {
-    var ctx = try bindSource("public class Empty {}");
+    var ctx = try bind_source("public class Empty {}");
     defer ctx.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), ctx.result.symbols.len);
@@ -624,46 +624,46 @@ test "empty class" {
 }
 
 test "multiple classes in file" {
-    var ctx = try bindSource("public class A {} public class B {}");
+    var ctx = try bind_source("public class A {} public class B {}");
     defer ctx.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), countSymbolsByKind(&ctx.result, .class));
+    try std.testing.expectEqual(@as(usize, 2), count_symbols_by_kind(&ctx.result, .class));
 }
 
 test "trigger declaration" {
-    var ctx = try bindSource("trigger MyTrigger on Account (before insert) { }");
+    var ctx = try bind_source("trigger MyTrigger on Account (before insert) { }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "MyTrigger");
+    const sym = find_symbol(&ctx.result, "MyTrigger");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.trigger, sym.?.kind);
 }
 
 test "interface declaration" {
-    var ctx = try bindSource("public interface Runnable { void run(); }");
+    var ctx = try bind_source("public interface Runnable { void run(); }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "Runnable");
+    const sym = find_symbol(&ctx.result, "Runnable");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.interface, sym.?.kind);
 }
 
 test "for-each variable scoped to loop body" {
-    var ctx = try bindSource("public class Foo { public void run() { for (Account a : accs) { } } }");
+    var ctx = try bind_source("public class Foo { public void run() { for (Account a : accs) { } } }");
     defer ctx.deinit();
 
-    const sym = findSymbol(&ctx.result, "a");
+    const sym = find_symbol(&ctx.result, "a");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.for_each_variable, sym.?.kind);
     try std.testing.expectEqualStrings("Account", sym.?.type_name.?);
 }
 
 test "constructor with params" {
-    var ctx = try bindSource("public class Foo { public Foo(String name) {} }");
+    var ctx = try bind_source("public class Foo { public Foo(String name) {} }");
     defer ctx.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), countSymbolsByKind(&ctx.result, .constructor));
-    const param = findSymbol(&ctx.result, "name");
+    try std.testing.expectEqual(@as(usize, 1), count_symbols_by_kind(&ctx.result, .constructor));
+    const param = find_symbol(&ctx.result, "name");
     try std.testing.expect(param != null);
     try std.testing.expectEqual(SymbolKind.parameter, param.?.kind);
 }

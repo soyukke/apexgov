@@ -27,7 +27,7 @@ const apex_keywords = [_][]const u8{
     "List",       "Map",       "Set",
 };
 
-pub fn getCompletions(
+pub fn get_completions(
     result: *const binder_mod.BindResult,
     source: []const u8,
     offset: u32,
@@ -35,17 +35,17 @@ pub fn getCompletions(
     custom_fields: ?*const sobject_schema.CustomFieldRegistry,
 ) ![]lsp_types.CompletionItem {
     // ドット補完の検出: offset の直前が '.' かチェック
-    const dot_ctx = detectDotContext(source, offset, result, custom_fields);
+    const dot_ctx = detect_dot_context(source, offset, result, custom_fields);
     if (dot_ctx) |type_name| {
-        return getDotCompletions(type_name, result, allocator, custom_fields);
+        return get_dot_completions(type_name, result, allocator, custom_fields);
     }
 
     // 通常補完: スコープ内シンボル + キーワード
-    return getDefaultCompletions(result, allocator);
+    return get_default_completions(result, allocator);
 }
 
 /// ドットの直前にある変数/型の type_name を解決する。
-fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.BindResult, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ?[]const u8 {
+fn detect_dot_context(source: []const u8, offset: u32, result: *const binder_mod.BindResult, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ?[]const u8 {
     if (offset == 0) return null;
 
     // offset の直前（空白をスキップ）に '.' があるか
@@ -66,14 +66,14 @@ fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.B
     const receiver_name = source[pos..name_end];
 
     // 1. 静的クラス名としてマッチ（System.debug 等）
-    if (apex_stdlib.isStdlibType(receiver_name)) return receiver_name;
-    if (sobject_schema.isSObject(receiver_name)) return receiver_name;
+    if (apex_stdlib.is_stdlib_type(receiver_name)) return receiver_name;
+    if (sobject_schema.is_s_object(receiver_name)) return receiver_name;
     if (custom_fields) |cf| {
-        if (cf.isSObject(receiver_name)) return receiver_name;
+        if (cf.is_s_object(receiver_name)) return receiver_name;
     }
 
     // 2. binder でシンボル解決 → type_name を取得
-    const sym = binder_mod.symbolAtPosition(result, pos) orelse {
+    const sym = binder_mod.symbol_at_position(result, pos) orelse {
         // シンボルテーブルにない場合、名前で全シンボルを検索
         for (result.symbols) |*s| {
             if (std.mem.eql(u8, s.name, receiver_name)) {
@@ -86,11 +86,11 @@ fn detectDotContext(source: []const u8, offset: u32, result: *const binder_mod.B
 }
 
 /// 型ベースのドット補完。SObject フィールド + 標準ライブラリメソッド。
-fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult, allocator: std.mem.Allocator, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ![]lsp_types.CompletionItem {
+fn get_dot_completions(type_name: []const u8, result: *const binder_mod.BindResult, allocator: std.mem.Allocator, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
 
     // SObject 標準フィールド
-    if (sobject_schema.getFields(type_name)) |fields| {
+    if (sobject_schema.get_fields(type_name)) |fields| {
         for (fields) |f| {
             try items.append(allocator, .{
                 .label = f.name,
@@ -102,7 +102,7 @@ fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult
 
     // カスタムフィールド (__c / __mdt 等)
     if (custom_fields) |cf| {
-        if (cf.getFields(type_name)) |fields| {
+        if (cf.get_fields(type_name)) |fields| {
             for (fields) |f| {
                 try items.append(allocator, .{
                     .label = f.name,
@@ -114,7 +114,7 @@ fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult
     }
 
     // Apex 標準ライブラリメソッド
-    if (apex_stdlib.getMembers(type_name)) |members| {
+    if (apex_stdlib.get_members(type_name)) |members| {
         for (members) |m| {
             try items.append(allocator, .{
                 .label = m.name,
@@ -150,7 +150,7 @@ fn getDotCompletions(type_name: []const u8, result: *const binder_mod.BindResult
 }
 
 /// 通常補完: スコープ内シンボル + キーワード。
-fn getDefaultCompletions(result: *const binder_mod.BindResult, allocator: std.mem.Allocator) ![]lsp_types.CompletionItem {
+fn get_default_completions(result: *const binder_mod.BindResult, allocator: std.mem.Allocator) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
 
     for (result.symbols) |sym| {
@@ -197,24 +197,24 @@ const TestComplCtx = struct {
     }
 };
 
-fn completeAt(source: []const u8, offset: u32) !TestComplCtx {
+fn complete_at(source: []const u8, offset: u32) !TestComplCtx {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     const alloc = arena.allocator();
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
     const br = try binder_mod.bind(decls, tokens, source, alloc);
-    const items = try getCompletions(&br, source, offset, alloc, null);
+    const items = try get_completions(&br, source, offset, alloc, null);
     return .{ .items = items, .arena = arena };
 }
 
-fn hasLabel(items: []const lsp_types.CompletionItem, label: []const u8) bool {
+fn has_label(items: []const lsp_types.CompletionItem, label: []const u8) bool {
     for (items) |item| {
         if (std.mem.eql(u8, item.label, label)) return true;
     }
     return false;
 }
 
-fn hasLabelWithKind(items: []const lsp_types.CompletionItem, label: []const u8, kind: lsp_types.CompletionItemKind) bool {
+fn has_label_with_kind(items: []const lsp_types.CompletionItem, label: []const u8, kind: lsp_types.CompletionItemKind) bool {
     for (items) |item| {
         if (std.mem.eql(u8, item.label, label) and item.kind != null and item.kind.? == kind) return true;
     }
@@ -225,28 +225,28 @@ fn hasLabelWithKind(items: []const lsp_types.CompletionItem, label: []const u8, 
 
 test "local variables in completions" {
     const source = "public class Foo { public void run() { Integer myVar = 1; } }";
-    var ctx = try completeAt(source, 50);
+    var ctx = try complete_at(source, 50);
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabel(ctx.items, "myVar"));
+    try std.testing.expect(has_label(ctx.items, "myVar"));
 }
 
 test "keywords in completions" {
     const source = "public class Foo {}";
-    var ctx = try completeAt(source, 10);
+    var ctx = try complete_at(source, 10);
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabel(ctx.items, "public"));
-    try std.testing.expect(hasLabel(ctx.items, "class"));
-    try std.testing.expect(hasLabel(ctx.items, "String"));
+    try std.testing.expect(has_label(ctx.items, "public"));
+    try std.testing.expect(has_label(ctx.items, "class"));
+    try std.testing.expect(has_label(ctx.items, "String"));
 }
 
 test "method parameters visible" {
     const source = "public class Foo { public void run(String name) {} }";
-    var ctx = try completeAt(source, 45);
+    var ctx = try complete_at(source, 45);
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabel(ctx.items, "name"));
+    try std.testing.expect(has_label(ctx.items, "name"));
 }
 
 // -- ドット補完テスト --
@@ -255,66 +255,66 @@ test "dot completion: Account fields after acc." {
     // "acc." のドットの直後が offset
     const source = "public class Foo { public void run() { Account acc; acc. } }";
     const dot_pos = std.mem.indexOf(u8, source, "acc. ").? + 4; // "acc." の直後
-    var ctx = try completeAt(source, @intCast(dot_pos));
+    var ctx = try complete_at(source, @intCast(dot_pos));
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabelWithKind(ctx.items, "Id", .field));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "Name", .field));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "Phone", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "Id", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "Name", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "Phone", .field));
     // キーワードは含まれない
-    try std.testing.expect(!hasLabel(ctx.items, "public"));
+    try std.testing.expect(!has_label(ctx.items, "public"));
 }
 
 test "dot completion: String methods after str." {
     const source = "public class Foo { public void run() { String str; str. } }";
     const dot_pos = std.mem.indexOf(u8, source, "str. ").? + 4;
-    var ctx = try completeAt(source, @intCast(dot_pos));
+    var ctx = try complete_at(source, @intCast(dot_pos));
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabelWithKind(ctx.items, "length", .method));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "toLowerCase", .method));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "contains", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "length", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "toLowerCase", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "contains", .method));
 }
 
 test "dot completion: System.debug static access" {
     const source = "public class Foo { public void run() { System. } }";
     const dot_pos = std.mem.indexOf(u8, source, "System. ").? + 7;
-    var ctx = try completeAt(source, @intCast(dot_pos));
+    var ctx = try complete_at(source, @intCast(dot_pos));
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabelWithKind(ctx.items, "debug", .method));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "assertEquals", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "debug", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "assertEquals", .method));
 }
 
 test "dot completion: List methods after list." {
     const source = "public class Foo { public void run() { List items; items. } }";
     const dot_pos = std.mem.indexOf(u8, source, "items. ").? + 6;
-    var ctx = try completeAt(source, @intCast(dot_pos));
+    var ctx = try complete_at(source, @intCast(dot_pos));
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabelWithKind(ctx.items, "add", .method));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "size", .method));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "isEmpty", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "add", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "size", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "isEmpty", .method));
 }
 
 test "dot completion: Contact fields" {
     const source = "public class Foo { public void run() { Contact c; c. } }";
     const dot_pos = std.mem.indexOf(u8, source, "c. ").? + 2;
-    var ctx = try completeAt(source, @intCast(dot_pos));
+    var ctx = try complete_at(source, @intCast(dot_pos));
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabelWithKind(ctx.items, "FirstName", .field));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "LastName", .field));
-    try std.testing.expect(hasLabelWithKind(ctx.items, "Email", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "FirstName", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "LastName", .field));
+    try std.testing.expect(has_label_with_kind(ctx.items, "Email", .field));
 }
 
 test "no dot: returns keywords and symbols, not SObject fields" {
     const source = "public class Foo { public void run() { Account acc; } }";
-    var ctx = try completeAt(source, 50);
+    var ctx = try complete_at(source, 50);
     defer ctx.deinit();
 
-    try std.testing.expect(hasLabel(ctx.items, "acc"));
-    try std.testing.expect(hasLabel(ctx.items, "public"));
+    try std.testing.expect(has_label(ctx.items, "acc"));
+    try std.testing.expect(has_label(ctx.items, "public"));
     // SObject フィールドは含まれない
-    try std.testing.expect(!hasLabel(ctx.items, "Phone"));
+    try std.testing.expect(!has_label(ctx.items, "Phone"));
 }

@@ -40,7 +40,7 @@ pub const DocumentStore = struct {
     pub fn deinit(self: *DocumentStore) void {
         var it = self.documents.iterator();
         while (it.next()) |entry| {
-            self.freeDocument(entry.value_ptr);
+            self.free_document(entry.value_ptr);
         }
         self.documents.deinit();
     }
@@ -49,7 +49,7 @@ pub const DocumentStore = struct {
     pub fn open(self: *DocumentStore, uri: []const u8, version: i64, text: []const u8) !void {
         // 既存エントリがあれば解放してから上書き
         if (self.documents.getPtr(uri)) |existing| {
-            self.freeDocument(existing);
+            self.free_document(existing);
             _ = self.documents.remove(uri);
         }
 
@@ -66,7 +66,7 @@ pub const DocumentStore = struct {
     /// ドキュメントを更新する（didChange, Full sync）。
     pub fn update(self: *DocumentStore, uri: []const u8, version: i64, text: []const u8) !void {
         if (self.documents.getPtr(uri)) |doc| {
-            self.invalidateCache(doc);
+            self.invalidate_cache(doc);
 
             // 古いテキストを解放して新しいテキストに差し替え
             self.allocator.free(doc.text);
@@ -76,12 +76,12 @@ pub const DocumentStore = struct {
     }
 
     /// インクリメンタル更新: range で指定された部分を text で置換する。
-    pub fn applyIncrementalChange(self: *DocumentStore, uri: []const u8, version: i64, range: lsp_types.Range, text: []const u8) !void {
+    pub fn apply_incremental_change(self: *DocumentStore, uri: []const u8, version: i64, range: lsp_types.Range, text: []const u8) !void {
         const doc = self.documents.getPtr(uri) orelse return;
-        self.invalidateCache(doc);
+        self.invalidate_cache(doc);
 
-        const start_offset = position_mod.positionToOffset(doc.text, range.start.line, range.start.character) orelse return;
-        const end_offset = position_mod.positionToOffset(doc.text, range.end.line, range.end.character) orelse return;
+        const start_offset = position_mod.position_to_offset(doc.text, range.start.line, range.start.character) orelse return;
+        const end_offset = position_mod.position_to_offset(doc.text, range.end.line, range.end.character) orelse return;
 
         // 新しいテキストを構築: [0..start_offset] + text + [end_offset..]
         const old = doc.text;
@@ -96,7 +96,7 @@ pub const DocumentStore = struct {
         doc.version = version;
     }
 
-    fn invalidateCache(self: *DocumentStore, doc: *Document) void {
+    fn invalidate_cache(self: *DocumentStore, doc: *Document) void {
         _ = self;
         if (doc.arena) |*a| a.deinit();
         doc.arena = null;
@@ -107,7 +107,7 @@ pub const DocumentStore = struct {
     pub fn close(self: *DocumentStore, uri: []const u8) void {
         if (self.documents.fetchRemove(uri)) |kv| {
             var doc = kv.value;
-            self.freeDocument(&doc);
+            self.free_document(&doc);
         }
     }
 
@@ -117,7 +117,7 @@ pub const DocumentStore = struct {
     }
 
     /// ドキュメントを解析し、結果をキャッシュする。
-    pub fn ensureParsed(self: *DocumentStore, uri: []const u8) !?*CachedParse {
+    pub fn ensure_parsed(self: *DocumentStore, uri: []const u8) !?*CachedParse {
         const doc = self.documents.getPtr(uri) orelse return null;
         if (doc.parse_result != null) return &doc.parse_result.?;
 
@@ -138,9 +138,9 @@ pub const DocumentStore = struct {
         return &doc.parse_result.?;
     }
 
-    /// バインド結果をキャッシュして返す。ensureParsed を内部で呼ぶ。
-    pub fn ensureBound(self: *DocumentStore, uri: []const u8) !?*binder_mod.BindResult {
-        const cached = try self.ensureParsed(uri) orelse return null;
+    /// バインド結果をキャッシュして返す。ensure_parsed を内部で呼ぶ。
+    pub fn ensure_bound(self: *DocumentStore, uri: []const u8) !?*binder_mod.BindResult {
+        const cached = try self.ensure_parsed(uri) orelse return null;
         if (cached.bind_result != null) return &cached.bind_result.?;
 
         const doc = self.documents.getPtr(uri) orelse return null;
@@ -158,7 +158,7 @@ pub const DocumentStore = struct {
         source: []const u8,
     };
 
-    pub fn resolveSymbolAcrossFiles(self: *DocumentStore, name: []const u8, exclude_uri: []const u8) ?SymbolMatch {
+    pub fn resolve_symbol_across_files(self: *DocumentStore, name: []const u8, exclude_uri: []const u8) ?SymbolMatch {
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, exclude_uri)) continue;
@@ -166,7 +166,7 @@ pub const DocumentStore = struct {
             const pr = doc.parse_result orelse continue;
             const br = pr.bind_result orelse continue;
             for (br.symbols) |sym| {
-                if (isTopLevelType(sym.kind) and std.mem.eql(u8, sym.name, name)) {
+                if (is_top_level_type(sym.kind) and std.mem.eql(u8, sym.name, name)) {
                     return .{
                         .uri = entry.key_ptr.*,
                         .symbol = sym,
@@ -178,14 +178,14 @@ pub const DocumentStore = struct {
         return null;
     }
 
-    fn isTopLevelType(kind: binder_mod.SymbolKind) bool {
+    fn is_top_level_type(kind: binder_mod.SymbolKind) bool {
         return switch (kind) {
             .class, .interface, .enum_type, .trigger => true,
             else => false,
         };
     }
 
-    fn freeDocument(self: *DocumentStore, doc: *Document) void {
+    fn free_document(self: *DocumentStore, doc: *Document) void {
         if (doc.arena) |*a| a.deinit();
         self.allocator.free(doc.text);
         self.allocator.free(doc.uri);
@@ -214,17 +214,17 @@ test "open, get, update, close" {
     try std.testing.expect(store.get("file:///test.cls") == null);
 }
 
-test "ensureParsed caches parse result" {
+test "ensure_parsed caches parse result" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///test.cls", 1, "public class MyClass { public void run() {} }");
-    const parsed = try store.ensureParsed("file:///test.cls");
+    const parsed = try store.ensure_parsed("file:///test.cls");
     try std.testing.expect(parsed != null);
     try std.testing.expect(parsed.?.decls.len > 0);
 }
 
-test "resolveSymbolAcrossFiles finds class in other file" {
+test "resolve_symbol_across_files finds class in other file" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
@@ -232,48 +232,48 @@ test "resolveSymbolAcrossFiles finds class in other file" {
     try store.open("file:///Main.cls", 1, "public class Main { }");
 
     // 両方をパース+バインド
-    _ = try store.ensureBound("file:///Helper.cls");
-    _ = try store.ensureBound("file:///Main.cls");
+    _ = try store.ensure_bound("file:///Helper.cls");
+    _ = try store.ensure_bound("file:///Main.cls");
 
     // Main.cls から Helper を検索 → Helper.cls で見つかるはず
-    const match = store.resolveSymbolAcrossFiles("Helper", "file:///Main.cls");
+    const match = store.resolve_symbol_across_files("Helper", "file:///Main.cls");
     try std.testing.expect(match != null);
     try std.testing.expectEqualStrings("file:///Helper.cls", match.?.uri);
     try std.testing.expectEqualStrings("Helper", match.?.symbol.name);
 }
 
-test "resolveSymbolAcrossFiles excludes current file" {
+test "resolve_symbol_across_files excludes current file" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///Foo.cls", 1, "public class Foo {}");
-    _ = try store.ensureBound("file:///Foo.cls");
+    _ = try store.ensure_bound("file:///Foo.cls");
 
     // 同じファイルを exclude → null
-    const match = store.resolveSymbolAcrossFiles("Foo", "file:///Foo.cls");
+    const match = store.resolve_symbol_across_files("Foo", "file:///Foo.cls");
     try std.testing.expect(match == null);
 }
 
-test "resolveSymbolAcrossFiles returns null for unknown symbol" {
+test "resolve_symbol_across_files returns null for unknown symbol" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///A.cls", 1, "public class A {}");
-    _ = try store.ensureBound("file:///A.cls");
+    _ = try store.ensure_bound("file:///A.cls");
 
-    const match = store.resolveSymbolAcrossFiles("NonExistent", "file:///B.cls");
+    const match = store.resolve_symbol_across_files("NonExistent", "file:///B.cls");
     try std.testing.expect(match == null);
 }
 
 // -- Incremental sync テスト --
 
-test "applyIncrementalChange: replace single word" {
+test "apply_incremental_change: replace single word" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///t.cls", 1, "public class Foo {}");
     // "Foo" → "Bar" (line 0, char 13..16)
-    try store.applyIncrementalChange("file:///t.cls", 2, .{
+    try store.apply_incremental_change("file:///t.cls", 2, .{
         .start = .{ .line = 0, .character = 13 },
         .end = .{ .line = 0, .character = 16 },
     }, "Bar");
@@ -283,13 +283,13 @@ test "applyIncrementalChange: replace single word" {
     try std.testing.expectEqual(@as(i64, 2), doc.version);
 }
 
-test "applyIncrementalChange: insert text" {
+test "apply_incremental_change: insert text" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///t.cls", 1, "AB");
     // "AB" の A と B の間に "XY" を挿入 (range start == end → 挿入)
-    try store.applyIncrementalChange("file:///t.cls", 2, .{
+    try store.apply_incremental_change("file:///t.cls", 2, .{
         .start = .{ .line = 0, .character = 1 },
         .end = .{ .line = 0, .character = 1 },
     }, "XY");
@@ -298,13 +298,13 @@ test "applyIncrementalChange: insert text" {
     try std.testing.expectEqualStrings("AXYB", doc.text);
 }
 
-test "applyIncrementalChange: delete text" {
+test "apply_incremental_change: delete text" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///t.cls", 1, "ABCDEF");
     // "BCD" を削除 (char 1..4, text="")
-    try store.applyIncrementalChange("file:///t.cls", 2, .{
+    try store.apply_incremental_change("file:///t.cls", 2, .{
         .start = .{ .line = 0, .character = 1 },
         .end = .{ .line = 0, .character = 4 },
     }, "");
@@ -313,13 +313,13 @@ test "applyIncrementalChange: delete text" {
     try std.testing.expectEqualStrings("AEF", doc.text);
 }
 
-test "applyIncrementalChange: multi-line edit" {
+test "apply_incremental_change: multi-line edit" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///t.cls", 1, "line0\nline1\nline2");
     // line1 全体を "replaced" に置換 (line 1, char 0 → line 1, char 5)
-    try store.applyIncrementalChange("file:///t.cls", 2, .{
+    try store.apply_incremental_change("file:///t.cls", 2, .{
         .start = .{ .line = 1, .character = 0 },
         .end = .{ .line = 1, .character = 5 },
     }, "replaced");
@@ -328,15 +328,15 @@ test "applyIncrementalChange: multi-line edit" {
     try std.testing.expectEqualStrings("line0\nreplaced\nline2", doc.text);
 }
 
-test "applyIncrementalChange: invalidates parse cache" {
+test "apply_incremental_change: invalidates parse cache" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
 
     try store.open("file:///t.cls", 1, "public class Foo {}");
-    _ = try store.ensureParsed("file:///t.cls");
+    _ = try store.ensure_parsed("file:///t.cls");
     try std.testing.expect(store.get("file:///t.cls").?.parse_result != null);
 
-    try store.applyIncrementalChange("file:///t.cls", 2, .{
+    try store.apply_incremental_change("file:///t.cls", 2, .{
         .start = .{ .line = 0, .character = 13 },
         .end = .{ .line = 0, .character = 16 },
     }, "Bar");

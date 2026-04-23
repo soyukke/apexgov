@@ -339,7 +339,7 @@ fn runTestsFiltered(
         for (class_decl.members) |member| {
             switch (member) {
                 .method_decl => |md| {
-                    if (!isTestMethod(md)) continue;
+                    if (!is_test_method(md)) continue;
 
                     // メソッドフィルタ: 指定されていれば一致するメソッドのみ
                     if (filter_method) |fm| {
@@ -461,7 +461,7 @@ fn runTestsFiltered(
     return suite;
 }
 
-fn isTestClass(cd: *ast.ClassDecl) bool {
+fn is_test_class(cd: *ast.ClassDecl) bool {
     for (cd.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or
             std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test("))
@@ -473,7 +473,7 @@ fn isTestClass(cd: *ast.ClassDecl) bool {
     for (cd.members) |member| {
         switch (member) {
             .method_decl => |md| {
-                if (isTestMethod(md)) return true;
+                if (is_test_method(md)) return true;
             },
             else => {},
         }
@@ -481,7 +481,7 @@ fn isTestClass(cd: *ast.ClassDecl) bool {
     return false;
 }
 
-fn isTestMethod(md: *ast.MethodDecl) bool {
+fn is_test_method(md: *ast.MethodDecl) bool {
     if (md.modifiers.is_test_method) return true;
     for (md.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or std.ascii.eqlIgnoreCase(ann, "@test")) {
@@ -1164,7 +1164,7 @@ test {
     _ = utils;
 }
 
-test "isTestMethod detects testMethod modifier" {
+test "is_test_method detects testMethod modifier" {
     const source =
         \\@IsTest
         \\public class LegacyTestDemo {
@@ -1189,8 +1189,8 @@ test "isTestMethod detects testMethod modifier" {
     try std.testing.expectEqualStrings("legacyTest", md.name);
     // is_test_method should be set by parser
     try std.testing.expect(md.modifiers.is_test_method);
-    // isTestMethod should detect it
-    try std.testing.expect(isTestMethod(md));
+    // is_test_method should detect it
+    try std.testing.expect(is_test_method(md));
 }
 
 // ---------------------------------------------------------------------------
@@ -8706,7 +8706,7 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
         \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
         \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
         \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
-        \\        List<Schema.FieldSetMember> members = fieldSet.getFields();
+        \\        List<Schema.FieldSetMember> members = fieldSet.get_fields();
         \\        return String.valueOf(byType.size()) + ':' +
         \\            String.valueOf(describedFieldSet != null) + ':' +
         \\            fieldSet.getLabel() + ':' +
@@ -9066,7 +9066,7 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     const source =
         \\public class FieldSetLookupMetadataTest {
         \\    public static String test() {
-        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults').getFields().get(0);
+        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults').get_fields().get(0);
         \\        Schema.DescribeFieldResult describe = member.getSObjectField().getDescribe();
         \\        return member.getLabel()
         \\            + ':' + describe.getLabel()
@@ -9172,7 +9172,7 @@ test "E2E: field set queries do not mark null summary fields as populated" {
         \\            '(SELECT Id FROM ThingEntries__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
         \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Thing__c WHERE Id = :thing.Id';
@@ -9226,7 +9226,7 @@ test "E2E: field set queries materialize formula fields built from rollup counts
         \\            '(SELECT Id FROM Children__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').get_fields()) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
         \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Parent__c WHERE Id = :parentRecord.Id';
@@ -12122,7 +12122,7 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
         \\            Database.SaveResult.class
         \\        );
         \\        Database.Error errorRow = result.getErrors().get(0);
-        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() + ':' + String.join(errorRow.getFields(), ',');
+        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() + ':' + String.join(errorRow.get_fields(), ',');
         \\    }
         \\}
     ;
@@ -12143,7 +12143,7 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
         \\            Database.SaveResult.class
         \\        );
-        \\        return result.errors.get(0).getMessage() + ':' + String.join(result.errors.get(0).getFields(), ',');
+        \\        return result.errors.get(0).getMessage() + ':' + String.join(result.errors.get(0).get_fields(), ',');
         \\    }
         \\}
     ;
@@ -13884,7 +13884,7 @@ test "E2E: sobject.Field.addError(msg) attaches error to the field" {
         \\        Database.Error first = opp.getErrors()[0];
         \\        return String.valueOf(opp.hasErrors()) + '|' +
         \\               first.getMessage() + '|' +
-        \\               first.getFields()[0];
+        \\               first.get_fields()[0];
         \\    }
         \\}
     ;
