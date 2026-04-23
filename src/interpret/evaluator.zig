@@ -9579,33 +9579,8 @@ pub const Evaluator = struct {
     ) ?[]const u8 {
         switch (expr.*) {
             .cast_expr => |ce| return self.render_type_ref(ce.target_type),
-            .new_expr => |ne| {
-                // Only surface container-shape hints (Set<X>, List<X>, Map<K,V>) so that
-                // generic-element overloads can disambiguate. For user types we rely on
-                // the regular subclass-scoring pass in the ranker.
-                const rendered = self.render_type_ref(ne.type_name);
-                if (std.mem.indexOfScalar(u8, rendered, '<') != null) return rendered;
-                return null;
-            },
-            .ternary => |te| {
-                // `cond ? then : else` — if both branches have a compatible hint
-                // (typically enum expressions like `flag ? MyEnum.A : MyEnum.B`),
-                // surface it so overload resolution can prefer the enum-typed
-                // parameter. If either branch lacks a hint or they disagree,
-                // fall back to null so the regular Value-based scoring runs.
-                const then_hint = self.extract_expr_type_hint(te.then_expr, current_env) orelse
-                    self.enum_access_type_name(te.then_expr) orelse null;
-                const else_hint = self.extract_expr_type_hint(te.else_expr, current_env) orelse
-                    self.enum_access_type_name(te.else_expr) orelse null;
-                if (then_hint != null and else_hint != null and
-                    std.ascii.eqlIgnoreCase(then_hint.?, else_hint.?))
-                {
-                    return then_hint;
-                }
-                if (then_hint != null) return then_hint;
-                if (else_hint != null) return else_hint;
-                return null;
-            },
+            .new_expr => |ne| return self.extract_new_expr_container_hint(ne),
+            .ternary => |te| return self.extract_ternary_type_hint(te, current_env),
             .identifier, .field_access => {
                 if (self.resolve_assignment_target_type(expr, current_env)) |type_name| {
                     return strip_type_namespace(type_name);
@@ -9613,72 +9588,100 @@ pub const Evaluator = struct {
                 // Fall back to enum detection for bare `MyEnum.VALUE` forms.
                 return self.enum_access_type_name(expr);
             },
-            .method_call => |mc| {
-                const arg_count = mc.args.len;
-
-                if (mc.object.* == .identifier) {
-                    const target_name = mc.object.identifier.name;
-
-                    if (self.find_class(target_name)) |class_decl| {
-                        if (self.find_method_in_hierarchy(
-                            null,
-                            class_decl,
-                            mc.method,
-                            arg_count,
-                        )) |method_decl| {
-                            return strip_type_namespace(
-                                self.render_type_ref(method_decl.return_type),
-                            );
-                        }
-                    }
-
-                    if (self.resolve_assignment_target_type(
-                        mc.object,
-                        current_env,
-                    )) |instance_type| {
-                        const base_type = type_base_name(instance_type);
-                        if (self.find_class(base_type)) |class_decl| {
-                            if (self.find_method_in_hierarchy(
-                                null,
-                                class_decl,
-                                mc.method,
-                                arg_count,
-                            )) |method_decl| {
-                                return strip_type_namespace(
-                                    self.render_type_ref(method_decl.return_type),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if (mc.object.* == .field_access) {
-                    const fa = mc.object.field_access;
-                    if (fa.object.* == .identifier) {
-                        const qualified_name = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ fa.object.identifier.name, fa.field },
-                        ) catch return null;
-                        if (self.find_class(qualified_name)) |class_decl| {
-                            if (self.find_method_in_hierarchy(
-                                null,
-                                class_decl,
-                                mc.method,
-                                arg_count,
-                            )) |method_decl| {
-                                return strip_type_namespace(
-                                    self.render_type_ref(method_decl.return_type),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                return null;
-            },
+            .method_call => |mc| return self.extract_method_call_type_hint(mc, current_env),
             else => return null,
         }
+    }
+
+    /// Only surface container-shape hints (Set<X>, List<X>, Map<K,V>) so that
+    /// generic-element overloads can disambiguate. For user types the ranker's
+    /// subclass-scoring pass already handles disambiguation.
+    fn extract_new_expr_container_hint(self: *Evaluator, ne: *ast.NewExpr) ?[]const u8 {
+        const rendered = self.render_type_ref(ne.type_name);
+        if (std.mem.indexOfScalar(u8, rendered, '<') != null) return rendered;
+        return null;
+    }
+
+    /// `cond ? then : else` — when both branches have a compatible hint
+    /// (typically enum expressions like `flag ? MyEnum.A : MyEnum.B`), surface
+    /// it so overload resolution can prefer the enum-typed parameter. Falls
+    /// back to whichever branch has a hint, else null.
+    fn extract_ternary_type_hint(
+        self: *Evaluator,
+        te: *ast.TernaryExpr,
+        current_env: *Env,
+    ) ?[]const u8 {
+        const then_hint = self.extract_expr_type_hint(te.then_expr, current_env) orelse
+            self.enum_access_type_name(te.then_expr) orelse null;
+        const else_hint = self.extract_expr_type_hint(te.else_expr, current_env) orelse
+            self.enum_access_type_name(te.else_expr) orelse null;
+        if (then_hint != null and else_hint != null and
+            std.ascii.eqlIgnoreCase(then_hint.?, else_hint.?))
+        {
+            return then_hint;
+        }
+        if (then_hint != null) return then_hint;
+        if (else_hint != null) return else_hint;
+        return null;
+    }
+
+    fn extract_method_call_type_hint(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+    ) ?[]const u8 {
+        const arg_count = mc.args.len;
+        if (mc.object.* == .identifier) {
+            const target_name = mc.object.identifier.name;
+            if (self.find_class(target_name)) |class_decl| {
+                if (self.find_method_in_hierarchy(
+                    null,
+                    class_decl,
+                    mc.method,
+                    arg_count,
+                )) |method_decl| {
+                    return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                }
+            }
+            if (self.resolve_assignment_target_type(mc.object, current_env)) |instance_type| {
+                const base_type = type_base_name(instance_type);
+                if (self.find_class(base_type)) |class_decl| {
+                    if (self.find_method_in_hierarchy(
+                        null,
+                        class_decl,
+                        mc.method,
+                        arg_count,
+                    )) |method_decl| {
+                        return strip_type_namespace(
+                            self.render_type_ref(method_decl.return_type),
+                        );
+                    }
+                }
+            }
+        }
+        if (mc.object.* == .field_access) {
+            const fa = mc.object.field_access;
+            if (fa.object.* == .identifier) {
+                const qualified_name = std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ fa.object.identifier.name, fa.field },
+                ) catch return null;
+                if (self.find_class(qualified_name)) |class_decl| {
+                    if (self.find_method_in_hierarchy(
+                        null,
+                        class_decl,
+                        mc.method,
+                        arg_count,
+                    )) |method_decl| {
+                        return strip_type_namespace(
+                            self.render_type_ref(method_decl.return_type),
+                        );
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     fn maybe_coerce_schema_expr_value(
