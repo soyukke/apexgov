@@ -200,137 +200,141 @@ const Lexer = struct {
         return self.make_token_at(.soql_literal, self.source[start..self.pos], start_loc);
     }
 
+    fn emit_op(self: *Lexer, kind: TokenKind, start: u32, start_loc: SourceLoc) Token {
+        return self.make_token_at(kind, self.source[start..self.pos], start_loc);
+    }
+
+    fn scan_plus(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '+') {
+            self.advance();
+            return self.emit_op(.plus_plus, start, start_loc);
+        }
+        if (next_char == '=') {
+            self.advance();
+            return self.emit_op(.plus_assign, start, start_loc);
+        }
+        return self.emit_op(.plus, start, start_loc);
+    }
+
+    fn scan_minus(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '-') {
+            self.advance();
+            return self.emit_op(.minus_minus, start, start_loc);
+        }
+        if (next_char == '=') {
+            self.advance();
+            return self.emit_op(.minus_assign, start, start_loc);
+        }
+        return self.emit_op(.minus, start, start_loc);
+    }
+
+    fn scan_eq(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '=') {
+            self.advance();
+            if (self.pos < self.source.len and self.source[self.pos] == '=') {
+                self.advance();
+                return self.emit_op(.strict_eq, start, start_loc);
+            }
+            return self.emit_op(.eq, start, start_loc);
+        }
+        if (next_char == '>') {
+            self.advance();
+            return self.emit_op(.arrow, start, start_loc);
+        }
+        return self.emit_op(.assign, start, start_loc);
+    }
+
+    fn scan_bang(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '=') {
+            self.advance();
+            if (self.pos < self.source.len and self.source[self.pos] == '=') {
+                self.advance();
+                return self.emit_op(.strict_neq, start, start_loc);
+            }
+            return self.emit_op(.neq, start, start_loc);
+        }
+        return self.emit_op(.not_op, start, start_loc);
+    }
+
+    fn scan_lt(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '=') {
+            self.advance();
+            return self.emit_op(.lte, start, start_loc);
+        }
+        if (next_char == '>') {
+            self.advance();
+            return self.emit_op(.neq, start, start_loc);
+        }
+        return self.emit_op(.lt, start, start_loc);
+    }
+
+    fn scan_gt(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '=') {
+            self.advance();
+            return self.emit_op(.gte, start, start_loc);
+        }
+        return self.emit_op(.gt, start, start_loc);
+    }
+
+    fn scan_question(self: *Lexer, next_char: u8, start: u32, start_loc: SourceLoc) Token {
+        if (next_char == '?') {
+            self.advance();
+            if (self.pos < self.source.len and self.source[self.pos] == '=') {
+                self.advance();
+                return self.emit_op(.question_question_equal, start, start_loc);
+            }
+            return self.emit_op(.question_question, start, start_loc);
+        }
+        if (next_char == '.') {
+            self.advance();
+            return self.emit_op(.question_dot, start, start_loc);
+        }
+        return self.emit_op(.question, start, start_loc);
+    }
+
     fn scan_operator(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         const c = self.source[self.pos];
         self.advance();
-
         const next_char: u8 = if (self.pos < self.source.len) self.source[self.pos] else 0;
 
-        switch (c) {
-            '+' => {
-                if (next_char == '+') {
-                    self.advance();
-                    return self.make_token_at(.plus_plus, self.source[start..self.pos], start_loc);
-                }
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.plus_assign, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.plus, self.source[start..self.pos], start_loc);
-            },
-            '-' => {
-                if (next_char == '-') {
-                    self.advance();
-                    return self.make_token_at(.minus_minus, self.source[start..self.pos], start_loc);
-                }
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.minus_assign, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.minus, self.source[start..self.pos], start_loc);
-            },
-            '*' => {
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.star_assign, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.star, self.source[start..self.pos], start_loc);
-            },
-            '/' => {
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.slash_assign, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.slash, self.source[start..self.pos], start_loc);
-            },
-            '%' => return self.make_token_at(.percent, self.source[start..self.pos], start_loc),
-            '=' => {
-                if (next_char == '=') {
-                    self.advance();
-                    if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                        self.advance();
-                        return self.make_token_at(.strict_eq, self.source[start..self.pos], start_loc);
-                    }
-                    return self.make_token_at(.eq, self.source[start..self.pos], start_loc);
-                }
-                if (next_char == '>') {
-                    self.advance();
-                    return self.make_token_at(.arrow, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.assign, self.source[start..self.pos], start_loc);
-            },
-            '!' => {
-                if (next_char == '=') {
-                    self.advance();
-                    if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                        self.advance();
-                        return self.make_token_at(.strict_neq, self.source[start..self.pos], start_loc);
-                    }
-                    return self.make_token_at(.neq, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.not_op, self.source[start..self.pos], start_loc);
-            },
-            '<' => {
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.lte, self.source[start..self.pos], start_loc);
-                }
-                if (next_char == '>') {
-                    self.advance();
-                    return self.make_token_at(.neq, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.lt, self.source[start..self.pos], start_loc);
-            },
-            '>' => {
-                if (next_char == '=') {
-                    self.advance();
-                    return self.make_token_at(.gte, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.gt, self.source[start..self.pos], start_loc);
-            },
-            '&' => {
-                if (next_char == '&') {
-                    self.advance();
-                    return self.make_token_at(.and_op, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.ampersand, self.source[start..self.pos], start_loc);
-            },
-            '|' => {
-                if (next_char == '|') {
-                    self.advance();
-                    return self.make_token_at(.or_op, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.pipe, self.source[start..self.pos], start_loc);
-            },
-            '^' => return self.make_token_at(.caret, self.source[start..self.pos], start_loc),
-            '~' => return self.make_token_at(.not_op, self.source[start..self.pos], start_loc),
-            '(' => return self.make_token_at(.lparen, self.source[start..self.pos], start_loc),
-            ')' => return self.make_token_at(.rparen, self.source[start..self.pos], start_loc),
-            '{' => return self.make_token_at(.lbrace, self.source[start..self.pos], start_loc),
-            '}' => return self.make_token_at(.rbrace, self.source[start..self.pos], start_loc),
-            ']' => return self.make_token_at(.rbracket, self.source[start..self.pos], start_loc),
-            '.' => return self.make_token_at(.dot, self.source[start..self.pos], start_loc),
-            ',' => return self.make_token_at(.comma, self.source[start..self.pos], start_loc),
-            ';' => return self.make_token_at(.semicolon, self.source[start..self.pos], start_loc),
-            ':' => return self.make_token_at(.colon, self.source[start..self.pos], start_loc),
-            '?' => {
-                if (next_char == '?') {
-                    self.advance();
-                    // Check for ??=
-                    if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                        self.advance();
-                        return self.make_token_at(.question_question_equal, self.source[start..self.pos], start_loc);
-                    }
-                    return self.make_token_at(.question_question, self.source[start..self.pos], start_loc);
-                }
-                if (next_char == '.') {
-                    self.advance();
-                    return self.make_token_at(.question_dot, self.source[start..self.pos], start_loc);
-                }
-                return self.make_token_at(.question, self.source[start..self.pos], start_loc);
-            },
-            else => return self.make_token_at(.identifier, self.source[start..self.pos], start_loc),
-        }
+        return switch (c) {
+            '+' => self.scan_plus(next_char, start, start_loc),
+            '-' => self.scan_minus(next_char, start, start_loc),
+            '*' => if (next_char == '=') blk: {
+                self.advance();
+                break :blk self.emit_op(.star_assign, start, start_loc);
+            } else self.emit_op(.star, start, start_loc),
+            '/' => if (next_char == '=') blk: {
+                self.advance();
+                break :blk self.emit_op(.slash_assign, start, start_loc);
+            } else self.emit_op(.slash, start, start_loc),
+            '%' => self.emit_op(.percent, start, start_loc),
+            '=' => self.scan_eq(next_char, start, start_loc),
+            '!' => self.scan_bang(next_char, start, start_loc),
+            '<' => self.scan_lt(next_char, start, start_loc),
+            '>' => self.scan_gt(next_char, start, start_loc),
+            '&' => if (next_char == '&') blk: {
+                self.advance();
+                break :blk self.emit_op(.and_op, start, start_loc);
+            } else self.emit_op(.ampersand, start, start_loc),
+            '|' => if (next_char == '|') blk: {
+                self.advance();
+                break :blk self.emit_op(.or_op, start, start_loc);
+            } else self.emit_op(.pipe, start, start_loc),
+            '^' => self.emit_op(.caret, start, start_loc),
+            '~' => self.emit_op(.not_op, start, start_loc),
+            '(' => self.emit_op(.lparen, start, start_loc),
+            ')' => self.emit_op(.rparen, start, start_loc),
+            '{' => self.emit_op(.lbrace, start, start_loc),
+            '}' => self.emit_op(.rbrace, start, start_loc),
+            ']' => self.emit_op(.rbracket, start, start_loc),
+            '.' => self.emit_op(.dot, start, start_loc),
+            ',' => self.emit_op(.comma, start, start_loc),
+            ';' => self.emit_op(.semicolon, start, start_loc),
+            ':' => self.emit_op(.colon, start, start_loc),
+            '?' => self.scan_question(next_char, start, start_loc),
+            else => self.emit_op(.identifier, start, start_loc),
+        };
     }
 
     fn skip_whitespace_and_comments(self: *Lexer) void {

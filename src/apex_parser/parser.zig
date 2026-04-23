@@ -306,6 +306,76 @@ const Parser = struct {
         return members.toOwnedSlice(self.arena);
     }
 
+    fn parse_method_body(self: *Parser, mods: ast.Modifiers, type_ref: TypeRef, name: []const u8, annotations: [][]const u8, loc: SourceLoc) anyerror!ast.Decl {
+        const params = try self.parse_params();
+        try self.expect(.rparen);
+        var body: []ast.Stmt = &.{};
+        if (self.match_kind(.lbrace)) {
+            body = try self.parse_block();
+            try self.expect(.rbrace);
+        } else {
+            // abstract method or interface method
+            _ = self.match_kind(.semicolon);
+        }
+
+        const decl = try self.arena.create(ast.MethodDecl);
+        decl.* = .{
+            .name = name,
+            .modifiers = mods,
+            .return_type = type_ref,
+            .params = params,
+            .body = body,
+            .annotations = annotations,
+            .loc = loc,
+        };
+        return .{ .method_decl = decl };
+    }
+
+    fn parse_property_accessors(self: *Parser, getter: *?[]ast.Stmt, setter: *?[]ast.Stmt) !void {
+        while (!self.at_end() and !self.check(.rbrace)) {
+            // Skip modifiers like 'private', 'public' before get/set
+            while (self.check(.private_kw) or self.check(.public_kw) or self.check(.protected_kw)) {
+                self.pos += 1;
+            }
+            if (!self.check(.identifier)) {
+                self.pos += 1;
+                continue;
+            }
+            const accessor = self.current().lexeme;
+            self.pos += 1;
+            if (std.ascii.eqlIgnoreCase(accessor, "get")) {
+                if (self.match_kind(.lbrace)) {
+                    getter.* = try self.parse_block();
+                    try self.expect(.rbrace);
+                } else {
+                    _ = self.match_kind(.semicolon);
+                }
+            } else if (std.ascii.eqlIgnoreCase(accessor, "set")) {
+                if (self.match_kind(.lbrace)) {
+                    setter.* = try self.parse_block();
+                    try self.expect(.rbrace);
+                } else {
+                    _ = self.match_kind(.semicolon);
+                }
+            }
+        }
+        try self.expect(.rbrace);
+    }
+
+    fn parse_field_initializer_and_tail(self: *Parser, initializer: *?*ast.Expr) !void {
+        if (self.match_kind(.assign)) {
+            initializer.* = try self.expression();
+        }
+        // Handle comma-separated field declarations: Type a, b, c;
+        while (self.match_kind(.comma)) {
+            _ = try self.expect_identifier();
+            if (self.match_kind(.assign)) {
+                _ = try self.expression();
+            }
+        }
+        _ = self.match_kind(.semicolon);
+    }
+
     fn parse_method_or_field(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!ast.Decl {
         const loc = self.current_loc();
 
@@ -327,28 +397,7 @@ const Parser = struct {
 
         // method: name followed by (
         if (self.match_kind(.lparen)) {
-            const params = try self.parse_params();
-            try self.expect(.rparen);
-            var body: []ast.Stmt = &.{};
-            if (self.match_kind(.lbrace)) {
-                body = try self.parse_block();
-                try self.expect(.rbrace);
-            } else {
-                // abstract method or interface method
-                _ = self.match_kind(.semicolon);
-            }
-
-            const decl = try self.arena.create(ast.MethodDecl);
-            decl.* = .{
-                .name = name,
-                .modifiers = mods,
-                .return_type = type_ref,
-                .params = params,
-                .body = body,
-                .annotations = annotations,
-                .loc = loc,
-            };
-            return .{ .method_decl = decl };
+            return self.parse_method_body(mods, type_ref, name, annotations, loc);
         }
 
         // field or property
@@ -357,48 +406,9 @@ const Parser = struct {
         var setter_body: ?[]ast.Stmt = null;
 
         if (self.match_kind(.lbrace)) {
-            // Property declaration: Type name { get { ... } set { ... } }
-            while (!self.at_end() and !self.check(.rbrace)) {
-                // Skip modifiers like 'private', 'public' before get/set
-                while (self.check(.private_kw) or self.check(.public_kw) or self.check(.protected_kw)) {
-                    self.pos += 1;
-                }
-                if (self.check(.identifier)) {
-                    const accessor = self.current().lexeme;
-                    self.pos += 1;
-                    if (std.ascii.eqlIgnoreCase(accessor, "get")) {
-                        if (self.match_kind(.lbrace)) {
-                            getter_body = try self.parse_block();
-                            try self.expect(.rbrace);
-                        } else {
-                            _ = self.match_kind(.semicolon);
-                        }
-                    } else if (std.ascii.eqlIgnoreCase(accessor, "set")) {
-                        if (self.match_kind(.lbrace)) {
-                            setter_body = try self.parse_block();
-                            try self.expect(.rbrace);
-                        } else {
-                            _ = self.match_kind(.semicolon);
-                        }
-                    }
-                } else {
-                    // Skip unknown tokens
-                    self.pos += 1;
-                }
-            }
-            try self.expect(.rbrace);
+            try self.parse_property_accessors(&getter_body, &setter_body);
         } else {
-            if (self.match_kind(.assign)) {
-                initializer = try self.expression();
-            }
-            // Handle comma-separated field declarations: Type a, b, c;
-            while (self.match_kind(.comma)) {
-                _ = try self.expect_identifier();
-                if (self.match_kind(.assign)) {
-                    _ = try self.expression();
-                }
-            }
-            _ = self.match_kind(.semicolon);
+            try self.parse_field_initializer_and_tail(&initializer);
         }
 
         const decl = try self.arena.create(ast.FieldDecl);
@@ -554,58 +564,74 @@ const Parser = struct {
         return .{ .if_stmt = stmt };
     }
 
+    fn parse_for_each_stmt(self: *Parser, loc: SourceLoc) !ast.Stmt {
+        const elem_type = try self.parse_type_ref();
+        const elem_name = try self.expect_identifier();
+        try self.expect(.colon);
+        const iterable = try self.expression();
+        try self.expect(.rparen);
+        const body = try self.parse_single_or_block();
+
+        const stmt = try self.arena.create(ast.ForEachStmt);
+        stmt.* = .{
+            .elem_type = elem_type,
+            .elem_name = elem_name,
+            .iterable = iterable,
+            .body = body,
+            .loc = loc,
+        };
+        return .{ .for_each_stmt = stmt };
+    }
+
+    fn parse_for_var_decl_init(self: *Parser) !ast.Stmt {
+        const type_ref = try self.parse_type_ref();
+        var init_stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
+        while (true) {
+            const decl_loc = self.current_loc();
+            const name = try self.expect_identifier();
+            var initializer: ?*ast.Expr = null;
+            if (self.match_kind(.assign)) {
+                initializer = try self.expression();
+            }
+
+            const decl = try self.arena.create(ast.VarDecl);
+            decl.* = .{
+                .type_ref = type_ref,
+                .name = name,
+                .initializer = initializer,
+                .loc = decl_loc,
+            };
+            try init_stmts.append(self.arena, .{ .var_decl = decl });
+
+            if (!self.match_kind(.comma)) break;
+        }
+
+        if (init_stmts.items.len == 1) return init_stmts.items[0];
+        return .{ .block = try init_stmts.toOwnedSlice(self.arena) };
+    }
+
+    fn parse_for_init(self: *Parser) !?*ast.Stmt {
+        if (self.check(.semicolon)) return null;
+        const init_stmt = try self.arena.create(ast.Stmt);
+        if (self.looks_like_var_decl()) {
+            init_stmt.* = try self.parse_for_var_decl_init();
+        } else {
+            const expr = try self.expression();
+            init_stmt.* = .{ .expr_stmt = expr };
+        }
+        return init_stmt;
+    }
+
     fn parse_for_stmt(self: *Parser) !ast.Stmt {
         const loc = self.current_loc();
         self.pos += 1; // skip 'for'
         try self.expect(.lparen);
 
         // Detect for-each: Type name : expr
-        if (self.looks_like_for_each()) {
-            const elem_type = try self.parse_type_ref();
-            const elem_name = try self.expect_identifier();
-            try self.expect(.colon);
-            const iterable = try self.expression();
-            try self.expect(.rparen);
-            const body = try self.parse_single_or_block();
-
-            const stmt = try self.arena.create(ast.ForEachStmt);
-            stmt.* = .{ .elem_type = elem_type, .elem_name = elem_name, .iterable = iterable, .body = body, .loc = loc };
-            return .{ .for_each_stmt = stmt };
-        }
+        if (self.looks_like_for_each()) return self.parse_for_each_stmt(loc);
 
         // Traditional for: init; condition; update
-        var init: ?*ast.Stmt = null;
-        if (!self.check(.semicolon)) {
-            const init_stmt = try self.arena.create(ast.Stmt);
-            if (self.looks_like_var_decl()) {
-                const type_ref = try self.parse_type_ref();
-                var init_stmts: std.ArrayListUnmanaged(ast.Stmt) = .empty;
-                while (true) {
-                    const decl_loc = self.current_loc();
-                    const name = try self.expect_identifier();
-                    var initializer: ?*ast.Expr = null;
-                    if (self.match_kind(.assign)) {
-                        initializer = try self.expression();
-                    }
-
-                    const decl = try self.arena.create(ast.VarDecl);
-                    decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = decl_loc };
-                    try init_stmts.append(self.arena, .{ .var_decl = decl });
-
-                    if (!self.match_kind(.comma)) break;
-                }
-
-                if (init_stmts.items.len == 1) {
-                    init_stmt.* = init_stmts.items[0];
-                } else {
-                    init_stmt.* = .{ .block = try init_stmts.toOwnedSlice(self.arena) };
-                }
-            } else {
-                const expr = try self.expression();
-                init_stmt.* = .{ .expr_stmt = expr };
-            }
-            init = init_stmt;
-        }
+        const init = try self.parse_for_init();
         _ = self.match_kind(.semicolon);
 
         var condition: ?*ast.Expr = null;
@@ -623,7 +649,13 @@ const Parser = struct {
         const body = try self.parse_single_or_block();
 
         const stmt = try self.arena.create(ast.ForStmt);
-        stmt.* = .{ .init = init, .condition = condition, .update = update, .body = body, .loc = loc };
+        stmt.* = .{
+            .init = init,
+            .condition = condition,
+            .update = update,
+            .body = body,
+            .loc = loc,
+        };
         return .{ .for_stmt = stmt };
     }
 
@@ -1127,20 +1159,67 @@ const Parser = struct {
         return self.parse_postfix();
     }
 
+    fn wrap_super_this_call(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+        const callee_name: []const u8 = if (expr.* == .super_expr) "super" else "this";
+        const args = try self.parse_arg_list();
+        try self.expect(.rparen);
+        const node = try self.arena.create(ast.CallExpr);
+        node.* = .{ .callee = callee_name, .args = args };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .call = node };
+        return result;
+    }
+
+    fn parse_dot_chain(self: *Parser, expr: *ast.Expr, is_null_safe: bool) !*ast.Expr {
+        const field_name = try self.expect_identifier_or_keyword();
+        if (self.match_kind(.lparen)) {
+            const args = try self.parse_arg_list();
+            try self.expect(.rparen);
+            const node = try self.arena.create(ast.MethodCallExpr);
+            node.* = .{
+                .object = expr,
+                .method = field_name,
+                .args = args,
+                .null_safe = is_null_safe,
+            };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .method_call = node };
+            return result;
+        }
+        const node = try self.arena.create(ast.FieldAccess);
+        node.* = .{ .object = expr, .field = field_name, .null_safe = is_null_safe };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .field_access = node };
+        return result;
+    }
+
+    fn parse_index_access(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+        const index = try self.expression();
+        try self.expect(.rbracket);
+        const node = try self.arena.create(ast.IndexAccess);
+        node.* = .{ .object = expr, .index = index };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .index_access = node };
+        return result;
+    }
+
+    fn build_postfix_assign(self: *Parser, expr: *ast.Expr, op: ast.AssignOp) !*ast.Expr {
+        const one = try self.arena.create(ast.Expr);
+        one.* = .{ .integer_literal = 1 };
+        const node = try self.arena.create(ast.Assignment);
+        node.* = .{ .target = expr, .op = op, .value = one, .is_postfix = true };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .assignment = node };
+        return result;
+    }
+
     fn parse_postfix(self: *Parser) !*ast.Expr {
         var expr = try self.parse_primary();
         var chain_is_null_safe = false;
 
         // super(args) / this(args) → constructor delegation
         if ((expr.* == .super_expr or expr.* == .this_expr) and self.match_kind(.lparen)) {
-            const callee_name: []const u8 = if (expr.* == .super_expr) "super" else "this";
-            const args = try self.parse_arg_list();
-            try self.expect(.rparen);
-            const node = try self.arena.create(ast.CallExpr);
-            node.* = .{ .callee = callee_name, .args = args };
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .call = node };
-            expr = result;
+            expr = try self.wrap_super_this_call(expr);
         }
 
         while (true) {
@@ -1149,55 +1228,20 @@ const Parser = struct {
             if (saw_dot or saw_question_dot) {
                 const is_null_safe = saw_question_dot or chain_is_null_safe;
                 if (saw_question_dot) chain_is_null_safe = true;
-                const field_name = try self.expect_identifier_or_keyword();
-
-                // method call: obj.method(args)
-                if (self.match_kind(.lparen)) {
-                    const args = try self.parse_arg_list();
-                    try self.expect(.rparen);
-                    const node = try self.arena.create(ast.MethodCallExpr);
-                    node.* = .{ .object = expr, .method = field_name, .args = args, .null_safe = is_null_safe };
-                    const result = try self.arena.create(ast.Expr);
-                    result.* = .{ .method_call = node };
-                    expr = result;
-                } else {
-                    const node = try self.arena.create(ast.FieldAccess);
-                    node.* = .{ .object = expr, .field = field_name, .null_safe = is_null_safe };
-                    const result = try self.arena.create(ast.Expr);
-                    result.* = .{ .field_access = node };
-                    expr = result;
-                }
+                expr = try self.parse_dot_chain(expr, is_null_safe);
                 continue;
             }
             if (self.match_kind(.lbracket)) {
-                const index = try self.expression();
-                try self.expect(.rbracket);
-                const node = try self.arena.create(ast.IndexAccess);
-                node.* = .{ .object = expr, .index = index };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .index_access = node };
-                expr = result;
+                expr = try self.parse_index_access(expr);
                 continue;
             }
-            // Postfix ++ and -- → rewrite as x += 1 / x -= 1 (with is_postfix flag)
+            // Postfix ++ / -- → rewrite as x += 1 / x -= 1
             if (self.match_kind(.plus_plus)) {
-                const one = try self.arena.create(ast.Expr);
-                one.* = .{ .integer_literal = 1 };
-                const node = try self.arena.create(ast.Assignment);
-                node.* = .{ .target = expr, .op = .plus_assign, .value = one, .is_postfix = true };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .assignment = node };
-                expr = result;
+                expr = try self.build_postfix_assign(expr, .plus_assign);
                 continue;
             }
             if (self.match_kind(.minus_minus)) {
-                const one = try self.arena.create(ast.Expr);
-                one.* = .{ .integer_literal = 1 };
-                const node = try self.arena.create(ast.Assignment);
-                node.* = .{ .target = expr, .op = .minus_assign, .value = one, .is_postfix = true };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .assignment = node };
-                expr = result;
+                expr = try self.build_postfix_assign(expr, .minus_assign);
                 continue;
             }
             break;
@@ -1206,212 +1250,204 @@ const Parser = struct {
         return expr;
     }
 
-    fn parse_primary(self: *Parser) anyerror!*ast.Expr {
-        const kind = self.current_kind();
-
-        // Literals
-        if (kind == .integer_literal) {
-            const val = std.fmt.parseInt(i64, self.current().lexeme, 10) catch 0;
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .integer_literal = val };
-            return result;
-        }
-        if (kind == .long_literal) {
-            const lexeme = self.current().lexeme;
-            const num_part = if (lexeme.len > 0 and (lexeme[lexeme.len - 1] == 'L' or lexeme[lexeme.len - 1] == 'l'))
-                lexeme[0 .. lexeme.len - 1]
-            else
-                lexeme;
-            const val = std.fmt.parseInt(i64, num_part, 10) catch 0;
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .long_literal = val };
-            return result;
-        }
-        if (kind == .double_literal) {
-            const val = std.fmt.parseFloat(f64, self.current().lexeme) catch 0.0;
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .double_literal = val };
-            return result;
-        }
-        if (kind == .string_literal) {
-            const raw = self.current().lexeme;
-            // strip quotes
-            const quoted = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
-            // Process escape sequences
-            const content = blk: {
-                // Quick check: if no backslash, return as-is
-                if (std.mem.indexOf(u8, quoted, "\\") == null) break :blk quoted;
-                var buf: std.ArrayListUnmanaged(u8) = .empty;
-                var ci: usize = 0;
-                while (ci < quoted.len) : (ci += 1) {
-                    if (quoted[ci] == '\\' and ci + 1 < quoted.len) {
-                        ci += 1;
-                        switch (quoted[ci]) {
-                            'n' => buf.append(self.arena, '\n') catch break :blk quoted,
-                            't' => buf.append(self.arena, '\t') catch break :blk quoted,
-                            'r' => buf.append(self.arena, '\r') catch break :blk quoted,
-                            '\\' => buf.append(self.arena, '\\') catch break :blk quoted,
-                            '\'' => buf.append(self.arena, '\'') catch break :blk quoted,
-                            '"' => buf.append(self.arena, '"') catch break :blk quoted,
-                            else => |ch| {
-                                // Keep unknown escapes as-is (e.g., \s, \*)
-                                buf.append(self.arena, '\\') catch break :blk quoted;
-                                buf.append(self.arena, ch) catch break :blk quoted;
-                            },
-                        }
-                    } else {
-                        buf.append(self.arena, quoted[ci]) catch break :blk quoted;
-                    }
-                }
-                break :blk buf.items;
-            };
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .string_literal = content };
-            return result;
-        }
-        if (kind == .true_kw) {
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .boolean_literal = true };
-            return result;
-        }
-        if (kind == .false_kw) {
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .boolean_literal = false };
-            return result;
-        }
-        if (kind == .null_kw) {
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .null_literal;
-            return result;
-        }
-        if (kind == .this_kw) {
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .this_expr;
-            return result;
-        }
-        if (kind == .super_kw) {
-            self.pos += 1;
-            const result = try self.arena.create(ast.Expr);
-            result.* = .super_expr;
-            return result;
-        }
-
-        // SOQL literal
-        if (kind == .soql_literal) {
-            const raw = self.current().lexeme;
-            const loc = self.current_loc();
-            self.pos += 1;
-            const node = try self.arena.create(ast.SoqlExpr);
-            node.* = .{ .raw = raw, .loc = loc };
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .soql = node };
-            return result;
-        }
-
-        // new expression
-        if (kind == .new_kw) {
-            return self.parse_new_expr();
-        }
-
-        // Grouped expression
-        if (kind == .lparen) {
-            self.pos += 1;
-            const inner = try self.expression();
-            try self.expect(.rparen);
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .grouped = inner };
-            return result;
-        }
-
-        // Identifier (or function call) — trigger_kw also acts as identifier in expression context
-        if (kind == .identifier or kind == .trigger_kw) {
-            const name = self.current().lexeme;
-            const loc = self.current_loc();
-            self.pos += 1;
-
-            // Function call: name(args)
-            if (self.match_kind(.lparen)) {
-                const args = try self.parse_arg_list();
-                try self.expect(.rparen);
-                const node = try self.arena.create(ast.CallExpr);
-                node.* = .{ .callee = name, .args = args, .loc = loc };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .call = node };
-                return result;
-            }
-
-            // Handle Type<T>.class → type literal (common in JSON.deserialize calls)
-            if (self.check(.lt) and self.looks_like_type_dot_class()) {
-                // Build full type name including generics: e.g. "List<Contact>"
-                var full_name_buf: std.ArrayListUnmanaged(u8) = .empty;
-                try full_name_buf.appendSlice(self.arena, name);
-                var depth: u32 = 0;
-                while (!self.at_end()) {
-                    const lex = self.current().lexeme;
-                    if (self.check(.lt)) {
-                        depth += 1;
-                        try full_name_buf.append(self.arena, '<');
-                    } else if (self.check(.gt)) {
-                        depth -= 1;
-                        try full_name_buf.append(self.arena, '>');
-                        if (depth == 0) {
-                            self.pos += 1;
-                            break;
-                        }
-                    } else {
-                        try full_name_buf.appendSlice(self.arena, lex);
-                    }
-                    self.pos += 1;
-                }
-                // Skip .class
-                if (self.match_kind(.dot)) {
-                    if (!self.match_kind(.class_kw)) {
-                        _ = self.match_kind(.identifier);
-                    }
-                }
-                const full_type_name = try full_name_buf.toOwnedSlice(self.arena);
-                // Return the type name as a new_expr for type reference
-                const type_obj = try self.arena.create(ast.NewExpr);
-                type_obj.* = .{ .type_name = .{ .name = full_type_name }, .args = &.{}, .loc = loc };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .new_expr = type_obj };
-                return result;
-            }
-
-            // Handle Type[].class → array type literal
-            if (self.check(.lbracket) and self.peek_kind(1) == .rbracket and self.peek_kind(2) == .dot) {
-                self.pos += 2; // skip []
-                if (self.match_kind(.dot)) {
-                    if (!self.match_kind(.class_kw)) {
-                        _ = self.match_kind(.identifier);
-                    }
-                }
-                const arr_name = try std.fmt.allocPrint(self.arena, "{s}[]", .{name});
-                const type_obj = try self.arena.create(ast.NewExpr);
-                type_obj.* = .{ .type_name = .{ .name = arr_name }, .args = &.{}, .loc = loc };
-                const result = try self.arena.create(ast.Expr);
-                result.* = .{ .new_expr = type_obj };
-                return result;
-            }
-
-            const result = try self.arena.create(ast.Expr);
-            result.* = .{ .identifier = .{ .name = name, .loc = loc } };
-            return result;
-        }
-
-        // Unexpected token — create a null literal as fallback
+    fn parse_integer_literal(self: *Parser) !*ast.Expr {
+        const val = std.fmt.parseInt(i64, self.current().lexeme, 10) catch 0;
         self.pos += 1;
         const result = try self.arena.create(ast.Expr);
-        result.* = .null_literal;
+        result.* = .{ .integer_literal = val };
         return result;
+    }
+
+    fn parse_long_literal(self: *Parser) !*ast.Expr {
+        const lexeme = self.current().lexeme;
+        const num_part = if (lexeme.len > 0 and
+            (lexeme[lexeme.len - 1] == 'L' or lexeme[lexeme.len - 1] == 'l'))
+            lexeme[0 .. lexeme.len - 1]
+        else
+            lexeme;
+        const val = std.fmt.parseInt(i64, num_part, 10) catch 0;
+        self.pos += 1;
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .long_literal = val };
+        return result;
+    }
+
+    fn parse_double_literal(self: *Parser) !*ast.Expr {
+        const val = std.fmt.parseFloat(f64, self.current().lexeme) catch 0.0;
+        self.pos += 1;
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .double_literal = val };
+        return result;
+    }
+
+    fn unescape_string_content(self: *Parser, quoted: []const u8) []const u8 {
+        if (std.mem.indexOf(u8, quoted, "\\") == null) return quoted;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var ci: usize = 0;
+        while (ci < quoted.len) : (ci += 1) {
+            if (quoted[ci] == '\\' and ci + 1 < quoted.len) {
+                ci += 1;
+                switch (quoted[ci]) {
+                    'n' => buf.append(self.arena, '\n') catch return quoted,
+                    't' => buf.append(self.arena, '\t') catch return quoted,
+                    'r' => buf.append(self.arena, '\r') catch return quoted,
+                    '\\' => buf.append(self.arena, '\\') catch return quoted,
+                    '\'' => buf.append(self.arena, '\'') catch return quoted,
+                    '"' => buf.append(self.arena, '"') catch return quoted,
+                    else => |ch| {
+                        // Keep unknown escapes as-is (e.g., \s, \*)
+                        buf.append(self.arena, '\\') catch return quoted;
+                        buf.append(self.arena, ch) catch return quoted;
+                    },
+                }
+            } else {
+                buf.append(self.arena, quoted[ci]) catch return quoted;
+            }
+        }
+        return buf.items;
+    }
+
+    fn parse_string_literal(self: *Parser) !*ast.Expr {
+        const raw = self.current().lexeme;
+        const quoted = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
+        const content = self.unescape_string_content(quoted);
+        self.pos += 1;
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .string_literal = content };
+        return result;
+    }
+
+    fn parse_bare_expr(self: *Parser, payload: ast.Expr) !*ast.Expr {
+        self.pos += 1;
+        const result = try self.arena.create(ast.Expr);
+        result.* = payload;
+        return result;
+    }
+
+    fn parse_soql_literal(self: *Parser) !*ast.Expr {
+        const raw = self.current().lexeme;
+        const loc = self.current_loc();
+        self.pos += 1;
+        const node = try self.arena.create(ast.SoqlExpr);
+        node.* = .{ .raw = raw, .loc = loc };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .soql = node };
+        return result;
+    }
+
+    fn parse_grouped_expr(self: *Parser) !*ast.Expr {
+        self.pos += 1;
+        const inner = try self.expression();
+        try self.expect(.rparen);
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .grouped = inner };
+        return result;
+    }
+
+    fn build_generic_type_class(self: *Parser, name: []const u8, loc: SourceLoc) !*ast.Expr {
+        // Build full type name including generics: e.g. "List<Contact>"
+        var full_name_buf: std.ArrayListUnmanaged(u8) = .empty;
+        try full_name_buf.appendSlice(self.arena, name);
+        var depth: u32 = 0;
+        while (!self.at_end()) {
+            const lex = self.current().lexeme;
+            if (self.check(.lt)) {
+                depth += 1;
+                try full_name_buf.append(self.arena, '<');
+            } else if (self.check(.gt)) {
+                depth -= 1;
+                try full_name_buf.append(self.arena, '>');
+                if (depth == 0) {
+                    self.pos += 1;
+                    break;
+                }
+            } else {
+                try full_name_buf.appendSlice(self.arena, lex);
+            }
+            self.pos += 1;
+        }
+        if (self.match_kind(.dot)) {
+            if (!self.match_kind(.class_kw)) _ = self.match_kind(.identifier);
+        }
+        const full_type_name = try full_name_buf.toOwnedSlice(self.arena);
+        const type_obj = try self.arena.create(ast.NewExpr);
+        type_obj.* = .{ .type_name = .{ .name = full_type_name }, .args = &.{}, .loc = loc };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .new_expr = type_obj };
+        return result;
+    }
+
+    fn build_array_type_class(self: *Parser, name: []const u8, loc: SourceLoc) !*ast.Expr {
+        self.pos += 2; // skip []
+        if (self.match_kind(.dot)) {
+            if (!self.match_kind(.class_kw)) _ = self.match_kind(.identifier);
+        }
+        const arr_name = try std.fmt.allocPrint(self.arena, "{s}[]", .{name});
+        const type_obj = try self.arena.create(ast.NewExpr);
+        type_obj.* = .{ .type_name = .{ .name = arr_name }, .args = &.{}, .loc = loc };
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .new_expr = type_obj };
+        return result;
+    }
+
+    fn parse_identifier_primary(self: *Parser) !*ast.Expr {
+        const name = self.current().lexeme;
+        const loc = self.current_loc();
+        self.pos += 1;
+
+        // Function call: name(args)
+        if (self.match_kind(.lparen)) {
+            const args = try self.parse_arg_list();
+            try self.expect(.rparen);
+            const node = try self.arena.create(ast.CallExpr);
+            node.* = .{ .callee = name, .args = args, .loc = loc };
+            const result = try self.arena.create(ast.Expr);
+            result.* = .{ .call = node };
+            return result;
+        }
+
+        // Handle Type<T>.class → type literal
+        if (self.check(.lt) and self.looks_like_type_dot_class()) {
+            return self.build_generic_type_class(name, loc);
+        }
+
+        // Handle Type[].class → array type literal
+        if (self.check(.lbracket) and
+            self.peek_kind(1) == .rbracket and
+            self.peek_kind(2) == .dot)
+        {
+            return self.build_array_type_class(name, loc);
+        }
+
+        const result = try self.arena.create(ast.Expr);
+        result.* = .{ .identifier = .{ .name = name, .loc = loc } };
+        return result;
+    }
+
+    fn parse_primary(self: *Parser) anyerror!*ast.Expr {
+        const kind = self.current_kind();
+        switch (kind) {
+            .integer_literal => return self.parse_integer_literal(),
+            .long_literal => return self.parse_long_literal(),
+            .double_literal => return self.parse_double_literal(),
+            .string_literal => return self.parse_string_literal(),
+            .true_kw => return self.parse_bare_expr(.{ .boolean_literal = true }),
+            .false_kw => return self.parse_bare_expr(.{ .boolean_literal = false }),
+            .null_kw => return self.parse_bare_expr(.null_literal),
+            .this_kw => return self.parse_bare_expr(.this_expr),
+            .super_kw => return self.parse_bare_expr(.super_expr),
+            .soql_literal => return self.parse_soql_literal(),
+            .new_kw => return self.parse_new_expr(),
+            .lparen => return self.parse_grouped_expr(),
+            .identifier, .trigger_kw => return self.parse_identifier_primary(),
+            else => {
+                // Unexpected token — create a null literal as fallback
+                self.pos += 1;
+                const result = try self.arena.create(ast.Expr);
+                result.* = .null_literal;
+                return result;
+            },
+        }
     }
 
     fn parse_new_expr(self: *Parser) !*ast.Expr {
