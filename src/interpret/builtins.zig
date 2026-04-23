@@ -4113,7 +4113,12 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
     return dispatch_obj_common(ctx, obj, method_name, args);
 }
 
-fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_common(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     // EventBus.PublishResult.getEventUuids
     if (std.ascii.eqlIgnoreCase(method_name, "getEventUuids")) {
         if (obj.fields.get("eventUuids")) |uuids| return uuids;
@@ -4122,12 +4127,28 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
         return Value{ .list = empty_list };
     }
 
-    // Exception methods
+    if (try dispatch_obj_exception_methods(ctx, obj, method_name, args)) |value| return value;
+    if (try dispatch_obj_identity_methods(ctx, obj, method_name, args)) |value| return value;
+    if (try dispatch_obj_dml_result_methods(ctx, obj, method_name)) |value| return value;
+    if (try dispatch_obj_get_describe(ctx, obj, method_name)) |value| return value;
+    if (try dispatch_obj_generic_accessors(ctx, obj, method_name, args)) |value| return value;
+
+    return null;
+}
+
+fn dispatch_obj_exception_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "setMessage") and args.len > 0) {
         try obj.fields.put(ctx.arena, "message", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) return obj.fields.get("message") orelse Value{ .string = "" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) {
+        return obj.fields.get("message") orelse Value{ .string = "" };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getInaccessibleFields")) {
         // QueryException exposed by user-mode SOQL carries a
         // Map<String, Set<String>> of "objectName → inaccessible fields"
@@ -4136,34 +4157,74 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
         // exception wasn't raised by an FLS/CRUD check).
         return obj.fields.get("inaccessibleFields") orelse Value.null_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) {
+        return obj.fields.get("statusCode") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getFields")) return obj.fields.get("fields") orelse blk: {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         break :blk Value{ .list = list };
     };
-    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber")) return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getStackTraceString")) {
+        return obj.fields.get("stackTraceString") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLineNumber")) {
+        return obj.fields.get("lineNumber") orelse Value{ .integer = 0 };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getTypeName")) {
-        const cn = obj.class_name;
-        if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
-            const system_exceptions = [_][]const u8{
-                "DMLException",                  "DmlException",           "NullPointerException",           "TypeException",
-                "QueryException",                "JSONException",          "ListException",                  "MathException",
-                "SecurityException",             "NoAccessException",      "InvalidParameterValueException", "CalloutException",
-                "StringException",               "NoSuchElementException", "NoDataFoundException",           "SearchException",
-                "SObjectException",              "HandledException",       "IllegalArgumentException",       "LimitException",
-                "AsyncException",                "SerializationException", "FlowException",                  "FinalException",
-                "UnsupportedOperationException", "EventBusException",
-            };
-            for (system_exceptions) |se| {
-                if (std.ascii.eqlIgnoreCase(cn, se)) {
-                    return Value{ .string = try std.fmt.allocPrint(ctx.arena, "System.{s}", .{cn}) };
-                }
+        return try dispatch_obj_type_name(ctx, obj);
+    }
+    return null;
+}
+
+fn dispatch_obj_type_name(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const cn = obj.class_name;
+    if (std.mem.endsWith(u8, cn, "Exception") and std.mem.indexOfScalar(u8, cn, '.') == null) {
+        const system_exceptions = [_][]const u8{
+            "DMLException",
+            "DmlException",
+            "NullPointerException",
+            "TypeException",
+            "QueryException",
+            "JSONException",
+            "ListException",
+            "MathException",
+            "SecurityException",
+            "NoAccessException",
+            "InvalidParameterValueException",
+            "CalloutException",
+            "StringException",
+            "NoSuchElementException",
+            "NoDataFoundException",
+            "SearchException",
+            "SObjectException",
+            "HandledException",
+            "IllegalArgumentException",
+            "LimitException",
+            "AsyncException",
+            "SerializationException",
+            "FlowException",
+            "FinalException",
+            "UnsupportedOperationException",
+            "EventBusException",
+        };
+        for (system_exceptions) |se| {
+            if (std.ascii.eqlIgnoreCase(cn, se)) {
+                return Value{
+                    .string = try std.fmt.allocPrint(ctx.arena, "System.{s}", .{cn}),
+                };
             }
         }
-        return Value{ .string = cn };
     }
+    return Value{ .string = cn };
+}
+
+fn dispatch_obj_identity_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "hashCode")) {
         return Value{ .integer = try ctx.eval.value_hash_code_public(Value{ .object = obj }) };
     }
@@ -4171,13 +4232,31 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
         return Value{ .boolean = ctx.eval.values_equal_public(Value{ .object = obj }, args[0]) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
-        return obj.fields.get("value") orelse Value{ .string = try utils.coerce_to_string(Value{ .object = obj }, ctx.arena) };
+        return obj.fields.get("value") orelse Value{
+            .string = try utils.coerce_to_string(Value{ .object = obj }, ctx.arena),
+        };
     }
+    return null;
+}
 
-    // DML result methods (SaveResult, UpsertResult, etc.)
-    if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) return obj.fields.get("isSuccess") orelse obj.fields.get("success") orelse Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreated")) return obj.fields.get("isCreated") orelse obj.fields.get("created") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getId")) return obj.fields.get("Id") orelse Value.null_val;
+fn dispatch_obj_dml_result_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "isSuccess")) {
+        return obj.fields.get("isSuccess") orelse
+            obj.fields.get("success") orelse
+            Value{ .boolean = true };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreated")) {
+        return obj.fields.get("isCreated") orelse
+            obj.fields.get("created") orelse
+            Value{ .boolean = false };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
+        return obj.fields.get("Id") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getErrors")) return obj.fields.get("errors") orelse blk: {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -4185,23 +4264,41 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
     };
 
     // Date-like methods
-    if (std.ascii.eqlIgnoreCase(method_name, "addDays") or std.ascii.eqlIgnoreCase(method_name, "addMonths")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "addDays") or
+        std.ascii.eqlIgnoreCase(method_name, "addMonths"))
+    {
         return obj.fields.get("value") orelse Value{ .string = "2026-04-20" };
     }
 
-    // Request methods
-    if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity")) return Value{ .string = "RUNTEST_SYNC" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRequestId")) return Value{ .string = "4eR000000000001" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getQuiddity")) {
+        return Value{ .string = "RUNTEST_SYNC" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRequestId")) {
+        return Value{ .string = "4eR000000000001" };
+    }
+    return null;
+}
 
-    // Generic getDescribe
+fn dispatch_obj_get_describe(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
             std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
         {
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
-            const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
+            const field_name_val = obj.fields.get("fieldName") orelse
+                obj.fields.get("name") orelse
+                Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
-                return try create_field_describe_result_with_type(ctx, object_type_val.string, field_name_val.string, null);
+                return try create_field_describe_result_with_type(
+                    ctx,
+                    object_type_val.string,
+                    field_name_val.string,
+                    null,
+                );
             }
             return Value{ .object = obj };
         }
@@ -4218,8 +4315,15 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
         try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = true });
         return Value{ .object = desc };
     }
+    return null;
+}
 
-    // Generic getter/setter pattern
+fn dispatch_obj_generic_accessors(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.mem.startsWith(u8, method_name, "get") and method_name.len > 3) {
         const field = method_name[3..];
         if (obj.fields.get(field)) |v| return v;
@@ -5298,7 +5402,12 @@ fn dispatch_obj_s_object_access_decision(ctx: *BuiltinContext, obj: *types.Objec
     return null;
 }
 
-fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_s_object_instance(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
         // Return a Schema.SObjectType object that supports getDescribe()
         const sot = try ctx.arena.create(types.ObjectInstance);
@@ -5309,8 +5418,26 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         return try create_describe_result(ctx, sob.type_name);
     }
-    // clone / deepClone
-    if (std.ascii.eqlIgnoreCase(method_name, "clone") or std.ascii.eqlIgnoreCase(method_name, "deepClone")) {
+
+    if (try dispatch_s_object_clone(ctx, sob, method_name, args)) |value| return value;
+    if (std.ascii.eqlIgnoreCase(method_name, "isClone")) {
+        return Value{ .boolean = sob.is_clone };
+    }
+    if (try dispatch_s_object_errors(ctx, sob, method_name, args)) |value| return value;
+    if (try dispatch_s_object_field_access(ctx, sob, method_name, args)) |value| return value;
+    if (try dispatch_s_object_populated_fields(ctx, sob, method_name)) |value| return value;
+    return null;
+}
+
+fn dispatch_s_object_clone(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "clone") or
+        std.ascii.eqlIgnoreCase(method_name, "deepClone"))
+    {
         const new_sob = try ctx.arena.create(types.SObject);
         new_sob.* = .{ .type_name = sob.type_name, .is_clone = true };
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
@@ -5319,7 +5446,10 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         // Deep clone preserves id; clone with no args may not
         if (std.ascii.eqlIgnoreCase(method_name, "clone")) {
             // clone(preserveId, isDeepClone, preserveReadonlyTimestamps, preserveAutonumber)
-            const preserve_id = if (args.len > 0 and args[0] == .boolean) args[0].boolean else false;
+            const preserve_id = if (args.len > 0 and args[0] == .boolean)
+                args[0].boolean
+            else
+                false;
             if (!preserve_id) {
                 _ = new_sob.fields.orderedRemove("Id");
                 new_sob.id = null;
@@ -5331,10 +5461,15 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         }
         return Value{ .sobject = new_sob };
     }
-    // isClone() — true when created via .clone()/.deepClone()
-    if (std.ascii.eqlIgnoreCase(method_name, "isClone")) {
-        return Value{ .boolean = sob.is_clone };
-    }
+    return null;
+}
+
+fn dispatch_s_object_errors(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     // addError → attach a Database.Error to the SObject. Matches Apex semantics:
     // the method itself does not throw — the surrounding DML (or trigger dispatcher)
     // is responsible for translating the attached errors into a DmlException when it
@@ -5345,15 +5480,23 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         const err_obj = try ctx.arena.create(types.ObjectInstance);
         err_obj.* = .{ .class_name = "Database.Error" };
         try err_obj.fields.put(ctx.arena, "message", msg_val);
-        try err_obj.fields.put(ctx.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+        try err_obj.fields.put(
+            ctx.arena,
+            "statusCode",
+            Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+        );
         const fields_list = try ctx.arena.create(types.ListValue);
         fields_list.* = .{};
         if (field_val) |fv| {
             const field_name: []const u8 = switch (fv) {
                 .string => |s| s,
                 .object => |ob| blk: {
-                    if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
-                    if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
+                    if (ob.fields.get("fieldName")) |fn_val| {
+                        if (fn_val == .string) break :blk fn_val.string;
+                    }
+                    if (ob.fields.get("name")) |n_val| {
+                        if (n_val == .string) break :blk n_val.string;
+                    }
                     break :blk "";
                 },
                 else => "",
@@ -5384,7 +5527,19 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         }
         return Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
+    return null;
+}
+
+fn dispatch_s_object_field_access(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and
+        args.len > 0 and
+        args[0] == .string)
+    {
         // Case-insensitive lookup
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, args[0].string)) {
@@ -5394,7 +5549,11 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         }
         // If stripped SObject, throw SObjectException for missing relationship
         if (sob.is_stripped) {
-            const msg = try std.fmt.allocPrint(ctx.arena, "SObject row was retrieved via SOQL without querying the requested field: {s}", .{args[0].string});
+            const msg = try std.fmt.allocPrint(
+                ctx.arena,
+                "SObject row was retrieved via SOQL without querying the requested field: {s}",
+                .{args[0].string},
+            );
             return ctx.throw_exception("SObjectException", msg);
         }
         return Value.null_val;
@@ -5406,17 +5565,34 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         if (sobject_field_exists(ctx, sob, args[0].string)) {
             return Value.null_val;
         }
-        const msg = try std.fmt.allocPrint(ctx.arena, "Invalid field {s} for {s}", .{ args[0].string, sob.type_name });
+        const msg = try std.fmt.allocPrint(
+            ctx.arena,
+            "Invalid field {s} for {s}",
+            .{ args[0].string, sob.type_name },
+        );
         return ctx.throw_exception("System.SObjectException", msg);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
-        const normalized = try normalize_s_object_field_assignment(ctx, sob, args[0].string, args[1]);
+        const normalized = try normalize_s_object_field_assignment(
+            ctx,
+            sob,
+            args[0].string,
+            args[1],
+        );
         try utils.sobject_put(&sob.fields, ctx.arena, args[0].string, normalized);
         if (std.ascii.eqlIgnoreCase(args[0].string, "Id") and normalized == .string) {
             sob.id = normalized.string;
         }
         return normalized;
     }
+    return null;
+}
+
+fn dispatch_s_object_populated_fields(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap")) {
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
