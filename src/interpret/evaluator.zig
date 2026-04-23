@@ -2121,49 +2121,83 @@ pub const Evaluator = struct {
         count_limits: bool,
         old_records_override: ?std.ArrayListUnmanaged(Value),
     ) anyerror!void {
-        // Salesforce: empty list DML does not count as a DML statement
         if (target == .list and target.list.items.items.len == 0) return;
-        if (count_limits) {
-            self.limits_dml += 1;
-            if (target == .list) {
-                self.limits_dml_rows += @intCast(target.list.items.items.len);
-            } else {
-                self.limits_dml_rows += 1;
+        if (count_limits) self.count_dml_statement_limits(target);
+        try self.throw_if_null_dml_target(target);
+
+        const obj_type = self.get_target_object_type(target);
+        const trigger_events = dml_trigger_events(op);
+        var record_list = try self.build_record_list(target);
+        self.clear_dml_record_errors(&record_list);
+        const old_records = try self.build_dml_old_records(op, &record_list, old_records_override);
+
+        if (trigger_events.before) |evt| {
+            if (obj_type) |ot| {
+                try self.fire_trigger(ot, evt, &record_list, old_records);
             }
         }
-        // Null target → throw NullPointerException (like Salesforce)
-        if (target == .null_val) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "System.NullPointerException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+        try self.fail_if_records_have_errors(&record_list, op, false);
+
+        try self.execute_dml_records(op, target, external_id_field);
+
+        if (trigger_events.after != null) {
+            record_list = try self.rebuild_after_dml_record_list(op, target, &record_list);
         }
+        if (trigger_events.after) |evt| {
+            if (obj_type) |ot| {
+                try self.fire_trigger(ot, evt, &record_list, old_records);
+            }
+        }
+        try self.fail_if_records_have_errors(&record_list, op, true);
 
-        // Determine object type for trigger lookup
-        const obj_type = self.get_target_object_type(target);
+        if (obj_type) |ot| {
+            try self.apply_rollup_summary_side_effects(ot, record_list.items, old_records);
+        }
+        self.cleanup_dml_side_effects(op, obj_type);
+    }
 
-        // Determine trigger event types
-        const before_event: ?ast.TriggerEvent = switch (op) {
-            .insert => .before_insert,
-            .update => .before_update,
-            .delete => .before_delete,
-            else => null,
+    const DmlTriggerEvents = struct {
+        before: ?ast.TriggerEvent,
+        after: ?ast.TriggerEvent,
+    };
+
+    fn count_dml_statement_limits(self: *Evaluator, target: Value) void {
+        self.limits_dml += 1;
+        if (target == .list) {
+            self.limits_dml_rows += @intCast(target.list.items.items.len);
+        } else {
+            self.limits_dml_rows += 1;
+        }
+    }
+
+    fn throw_if_null_dml_target(self: *Evaluator, target: Value) !void {
+        if (target != .null_val) return;
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.NullPointerException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn dml_trigger_events(op: ast.DmlOp) DmlTriggerEvents {
+        return .{
+            .before = switch (op) {
+                .insert => .before_insert,
+                .update => .before_update,
+                .delete => .before_delete,
+                else => null,
+            },
+            .after = switch (op) {
+                .insert => .after_insert,
+                .update => .after_update,
+                .delete => .after_delete,
+                .undelete => .after_undelete,
+                else => null,
+            },
         };
-        const after_event: ?ast.TriggerEvent = switch (op) {
-            .insert => .after_insert,
-            .update => .after_update,
-            .delete => .after_delete,
-            .undelete => .after_undelete,
-            else => null,
-        };
+    }
 
-        // Build record list for trigger context
-        var record_list = try self.build_record_list(target);
-
-        // Clear any stale `errors` list from previous DML attempts so a post-trigger
-        // error check only sees errors added during THIS DML, not ones that leaked
-        // from a prior call (e.g., `undelete a` after `addError` ran on `a`).
+    fn clear_dml_record_errors(_: *Evaluator, record_list: *std.ArrayListUnmanaged(Value)) void {
         for (record_list.items) |item| {
             if (item == .sobject) {
                 if (item.sobject.fields.get("errors")) |_| {
@@ -2171,88 +2205,76 @@ pub const Evaluator = struct {
                 }
             }
         }
+    }
 
-        // Build old records for update/delete triggers
-        var old_records: ?std.ArrayListUnmanaged(Value) = null;
-        if (old_records_override) |override| {
-            old_records = override;
-        } else if (op == .update or op == .delete) {
-            old_records = .empty;
-            for (record_list.items) |item| {
-                if (item == .sobject and item.sobject.id != null) {
-                    // Find current record in store and deep-copy it (so DML mutations don't affect old snapshot)
-                    if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
-                        if (stored == .sobject) {
-                            const clone = try self.arena.create(types.SObject);
-                            clone.* = .{ .type_name = stored.sobject.type_name };
-                            clone.id = stored.sobject.id;
-                            for (stored.sobject.fields.keys(), stored.sobject.fields.values()) |k, v| {
-                                try clone.fields.put(self.arena, k, v);
-                            }
-                            try old_records.?.append(self.arena, Value{ .sobject = clone });
-                        } else {
-                            try old_records.?.append(self.arena, stored);
-                        }
-                    } else {
-                        try old_records.?.append(self.arena, item);
-                    }
-                }
+    fn build_dml_old_records(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        record_list: *std.ArrayListUnmanaged(Value),
+        old_records_override: ?std.ArrayListUnmanaged(Value),
+    ) !?std.ArrayListUnmanaged(Value) {
+        if (old_records_override) |override| return override;
+        if (op != .update and op != .delete) return null;
+        var old_records = std.ArrayListUnmanaged(Value).empty;
+        for (record_list.items) |item| {
+            if (item != .sobject or item.sobject.id == null) continue;
+            if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                try old_records.append(self.arena, try self.clone_old_dml_record(stored));
+            } else {
+                try old_records.append(self.arena, item);
             }
         }
+        return old_records;
+    }
 
-        // Fire BEFORE trigger
-        if (before_event) |evt| {
-            if (obj_type) |ot| {
-                try self.fire_trigger(ot, evt, &record_list, old_records);
-            }
+    fn clone_old_dml_record(self: *Evaluator, stored: Value) !Value {
+        if (stored != .sobject) return stored;
+        const clone = try self.arena.create(types.SObject);
+        clone.* = .{ .type_name = stored.sobject.type_name };
+        clone.id = stored.sobject.id;
+        for (stored.sobject.fields.keys(), stored.sobject.fields.values()) |key, value| {
+            try clone.fields.put(self.arena, key, value);
         }
+        return Value{ .sobject = clone };
+    }
 
-        // If the before trigger attached errors via addError(), convert them into a
-        // DmlException before the actual DML runs. Without this the DML would quietly
-        // persist records that Apex would have rejected.
+    fn fail_if_records_have_errors(
+        self: *Evaluator,
+        record_list: *std.ArrayListUnmanaged(Value),
+        op: ast.DmlOp,
+        rollback_after_trigger: bool,
+    ) !void {
         for (record_list.items) |item| {
             if (item != .sobject) continue;
-            if (utils.sobject_get(&item.sobject.fields, "errors")) |errs_val| {
-                if (errs_val == .list and errs_val.list.items.items.len > 0) {
-                    const first = errs_val.list.items.items[0];
-                    var msg: []const u8 = "Trigger added error";
-                    if (first == .object) {
-                        if (first.object.fields.get("message")) |m| {
-                            if (m == .string) msg = m.string;
-                        }
-                    }
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "DmlException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
+            const errors = utils.sobject_get(&item.sobject.fields, "errors") orelse continue;
+            if (errors != .list or errors.list.items.items.len == 0) continue;
+            if (rollback_after_trigger and op == .undelete) {
+                self.rollback_undelete(record_list) catch {};
+            }
+            return self.throw_dml_exception(dml_error_message(errors.list.items.items[0]));
+        }
+    }
+
+    fn dml_error_message(first_error: Value) []const u8 {
+        if (first_error == .object) {
+            if (first_error.object.fields.get("message")) |message| {
+                if (message == .string) return message.string;
             }
         }
+        return "Trigger added error";
+    }
 
-        // Execute actual DML
+    fn throw_dml_exception(self: *Evaluator, message: []const u8) !void {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = message });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn execute_dml_records(self: *Evaluator, op: ast.DmlOp, target: Value, external_id_field: ?[]const u8) !void {
         switch (op) {
-            .insert => {
-                if (target == .sobject) {
-                    try self.insert_record(target.sobject);
-                } else if (target == .list) {
-                    // Pre-validate all records before inserting any (allOrNothing semantics)
-                    for (target.list.items.items) |item| {
-                        if (item == .sobject) {
-                            if (try self.validate_required_fields(item.sobject, false)) |err_msg| {
-                                const exc = try self.arena.create(types.ObjectInstance);
-                                exc.* = .{ .class_name = "DmlException" };
-                                try exc.fields.put(self.arena, "message", Value{ .string = err_msg });
-                                self.pending_exception = Value{ .object = exc };
-                                return error.ApexException;
-                            }
-                        }
-                    }
-                    for (target.list.items.items) |item| {
-                        if (item == .sobject) try self.insert_record(item.sobject);
-                    }
-                }
-            },
+            .insert => try self.execute_insert_records(target),
             .update => {
                 if (target == .sobject) {
                     try self.update_record(target.sobject);
@@ -2291,87 +2313,49 @@ pub const Evaluator = struct {
             },
             .merge => {},
         }
+    }
 
-        // Rebuild record list after DML (records now have IDs for insert, or from store for update)
-        if (after_event != null) {
-            if (op == .update) {
-                // For updates, rebuild Trigger.new from the store to include all fields
-                // (not just the fields passed to the DML target)
-                var new_list: std.ArrayListUnmanaged(Value) = .empty;
-                for (record_list.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
-                            try new_list.append(self.arena, stored);
-                        } else {
-                            try new_list.append(self.arena, item);
-                        }
-                    } else {
-                        try new_list.append(self.arena, item);
-                    }
+    fn execute_insert_records(self: *Evaluator, target: Value) !void {
+        if (target == .sobject) return self.insert_record(target.sobject);
+        if (target != .list) return;
+        for (target.list.items.items) |item| {
+            if (item != .sobject) continue;
+            if (try self.validate_required_fields(item.sobject, false)) |err_msg| {
+                return self.throw_dml_exception(err_msg);
+            }
+        }
+        for (target.list.items.items) |item| {
+            if (item == .sobject) try self.insert_record(item.sobject);
+        }
+    }
+
+    fn rebuild_after_dml_record_list(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        target: Value,
+        record_list: *std.ArrayListUnmanaged(Value),
+    ) !std.ArrayListUnmanaged(Value) {
+        if (op != .update) return self.build_record_list(target);
+        var new_list = std.ArrayListUnmanaged(Value).empty;
+        for (record_list.items) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                    try new_list.append(self.arena, stored);
+                } else {
+                    try new_list.append(self.arena, item);
                 }
-                record_list = new_list;
             } else {
-                record_list = try self.build_record_list(target);
+                try new_list.append(self.arena, item);
             }
         }
+        return new_list;
+    }
 
-        // Fire AFTER trigger
-        if (after_event) |evt| {
-            if (obj_type) |ot| {
-                try self.fire_trigger(ot, evt, &record_list, old_records);
-            }
-        }
-
-        // addError() in an AFTER trigger (delete, undelete, etc.) causes the DML to
-        // fail in real Apex and the transaction rolls back. Mirror that: if any record
-        // gained an `errors` list during the AFTER trigger, reverse the DML where
-        // feasible and raise a DmlException carrying the first error's message.
-        // This is especially important for `undelete`, where frameworks like
-        // ActionPlansV4 add errors in AFTER_UNDELETE and then expect to undelete
-        // again on a retry — which requires the record to still be in the recycle
-        // bin, not already promoted back to the active store.
-        if (after_event != null) {
-            for (record_list.items) |item| {
-                if (item != .sobject) continue;
-                if (utils.sobject_get(&item.sobject.fields, "errors")) |errs_val| {
-                    if (errs_val == .list and errs_val.list.items.items.len > 0) {
-                        const first = errs_val.list.items.items[0];
-                        var msg: []const u8 = "Trigger added error";
-                        if (first == .object) {
-                            if (first.object.fields.get("message")) |m| {
-                                if (m == .string) msg = m.string;
-                            }
-                        }
-                        // Roll back an undelete: return the record to the recycle bin
-                        // so a retry with no error sees the same trash state. Other
-                        // DML ops don't need this today (no tests depend on delete/
-                        // insert rollback after AFTER-trigger addError).
-                        if (op == .undelete) {
-                            self.rollback_undelete(&record_list) catch {};
-                        }
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "DmlException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                }
-            }
-        }
-
-        // Roll-up summary fields on parent records are recalculated after child DML
-        // and can indirectly fire parent update triggers.
-        if (obj_type) |ot| {
-            try self.apply_rollup_summary_side_effects(ot, record_list.items, old_records);
-        }
-
-        // Auto-cleanup orphaned DuplicateRecordSets after DRI delete/update triggers complete
-        if (op == .delete or op == .update) {
-            if (obj_type) |ot| {
-                if (std.ascii.eqlIgnoreCase(ot, "DuplicateRecordItem")) {
-                    self.cleanup_orphaned_duplicate_record_sets() catch {};
-                }
-            }
+    fn cleanup_dml_side_effects(self: *Evaluator, op: ast.DmlOp, obj_type: ?[]const u8) void {
+        if (op != .delete and op != .update) return;
+        const type_name = obj_type orelse return;
+        if (std.ascii.eqlIgnoreCase(type_name, "DuplicateRecordItem")) {
+            self.cleanup_orphaned_duplicate_record_sets() catch {};
         }
     }
 
