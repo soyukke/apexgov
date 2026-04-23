@@ -21192,99 +21192,131 @@ pub const Evaluator = struct {
         depth_ref: *i32,
         resolved_type: *[]const u8,
     ) anyerror!usize {
-        const val_start = start;
-        var i = start;
-        if (trimmed[i] == '"') {
-            i += 1;
-            while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
-                if (trimmed[i] == '\\') i += 1;
-            }
-            if (i < trimmed.len) {
-                const val_str = trimmed[val_start + 1 .. i];
-                i += 1;
-                if (std.mem.eql(u8, key, "attributes")) {
-                    // `"attributes"` was supposed to be an object; ignore when it's a bare string.
-                } else if (std.ascii.eqlIgnoreCase(key, "Id")) {
-                    sob.id = val_str;
-                    sob.fields.put(self.arena, "Id", Value{ .string = val_str }) catch {};
-                } else {
-                    const normalized = self.normalize_parsed_json_s_object_field(
-                        sob,
-                        key,
-                        Value{ .string = val_str },
-                    );
-                    sob.fields.put(self.arena, key, normalized) catch {};
-                }
-            }
-            return i;
+        if (trimmed[start] == '"') return self.parse_json_sobject_string(sob, trimmed, start, key);
+        if (trimmed[start] == '{') {
+            return try self.parse_json_sobject_object(
+                sob,
+                trimmed,
+                start,
+                key,
+                depth_ref,
+                resolved_type,
+            );
         }
-        if (trimmed[i] == '{') {
-            depth_ref.* = 1;
-            i += 1;
-            while (i < trimmed.len and depth_ref.* > 0) : (i += 1) {
-                if (trimmed[i] == '{') depth_ref.* += 1;
-                if (trimmed[i] == '}') depth_ref.* -= 1;
-                if (trimmed[i] == '"') {
-                    i += 1;
-                    while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
-                        if (trimmed[i] == '\\') i += 1;
-                    }
-                }
-            }
-            const nested = trimmed[val_start..i];
-            if (std.mem.eql(u8, key, "attributes")) {
-                try self.parse_json_sobject_attributes(sob, nested, resolved_type);
-            } else {
-                if (self.parse_json_value(nested, "Object")) |nv| {
-                    const stored_value = self.relationship_records_value(nv) orelse
-                        self.normalize_parsed_json_s_object_field(sob, key, nv);
-                    sob.fields.put(self.arena, key, stored_value) catch {};
-                }
-            }
-            return i;
+        if (trimmed[start] == '[') {
+            return self.parse_json_sobject_array(sob, trimmed, start, key, depth_ref);
         }
-        if (trimmed[i] == '[') {
-            depth_ref.* = 1;
-            i += 1;
-            while (i < trimmed.len and depth_ref.* > 0) : (i += 1) {
-                if (trimmed[i] == '[') depth_ref.* += 1;
-                if (trimmed[i] == ']') depth_ref.* -= 1;
-                if (trimmed[i] == '"') {
-                    i += 1;
-                    while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
-                        if (trimmed[i] == '\\') i += 1;
-                    }
-                }
-            }
-            const arr = trimmed[val_start..i];
-            if (self.parse_json_value(arr, "List")) |av| {
-                sob.fields.put(self.arena, key, av) catch {};
-            }
-            return i;
-        }
-        if (std.mem.startsWith(u8, trimmed[i..], "null")) {
+        if (std.mem.startsWith(u8, trimmed[start..], "null")) {
             sob.fields.put(self.arena, key, Value.null_val) catch {};
-            return i + 4;
+            return start + 4;
         }
-        if (std.mem.startsWith(u8, trimmed[i..], "true")) {
+        if (std.mem.startsWith(u8, trimmed[start..], "true")) {
             const normalized = self.normalize_parsed_json_s_object_field(
                 sob,
                 key,
                 Value{ .boolean = true },
             );
             sob.fields.put(self.arena, key, normalized) catch {};
-            return i + 4;
+            return start + 4;
         }
-        if (std.mem.startsWith(u8, trimmed[i..], "false")) {
+        if (std.mem.startsWith(u8, trimmed[start..], "false")) {
             const normalized = self.normalize_parsed_json_s_object_field(
                 sob,
                 key,
                 Value{ .boolean = false },
             );
             sob.fields.put(self.arena, key, normalized) catch {};
-            return i + 5;
+            return start + 5;
         }
-        return self.parse_json_sobject_number(sob, trimmed, i, key);
+        return self.parse_json_sobject_number(sob, trimmed, start, key);
+    }
+
+    fn parse_json_sobject_string(
+        self: *Evaluator,
+        sob: *types.SObject,
+        trimmed: []const u8,
+        start: usize,
+        key: []const u8,
+    ) usize {
+        var i = start + 1;
+        while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
+            if (trimmed[i] == '\\') i += 1;
+        }
+        if (i >= trimmed.len) return i;
+        const val_str = trimmed[start + 1 .. i];
+        i += 1;
+        if (std.mem.eql(u8, key, "attributes")) return i;
+        if (std.ascii.eqlIgnoreCase(key, "Id")) {
+            sob.id = val_str;
+            sob.fields.put(self.arena, "Id", Value{ .string = val_str }) catch {};
+            return i;
+        }
+        const normalized = self.normalize_parsed_json_s_object_field(
+            sob,
+            key,
+            Value{ .string = val_str },
+        );
+        sob.fields.put(self.arena, key, normalized) catch {};
+        return i;
+    }
+
+    fn parse_json_sobject_object(
+        self: *Evaluator,
+        sob: *types.SObject,
+        trimmed: []const u8,
+        start: usize,
+        key: []const u8,
+        depth_ref: *i32,
+        resolved_type: *[]const u8,
+    ) anyerror!usize {
+        depth_ref.* = 1;
+        var i = start + 1;
+        while (i < trimmed.len and depth_ref.* > 0) : (i += 1) {
+            if (trimmed[i] == '{') depth_ref.* += 1;
+            if (trimmed[i] == '}') depth_ref.* -= 1;
+            if (trimmed[i] == '"') {
+                i += 1;
+                while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
+                    if (trimmed[i] == '\\') i += 1;
+                }
+            }
+        }
+        const nested = trimmed[start..i];
+        if (std.mem.eql(u8, key, "attributes")) {
+            try self.parse_json_sobject_attributes(sob, nested, resolved_type);
+        } else if (self.parse_json_value(nested, "Object")) |nv| {
+            const stored_value = self.relationship_records_value(nv) orelse
+                self.normalize_parsed_json_s_object_field(sob, key, nv);
+            sob.fields.put(self.arena, key, stored_value) catch {};
+        }
+        return i;
+    }
+
+    fn parse_json_sobject_array(
+        self: *Evaluator,
+        sob: *types.SObject,
+        trimmed: []const u8,
+        start: usize,
+        key: []const u8,
+        depth_ref: *i32,
+    ) usize {
+        depth_ref.* = 1;
+        var i = start + 1;
+        while (i < trimmed.len and depth_ref.* > 0) : (i += 1) {
+            if (trimmed[i] == '[') depth_ref.* += 1;
+            if (trimmed[i] == ']') depth_ref.* -= 1;
+            if (trimmed[i] == '"') {
+                i += 1;
+                while (i < trimmed.len and trimmed[i] != '"') : (i += 1) {
+                    if (trimmed[i] == '\\') i += 1;
+                }
+            }
+        }
+        const arr = trimmed[start..i];
+        if (self.parse_json_value(arr, "List")) |av| {
+            sob.fields.put(self.arena, key, av) catch {};
+        }
+        return i;
     }
 
     fn parse_json_sobject_number(
