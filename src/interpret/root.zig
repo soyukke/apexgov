@@ -660,6 +660,15 @@ fn should_search_metadata_parents(path: []const u8) bool {
 }
 
 /// field-meta.xml からデフォルト値と型情報を読み込む。
+const FieldMetaCollect = struct {
+    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+    field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
+    field_metadata: *std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata),
+    ),
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+};
+
 /// パス構造: .../objects/TypeName__c/fields/FieldName__c.field-meta.xml
 fn collect_field_defaults(
     alloc: std.mem.Allocator,
@@ -674,215 +683,256 @@ fn collect_field_defaults(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
-
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
 
+    const collect = FieldMetaCollect{
+        .field_defaults = field_defaults,
+        .field_types = field_types,
+        .field_metadata = field_metadata,
+        .child_relationships = child_relationships,
+    };
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
-
-        // Extract type name from path: .../objects/TypeName/fields/FieldName.field-meta.xml
-        const entry_path = entry.path;
-        const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
-            std.mem.indexOf(u8, entry_path, "objects\\") orelse continue;
-        const after_objects = entry_path[objects_idx + 8 ..];
-        const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse continue;
-        const type_name = after_objects[0..sep_idx];
-        const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
-
-        const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(
-            io,
-            full_path,
-            alloc,
-            .limited(64 * 1024),
-        ) catch continue;
-
-        var metadata = evaluator.FieldMetadata{};
-        if (extract_xml_tag_value(content, "label")) |label| {
-            metadata.label = alloc.dupe(u8, std.mem.trim(u8, label, " \t\n\r")) catch null;
-        }
-
-        if (std.mem.indexOf(u8, content, "<caseSensitive>")) |cs| {
-            const cs_start = cs + "<caseSensitive>".len;
-            if (std.mem.indexOfPos(u8, content, cs_start, "</caseSensitive>")) |ce| {
-                const value = std.mem.trim(u8, content[cs_start..ce], " \t\n\r");
-                metadata.case_sensitive = std.ascii.eqlIgnoreCase(value, "true");
-            }
-        }
-        if (std.mem.indexOf(u8, content, "<externalId>")) |es| {
-            const e_start = es + "<externalId>".len;
-            if (std.mem.indexOfPos(u8, content, e_start, "</externalId>")) |ee| {
-                const value = std.mem.trim(u8, content[e_start..ee], " \t\n\r");
-                metadata.is_external_id = std.ascii.eqlIgnoreCase(value, "true");
-            }
-        }
-        if (std.mem.indexOf(u8, content, "<unique>")) |us| {
-            const u_start = us + "<unique>".len;
-            if (std.mem.indexOfPos(u8, content, u_start, "</unique>")) |ue| {
-                const value = std.mem.trim(u8, content[u_start..ue], " \t\n\r");
-                metadata.is_unique = std.ascii.eqlIgnoreCase(value, "true");
-            }
-        }
-        if (std.mem.indexOf(u8, content, "<required>")) |rs| {
-            const r_start = rs + "<required>".len;
-            if (std.mem.indexOfPos(u8, content, r_start, "</required>")) |re| {
-                const value = std.mem.trim(u8, content[r_start..re], " \t\n\r");
-                metadata.is_required = std.ascii.eqlIgnoreCase(value, "true");
-            }
-        }
-        if (std.mem.indexOf(u8, content, "<length>")) |ls| {
-            const l_start = ls + "<length>".len;
-            if (std.mem.indexOfPos(u8, content, l_start, "</length>")) |le| {
-                const value = std.mem.trim(u8, content[l_start..le], " \t\n\r");
-                metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
-            }
-        }
-        if (extract_xml_tag_value(content, "formula")) |formula| {
-            metadata.formula = decode_xml_text(alloc, formula, false) catch null;
-        }
-        if (extract_xml_tag_value(content, "formulaTreatBlanksAs")) |blank_mode| {
-            metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(
-                std.mem.trim(u8, blank_mode, " \t\n\r"),
-                "BlankAsZero",
-            );
-        }
-        if (extract_xml_tag_value(content, "summarizedField")) |summarized_field| {
-            metadata.summarized_field = alloc.dupe(
-                u8,
-                std.mem.trim(u8, summarized_field, " \t\n\r"),
-            ) catch null;
-        }
-        if (extract_xml_tag_value(content, "summaryForeignKey")) |summary_foreign_key| {
-            metadata.summary_foreign_key = alloc.dupe(
-                u8,
-                std.mem.trim(u8, summary_foreign_key, " \t\n\r"),
-            ) catch null;
-        }
-        if (extract_xml_tag_value(content, "summaryOperation")) |summary_operation| {
-            metadata.summary_operation = alloc.dupe(
-                u8,
-                std.mem.trim(u8, summary_operation, " \t\n\r"),
-            ) catch null;
-        }
-        metadata.summary_filters = parse_summary_filters(alloc, content) catch &.{};
-        metadata.picklist_values = parse_picklist_values(alloc, content) catch &.{};
-
-        // Extract <type>...</type> for field type info
-        if (std.mem.indexOf(u8, content, "<type>")) |ts| {
-            const t_start = ts + 6; // "<type>".len
-            if (std.mem.indexOfPos(u8, content, t_start, "</type>")) |te| {
-                const ft = content[t_start..te];
-                const tk = alloc.dupe(u8, type_name) catch continue;
-                const fk = alloc.dupe(u8, field_name) catch continue;
-                const ft_gop = field_types.getOrPut(alloc, tk) catch continue;
-                if (!ft_gop.found_existing) ft_gop.value_ptr.* = .empty;
-                ft_gop.value_ptr.put(alloc, fk, ft) catch {};
-            }
-        }
-
-        if (std.mem.indexOf(u8, content, "<referenceTo>")) |rs| {
-            const r_start = rs + "<referenceTo>".len;
-            if (std.mem.indexOfPos(u8, content, r_start, "</referenceTo>")) |re| {
-                metadata.reference_to = alloc.dupe(
-                    u8,
-                    std.mem.trim(u8, content[r_start..re], " \t\n\r"),
-                ) catch null;
-                if (std.mem.indexOf(u8, content, "<relationshipName>")) |ns| {
-                    const n_start = ns + "<relationshipName>".len;
-                    if (std.mem.indexOfPos(u8, content, n_start, "</relationshipName>")) |ne| {
-                        const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
-                        const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
-                        put_child_relationship(
-                            alloc,
-                            child_relationships,
-                            parent_type,
-                            relationship_name,
-                            type_name,
-                            field_name,
-                        ) catch {};
-                        if (!std.mem.endsWith(u8, relationship_name, "__r")) {
-                            const rel_with_suffix = std.fmt.allocPrint(
-                                alloc,
-                                "{s}__r",
-                                .{relationship_name},
-                            ) catch "";
-                            if (rel_with_suffix.len > 0) {
-                                put_child_relationship(
-                                    alloc,
-                                    child_relationships,
-                                    parent_type,
-                                    rel_with_suffix,
-                                    type_name,
-                                    field_name,
-                                ) catch {};
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (metadata.label != null or
-            metadata.is_unique or
-            metadata.is_external_id or
-            metadata.is_required or
-            metadata.length != null or
-            metadata.reference_to != null or
-            metadata.formula != null or
-            metadata.summary_operation != null or
-            metadata.picklist_values.len > 0)
-        {
-            const type_key = alloc.dupe(u8, type_name) catch continue;
-            const field_key = alloc.dupe(u8, field_name) catch continue;
-            const meta_gop = field_metadata.getOrPut(alloc, type_key) catch continue;
-            if (!meta_gop.found_existing) meta_gop.value_ptr.* = .empty;
-            meta_gop.value_ptr.put(alloc, field_key, metadata) catch {};
-        }
-
-        for (metadata.picklist_values) |picklist_value| {
-            if (!picklist_value.is_default) continue;
-            const type_key = alloc.dupe(u8, type_name) catch break;
-            const field_key = alloc.dupe(u8, field_name) catch break;
-            const gop = field_defaults.getOrPut(alloc, type_key) catch break;
-            if (!gop.found_existing) {
-                gop.value_ptr.* = .empty;
-            }
-            gop.value_ptr.put(alloc, field_key, Value{ .string = picklist_value.value }) catch {};
-            break;
-        }
-
-        // Extract <default_value>...</default_value>
-        const dv_start_tag = "<default_value>";
-        const dv_end_tag = "</default_value>";
-        const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse continue;
-        const dv_value_start = dv_start + dv_start_tag.len;
-        const dv_end = std.mem.indexOfPos(u8, content, dv_value_start, dv_end_tag) orelse continue;
-        const raw_str = content[dv_value_start..dv_end];
-
-        // Decode XML entities and strip Apex string quotes
-        const decoded = decode_xml_default_value(alloc, raw_str) catch continue;
-
-        // Convert to Value based on content
-        const value: Value = if (std.ascii.eqlIgnoreCase(decoded, "true"))
-            Value{ .boolean = true }
-        else if (std.ascii.eqlIgnoreCase(decoded, "false"))
-            Value{ .boolean = false }
-        else if (std.fmt.parseInt(i64, decoded, 10)) |i|
-            Value{ .integer = i }
-        else |_|
-            Value{ .string = decoded };
-
-        // Store in field_defaults[type_name][field_name]
-        const type_key = alloc.dupe(u8, type_name) catch continue;
-        const field_key = alloc.dupe(u8, field_name) catch continue;
-        const gop = field_defaults.getOrPut(alloc, type_key) catch continue;
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .empty;
-        }
-        gop.value_ptr.put(alloc, field_key, value) catch continue;
+        process_field_meta_entry(alloc, io, path, entry, collect) catch continue;
     }
+}
+
+fn process_field_meta_entry(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    entry: std.Io.Dir.Walker.Entry,
+    collect: FieldMetaCollect,
+) !void {
+    // Extract type name from path: .../objects/TypeName/fields/FieldName.field-meta.xml
+    const entry_path = entry.path;
+    const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+        std.mem.indexOf(u8, entry_path, "objects\\") orelse return;
+    const after_objects = entry_path[objects_idx + 8 ..];
+    const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return;
+    const type_name = after_objects[0..sep_idx];
+    const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
+
+    const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch return;
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(64 * 1024),
+    ) catch return;
+
+    var metadata = evaluator.FieldMetadata{};
+    parse_field_metadata_scalar_tags(alloc, content, &metadata);
+    metadata.summary_filters = parse_summary_filters(alloc, content) catch &.{};
+    metadata.picklist_values = parse_picklist_values(alloc, content) catch &.{};
+
+    store_field_type_tag(alloc, content, type_name, field_name, collect.field_types);
+    parse_field_reference_and_relationship(
+        alloc,
+        content,
+        type_name,
+        field_name,
+        &metadata,
+        collect.child_relationships,
+    );
+    maybe_store_field_metadata(alloc, type_name, field_name, metadata, collect.field_metadata);
+    maybe_store_picklist_default(alloc, type_name, field_name, metadata, collect.field_defaults);
+    maybe_store_default_value_tag(
+        alloc,
+        content,
+        type_name,
+        field_name,
+        collect.field_defaults,
+    );
+}
+
+fn parse_field_metadata_scalar_tags(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    metadata: *evaluator.FieldMetadata,
+) void {
+    if (extract_xml_tag_value(content, "label")) |label| {
+        metadata.label = alloc.dupe(u8, std.mem.trim(u8, label, " \t\n\r")) catch null;
+    }
+    metadata.case_sensitive = parse_bool_xml_tag(content, "caseSensitive", false);
+    metadata.is_external_id = parse_bool_xml_tag(content, "externalId", false);
+    metadata.is_unique = parse_bool_xml_tag(content, "unique", false);
+    metadata.is_required = parse_bool_xml_tag(content, "required", false);
+    if (std.mem.indexOf(u8, content, "<length>")) |ls| {
+        const l_start = ls + "<length>".len;
+        if (std.mem.indexOfPos(u8, content, l_start, "</length>")) |le| {
+            const value = std.mem.trim(u8, content[l_start..le], " \t\n\r");
+            metadata.length = std.fmt.parseInt(i64, value, 10) catch null;
+        }
+    }
+    if (extract_xml_tag_value(content, "formula")) |formula| {
+        metadata.formula = decode_xml_text(alloc, formula, false) catch null;
+    }
+    if (extract_xml_tag_value(content, "formulaTreatBlanksAs")) |blank_mode| {
+        metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(
+            std.mem.trim(u8, blank_mode, " \t\n\r"),
+            "BlankAsZero",
+        );
+    }
+    metadata.summarized_field = dupe_trimmed_xml_tag(alloc, content, "summarizedField");
+    metadata.summary_foreign_key = dupe_trimmed_xml_tag(alloc, content, "summaryForeignKey");
+    metadata.summary_operation = dupe_trimmed_xml_tag(alloc, content, "summaryOperation");
+}
+
+fn parse_bool_xml_tag(content: []const u8, tag: []const u8, default: bool) bool {
+    if (extract_xml_tag_value(content, tag)) |raw| {
+        const value = std.mem.trim(u8, raw, " \t\n\r");
+        return std.ascii.eqlIgnoreCase(value, "true");
+    }
+    return default;
+}
+
+fn dupe_trimmed_xml_tag(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    tag: []const u8,
+) ?[]const u8 {
+    const raw = extract_xml_tag_value(content, tag) orelse return null;
+    return alloc.dupe(u8, std.mem.trim(u8, raw, " \t\n\r")) catch null;
+}
+
+fn store_field_type_tag(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    type_name: []const u8,
+    field_name: []const u8,
+    field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
+) void {
+    // Extract <type>...</type> for field type info
+    const ts = std.mem.indexOf(u8, content, "<type>") orelse return;
+    const t_start = ts + 6; // "<type>".len
+    const te = std.mem.indexOfPos(u8, content, t_start, "</type>") orelse return;
+    const ft = content[t_start..te];
+    const tk = alloc.dupe(u8, type_name) catch return;
+    const fk = alloc.dupe(u8, field_name) catch return;
+    const ft_gop = field_types.getOrPut(alloc, tk) catch return;
+    if (!ft_gop.found_existing) ft_gop.value_ptr.* = .empty;
+    ft_gop.value_ptr.put(alloc, fk, ft) catch {};
+}
+
+fn parse_field_reference_and_relationship(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    type_name: []const u8,
+    field_name: []const u8,
+    metadata: *evaluator.FieldMetadata,
+    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+) void {
+    const rs = std.mem.indexOf(u8, content, "<referenceTo>") orelse return;
+    const r_start = rs + "<referenceTo>".len;
+    const re = std.mem.indexOfPos(u8, content, r_start, "</referenceTo>") orelse return;
+    metadata.reference_to = alloc.dupe(
+        u8,
+        std.mem.trim(u8, content[r_start..re], " \t\n\r"),
+    ) catch null;
+    const ns = std.mem.indexOf(u8, content, "<relationshipName>") orelse return;
+    const n_start = ns + "<relationshipName>".len;
+    const ne = std.mem.indexOfPos(u8, content, n_start, "</relationshipName>") orelse return;
+    const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
+    const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
+    put_child_relationship(
+        alloc,
+        child_relationships,
+        parent_type,
+        relationship_name,
+        type_name,
+        field_name,
+    ) catch {};
+    if (std.mem.endsWith(u8, relationship_name, "__r")) return;
+    const rel_with_suffix =
+        std.fmt.allocPrint(alloc, "{s}__r", .{relationship_name}) catch "";
+    if (rel_with_suffix.len == 0) return;
+    put_child_relationship(
+        alloc,
+        child_relationships,
+        parent_type,
+        rel_with_suffix,
+        type_name,
+        field_name,
+    ) catch {};
+}
+
+fn maybe_store_field_metadata(
+    alloc: std.mem.Allocator,
+    type_name: []const u8,
+    field_name: []const u8,
+    metadata: evaluator.FieldMetadata,
+    field_metadata: *std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata),
+    ),
+) void {
+    if (!(metadata.label != null or
+        metadata.is_unique or
+        metadata.is_external_id or
+        metadata.is_required or
+        metadata.length != null or
+        metadata.reference_to != null or
+        metadata.formula != null or
+        metadata.summary_operation != null or
+        metadata.picklist_values.len > 0)) return;
+    const type_key = alloc.dupe(u8, type_name) catch return;
+    const field_key = alloc.dupe(u8, field_name) catch return;
+    const meta_gop = field_metadata.getOrPut(alloc, type_key) catch return;
+    if (!meta_gop.found_existing) meta_gop.value_ptr.* = .empty;
+    meta_gop.value_ptr.put(alloc, field_key, metadata) catch {};
+}
+
+fn maybe_store_picklist_default(
+    alloc: std.mem.Allocator,
+    type_name: []const u8,
+    field_name: []const u8,
+    metadata: evaluator.FieldMetadata,
+    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+) void {
+    for (metadata.picklist_values) |picklist_value| {
+        if (!picklist_value.is_default) continue;
+        const type_key = alloc.dupe(u8, type_name) catch break;
+        const field_key = alloc.dupe(u8, field_name) catch break;
+        const gop = field_defaults.getOrPut(alloc, type_key) catch break;
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        gop.value_ptr.put(alloc, field_key, Value{ .string = picklist_value.value }) catch {};
+        break;
+    }
+}
+
+fn maybe_store_default_value_tag(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    type_name: []const u8,
+    field_name: []const u8,
+    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+) void {
+    // Extract <default_value>...</default_value>
+    const dv_start_tag = "<default_value>";
+    const dv_end_tag = "</default_value>";
+    const dv_start = std.mem.indexOf(u8, content, dv_start_tag) orelse return;
+    const dv_value_start = dv_start + dv_start_tag.len;
+    const dv_end = std.mem.indexOfPos(u8, content, dv_value_start, dv_end_tag) orelse return;
+    const raw_str = content[dv_value_start..dv_end];
+    // Decode XML entities and strip Apex string quotes
+    const decoded = decode_xml_default_value(alloc, raw_str) catch return;
+    // Convert to Value based on content
+    const value: Value = if (std.ascii.eqlIgnoreCase(decoded, "true"))
+        Value{ .boolean = true }
+    else if (std.ascii.eqlIgnoreCase(decoded, "false"))
+        Value{ .boolean = false }
+    else if (std.fmt.parseInt(i64, decoded, 10)) |i|
+        Value{ .integer = i }
+    else |_|
+        Value{ .string = decoded };
+    // Store in field_defaults[type_name][field_name]
+    const type_key = alloc.dupe(u8, type_name) catch return;
+    const field_key = alloc.dupe(u8, field_name) catch return;
+    const gop = field_defaults.getOrPut(alloc, type_key) catch return;
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    gop.value_ptr.put(alloc, field_key, value) catch return;
 }
 
 fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 {
