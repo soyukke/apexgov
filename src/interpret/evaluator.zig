@@ -3992,98 +3992,71 @@ pub const Evaluator = struct {
         external_id_field: ?[]const u8,
     ) anyerror!void {
         if (external_id_field) |field_name| {
-            if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
-                if (obj.id != null) {
-                    try self.update_record(obj);
-                    return;
-                }
-                if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-                    if (id_val == .string and id_val.string.len > 0) {
-                        obj.id = id_val.string;
-                        try self.update_record(obj);
-                        return;
-                    }
-                }
-                try self.insert_record(obj);
-                return;
-            }
-            const field_value = get_upsert_field_value(obj, field_name);
-            if (field_value == .null_val) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: external id field not specified in an upsert call" });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            if (self.find_record_by_field_value(
-                obj.type_name,
-                field_name,
-                field_value,
-            )) |existing| {
-                if (existing.id) |existing_id| {
-                    obj.id = existing_id;
-                    try utils.sobject_put(
-                        &obj.fields,
-                        self.arena,
-                        "Id",
-                        Value{ .string = existing_id },
-                    );
-                }
-                try self.update_record(obj);
-                return;
-            }
+            return try self.upsert_with_external_id(obj, field_name);
         }
-        if (obj.id != null) {
-            // Check if record exists in store
-            const record_id = obj.id.?;
-            var found = false;
-            if (self.store.getPtr(obj.type_name)) |records| {
-                for (records.items) |rec| {
-                    if (rec == .sobject and rec.sobject.id != null and
-                        std.mem.eql(u8, rec.sobject.id.?, record_id))
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            // Also check Id field
-            if (!found) {
-                if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-                    if (id_val == .string) {
-                        var store_iter = self.store.iterator();
-                        while (store_iter.next()) |entry| {
-                            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj.type_name)) {
-                                for (entry.value_ptr.items) |rec| {
-                                    if (rec == .sobject and rec.sobject.id != null and
-                                        std.mem.eql(u8, rec.sobject.id.?, id_val.string))
-                                    {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (found) {
-                try self.update_record(obj);
-            } else {
-                // Invalid cross reference Id — throw DmlException
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(
+        if (obj.id == null) {
+            return self.insert_record(obj);
+        }
+        if (self.find_stored_record(obj, obj.id.?) != null) {
+            return self.update_record(obj);
+        }
+        return self.throw_dml_exception(
+            "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id",
+        );
+    }
+
+    fn upsert_with_external_id(
+        self: *Evaluator,
+        obj: *types.SObject,
+        field_name: []const u8,
+    ) anyerror!void {
+        if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
+            return try self.upsert_by_id(obj);
+        }
+        const field_value = get_upsert_field_value(obj, field_name);
+        if (field_value == .null_val) {
+            return self.throw_dml_exception(
+                "MISSING_ARGUMENT: external id field not specified in an upsert call",
+            );
+        }
+        if (self.find_record_by_field_value(
+            obj.type_name,
+            field_name,
+            field_value,
+        )) |existing| {
+            if (existing.id) |existing_id| {
+                obj.id = existing_id;
+                try utils.sobject_put(
+                    &obj.fields,
                     self.arena,
-                    "message",
-                    Value{ .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id" },
+                    "Id",
+                    Value{ .string = existing_id },
                 );
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
             }
-        } else {
-            try self.insert_record(obj);
+            return self.update_record(obj);
         }
+        // No existing record with the external Id → fall through to insert via
+        // the Id-less path in the main upsert handler.
+        if (obj.id == null) {
+            return self.insert_record(obj);
+        }
+        if (self.find_stored_record(obj, obj.id.?) != null) {
+            return self.update_record(obj);
+        }
+        return self.throw_dml_exception(
+            "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id",
+        );
+    }
+
+    fn upsert_by_id(self: *Evaluator, obj: *types.SObject) anyerror!void {
+        if (obj.id != null) return self.update_record(obj);
+        if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
+            if (id_val == .string and id_val.string.len > 0) {
+                obj.id = id_val.string;
+                return self.update_record(obj);
+            }
+        }
+        return self.insert_record(obj);
     }
 
     fn delete_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
