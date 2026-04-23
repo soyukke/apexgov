@@ -18593,20 +18593,17 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
+        if (self.call_depth > self.max_call_depth) return .null_val;
 
-        if (self.call_depth > self.max_call_depth) {
-            return .null_val;
-        }
-        // Push call frame for stack trace generation (use current_call_line set by caller)
         const frame_line = self.current_call_line;
         self.current_call_line = 0;
-        // Lazy static init for the instance's class and its parent hierarchy
         self.ensure_static_init(instance.class_name);
         self.ensure_static_init(class_decl.name);
         if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
-        // For virtual dispatch: find method in instance's actual class first (child override),
-        // then in the provided class_decl, then in parent classes.
-        // `actual_class = null` is used for super.method() dispatch.
+
+        // For virtual dispatch: find method in instance's actual class first
+        // (child override), then in the provided class_decl, then in parent
+        // classes. `actual_class = null` is used for super.method() dispatch.
         const resolved = self.find_resolved_method_in_hierarchy_typed(
             actual_class,
             class_decl,
@@ -18614,114 +18611,165 @@ pub const Evaluator = struct {
             args,
         ) orelse
             self.find_resolved_method_in_hierarchy(actual_class, class_decl, method_name, args.len);
+        const rm = resolved orelse return self.call_method(class_decl.name, method_name, args);
+        return try self.execute_resolved_method(rm, instance, method_name, args, frame_line);
+    }
 
-        if (resolved) |rm| {
-            const owner_decl = rm.owner;
-            const method = rm.method;
-            const frame_class_name: []const u8 = blk: {
-                if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], owner_decl.name)) {
-                        break :blk instance.class_name;
-                    }
+    fn execute_resolved_method(
+        self: *Evaluator,
+        rm: anytype,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+        frame_line: u32,
+    ) anyerror!Value {
+        const owner_decl = rm.owner;
+        const method = rm.method;
+        try self.push_method_stack_frame(instance, owner_decl, method_name, frame_line);
+        defer _ = self.call_stack.pop();
+
+        const method_env = try self.build_method_env(instance, method, args);
+        const saved_class = self.current_class;
+        self.current_class = owner_decl.name;
+        defer self.current_class = saved_class;
+
+        const batch_lifecycle =
+            self.is_batch_lifecycle_method(owner_decl.name, method_name) or
+            self.is_batch_lifecycle_method(instance.class_name, method_name);
+        if (batch_lifecycle) self.batch_lifecycle_depth += 1;
+        defer if (batch_lifecycle) {
+            self.batch_lifecycle_depth -= 1;
+        };
+
+        const result = try self.exec_block(method.body, method_env);
+        self.sync_this_back_to_instance(method_env, instance);
+        self.sync_instance_fields_into_env(method_env, instance, method);
+        return self.resolve_method_return_value(result, method, owner_decl, instance);
+    }
+
+    fn push_method_stack_frame(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        owner_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        frame_line: u32,
+    ) !void {
+        const frame_class_name: []const u8 = blk: {
+            if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], owner_decl.name)) {
+                    break :blk instance.class_name;
                 }
-                break :blk owner_decl.name;
+            }
+            break :blk owner_decl.name;
+        };
+        try self.call_stack.append(
+            self.arena,
+            .{ .class_name = frame_class_name, .method_name = method_name, .line = frame_line },
+        );
+    }
+
+    /// Build the child env for the method body. Instance fields are defined
+    /// first (so bare identifiers resolve to them), then method parameters
+    /// are define_typed'd so they shadow any same-named field and carry a
+    /// declared type for later lookup disambiguation.
+    fn build_method_env(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        method: *ast.MethodDecl,
+        args: []const Value,
+    ) !*Env {
+        const method_env = try self.global_env.child();
+        try method_env.define("this", Value{ .object = instance });
+        for (instance.fields.keys(), instance.fields.values()) |k, v| {
+            method_env.set(k, v) catch {
+                try method_env.define(k, v);
             };
-            try self.call_stack.append(
-                self.arena,
-                .{ .class_name = frame_class_name, .method_name = method_name, .line = frame_line },
+        }
+        // Always use define_typed — instance-field pre-loads above set the
+        // value but no declared type, so a later identifier lookup that reads
+        // `get_declared_type` to distinguish "real param binding" from "stale
+        // ctor pre-load" would otherwise misclassify the parameter and fall
+        // back to instance.fields (bug: nothingToProcessShouldExitEarly).
+        for (method.params, 0..) |param, i| {
+            const val = if (i < args.len)
+                try self.prepare_method_arg_value(args[i])
+            else
+                Value.null_val;
+            const declared_type = self.render_type_ref(param.type_ref);
+            try method_env.define_typed(
+                param.name,
+                self.annotate_declared_collection_type(val, declared_type),
+                declared_type,
             );
-            defer _ = self.call_stack.pop();
+        }
+        return method_env;
+    }
 
-            const method_env = try self.global_env.child();
-            try method_env.define("this", Value{ .object = instance });
-            // Define instance fields as local variables FIRST
-            for (instance.fields.keys(), instance.fields.values()) |k, v| {
-                method_env.set(k, v) catch {
-                    try method_env.define(k, v);
-                };
-            }
-            // Then define method parameters (so they shadow instance fields with same name).
-            // Always use define_typed — instance-field pre-loads above set the value but no
-            // declared type, so a later identifier lookup that reads `get_declared_type` to
-            // distinguish "real param binding" from "stale ctor pre-load" would otherwise
-            // misclassify the parameter and fall back to instance.fields (bug:
-            // nothingToProcessShouldExitEarly).
-            for (method.params, 0..) |param, i| {
-                const val = if (i < args.len) try self.prepare_method_arg_value(args[i]) else Value.null_val;
-                const declared_type = self.render_type_ref(param.type_ref);
-                try method_env.define_typed(
-                    param.name,
-                    self.annotate_declared_collection_type(val, declared_type),
-                    declared_type,
-                );
-            }
-            const saved_class = self.current_class;
-            self.current_class = owner_decl.name;
-            defer self.current_class = saved_class;
+    fn sync_this_back_to_instance(
+        self: *Evaluator,
+        method_env: *Env,
+        instance: *types.ObjectInstance,
+    ) void {
+        const this_val = method_env.get("this") orelse return;
+        if (this_val != .object) return;
+        const updated = this_val.object;
+        if (updated == instance) return;
+        for (updated.fields.keys(), updated.fields.values()) |k, v| {
+            instance.fields.put(self.arena, k, v) catch {};
+        }
+    }
 
-            const batch_lifecycle = self.is_batch_lifecycle_method(owner_decl.name, method_name) or
-                self.is_batch_lifecycle_method(instance.class_name, method_name);
-            if (batch_lifecycle) self.batch_lifecycle_depth += 1;
-            defer {
-                if (batch_lifecycle) self.batch_lifecycle_depth -= 1;
-            }
-
-            const result = try self.exec_block(method.body, method_env);
-            // Sync back fields modified via `this.field = value`
-            const this_val = method_env.get("this");
-            if (this_val != null and this_val.? == .object) {
-                const updated = this_val.?.object;
-                if (updated == instance) {
-                    // Same pointer, fields already updated in place
-                } else {
-                    // Copy fields back
-                    for (updated.fields.keys(), updated.fields.values()) |k, v| {
-                        instance.fields.put(self.arena, k, v) catch {};
-                    }
+    /// Sync instance field values back to the method env so that bare
+    /// identifier access sees updates made via `this.field = ...`. Skip
+    /// fields whose name matches a parameter to avoid overwriting args.
+    fn sync_instance_fields_into_env(
+        _: *Evaluator,
+        method_env: *Env,
+        instance: *types.ObjectInstance,
+        method: *ast.MethodDecl,
+    ) void {
+        for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
+            var is_param = false;
+            for (method.params) |p| {
+                if (std.ascii.eqlIgnoreCase(p.name, fk)) {
+                    is_param = true;
+                    break;
                 }
             }
-            // Sync instance field values back to the method env so that bare
-            // identifier access sees updates made by the method body via this.field = ...
-            // Skip fields whose name matches a parameter to avoid overwriting parameters.
-            for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
-                var is_param = false;
-                for (method.params) |p| {
-                    if (std.ascii.eqlIgnoreCase(p.name, fk)) {
-                        is_param = true;
-                        break;
-                    }
-                }
-                if (!is_param) {
-                    method_env.set(fk, fv) catch {};
-                }
-            }
-            const final_result = switch (result) {
-                .return_val => |v| v,
-                else => blk: {
-                    // Fluent pattern: if method return type matches the class (or parent),
-                    // return `this` instead of void. This enables method chaining.
-                    if (method.return_type.name.len > 0 and
-                        !std.ascii.eqlIgnoreCase(method.return_type.name, "void"))
+            if (!is_param) method_env.set(fk, fv) catch {};
+        }
+    }
+
+    /// Resolve the final return value: an explicit `return_val`, otherwise
+    /// the evaluator's `return_value` (or `this` for fluent-pattern void
+    /// methods whose declared return type names the class or a parent).
+    fn resolve_method_return_value(
+        self: *Evaluator,
+        result: StmtResult,
+        method: *ast.MethodDecl,
+        owner_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+    ) Value {
+        return switch (result) {
+            .return_val => |v| v,
+            else => blk: {
+                if (method.return_type.name.len > 0 and
+                    !std.ascii.eqlIgnoreCase(method.return_type.name, "void"))
+                {
+                    if (std.ascii.eqlIgnoreCase(method.return_type.name, owner_decl.name) or
+                        std.ascii.eqlIgnoreCase(method.return_type.name, instance.class_name))
                     {
-                        if (std.ascii.eqlIgnoreCase(method.return_type.name, owner_decl.name) or
-                            std.ascii.eqlIgnoreCase(method.return_type.name, instance.class_name))
-                        {
+                        break :blk Value{ .object = instance };
+                    }
+                    if (owner_decl.super_class) |sc| {
+                        if (std.ascii.eqlIgnoreCase(method.return_type.name, sc.name)) {
                             break :blk Value{ .object = instance };
                         }
-                        // Check if return type matches a parent class
-                        if (owner_decl.super_class) |sc| {
-                            if (std.ascii.eqlIgnoreCase(method.return_type.name, sc.name)) {
-                                break :blk Value{ .object = instance };
-                            }
-                        }
                     }
-                    break :blk self.return_value;
-                },
-            };
-            return final_result;
-        }
-        // Try static method as fallback
-        return self.call_method(class_decl.name, method_name, args);
+                }
+                break :blk self.return_value;
+            },
+        };
     }
 
     fn find_resolved_method_in_hierarchy_typed(
