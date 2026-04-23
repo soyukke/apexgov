@@ -7531,189 +7531,216 @@ fn handle_csv_to_json(
     args: []const Value,
     script_name: []const u8,
 ) ![]const u8 {
-    // Extract input data (CSV string or records)
-    var csv_str: []const u8 = "";
-    var separator: u8 = ',';
-
-    // Check if script name indicates custom separator
-    if (std.ascii.indexOfIgnoreCase(script_name, "CustomSeparator") != null or
-        std.ascii.indexOfIgnoreCase(script_name, "Separator") != null)
-    {
-        separator = ';'; // Default custom separator
-    }
-
-    // Check for field renaming script
+    const has_custom_sep =
+        std.ascii.indexOfIgnoreCase(script_name, "CustomSeparator") != null or
+        std.ascii.indexOfIgnoreCase(script_name, "Separator") != null;
     const is_rename = std.ascii.indexOfIgnoreCase(script_name, "Rename") != null or
         std.ascii.indexOfIgnoreCase(script_name, "FieldRenaming") != null;
 
-    if (args.len > 0) {
-        if (args[0] == .object) {
-            if (args[0].object.fields.get("records") orelse args[0].object.fields.get("payload") orelse args[0].object.fields.get("csvData")) |records| {
-                if (records == .string) csv_str = records.string;
-            }
-            if (args[0].object.fields.get("separator")) |sep| {
-                if (sep == .string and sep.string.len > 0) separator = sep.string[0];
-            }
-        } else if (args[0] == .map) {
-            for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-                if ((std.ascii.eqlIgnoreCase(
-                    k,
-                    "records",
-                ) or std.ascii.eqlIgnoreCase(k, "payload") or
-                    std.ascii.eqlIgnoreCase(k, "csvData")) and v == .string)
-                {
-                    csv_str = v.string;
-                } else if (std.ascii.eqlIgnoreCase(k, "separator") and
-                    v == .string and
-                    v.string.len > 0)
-                {
-                    separator = v.string[0];
-                }
-            }
-        }
-    }
+    const input = csv_extract_input_and_separator(args, has_custom_sep);
+    if (input.csv_str.len == 0) return "[]";
 
-    if (csv_str.len == 0) return "[]";
-
-    const normalized_csv = blk: {
-        if (std.mem.indexOf(u8, csv_str, "\\n") == null and
-            std.mem.indexOf(u8, csv_str, "\\r") == null)
-        {
-            break :blk csv_str;
-        }
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        var i: usize = 0;
-        while (i < csv_str.len) : (i += 1) {
-            if (csv_str[i] == '\\' and i + 1 < csv_str.len) {
-                const escaped = csv_str[i + 1];
-                if (escaped == 'n') {
-                    try buf.append(ctx.arena, '\n');
-                    i += 1;
-                    continue;
-                }
-                if (escaped == 'r') {
-                    try buf.append(ctx.arena, '\r');
-                    i += 1;
-                    continue;
-                }
-            }
-            try buf.append(ctx.arena, csv_str[i]);
-        }
-        break :blk buf.items;
-    };
-
-    // Parse CSV fields from a row, handling quoted fields
-    // Returns a list of field values
-    const parseCsvFields = struct {
-        fn parse(
-            arena: std.mem.Allocator,
-            row: []const u8,
-            sep: u8,
-        ) !std.ArrayListUnmanaged([]const u8) {
-            var fields: std.ArrayListUnmanaged([]const u8) = .empty;
-            var ci: usize = 0;
-            while (ci <= row.len) {
-                if (ci >= row.len) {
-                    // Empty trailing field
-                    try fields.append(arena, "");
-                    break;
-                }
-                if (row[ci] == '"') {
-                    // Quoted field - scan until closing quote (handling escaped quotes)
-                    ci += 1; // skip opening quote
-                    var field_buf: std.ArrayListUnmanaged(u8) = .empty;
-                    while (ci < row.len) {
-                        if (row[ci] == '"') {
-                            if (ci + 1 < row.len and row[ci + 1] == '"') {
-                                // Escaped quote
-                                try field_buf.append(arena, '"');
-                                ci += 2;
-                            } else {
-                                // End of quoted field
-                                ci += 1;
-                                break;
-                            }
-                        } else {
-                            try field_buf.append(arena, row[ci]);
-                            ci += 1;
-                        }
-                    }
-                    try fields.append(arena, field_buf.items);
-                    // Skip separator after quoted field
-                    if (ci < row.len and row[ci] == sep) ci += 1;
-                } else {
-                    // Unquoted field
-                    var end = ci;
-                    while (end < row.len and row[end] != sep) end += 1;
-                    try fields.append(arena, std.mem.trim(u8, row[ci..end], " \t\r"));
-                    ci = if (end < row.len) end + 1 else end + 1;
-                }
-            }
-            return fields;
-        }
-    }.parse;
-
-    // Split CSV into records, handling quoted fields that span multiple lines
+    const normalized_csv = try csv_normalize_escapes(ctx.arena, input.csv_str);
     var records: std.ArrayListUnmanaged([]const u8) = .empty;
-    {
-        var rec_buf: std.ArrayListUnmanaged(u8) = .empty;
-        var in_quotes = false;
-        for (normalized_csv) |c| {
-            if (c == '"') in_quotes = !in_quotes;
-            if (c == '\n' and !in_quotes) {
-                const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
-                if (rec.len > 0) try records.append(ctx.arena, try ctx.arena.dupe(u8, rec));
-                rec_buf = .empty;
-            } else {
-                try rec_buf.append(ctx.arena, c);
-            }
-        }
-        if (rec_buf.items.len > 0) {
-            const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
-            if (rec.len > 0) try records.append(ctx.arena, try ctx.arena.dupe(u8, rec));
-        }
-    }
-
+    try csv_split_records(ctx.arena, normalized_csv, &records);
     if (records.items.len < 2) return "[]";
 
-    // Parse headers
-    const headers = try parseCsvFields(ctx.arena, records.items[0], separator);
+    const headers = try csv_parse_fields(ctx.arena, records.items[0], input.separator);
+    return csv_build_json_output(
+        ctx.arena,
+        records.items[1..],
+        headers,
+        input.separator,
+        is_rename,
+    );
+}
 
-    // Parse data rows and build JSON
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.appendSlice(ctx.arena, "[");
-    var first_row = true;
-    for (records.items[1..]) |record| {
-        if (!first_row) try buf.appendSlice(ctx.arena, ", ");
-        first_row = false;
-        try buf.appendSlice(ctx.arena, "{");
-        const fields = try parseCsvFields(ctx.arena, record, separator);
-        var first_col = true;
-        for (fields.items, 0..) |field_val, col_idx| {
-            if (col_idx >= headers.items.len) break;
-            if (!first_col) try buf.appendSlice(ctx.arena, ", ");
-            first_col = false;
-            var header = headers.items[col_idx];
-            if (is_rename) header = rename_field(header);
-            try buf.appendSlice(ctx.arena, "\"");
-            try buf.appendSlice(ctx.arena, header);
-            try buf.appendSlice(ctx.arena, "\": \"");
-            // Escape special characters in field value for JSON
-            for (field_val) |fc| {
-                if (fc == '"') {
-                    try buf.appendSlice(ctx.arena, "\\\"");
-                } else if (fc == '\n') {
-                    try buf.appendSlice(ctx.arena, "\\n");
-                } else {
-                    try buf.append(ctx.arena, fc);
-                }
-            }
-            try buf.appendSlice(ctx.arena, "\"");
+const CsvInput = struct { csv_str: []const u8, separator: u8 };
+
+fn csv_extract_input_and_separator(args: []const Value, has_custom_sep: bool) CsvInput {
+    var out = CsvInput{ .csv_str = "", .separator = if (has_custom_sep) ';' else ',' };
+    if (args.len == 0) return out;
+    if (args[0] == .object) {
+        if (args[0].object.fields.get("records") orelse
+            args[0].object.fields.get("payload") orelse
+            args[0].object.fields.get("csvData")) |records|
+        {
+            if (records == .string) out.csv_str = records.string;
         }
-        try buf.appendSlice(ctx.arena, "}");
+        if (args[0].object.fields.get("separator")) |sep| {
+            if (sep == .string and sep.string.len > 0) out.separator = sep.string[0];
+        }
+        return out;
     }
-    try buf.appendSlice(ctx.arena, "]");
+    if (args[0] == .map) {
+        for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
+            const is_data_key = std.ascii.eqlIgnoreCase(k, "records") or
+                std.ascii.eqlIgnoreCase(k, "payload") or
+                std.ascii.eqlIgnoreCase(k, "csvData");
+            if (is_data_key and v == .string) {
+                out.csv_str = v.string;
+            } else if (std.ascii.eqlIgnoreCase(k, "separator") and
+                v == .string and v.string.len > 0)
+            {
+                out.separator = v.string[0];
+            }
+        }
+    }
+    return out;
+}
+
+fn csv_normalize_escapes(arena: std.mem.Allocator, csv_str: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, csv_str, "\\n") == null and
+        std.mem.indexOf(u8, csv_str, "\\r") == null)
+    {
+        return csv_str;
+    }
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var i: usize = 0;
+    while (i < csv_str.len) : (i += 1) {
+        if (csv_str[i] == '\\' and i + 1 < csv_str.len) {
+            const escaped = csv_str[i + 1];
+            if (escaped == 'n') {
+                try buf.append(arena, '\n');
+                i += 1;
+                continue;
+            }
+            if (escaped == 'r') {
+                try buf.append(arena, '\r');
+                i += 1;
+                continue;
+            }
+        }
+        try buf.append(arena, csv_str[i]);
+    }
     return buf.items;
+}
+
+fn csv_split_records(
+    arena: std.mem.Allocator,
+    normalized_csv: []const u8,
+    records: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    var rec_buf: std.ArrayListUnmanaged(u8) = .empty;
+    var in_quotes = false;
+    for (normalized_csv) |c| {
+        if (c == '"') in_quotes = !in_quotes;
+        if (c == '\n' and !in_quotes) {
+            const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
+            if (rec.len > 0) try records.append(arena, try arena.dupe(u8, rec));
+            rec_buf = .empty;
+        } else {
+            try rec_buf.append(arena, c);
+        }
+    }
+    if (rec_buf.items.len > 0) {
+        const rec = std.mem.trim(u8, rec_buf.items, " \t\r");
+        if (rec.len > 0) try records.append(arena, try arena.dupe(u8, rec));
+    }
+}
+
+fn csv_parse_fields(
+    arena: std.mem.Allocator,
+    row: []const u8,
+    sep: u8,
+) !std.ArrayListUnmanaged([]const u8) {
+    var fields: std.ArrayListUnmanaged([]const u8) = .empty;
+    var ci: usize = 0;
+    while (ci <= row.len) {
+        if (ci >= row.len) {
+            try fields.append(arena, "");
+            break;
+        }
+        if (row[ci] == '"') {
+            ci = try csv_parse_quoted_field(arena, row, ci, sep, &fields);
+        } else {
+            var end = ci;
+            while (end < row.len and row[end] != sep) end += 1;
+            try fields.append(arena, std.mem.trim(u8, row[ci..end], " \t\r"));
+            ci = if (end < row.len) end + 1 else end + 1;
+        }
+    }
+    return fields;
+}
+
+fn csv_parse_quoted_field(
+    arena: std.mem.Allocator,
+    row: []const u8,
+    start: usize,
+    sep: u8,
+    fields: *std.ArrayListUnmanaged([]const u8),
+) !usize {
+    var ci = start + 1; // skip opening quote
+    var field_buf: std.ArrayListUnmanaged(u8) = .empty;
+    while (ci < row.len) {
+        if (row[ci] == '"') {
+            if (ci + 1 < row.len and row[ci + 1] == '"') {
+                try field_buf.append(arena, '"');
+                ci += 2;
+            } else {
+                ci += 1; // End of quoted field
+                break;
+            }
+        } else {
+            try field_buf.append(arena, row[ci]);
+            ci += 1;
+        }
+    }
+    try fields.append(arena, field_buf.items);
+    if (ci < row.len and row[ci] == sep) ci += 1;
+    return ci;
+}
+
+fn csv_build_json_output(
+    arena: std.mem.Allocator,
+    data_records: []const []const u8,
+    headers: std.ArrayListUnmanaged([]const u8),
+    separator: u8,
+    is_rename: bool,
+) ![]const u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(arena, "[");
+    var first_row = true;
+    for (data_records) |record| {
+        if (!first_row) try buf.appendSlice(arena, ", ");
+        first_row = false;
+        try buf.appendSlice(arena, "{");
+        const fields = try csv_parse_fields(arena, record, separator);
+        try csv_append_json_row(arena, &buf, fields, headers, is_rename);
+        try buf.appendSlice(arena, "}");
+    }
+    try buf.appendSlice(arena, "]");
+    return buf.items;
+}
+
+fn csv_append_json_row(
+    arena: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    fields: std.ArrayListUnmanaged([]const u8),
+    headers: std.ArrayListUnmanaged([]const u8),
+    is_rename: bool,
+) !void {
+    var first_col = true;
+    for (fields.items, 0..) |field_val, col_idx| {
+        if (col_idx >= headers.items.len) break;
+        if (!first_col) try buf.appendSlice(arena, ", ");
+        first_col = false;
+        var header = headers.items[col_idx];
+        if (is_rename) header = rename_field(header);
+        try buf.appendSlice(arena, "\"");
+        try buf.appendSlice(arena, header);
+        try buf.appendSlice(arena, "\": \"");
+        for (field_val) |fc| {
+            if (fc == '"') {
+                try buf.appendSlice(arena, "\\\"");
+            } else if (fc == '\n') {
+                try buf.appendSlice(arena, "\\n");
+            } else {
+                try buf.append(arena, fc);
+            }
+        }
+        try buf.appendSlice(arena, "\"");
+    }
 }
 
 fn rename_field(name: []const u8) []const u8 {
