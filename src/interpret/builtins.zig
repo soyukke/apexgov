@@ -2530,72 +2530,78 @@ fn dispatch_static_type(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "forName") and args.len > 0 and args[0] == .string) {
-        const requested = args[0].string;
-        if (std.ascii.startsWithIgnoreCase(requested, "Map") or
-            std.ascii.startsWithIgnoreCase(requested, "List") or
-            std.ascii.startsWithIgnoreCase(requested, "Set"))
-        {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Type" };
-            try obj.fields.put(ctx.arena, "name", args[0]);
-            return Value{ .object = obj };
-        }
-        const lookup_name =
-            if (std.mem.indexOf(u8, requested, ".")) |dot| requested[0..dot] else requested;
-        const inner_name =
-            if (std.mem.indexOf(u8, requested, ".")) |dot| requested[dot + 1 ..] else "";
-        if (inner_name.len > 0) {
-            const cd_opt: ?*ast.ClassDecl = blk: {
-                if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
-                var it = ctx.eval.classes.iterator();
-                while (it.next()) |e| {
-                    if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
-                }
-                break :blk null;
-            };
-            if (cd_opt) |cd| {
-                var found_inner = false;
-                for (cd.members) |member| {
-                    switch (member) {
-                        .class_decl => |inner_cd| {
-                            if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
-                                found_inner = true;
-                                break;
-                            }
-                        },
-                        .interface_decl => |iface| {
-                            if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) {
-                                found_inner = true;
-                                break;
-                            }
-                        },
-                        else => {},
-                    }
-                }
-                if (!found_inner) {
-                    if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |v| return v;
-                    return Value.null_val;
-                }
-            } else {
-                if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |v| return v;
-                return Value.null_val;
-            }
-        }
-        // Bare class name — resolve conservatively so that `Type.forName('Bogus')`
-        // returns null (matching Apex semantics) while user classes, standard
-        // SObjects, and the common system primitives still round-trip to a Type
-        // value. Frameworks downstream can then catch `NullPointerException` on
-        // `null.newInstance()` for bogus names.
-        if (is_resolvable_type_name(ctx, lookup_name)) {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Type" };
-            try obj.fields.put(ctx.arena, "name", args[0]);
-            return Value{ .object = obj };
-        }
-        return Value.null_val;
+    if (!std.ascii.eqlIgnoreCase(method_name, "forName")) return Value.null_val;
+    if (args.len == 0 or args[0] != .string) return Value.null_val;
+    const requested = args[0].string;
+    if (std.ascii.startsWithIgnoreCase(requested, "Map") or
+        std.ascii.startsWithIgnoreCase(requested, "List") or
+        std.ascii.startsWithIgnoreCase(requested, "Set"))
+    {
+        return try make_type_object(ctx, args[0]);
     }
+    const lookup_name =
+        if (std.mem.indexOf(u8, requested, ".")) |dot| requested[0..dot] else requested;
+    const inner_name =
+        if (std.mem.indexOf(u8, requested, ".")) |dot| requested[dot + 1 ..] else "";
+    if (inner_name.len > 0) {
+        if (try resolve_type_with_inner(ctx, lookup_name, inner_name)) |v| return v;
+        // Fall through to bare lookup only when the class was found AND the
+        // inner name actually matched — matching the original semantics.
+    }
+    // Bare class name — resolve conservatively so that `Type.forName('Bogus')`
+    // returns null (matching Apex semantics) while user classes, standard
+    // SObjects, and the common system primitives still round-trip to a Type
+    // value. Frameworks downstream can then catch `NullPointerException` on
+    // `null.newInstance()` for bogus names.
+    if (!is_resolvable_type_name(ctx, lookup_name)) return Value.null_val;
+    return try make_type_object(ctx, args[0]);
+}
+
+fn make_type_object(ctx: *BuiltinContext, name_val: Value) !Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Type" };
+    try obj.fields.put(ctx.arena, "name", name_val);
+    return Value{ .object = obj };
+}
+
+/// Returns:
+/// - `Value.null_val` — resolution failed (caller should return null)
+/// - `Value{schema object}` — resolved via schema
+/// - `null` (the optional being null) — caller should fall through to bare-name handling
+///   (class was found and the inner name matched)
+fn resolve_type_with_inner(
+    ctx: *BuiltinContext,
+    lookup_name: []const u8,
+    inner_name: []const u8,
+) !?Value {
+    const cd_opt: ?*ast.ClassDecl = blk: {
+        if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
+        var it = ctx.eval.classes.iterator();
+        while (it.next()) |e| {
+            if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
+        }
+        break :blk null;
+    };
+    if (cd_opt) |cd| {
+        if (class_has_inner_decl(cd, inner_name)) return null; // fall through to bare lookup
+    }
+    if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |v| return v;
     return Value.null_val;
+}
+
+fn class_has_inner_decl(cd: *ast.ClassDecl, inner_name: []const u8) bool {
+    for (cd.members) |member| {
+        switch (member) {
+            .class_decl => |inner_cd| {
+                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) return true;
+            },
+            .interface_decl => |iface| {
+                if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 /// Returns true when a bare class name (no `.`) is resolvable via user code,
