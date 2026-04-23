@@ -4915,109 +4915,172 @@ pub const Evaluator = struct {
         return self.extract_where_field_value(soql, "Name", current_env);
     }
 
+    const WhereFieldOperator = struct {
+        index: usize,
+        is_in: bool,
+    };
+
     /// Extract a specific field value from WHERE clause
-    fn extract_where_field_value(self: *Evaluator, soql: []const u8, field_name: []const u8, current_env: *Env) ?[]const u8 {
+    fn extract_where_field_value(
+        self: *Evaluator,
+        soql: []const u8,
+        field_name: []const u8,
+        current_env: *Env,
+    ) ?[]const u8 {
         const where_clause = extract_where_clause(soql) orelse return null;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name) and
-                (pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(') and
-                (pos + field_name.len == where_clause.len or is_soql_whitespace(where_clause[pos + field_name.len]) or where_clause[pos + field_name.len] == ')'))
+            if (!where_field_matches_at(where_clause, field_name, pos)) continue;
+            const op = scan_where_field_operator(where_clause, pos + field_name.len);
+            if (self.extract_where_value_after_operator(where_clause, op, current_env)) |value| {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    fn where_field_matches_at(where_clause: []const u8, field_name: []const u8, pos: usize) bool {
+        if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) {
+            return false;
+        }
+        const has_left_boundary = pos == 0 or
+            is_soql_whitespace(where_clause[pos - 1]) or
+            where_clause[pos - 1] == '(';
+        const field_end = pos + field_name.len;
+        const has_right_boundary = field_end == where_clause.len or
+            is_soql_whitespace(where_clause[field_end]) or
+            where_clause[field_end] == ')';
+        return has_left_boundary and has_right_boundary;
+    }
+
+    fn scan_where_field_operator(where_clause: []const u8, field_end: usize) WhereFieldOperator {
+        var j = field_end;
+        while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+
+        var is_in = false;
+        if (j + 2 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 2], "IN")) {
+            is_in = true;
+            j += 2;
+        } else if (j + 4 <= where_clause.len and
+            std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
+        {
+            j += 4;
+        } else if (j < where_clause.len and where_clause[j] == '=') {
+            j += 1;
+        } else {
+            while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and
+                where_clause[j] != '(' and where_clause[j] != ' ')
             {
-                var j = pos + field_name.len;
-                while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+                j += 1;
+            }
+        }
 
-                var is_in = false;
-                if (j + 2 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 2], "IN")) {
-                    is_in = true;
-                    j += 2;
-                } else if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) {
-                    j += 4;
-                } else if (j < where_clause.len and where_clause[j] == '=') {
-                    j += 1;
-                } else {
-                    while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(' and where_clause[j] != ' ') j += 1;
-                }
+        while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+        return .{ .index = j, .is_in = is_in };
+    }
 
-                while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
+    fn extract_where_value_after_operator(
+        self: *Evaluator,
+        where_clause: []const u8,
+        op: WhereFieldOperator,
+        current_env: *Env,
+    ) ?[]const u8 {
+        var j = op.index;
+        if (op.is_in and j < where_clause.len and where_clause[j] == '(') {
+            return extract_where_in_list_first_value(where_clause, j + 1);
+        }
 
-                if (is_in and j < where_clause.len and where_clause[j] == '(') {
-                    j += 1;
-                    while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
-                    if (j < where_clause.len and where_clause[j] == '\'') {
-                        j += 1;
-                        const start = j;
-                        while (j < where_clause.len and where_clause[j] != '\'') j += 1;
-                        return where_clause[start..j];
-                    }
-                    const start = j;
-                    while (j < where_clause.len and where_clause[j] != ',' and where_clause[j] != ')' and where_clause[j] != ' ' and where_clause[j] != '\t') j += 1;
-                    if (j > start) return std.mem.trim(u8, where_clause[start..j], " \t\n\r'");
-                    continue;
-                }
+        if (j < where_clause.len and where_clause[j] == '\'') {
+            j += 1;
+            const start = j;
+            while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+            return where_clause[start..j];
+        }
 
-                if (j < where_clause.len and where_clause[j] == '\'') {
-                    j += 1;
-                    const start = j;
-                    while (j < where_clause.len and where_clause[j] != '\'') j += 1;
-                    return where_clause[start..j];
+        if (extract_where_bare_literal(where_clause, j)) |raw| return raw;
+        if (j < where_clause.len and where_clause[j] == ':') {
+            j += 1;
+            const start = j;
+            j = scan_bind_expression_end(where_clause, j);
+            return self.extract_where_bind_value(current_env, where_clause[start..j]);
+        }
+        return null;
+    }
+
+    fn extract_where_in_list_first_value(where_clause: []const u8, start_index: usize) ?[]const u8 {
+        var j = start_index;
+        while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+        if (j < where_clause.len and where_clause[j] == '\'') {
+            j += 1;
+            const start = j;
+            while (j < where_clause.len and where_clause[j] != '\'') j += 1;
+            return where_clause[start..j];
+        }
+        const start = j;
+        while (j < where_clause.len and where_clause[j] != ',' and where_clause[j] != ')' and
+            where_clause[j] != ' ' and where_clause[j] != '\t')
+        {
+            j += 1;
+        }
+        if (j > start) return std.mem.trim(u8, where_clause[start..j], " \t\n\r'");
+        return null;
+    }
+
+    fn extract_where_bare_literal(where_clause: []const u8, start_index: usize) ?[]const u8 {
+        var j = start_index;
+        if (j >= where_clause.len or
+            where_clause[j] == '\'' or
+            where_clause[j] == ':' or
+            where_clause[j] == '(')
+        {
+            return null;
+        }
+        const start = j;
+        while (j < where_clause.len) : (j += 1) {
+            const ch = where_clause[j];
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == ')' or ch == ',') break;
+        }
+        if (j <= start) return null;
+        const raw = std.mem.trim(u8, where_clause[start..j], " \t\n\r");
+        return if (raw.len > 0) raw else null;
+    }
+
+    fn extract_where_bind_value(
+        self: *Evaluator,
+        current_env: *Env,
+        var_name: []const u8,
+    ) ?[]const u8 {
+        const v = self.lookup_bind_value(current_env, var_name) orelse return null;
+        switch (v) {
+            .string => return v.string,
+            .list => return self.extract_where_bind_list_value(v.list),
+            .set => {
+                var it = v.set.entries.iterator();
+                if (it.next()) |entry| {
+                    if (entry.value_ptr.* == .string) return entry.value_ptr.*.string;
                 }
-                // Bare literal (TRUE / FALSE / number / unquoted identifier) — consume
-                // up to the next WHERE terminator so predicates like
-                // `PermissionsModifyAllData = TRUE` resolve to the string "TRUE"
-                // rather than returning null and being skipped during synthesis.
-                if (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ':' and where_clause[j] != '(') {
-                    const start = j;
-                    while (j < where_clause.len) : (j += 1) {
-                        const ch = where_clause[j];
-                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == ')' or ch == ',') break;
-                        // Stop at AND/OR boundary (defensive — WHERE terminators
-                        // beyond whitespace).
-                    }
-                    if (j > start) {
-                        const raw = std.mem.trim(u8, where_clause[start..j], " \t\n\r");
-                        if (raw.len > 0) return raw;
-                    }
-                }
-                if (j < where_clause.len and where_clause[j] == ':') {
-                    j += 1;
-                    const start = j;
-                    j = scan_bind_expression_end(where_clause, j);
-                    const var_name = where_clause[start..j];
-                    if (self.lookup_bind_value(current_env, var_name)) |v| {
-                        switch (v) {
-                            .string => return v.string,
-                            .list => {
-                                for (v.list.items.items) |item| {
-                                    switch (item) {
-                                        .string => return item.string,
-                                        .sobject => {
-                                            if (item.sobject.id) |id| return id;
-                                        },
-                                        else => {
-                                            const coerced = utils.coerce_to_string(item, self.arena) catch continue;
-                                            return coerced;
-                                        },
-                                    }
-                                }
-                                return null;
-                            },
-                            .set => {
-                                var it = v.set.entries.iterator();
-                                if (it.next()) |entry| {
-                                    if (entry.value_ptr.* == .string) return entry.value_ptr.*.string;
-                                }
-                                return null;
-                            },
-                            .map => {
-                                var it = v.map.entries.iterator();
-                                if (it.next()) |entry| return entry.key_ptr.*;
-                                return null;
-                            },
-                            else => return (utils.coerce_to_string(v, self.arena) catch null),
-                        }
-                    }
-                }
+                return null;
+            },
+            .map => {
+                var it = v.map.entries.iterator();
+                if (it.next()) |entry| return entry.key_ptr.*;
+                return null;
+            },
+            else => return (utils.coerce_to_string(v, self.arena) catch null),
+        }
+    }
+
+    fn extract_where_bind_list_value(self: *Evaluator, list: *types.ListValue) ?[]const u8 {
+        for (list.items.items) |item| {
+            switch (item) {
+                .string => return item.string,
+                .sobject => {
+                    if (item.sobject.id) |id| return id;
+                },
+                else => {
+                    const coerced = utils.coerce_to_string(item, self.arena) catch continue;
+                    return coerced;
+                },
             }
         }
         return null;
@@ -14939,16 +15002,35 @@ pub const Evaluator = struct {
         return generated;
     }
 
-    fn call_instance_method(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+    fn call_instance_method(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const actual_class = self.find_class(instance.class_name);
         return self.call_instance_method_resolved(class_decl, actual_class, instance, method_name, args);
     }
 
-    fn call_super_instance_method(self: *Evaluator, super_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+    fn call_super_instance_method(
+        self: *Evaluator,
+        super_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         return self.call_instance_method_resolved(super_decl, null, instance, method_name, args);
     }
 
-    fn call_instance_method_resolved(self: *Evaluator, class_decl: *ast.ClassDecl, actual_class: ?*ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+    fn call_instance_method_resolved(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        actual_class: ?*ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
 
@@ -14969,105 +15051,137 @@ pub const Evaluator = struct {
             self.find_resolved_method_in_hierarchy(actual_class, class_decl, method_name, args.len);
 
         if (resolved) |rm| {
-            const owner_decl = rm.owner;
-            const method = rm.method;
-            const frame_class_name: []const u8 = blk: {
-                if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], owner_decl.name)) {
-                        break :blk instance.class_name;
-                    }
-                }
-                break :blk owner_decl.name;
-            };
-            try self.call_stack.append(self.arena, .{ .class_name = frame_class_name, .method_name = method_name, .line = frame_line });
-            defer _ = self.call_stack.pop();
-
-            const method_env = try self.global_env.child();
-            try method_env.define("this", Value{ .object = instance });
-            // Define instance fields as local variables FIRST
-            for (instance.fields.keys(), instance.fields.values()) |k, v| {
-                method_env.set(k, v) catch {
-                    try method_env.define(k, v);
-                };
-            }
-            // Then define method parameters (so they shadow instance fields with same name).
-            // Always use defineTyped — instance-field pre-loads above set the value but no
-            // declared type, so a later identifier lookup that reads `getDeclaredType` to
-            // distinguish "real param binding" from "stale ctor pre-load" would otherwise
-            // misclassify the parameter and fall back to instance.fields (bug:
-            // nothingToProcessShouldExitEarly).
-            for (method.params, 0..) |param, i| {
-                const val = if (i < args.len) try self.prepare_method_arg_value(args[i]) else Value.null_val;
-                const declared_type = self.render_type_ref(param.type_ref);
-                try method_env.define_typed(param.name, self.annotate_declared_collection_type(val, declared_type), declared_type);
-            }
-            const saved_class = self.current_class;
-            self.current_class = owner_decl.name;
-            defer self.current_class = saved_class;
-
-            const batch_lifecycle = self.is_batch_lifecycle_method(owner_decl.name, method_name) or
-                self.is_batch_lifecycle_method(instance.class_name, method_name);
-            if (batch_lifecycle) self.batch_lifecycle_depth += 1;
-            defer {
-                if (batch_lifecycle) self.batch_lifecycle_depth -= 1;
-            }
-
-            const result = try self.exec_block(method.body, method_env);
-            // Sync back fields modified via `this.field = value`
-            const this_val = method_env.get("this");
-            if (this_val != null and this_val.? == .object) {
-                const updated = this_val.?.object;
-                if (updated == instance) {
-                    // Same pointer, fields already updated in place
-                } else {
-                    // Copy fields back
-                    for (updated.fields.keys(), updated.fields.values()) |k, v| {
-                        instance.fields.put(self.arena, k, v) catch {};
-                    }
-                }
-            }
-            // Sync instance field values back to the method env so that bare
-            // identifier access sees updates made by the method body via this.field = ...
-            // Skip fields whose name matches a parameter to avoid overwriting parameters.
-            for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
-                var is_param = false;
-                for (method.params) |p| {
-                    if (std.ascii.eqlIgnoreCase(p.name, fk)) {
-                        is_param = true;
-                        break;
-                    }
-                }
-                if (!is_param) {
-                    method_env.set(fk, fv) catch {};
-                }
-            }
-            const final_result = switch (result) {
-                .return_val => |v| v,
-                else => blk: {
-                    // Fluent pattern: if method return type matches the class (or parent),
-                    // return `this` instead of void. This enables method chaining.
-                    if (method.return_type.name.len > 0 and
-                        !std.ascii.eqlIgnoreCase(method.return_type.name, "void"))
-                    {
-                        if (std.ascii.eqlIgnoreCase(method.return_type.name, owner_decl.name) or
-                            std.ascii.eqlIgnoreCase(method.return_type.name, instance.class_name))
-                        {
-                            break :blk Value{ .object = instance };
-                        }
-                        // Check if return type matches a parent class
-                        if (owner_decl.super_class) |sc| {
-                            if (std.ascii.eqlIgnoreCase(method.return_type.name, sc.name)) {
-                                break :blk Value{ .object = instance };
-                            }
-                        }
-                    }
-                    break :blk self.return_value;
-                },
-            };
-            return final_result;
+            return self.call_resolved_instance_method(rm, instance, method_name, args, frame_line);
         }
         // Try static method as fallback
         return self.call_method(class_decl.name, method_name, args);
+    }
+
+    fn call_resolved_instance_method(
+        self: *Evaluator,
+        resolved: ResolvedInstanceMethod,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+        frame_line: u32,
+    ) anyerror!Value {
+        const owner_decl = resolved.owner;
+        const method = resolved.method;
+        const frame_class_name = instance_method_frame_class_name(instance.class_name, owner_decl.name);
+        try self.call_stack.append(self.arena, .{
+            .class_name = frame_class_name,
+            .method_name = method_name,
+            .line = frame_line,
+        });
+        defer _ = self.call_stack.pop();
+
+        const method_env = try self.prepare_instance_method_env(instance, method, args);
+        const saved_class = self.current_class;
+        self.current_class = owner_decl.name;
+        defer self.current_class = saved_class;
+
+        const batch_lifecycle = self.is_batch_lifecycle_method(owner_decl.name, method_name) or
+            self.is_batch_lifecycle_method(instance.class_name, method_name);
+        if (batch_lifecycle) self.batch_lifecycle_depth += 1;
+        defer {
+            if (batch_lifecycle) self.batch_lifecycle_depth -= 1;
+        }
+
+        const result = try self.exec_block(method.body, method_env);
+        self.sync_method_this_to_instance(method_env, instance);
+        sync_instance_fields_to_method_env(method_env, instance, method);
+        return self.resolve_instance_method_result(result, method, owner_decl, instance);
+    }
+
+    fn instance_method_frame_class_name(
+        instance_class_name: []const u8,
+        owner_name: []const u8,
+    ) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, instance_class_name, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(instance_class_name[di + 1 ..], owner_name)) {
+                return instance_class_name;
+            }
+        }
+        return owner_name;
+    }
+
+    fn prepare_instance_method_env(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        method: *ast.MethodDecl,
+        args: []const Value,
+    ) anyerror!*Env {
+        const method_env = try self.global_env.child();
+        try method_env.define("this", Value{ .object = instance });
+        for (instance.fields.keys(), instance.fields.values()) |k, v| {
+            method_env.set(k, v) catch {
+                try method_env.define(k, v);
+            };
+        }
+        for (method.params, 0..) |param, i| {
+            const val = if (i < args.len) try self.prepare_method_arg_value(args[i]) else Value.null_val;
+            const declared_type = self.render_type_ref(param.type_ref);
+            try method_env.define_typed(
+                param.name,
+                self.annotate_declared_collection_type(val, declared_type),
+                declared_type,
+            );
+        }
+        return method_env;
+    }
+
+    fn sync_method_this_to_instance(
+        self: *Evaluator,
+        method_env: *Env,
+        instance: *types.ObjectInstance,
+    ) void {
+        const this_val = method_env.get("this") orelse return;
+        if (this_val != .object) return;
+        const updated = this_val.object;
+        if (updated == instance) return;
+        for (updated.fields.keys(), updated.fields.values()) |k, v| {
+            instance.fields.put(self.arena, k, v) catch {};
+        }
+    }
+
+    fn sync_instance_fields_to_method_env(
+        method_env: *Env,
+        instance: *types.ObjectInstance,
+        method: *ast.MethodDecl,
+    ) void {
+        for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
+            if (method_has_param_named(method, fk)) continue;
+            method_env.set(fk, fv) catch {};
+        }
+    }
+
+    fn method_has_param_named(method: *ast.MethodDecl, name: []const u8) bool {
+        for (method.params) |p| {
+            if (std.ascii.eqlIgnoreCase(p.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn resolve_instance_method_result(
+        self: *Evaluator,
+        result: StmtResult,
+        method: *ast.MethodDecl,
+        owner_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+    ) Value {
+        if (result == .return_val) return result.return_val;
+        if (method.return_type.name.len == 0 or
+            std.ascii.eqlIgnoreCase(method.return_type.name, "void"))
+            return self.return_value;
+        if (std.ascii.eqlIgnoreCase(method.return_type.name, owner_decl.name) or
+            std.ascii.eqlIgnoreCase(method.return_type.name, instance.class_name))
+            return Value{ .object = instance };
+        if (owner_decl.super_class) |sc| {
+            if (std.ascii.eqlIgnoreCase(method.return_type.name, sc.name)) {
+                return Value{ .object = instance };
+            }
+        }
+        return self.return_value;
     }
 
     fn find_resolved_method_in_hierarchy_typed(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?ResolvedInstanceMethod {
@@ -15717,135 +15831,224 @@ pub const Evaluator = struct {
         return best;
     }
 
-    fn run_constructor(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, args: []const Value) anyerror!void {
-        // Collect candidates with matching param count
-        var candidates: [8]*ast.ConstructorDecl = undefined;
-        var count: usize = 0;
-        var best_any: ?*ast.ConstructorDecl = null;
+    const ConstructorCandidateSet = struct {
+        candidates: [8]*ast.ConstructorDecl = undefined,
+        count: usize = 0,
+        best_any: ?*ast.ConstructorDecl = null,
+    };
+
+    fn run_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        args: []const Value,
+    ) anyerror!void {
+        const chosen = self.choose_constructor_for_run(class_decl, args) orelse return;
+        try self.execute_constructor_body(class_decl, instance, chosen, args);
+    }
+
+    fn choose_constructor_for_run(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        args: []const Value,
+    ) ?*ast.ConstructorDecl {
+        const candidates = collect_constructor_candidates(class_decl, args);
+        if (candidates.count == 0) return candidates.best_any;
+        if (candidates.count == 1) return candidates.candidates[0];
+        return self.choose_best_constructor(candidates.candidates[0..candidates.count], args);
+    }
+
+    fn collect_constructor_candidates(
+        class_decl: *ast.ClassDecl,
+        args: []const Value,
+    ) ConstructorCandidateSet {
+        var result: ConstructorCandidateSet = .{};
         for (class_decl.members) |member| {
             switch (member) {
                 .constructor_decl => |cd| {
-                    if (cd.params.len == args.len) {
-                        if (count < candidates.len) {
-                            candidates[count] = cd;
-                            count += 1;
-                        }
+                    if (cd.params.len == args.len and result.count < result.candidates.len) {
+                        result.candidates[result.count] = cd;
+                        result.count += 1;
                     }
-                    if (best_any == null and (cd.params.len == args.len or args.len == 0)) best_any = cd;
+                    if (result.best_any == null and (cd.params.len == args.len or args.len == 0)) {
+                        result.best_any = cd;
+                    }
                 },
                 else => {},
             }
         }
-        // Pick best candidate using type scoring
-        const arg_type_hints = self.cast_type_hints;
-        const chosen: ?*ast.ConstructorDecl = if (count == 0) best_any else if (count == 1) candidates[0] else blk: {
-            var best: ?*ast.ConstructorDecl = null;
-            var best_score: i32 = -1;
-            for (candidates[0..count]) |cd| {
-                var score: i32 = 0;
-                for (cd.params, 0..) |param, i| {
-                    if (i >= args.len) break;
-                    const pt = param.type_ref.name;
-                    const arg = args[i];
-                    const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                    if (arg_hint) |hint| {
-                        const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
-                        if (hint_score > 0) score += hint_score;
-                    }
-                    if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
-                        score += 2;
-                    } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
-                        score += 2;
-                    } else if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) {
-                        score += 2;
-                    } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
-                        score += 2;
-                    } else if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) {
-                        score += 2;
-                    } else if (arg == .object) {
-                        // Check if the object's class_name matches the param type
-                        if (std.ascii.eqlIgnoreCase(arg.object.class_name, pt)) {
-                            score += 3;
-                        } else if (self.is_subclass_of(arg.object.class_name, pt)) {
-                            score += 2;
-                        } else {
-                            score += 0;
-                        }
-                    } else if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) {
-                        score += 2;
-                    } else if (arg == .sobject) {
-                        const arg_type = arg.sobject.type_name;
-                        if (std.ascii.eqlIgnoreCase(arg_type, pt)) {
-                            score += 4;
-                        } else if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-                            if (std.ascii.eqlIgnoreCase(arg_type, pt[di + 1 ..])) {
-                                score += 4;
-                            } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "sObject") or std.ascii.eqlIgnoreCase(pt, "Sobject")) {
-                                score += 2;
-                            }
-                        } else if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "sObject") or std.ascii.eqlIgnoreCase(pt, "Sobject")) {
-                            score += 2;
-                        } else {
-                            score += 0;
-                        }
-                    } else if (arg == .null_val) {
-                        // Null prefers primitive types (String/Id/Integer/etc) over Exception,
-                        // since `null` is most commonly assigned to strings/IDs in Apex code.
-                        if (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")) {
-                            score += 2;
-                        } else if (std.mem.endsWith(u8, pt, "Exception")) {
-                            score += 0;
-                        } else {
-                            score += 1;
-                        }
-                    }
-                }
-                if (best == null or score > best_score) {
-                    best = cd;
-                    best_score = score;
-                }
-            }
-            break :blk best;
-        };
-        if (chosen) |cd| {
-            const ctor_env = try self.global_env.child();
-            try ctor_env.define("this", Value{ .object = instance });
-            for (instance.fields.keys(), instance.fields.values()) |k, v| {
-                ctor_env.set(k, v) catch {
-                    try ctor_env.define(k, v);
-                };
-            }
-            for (cd.params, 0..) |param, pi| {
-                const pval = if (pi < args.len) args[pi] else Value.null_val;
-                const declared_type = self.render_type_ref(param.type_ref);
-                try ctor_env.define_typed(param.name, self.annotate_declared_collection_type(pval, declared_type), declared_type);
-            }
-            // Push call frame for constructor (use current_call_line from new-expression site)
-            const ctor_line = if (self.current_call_line > 0) self.current_call_line else if (cd.loc.line > 0) cd.loc.line else 1;
-            self.current_call_line = 0;
-            // Prefer the FQ class name for stack traces: if the instance's class_name
-            // is an FQ form ("Outer.Inner") and its suffix matches class_decl.name, use it.
-            const frame_class_name: []const u8 = blk: {
-                if (std.mem.lastIndexOfScalar(u8, instance.class_name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(instance.class_name[di + 1 ..], class_decl.name)) {
-                        break :blk instance.class_name;
-                    }
-                }
-                break :blk class_decl.name;
-            };
-            try self.call_stack.append(self.arena, .{ .class_name = frame_class_name, .method_name = "<init>", .line = ctor_line });
-            defer _ = self.call_stack.pop();
-            // Track which class's constructor is running (for correct super() dispatch)
-            const saved_ctor_class = self.current_constructor_class;
-            self.current_constructor_class = class_decl.name;
-            defer self.current_constructor_class = saved_ctor_class;
-            // Set current_class so unqualified method/field references resolve to this class
-            const saved_class = self.current_class;
-            self.current_class = class_decl.name;
-            defer self.current_class = saved_class;
+        return result;
+    }
 
-            _ = try self.exec_block(cd.body, ctor_env);
+    fn choose_best_constructor(
+        self: *Evaluator,
+        candidates: []const *ast.ConstructorDecl,
+        args: []const Value,
+    ) ?*ast.ConstructorDecl {
+        const arg_type_hints = self.cast_type_hints;
+        var best: ?*ast.ConstructorDecl = null;
+        var best_score: i32 = -1;
+        for (candidates) |cd| {
+            const score = self.score_constructor_candidate(cd, args, arg_type_hints);
+            if (best == null or score > best_score) {
+                best = cd;
+                best_score = score;
+            }
         }
+        return best;
+    }
+
+    fn score_constructor_candidate(
+        self: *Evaluator,
+        cd: *ast.ConstructorDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+    ) i32 {
+        var score: i32 = 0;
+        for (cd.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len)
+                arg_type_hints.?[i]
+            else
+                null;
+            score += self.score_constructor_arg(args[i], param, arg_hint);
+        }
+        return score;
+    }
+
+    fn score_constructor_arg(self: *Evaluator, arg: Value, param: ast.Param, arg_hint: ?[]const u8) i32 {
+        const pt = param.type_ref.name;
+        var score: i32 = 0;
+        if (arg_hint) |hint| {
+            const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
+            if (hint_score > 0) score += hint_score;
+        }
+        if (arg == .string and
+            (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")))
+            return score + 2;
+        if (arg == .integer and
+            (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")))
+            return score + 2;
+        if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) return score + 2;
+        if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) return score + 2;
+        if (arg == .object and std.mem.endsWith(u8, pt, "Exception")) return score + 2;
+        if (arg == .object) return score + self.score_constructor_object_arg(arg.object, pt);
+        if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) return score + 2;
+        if (arg == .sobject) return score + score_constructor_sobject_arg(arg.sobject, pt);
+        if (arg == .null_val) return score + score_constructor_null_arg(pt);
+        return score;
+    }
+
+    fn score_constructor_object_arg(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        param_type: []const u8,
+    ) i32 {
+        if (std.ascii.eqlIgnoreCase(obj.class_name, param_type)) return 3;
+        if (self.is_subclass_of(obj.class_name, param_type)) return 2;
+        return 0;
+    }
+
+    fn score_constructor_sobject_arg(sob: *types.SObject, param_type: []const u8) i32 {
+        const arg_type = sob.type_name;
+        if (std.ascii.eqlIgnoreCase(arg_type, param_type)) return 4;
+        if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(arg_type, param_type[di + 1 ..])) return 4;
+            if (is_constructor_sobject_param(param_type)) return 2;
+        } else if (is_constructor_sobject_param(param_type)) {
+            return 2;
+        }
+        return 0;
+    }
+
+    fn is_constructor_sobject_param(param_type: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(param_type, "SObject") or
+            std.ascii.eqlIgnoreCase(param_type, "sObject") or
+            std.ascii.eqlIgnoreCase(param_type, "Sobject");
+    }
+
+    fn score_constructor_null_arg(param_type: []const u8) i32 {
+        if (std.ascii.eqlIgnoreCase(param_type, "String") or
+            std.ascii.eqlIgnoreCase(param_type, "Id"))
+            return 2;
+        if (std.mem.endsWith(u8, param_type, "Exception")) return 0;
+        return 1;
+    }
+
+    fn execute_constructor_body(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        cd: *ast.ConstructorDecl,
+        args: []const Value,
+    ) anyerror!void {
+        const ctor_env = try self.prepare_constructor_env(instance, cd, args);
+        const ctor_line = self.consume_constructor_call_line(cd);
+        const frame_class_name = constructor_frame_class_name(instance.class_name, class_decl.name);
+        try self.call_stack.append(self.arena, .{
+            .class_name = frame_class_name,
+            .method_name = "<init>",
+            .line = ctor_line,
+        });
+        defer _ = self.call_stack.pop();
+
+        const saved_ctor_class = self.current_constructor_class;
+        self.current_constructor_class = class_decl.name;
+        defer self.current_constructor_class = saved_ctor_class;
+
+        const saved_class = self.current_class;
+        self.current_class = class_decl.name;
+        defer self.current_class = saved_class;
+
+        _ = try self.exec_block(cd.body, ctor_env);
+    }
+
+    fn prepare_constructor_env(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        cd: *ast.ConstructorDecl,
+        args: []const Value,
+    ) anyerror!*Env {
+        const ctor_env = try self.global_env.child();
+        try ctor_env.define("this", Value{ .object = instance });
+        for (instance.fields.keys(), instance.fields.values()) |k, v| {
+            ctor_env.set(k, v) catch {
+                try ctor_env.define(k, v);
+            };
+        }
+        for (cd.params, 0..) |param, pi| {
+            const pval = if (pi < args.len) args[pi] else Value.null_val;
+            const declared_type = self.render_type_ref(param.type_ref);
+            try ctor_env.define_typed(
+                param.name,
+                self.annotate_declared_collection_type(pval, declared_type),
+                declared_type,
+            );
+        }
+        return ctor_env;
+    }
+
+    fn consume_constructor_call_line(self: *Evaluator, cd: *ast.ConstructorDecl) u32 {
+        const ctor_line = if (self.current_call_line > 0)
+            self.current_call_line
+        else if (cd.loc.line > 0)
+            cd.loc.line
+        else
+            1;
+        self.current_call_line = 0;
+        return ctor_line;
+    }
+
+    fn constructor_frame_class_name(
+        instance_class_name: []const u8,
+        class_name: []const u8,
+    ) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, instance_class_name, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(instance_class_name[di + 1 ..], class_name)) {
+                return instance_class_name;
+            }
+        }
+        return class_name;
     }
 
     fn is_instance_field(_: *Evaluator, class_decl: *ast.ClassDecl, name: []const u8) bool {
