@@ -1887,7 +1887,8 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
         \\                when FIELD_NAME {
         \\                    generator.writeFieldName(parser.getCurrentName());
         \\                }
-        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT,
+        \\ VALUE_NUMBER_INT {
         \\                    generator.writeString(parser.getText());
         \\                }
         \\                when VALUE_NULL {
@@ -1929,13 +1930,15 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\        private List<List<Contact>> children;
         \\        private Integer childListIdx = 0;
         \\
-        \\        public InjectChildrenEventHandler(JSONParser childrenParser, List<List<Contact>> children) {
+        \\        public InjectChildrenEventHandler(JSONParser childrenParser,
+        \\ List<List<Contact>> children) {
         \\            this.childrenParser = childrenParser;
         \\            this.children = children;
         \\            this.childrenParser.nextToken();
         \\        }
         \\
-        \\        public void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream) {
+        \\        public void nextToken(JSONParser fromStream, Integer depth,
+        \\ JSONGenerator toStream) {
         \\            if (depth == 2 && fromStream.getCurrentToken() == JSONToken.END_OBJECT) {
         \\                toStream.writeFieldName('Contacts');
         \\                toStream.writeStartObject();
@@ -1949,7 +1952,8 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\        }
         \\    }
         \\
-        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream,
+        \\ ParserEvents events) {
         \\        Integer depth = 0;
         \\        while (fromStream.nextToken() != null) {
         \\            if (events != null) {
@@ -1967,7 +1971,8 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\                when FIELD_NAME {
         \\                    toStream.writeFieldName(fromStream.getCurrentName());
         \\                }
-        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT,
+        \\ VALUE_NUMBER_INT {
         \\                    toStream.writeString(fromStream.getText());
         \\                }
         \\                when VALUE_NULL {
@@ -2007,7 +2012,8 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\        String combined = out.getAsString();
         \\        Account typed = ((List<Account>) JSON.deserialize(combined, List<Account>.class))[0];
         \\        SObject generic = ((List<SObject>) JSON.deserialize(combined, List<SObject>.class))[0];
-        \\        return String.valueOf(typed.Contacts == null ? null : typed.Contacts.size()) + ':' +
+        \\        return String.valueOf(typed.Contacts == null ? null : typed.Contacts.size()) +
+        \\ ':' +
         \\            String.valueOf(generic.getSObjects('Contacts').size()) + ':' +
         \\            String.valueOf(generic.getSObjects('Contacts')[0].Id);
         \\    }
@@ -2034,13 +2040,15 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         \\        private List<List<Contact>> children;
         \\        private Integer childListIdx = 0;
         \\
-        \\        public InjectChildrenEventHandler(JSONParser childrenParser, List<List<Contact>> children) {
+        \\        public InjectChildrenEventHandler(JSONParser childrenParser,
+        \\ List<List<Contact>> children) {
         \\            this.childrenParser = childrenParser;
         \\            this.children = children;
         \\            this.childrenParser.nextToken();
         \\        }
         \\
-        \\        public void nextToken(JSONParser fromStream, Integer depth, JSONGenerator toStream) {
+        \\        public void nextToken(JSONParser fromStream, Integer depth,
+        \\ JSONGenerator toStream) {
         \\            if (depth == 2 && fromStream.getCurrentToken() == JSONToken.END_OBJECT) {
         \\                toStream.writeFieldName('Contacts');
         \\                toStream.writeStartObject();
@@ -2054,7 +2062,8 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         \\        }
         \\    }
         \\
-        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream,
+        \\ ParserEvents events) {
         \\        Integer depth = 0;
         \\        while (fromStream.nextToken() != null) {
         \\            if (events != null) {
@@ -2072,7 +2081,8 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         \\                when FIELD_NAME {
         \\                    toStream.writeFieldName(fromStream.getCurrentName());
         \\                }
-        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT,
+        \\ VALUE_NUMBER_INT {
         \\                    toStream.writeString(fromStream.getText());
         \\                }
         \\                when VALUE_NULL {
@@ -2413,7 +2423,8 @@ test "E2E: Flow metadata stubs support IN bind variables" {
         \\            WHERE DurableId IN :activeVersionIds
         \\        ];
         \\        return defs.get(0).ApiName + ':' +
-        \\            String.valueOf(vers.get(0).FlowDefinitionViewId == defs.get(0).DurableId) + ':' +
+        \\            String.valueOf(vers.get(0).FlowDefinitionViewId == defs.get(0).DurableId) +
+        \\ ':' +
         \\            String.valueOf(vers.get(0).DurableId == defs.get(0).ActiveVersionId);
         \\    }
         \\}
@@ -2675,7 +2686,8 @@ test "E2E: synthetic Profile query honors permission flag predicates" {
         \\public class ProfilePermissionPredicateTest {
         \\    public static String test() {
         \\        Profile p = [
-        \\            SELECT Id, Name, PermissionsPrivacyDataAccess, PermissionsSubmitMacrosAllowed, PermissionsMassInlineEdit
+        \\            SELECT Id, Name, PermissionsPrivacyDataAccess, PermissionsSubmitMacrosAllowed,
+        \\ PermissionsMassInlineEdit
         \\            FROM Profile
         \\            WHERE
         \\                UserType = 'Standard'
@@ -4361,7 +4373,8 @@ test "E2E: virtual class with overloaded methods and auto property" {
         \\    public RC(String nc) { this.namedCredentialName = nc; }
         \\    protected RC() { }
         \\    // 5-arg instance
-        \\    protected HttpResponse makeApiCall(HttpVerb method, String path, String query, String body, Map<String, String> headers) {
+        \\    protected HttpResponse makeApiCall(HttpVerb method, String path, String query,
+        \\ String body, Map<String, String> headers) {
         \\        HttpRequest req = new HttpRequest();
         \\        req.setEndpoint('callout:' + this.namedCredentialName + '/' + path);
         \\        req.setMethod(String.valueOf(method));
@@ -4951,7 +4964,8 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
         \\public class DtLooseProbe {
         \\    public static String test() {
         \\        Datetime dt = Datetime.valueOf('2006-5-4 3:2:1');
-        \\        return String.valueOf(dt.year()) + '-' + String.valueOf(dt.month()) + '-' + String.valueOf(dt.day()) +
+        \\        return String.valueOf(dt.year()) + '-' + String.valueOf(dt.month()) + '-' +
+        \\ String.valueOf(dt.day()) +
         \\            ' ' + String.valueOf(dt.hour()) + ':' + String.valueOf(dt.minute()) + ':' +
         \\ String.valueOf(dt.second());
         \\    }
@@ -6286,7 +6300,8 @@ test "E2E: hierarchy custom setting getInstance returns user-scoped inherited se
         \\        insert orgDefaults;
         \\        AppSettings__c currentUserSettings = AppSettings__c.getInstance();
         \\        return String.valueOf(currentUserSettings.Id == null) + ':' +
-        \\            String.valueOf(currentUserSettings.SetupOwnerId == UserInfo.getUserId()) + ':' +
+        \\            String.valueOf(currentUserSettings.SetupOwnerId == UserInfo.getUserId()) +
+        \\ ':' +
         \\            String.valueOf(currentUserSettings.Flag__c);
         \\    }
         \\}
@@ -6767,7 +6782,8 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
     const source =
         \\public class SchemaFieldTokenMapTest {
         \\    public static String test() {
-        \\        Map<Schema.SObjectField, Object> changesToFields = new Map<Schema.SObjectField, Object>{
+        \\        Map<Schema.SObjectField, Object> changesToFields = new Map<Schema.SObjectField,
+        \\ Object>{
         \\            Schema.ApexClass.LastModifiedDate => Datetime.newInstance(2026, 4, 1, 0, 0, 0)
         \\        };
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
@@ -6793,11 +6809,13 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
 test "E2E: helper-style read-only field setter preserves ApexClass Name" {
     const source =
         \\public class ReadOnlyFieldSetterProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field,
+        \\ Object value) {
         \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
         \\ Object>{ field => value });
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField,
+        \\ Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
         \\        Map<String, Object> deserializedRecordMap = (Map<String,
         \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
@@ -6834,11 +6852,13 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
 test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
     const source =
         \\public class ReadOnlyFieldSetterCommaProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field,
+        \\ Object value) {
         \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
         \\ Object>{ field => value });
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField,
+        \\ Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
         \\        Map<String, Object> deserializedRecordMap = (Map<String,
         \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
@@ -6890,11 +6910,13 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         \\    }
         \\}
         \\public class QualifiedSchemaSetupObjectProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field,
+        \\ Object value) {
         \\        return setReadOnlyField(record, new Map<Schema.SObjectField,
         \\ Object>{ field => value });
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField,
+        \\ Object> changesToFields) {
         \\        String serializedRecord = System.JSON.serialize(record);
         \\        Map<String, Object> deserializedRecordMap = (Map<String,
         \\ Object>) System.JSON.deserializeUntyped(serializedRecord);
@@ -7225,7 +7247,8 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
         \\        for (Schema.SObjectType sobjectType : idsByType.keySet()) {
         \\            List<Id> recordIds = idsByType.get(sobjectType);
         \\            List<SObject> results = Database.query(
-        \\                String.format('SELECT Username FROM {0} WHERE Id IN :recordIds', new List<Object>{ sobjectType })
+        \\                String.format('SELECT Username FROM {0} WHERE Id IN :recordIds',
+        \\ new List<Object>{ sobjectType })
         \\            );
         \\            return sobjectType.getDescribe().getName() + ':' +
         \\ (String) results.get(0).get('Username');
@@ -7280,7 +7303,8 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\        String displayField = getDisplayFieldApiName(emailMessage.Id.getSObjectType());
         \\        List<Id> recordIds = new List<Id>{ emailMessage.Id };
         \\        List<SObject> results = Database.query(
-        \\            String.format('SELECT {0} FROM {1} WHERE Id IN :recordIds', new List<Object>{ displayField, emailMessage.Id.getSObjectType() })
+        \\            String.format('SELECT {0} FROM {1} WHERE Id IN :recordIds',
+        \\ new List<Object>{ displayField, emailMessage.Id.getSObjectType() })
         \\        );
         \\        return displayField + ':' + (String) results.get(0).get(displayField);
         \\    }
@@ -9738,7 +9762,8 @@ test "E2E: Apex metadata describe is accessible by default" {
     const source =
         \\public class ApexMetadataDescribeAccessTest {
         \\    public static String test() {
-        \\        return String.valueOf(Schema.ApexClass.SObjectType.getDescribe().isAccessible()) + ':' +
+        \\        return String.valueOf(Schema.ApexClass.SObjectType.getDescribe().isAccessible()) +
+        \\ ':' +
         \\            String.valueOf(Schema.ApexTrigger.SObjectType.getDescribe().isAccessible());
         \\    }
         \\}
@@ -9995,7 +10020,8 @@ test "E2E: JSON serialize preserves Id on generic newSObject records" {
 test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
     const source =
         \\public class TokenKeyedSObjectMatchProbe {
-        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField,
+        \\ Object> toMatch) {
         \\        for (Schema.SObjectField f : toMatch.keySet()) {
         \\            if (sobj.get(f) != toMatch.get(f)) {
         \\                return false;
@@ -10017,7 +10043,8 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         \\        second.put('Id', '001000000000002AAA');
         \\        second.put('Name', 'Beta');
         \\
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField,
+        \\ Object>> expected = new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => '001000000000001AAA',
         \\                nameField => 'Acme'
@@ -10046,7 +10073,8 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
 test "E2E: token-keyed sobject match works for inserted Group records" {
     const source =
         \\public class TokenKeyedGroupMatchProbe {
-        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField,
+        \\ Object> toMatch) {
         \\        for (Schema.SObjectField f : toMatch.keySet()) {
         \\            try {
         \\                if (sobj.get(f) != toMatch.get(f)) {
@@ -10070,7 +10098,8 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
         \\
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField,
+        \\ Object>> expected = new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => groups[0].Id,
         \\                nameField => groups[0].get('Name')
@@ -10197,7 +10226,8 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\        }
         \\    }
         \\
-        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField,
+        \\ Object> toMatch) {
         \\        for (Schema.SObjectField f : toMatch.keySet()) {
         \\            try {
         \\                if (sobj.get(f) != toMatch.get(f)) {
@@ -10220,7 +10250,8 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\ Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField,
+        \\ Object>> expected = new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => groups[0].Id,
         \\                nameField => groups[0].get('Name')
@@ -10310,7 +10341,8 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
 
     const source =
         \\public class ApexMetadataDateComparisonTest {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
+        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field,
+        \\ Object value) {
         \\        Map<String,
         \\ Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(record));
         \\        fields.put(field.toString(), value);
@@ -11046,7 +11078,8 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
     defer alloc.free(tmp_path);
 
     const source =
-        \\global class ChainedCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\global class ChainedCleanupBatch implements Database.Batchable<SObject>,
+        \\Database.Stateful {
         \\    public String phase = 'Children';
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
         \\        if (phase == 'Children') {
@@ -11086,7 +11119,8 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
 
 test "E2E: direct batch finish does not synchronously run chained executeBatch" {
     const source =
-        \\global class DeferredFinishBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\global class DeferredFinishBatch implements Database.Batchable<SObject>,
+        \\Database.Stateful {
         \\    public Integer startRuns = 0;
         \\    public String phase = 'initial';
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
@@ -11145,7 +11179,8 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\        return new Database();
         \\    }
         \\}
-        \\global class WrappedHardDeleteBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\global class WrappedHardDeleteBatch implements Database.Batchable<SObject>,
+        \\Database.Stateful {
         \\    public String phase = 'Children';
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
         \\        if (phase == 'Children') {
@@ -11394,7 +11429,8 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
         \\    }
         \\    insert insertedAccounts;
         \\}
-        \\global class EventedBatch implements Database.Batchable<SObject>, Database.RaisesPlatformEvents {
+        \\global class EventedBatch implements Database.Batchable<SObject>,
+        \\Database.RaisesPlatformEvents {
         \\    private String phase;
         \\    global EventedBatch(String phase) {
         \\        this.phase = phase;
@@ -11481,7 +11517,8 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\        }
         \\    }
         \\}
-        \\global class SingletonCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\global class SingletonCleanupBatch implements Database.Batchable<SObject>,
+        \\Database.Stateful {
         \\    private static final Date RETENTION_END_DATE = System.today();
         \\    public Schema.SObjectType currentSObjectType;
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
@@ -11603,7 +11640,8 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
     defer alloc.free(tmp_path);
 
     const source =
-        \\global class DirectCleanupBatch implements Database.Batchable<SObject>, Database.Stateful {
+        \\global class DirectCleanupBatch implements Database.Batchable<SObject>,
+        \\Database.Stateful {
         \\    private static final Date RETENTION_END_DATE = System.today();
         \\    public Schema.SObjectType currentSObjectType;
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
@@ -13460,7 +13498,8 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records,
+        \\ Schema.SObjectField externalIdField) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
@@ -13491,7 +13530,8 @@ test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsert_records(List<SObject> records,
+        \\ Schema.SObjectField externalIdField) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
