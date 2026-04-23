@@ -268,7 +268,10 @@ fn dispatch_static_system_and_metadata(
         return .{ .wrapped = try dispatch_static_user_info(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
         return .{ .wrapped = try dispatch_static_logging_level(ctx, method_name, args) };
-    if (ci.eqlIgnoreCase(class_name, "Quiddity")) return .{ .wrapped = Value{ .string = method_name } };
+    if (ci.eqlIgnoreCase(
+        class_name,
+        "Quiddity",
+    )) return .{ .wrapped = Value{ .string = method_name } };
     if (ci.eqlIgnoreCase(class_name, "UUID"))
         return .{ .wrapped = try dispatch_static_uuid(ctx, method_name) };
     if (ci.eqlIgnoreCase(class_name, "OrgLimits"))
@@ -1281,7 +1284,11 @@ fn handle_json_deserialize_array(ctx: *BuiltinContext, trimmed: []const u8) !?Va
             if (arr_depth == 0 and trimmed[ai] == '}') {
                 const elem_json = trimmed[elem_start .. ai + 1];
                 const nested_args = [_]Value{Value{ .string = elem_json }};
-                if (try dispatch_static_json(ctx, "deserializeUntyped", &nested_args)) |nested_val| {
+                if (try dispatch_static_json(
+                    ctx,
+                    "deserializeUntyped",
+                    &nested_args,
+                )) |nested_val| {
                     try list.items.append(ctx.arena, nested_val);
                 }
             } else if (arr_depth < 0) break;
@@ -2642,7 +2649,10 @@ fn dispatch_static_crypto(
     args: []const Value,
 ) !?Value {
     const ci = std.ascii;
-    if (ci.eqlIgnoreCase(method_name, "generateDigest")) return try crypto_generate_digest(ctx, args);
+    if (ci.eqlIgnoreCase(
+        method_name,
+        "generateDigest",
+    )) return try crypto_generate_digest(ctx, args);
     if (ci.eqlIgnoreCase(method_name, "generateMac")) return try crypto_generate_mac(ctx, args);
     if (ci.eqlIgnoreCase(method_name, "generateAesKey"))
         return try crypto_generate_aes_key(ctx, args);
@@ -4198,7 +4208,10 @@ fn create_field_describe_result_with_type(
         .integer = cfdr_resolve_length(field_name, metadata),
     });
     try fdr.fields.put(ctx.arena, "isNillable", Value{
-        .boolean = if (metadata) |meta| !meta.is_required else default_field_is_nillable(object_type, field_name),
+        .boolean = if (metadata) |meta| !meta.is_required else default_field_is_nillable(
+            object_type,
+            field_name,
+        ),
     });
     const ft: []const u8 = map_xml_type_to_display_type(
         cfdr_resolve_raw_field_type(ctx, object_type, field_name, field_type),

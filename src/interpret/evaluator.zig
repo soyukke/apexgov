@@ -2074,7 +2074,11 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_while_stmt(self: *Evaluator, ws: *ast.WhileStmt, current_env: *Env) anyerror!StmtResult {
+    fn exec_while_stmt(
+        self: *Evaluator,
+        ws: *ast.WhileStmt,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         var iterations: u32 = 0;
         while (iterations < 100_000) : (iterations += 1) {
             const cv = try self.eval_expr(ws.condition, current_env);
@@ -2090,7 +2094,11 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_do_while_stmt(self: *Evaluator, dw: *ast.DoWhileStmt, current_env: *Env) anyerror!StmtResult {
+    fn exec_do_while_stmt(
+        self: *Evaluator,
+        dw: *ast.DoWhileStmt,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         var iterations: u32 = 0;
         while (iterations < 100_000) : (iterations += 1) {
             const result = try self.exec_block(dw.body, current_env);
@@ -2140,7 +2148,11 @@ pub const Evaluator = struct {
         }
     }
 
-    fn exec_run_as_stmt(self: *Evaluator, ras: *ast.RunAsStmt, current_env: *Env) anyerror!StmtResult {
+    fn exec_run_as_stmt(
+        self: *Evaluator,
+        ras: *ast.RunAsStmt,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const user_val = try self.eval_expr(ras.user_expr, current_env);
         const prev_restricted = self.is_restricted_user;
         const prev_min_access = self.is_min_access_user;
@@ -2169,7 +2181,12 @@ pub const Evaluator = struct {
         if (result) |r| return r else |e| return e;
     }
 
-    fn try_switch_value_match(self: *Evaluator, subject: Value, val_copy: ast.Expr, when_val: Value) bool {
+    fn try_switch_value_match(
+        self: *Evaluator,
+        subject: Value,
+        val_copy: ast.Expr,
+        when_val: Value,
+    ) bool {
         if (subject == .string and when_val == .string) {
             if (std.mem.eql(u8, subject.string, when_val.string)) return true;
         } else if (utils.value_eql(subject, when_val)) {
@@ -2199,7 +2216,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn exec_switch_stmt(self: *Evaluator, sw: *ast.SwitchStmt, current_env: *Env) anyerror!StmtResult {
+    fn exec_switch_stmt(
+        self: *Evaluator,
+        sw: *ast.SwitchStmt,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const subject = try self.eval_expr(sw.subject, current_env);
         for (sw.when_clauses) |clause| {
             switch (clause.pattern) {
@@ -2318,7 +2339,12 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn exec_for_each_chunked_list(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+    fn exec_for_each_chunked_list(
+        self: *Evaluator,
+        fes: anytype,
+        iterable: Value,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const chunk_size: usize = 200;
         const items = iterable.list.items.items;
         var offset: usize = 0;
@@ -2343,7 +2369,12 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_for_each_list(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+    fn exec_for_each_list(
+        self: *Evaluator,
+        fes: anytype,
+        iterable: Value,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const elem_type_is_list = std.ascii.eqlIgnoreCase(fes.elem_type.name, "List") and
             fes.elem_type.params.len > 0;
         const is_list_type = elem_type_is_list and !iterable_is_list_of_lists(iterable);
@@ -2364,7 +2395,12 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_for_each_set(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+    fn exec_for_each_set(
+        self: *Evaluator,
+        fes: anytype,
+        iterable: Value,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const loop_env = try current_env.child();
         var values_copy: std.ArrayListUnmanaged(Value) = .empty;
         for (iterable.set.entries.values()) |item| try values_copy.append(self.arena, item);
@@ -2383,7 +2419,12 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_for_each_map(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+    fn exec_for_each_map(
+        self: *Evaluator,
+        fes: anytype,
+        iterable: Value,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const loop_env = try current_env.child();
         for (iterable.map.entries.values()) |val| {
             loop_env.set(fes.elem_name, val) catch {
@@ -2400,7 +2441,12 @@ pub const Evaluator = struct {
         return .normal;
     }
 
-    fn exec_for_each_object(self: *Evaluator, fes: anytype, iterable: Value, current_env: *Env) anyerror!StmtResult {
+    fn exec_for_each_object(
+        self: *Evaluator,
+        fes: anytype,
+        iterable: Value,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         const iterator_obj = blk: {
             if (self.find_class(iterable.object.class_name)) |cd| {
                 const iter_val = self.call_instance_method(
@@ -4444,40 +4490,27 @@ pub const Evaluator = struct {
         var soql = raw;
         if (soql.len > 2 and soql[0] == '[') soql = soql[1 .. soql.len - 1];
         soql = std.mem.trim(u8, try self.strip_soql_line_comments(soql), " \t\n\r");
-
-        if (self.is_restricted_user) {
-            try self.soql_check_restricted_security_and_throw(soql);
-        }
-
-        if (soql.len > 4 and std.ascii.eqlIgnoreCase(soql[0..4], "FIND")) {
+        if (self.is_restricted_user) try self.soql_check_restricted_security_and_throw(soql);
+        if (soql.len > 4 and std.ascii.eqlIgnoreCase(soql[0..4], "FIND"))
             return self.execute_sosl(soql);
-        }
 
-        var include_all_rows = false;
+        var all_rows = false;
         if (soql.len > 8 and std.ascii.eqlIgnoreCase(soql[soql.len - 8 ..], "ALL ROWS")) {
             soql = std.mem.trim(u8, soql[0 .. soql.len - 8], " \t\n\r");
-            include_all_rows = true;
+            all_rows = true;
         }
-
-        if (try self.soql_try_count_query(soql, current_env, include_all_rows)) |cnt| {
-            return cnt;
-        }
-        if (try self.soql_try_aggregate_dispatch(soql, current_env, include_all_rows)) |agg| {
-            return agg;
-        }
+        if (try self.soql_try_count_query(soql, current_env, all_rows)) |cnt| return cnt;
+        if (try self.soql_try_aggregate_dispatch(soql, current_env, all_rows)) |agg| return agg;
 
         const from_type = extract_from_type(soql) orelse return self.make_empty_list();
         var records: std.ArrayListUnmanaged(Value) = .empty;
-
-        try self.soql_collect_store_records(soql, current_env, from_type, include_all_rows, &records);
+        try self.soql_collect_store_records(soql, current_env, from_type, all_rows, &records);
         if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "UserRecordAccess")) {
             try self.seed_user_record_access_records(soql, current_env, &records);
         }
         try self.soql_seed_perm_set_from_in_clause(soql, current_env, from_type, &records);
-        try self.soql_load_custom_metadata_mdt(soql, current_env, from_type, include_all_rows, &records);
-        if (include_all_rows) {
-            try self.soql_collect_trash_records(soql, current_env, from_type, &records);
-        }
+        try self.soql_load_custom_metadata_mdt(soql, current_env, from_type, all_rows, &records);
+        if (all_rows) try self.soql_collect_trash_records(soql, current_env, from_type, &records);
 
         try self.soql_ensure_select_fields_present(soql, &records);
         try self.soql_apply_metadata_stubs(soql, current_env, from_type, &records);
@@ -4487,10 +4520,8 @@ pub const Evaluator = struct {
         try self.soql_seed_fallback_business_hours(soql, current_env, from_type, &records);
         try self.soql_throw_if_unknown_type(soql, current_env, from_type, &records);
         try self.soql_apply_sub_query(soql, from_type, &records);
-
         try self.apply_parent_field_lookups(soql, from_type, &records);
         try self.resolve_formula_fields(soql, &records);
-
         try self.soql_reorder_by_in_bind(soql, current_env, &records);
         self.soql_apply_order_by(soql, &records);
         self.soql_apply_offset(soql, current_env, &records);
@@ -4864,7 +4895,11 @@ pub const Evaluator = struct {
         const where_clause = extract_where_clause(soql) orelse "";
         var wpos: usize = 0;
         while (wpos < where_clause.len) {
-            const name_pos = std.ascii.indexOfIgnoreCasePos(where_clause, wpos, "Name") orelse break;
+            const name_pos = std.ascii.indexOfIgnoreCasePos(
+                where_clause,
+                wpos,
+                "Name",
+            ) orelse break;
             const extracted = self.soql_extract_apex_class_or_name(
                 where_clause,
                 name_pos,
@@ -5155,7 +5190,13 @@ pub const Evaluator = struct {
             const parent_id = rec.sobject.id orelse continue;
             var child_records: std.ArrayListUnmanaged(Value) = .empty;
             if (child_type) |ct| {
-                try self.soql_collect_sub_query_children(ct, from_type, rel_name, parent_id, &child_records);
+                try self.soql_collect_sub_query_children(
+                    ct,
+                    from_type,
+                    rel_name,
+                    parent_id,
+                    &child_records,
+                );
                 try self.apply_parent_field_lookups(sub_info.query, ct, &child_records);
                 try self.resolve_formula_fields(sub_info.query, &child_records);
             }
@@ -5179,7 +5220,10 @@ pub const Evaluator = struct {
             const fk_field = self.resolve_foreign_key(child_type, from_type, rel_name);
             for (child_entry.value_ptr.items) |child_rec| {
                 if (child_rec != .sobject) continue;
-                const fk_val = utils.sobject_get(&child_rec.sobject.fields, fk_field) orelse continue;
+                const fk_val = utils.sobject_get(
+                    &child_rec.sobject.fields,
+                    fk_field,
+                ) orelse continue;
                 if (fk_val != .string) continue;
                 if (!std.ascii.eqlIgnoreCase(fk_val.string, parent_id)) continue;
                 try child_records.append(self.arena, child_rec);
@@ -5624,7 +5668,12 @@ pub const Evaluator = struct {
         }
 
         if (std.ascii.eqlIgnoreCase(from_type, "FlowDefinitionView")) {
-            return try self.generate_flow_definition_view_stub(from_type, soql, current_env, name_val);
+            return try self.generate_flow_definition_view_stub(
+                from_type,
+                soql,
+                current_env,
+                name_val,
+            );
         }
         if (std.ascii.eqlIgnoreCase(from_type, "FlowVersionView")) {
             return try self.generate_flow_version_view_stub(from_type, soql, current_env);
@@ -6446,10 +6495,17 @@ pub const Evaluator = struct {
         if (std.mem.indexOf(u8, val_tag, "xsd:double") != null or
             std.mem.indexOf(u8, val_tag, "xsd:decimal") != null)
         {
-            return if (std.fmt.parseFloat(f64, field_value)) |f| Value{ .double = f } else |_| Value{ .string = field_value };
+            return if (std.fmt.parseFloat(
+                f64,
+                field_value,
+            )) |f| Value{ .double = f } else |_| Value{ .string = field_value };
         }
         if (std.mem.indexOf(u8, val_tag, "xsd:int") != null) {
-            return if (std.fmt.parseInt(i64, field_value, 10)) |i| Value{ .integer = i } else |_| Value{ .string = field_value };
+            return if (std.fmt.parseInt(
+                i64,
+                field_value,
+                10,
+            )) |i| Value{ .integer = i } else |_| Value{ .string = field_value };
         }
         return Value{ .string = field_value };
     }
@@ -7343,11 +7399,21 @@ pub const Evaluator = struct {
 
         const field_val_opt = self.resolve_simple_condition_field(sob, field_name);
         const field_val = field_val_opt orelse {
-            return self.simple_condition_missing_field(cond, field_name, value_str, op, current_env);
+            return self.simple_condition_missing_field(
+                cond,
+                field_name,
+                value_str,
+                op,
+                current_env,
+            );
         };
         if (op.is_like) return eval_simple_condition_like(self, field_val, value_str, current_env);
         if (op.is_in) return eval_simple_condition_in(self, field_val, value_str, current_env);
-        const cmp_val = self.resolve_simple_condition_cmp_value(value_str, op.is_neq, current_env) orelse
+        const cmp_val = self.resolve_simple_condition_cmp_value(
+            value_str,
+            op.is_neq,
+            current_env,
+        ) orelse
             return true;
         return eval_simple_condition_compare(self, field_val, cmp_val, op);
     }
@@ -7836,7 +7902,10 @@ pub const Evaluator = struct {
             const parent_ref = remaining[0..dot_pos];
             const rest = remaining[dot_pos + 1 ..];
             const fk_field = self.parent_ref_to_fk(parent_ref);
-            const parent_type = self.parent_ref_to_type_for_s_object(current_type, parent_ref) orelse
+            const parent_type = self.parent_ref_to_type_for_s_object(
+                current_type,
+                parent_ref,
+            ) orelse
                 return;
             const fk_val = utils.sobject_get(&current_sob.fields, fk_field) orelse return;
             if (fk_val != .string) return;
@@ -9094,7 +9163,10 @@ pub const Evaluator = struct {
         const live = utils.sobject_get(&this_live.object.fields, name) orelse return null;
         if (live == .null_val) return null;
         const live_cd = self.find_class(this_live.object.class_name) orelse return null;
-        if (!(self.is_instance_field(live_cd, name) or self.is_parent_instance_field(live_cd, name))) {
+        if (!(self.is_instance_field(
+            live_cd,
+            name,
+        ) or self.is_parent_instance_field(live_cd, name))) {
             return null;
         }
         if (current_env.get_declared_type(name) != null) return null;
@@ -9124,7 +9196,11 @@ pub const Evaluator = struct {
         return .null_val;
     }
 
-    fn resolve_this_getter_or_backing(self: *Evaluator, name: []const u8, current_env: *Env) !?Value {
+    fn resolve_this_getter_or_backing(
+        self: *Evaluator,
+        name: []const u8,
+        current_env: *Env,
+    ) !?Value {
         const this_check = current_env.get("this") orelse return null;
         if (this_check != .object) return null;
         const already_in_instance_getter = if (self.evaluating_getter) |eg|
@@ -9153,7 +9229,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn resolve_class_static_field_from_this(self: *Evaluator, name: []const u8, current_env: *Env) ?Value {
+    fn resolve_class_static_field_from_this(
+        self: *Evaluator,
+        name: []const u8,
+        current_env: *Env,
+    ) ?Value {
         const this_val = current_env.get("this") orelse return null;
         if (this_val != .object) return null;
         const this_cn = this_val.object.class_name;
@@ -9196,10 +9276,16 @@ pub const Evaluator = struct {
                 for (ccd.members) |member| {
                     switch (member) {
                         .enum_decl => |ed| {
-                            if (std.ascii.eqlIgnoreCase(ed.name, name)) return Value{ .string = name };
+                            if (std.ascii.eqlIgnoreCase(
+                                ed.name,
+                                name,
+                            )) return Value{ .string = name };
                         },
                         .class_decl => |inner_cd| {
-                            if (std.ascii.eqlIgnoreCase(inner_cd.name, name)) return Value{ .string = name };
+                            if (std.ascii.eqlIgnoreCase(
+                                inner_cd.name,
+                                name,
+                            )) return Value{ .string = name };
                         },
                         else => {},
                     }
@@ -9266,7 +9352,9 @@ pub const Evaluator = struct {
         {
             return Value{ .string = field };
         }
-        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and is_known_schema_enum_type(inner_name)) {
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            is_known_schema_enum_type(inner_name))
+        {
             return Value{ .string = field };
         }
         if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
@@ -9287,7 +9375,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess, current_env: *Env) anyerror!Value {
+    fn eval_field_access_expr(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        current_env: *Env,
+    ) anyerror!Value {
         if (fa.object.* == .identifier and
             std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
         {
@@ -9337,10 +9429,16 @@ pub const Evaluator = struct {
     fn instanceof_object(self: *Evaluator, val: Value, type_name: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(val.object.class_name, type_name)) return true;
         if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |dot_pos| {
-            if (std.ascii.eqlIgnoreCase(val.object.class_name, type_name[dot_pos + 1 ..])) return true;
+            if (std.ascii.eqlIgnoreCase(
+                val.object.class_name,
+                type_name[dot_pos + 1 ..],
+            )) return true;
         }
         if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
-            if (std.ascii.eqlIgnoreCase(val.object.class_name[dot_pos + 1 ..], type_name)) return true;
+            if (std.ascii.eqlIgnoreCase(
+                val.object.class_name[dot_pos + 1 ..],
+                type_name,
+            )) return true;
         }
         if (self.find_class(val.object.class_name)) |cd| {
             var cur: ?*ast.ClassDecl = cd;
@@ -9348,7 +9446,10 @@ pub const Evaluator = struct {
                 for (ccd.interfaces) |iface| {
                     if (std.ascii.eqlIgnoreCase(iface.name, type_name)) return true;
                     if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) return true;
+                        if (std.ascii.eqlIgnoreCase(
+                            iface.name[dot_pos + 1 ..],
+                            type_name,
+                        )) return true;
                     }
                 }
                 if (ccd.super_class) |sc| {
@@ -9380,7 +9481,8 @@ pub const Evaluator = struct {
         for (val.list.items.items) |item| {
             if (item == .null_val) continue;
             if (instanceof_matches_primitive(item, elem_type)) return true;
-            if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) return true;
+            if (item == .object and
+                self.is_subclass_of(item.object.class_name, elem_type)) return true;
             return false;
         }
         return true;
@@ -9392,7 +9494,10 @@ pub const Evaluator = struct {
             tn_name[di + 1 ..]
         else
             tn_name;
-        return std.ascii.eqlIgnoreCase(tn_name, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable");
+        return std.ascii.eqlIgnoreCase(tn_name, "Set") or std.ascii.eqlIgnoreCase(
+            tn_base,
+            "Iterable",
+        );
     }
 
     fn instanceof_string(val: Value, type_name: []const u8) bool {
@@ -9401,7 +9506,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn eval_instanceof_expr(self: *Evaluator, ie: *ast.InstanceofExpr, current_env: *Env) anyerror!Value {
+    fn eval_instanceof_expr(
+        self: *Evaluator,
+        ie: *ast.InstanceofExpr,
+        current_env: *Env,
+    ) anyerror!Value {
         const val = try self.eval_expr(ie.operand, current_env);
         const type_name = ie.type_name.name;
         if (instanceof_matches_primitive(val, type_name)) return Value{ .boolean = true };
@@ -9411,7 +9520,10 @@ pub const Evaluator = struct {
             .list => Value{ .boolean = self.instanceof_list(val, ie.type_name) },
             .map, .set => Value{ .boolean = instanceof_set_or_map(val, type_name) },
             .string => Value{ .boolean = instanceof_string(val, type_name) },
-            .integer, .long, .double => Value{ .boolean = instanceof_matches_primitive(val, type_name) },
+            .integer, .long, .double => Value{ .boolean = instanceof_matches_primitive(
+                val,
+                type_name,
+            ) },
             .boolean => Value{ .boolean = std.ascii.eqlIgnoreCase(type_name, "Boolean") },
             else => Value{ .boolean = false },
         };
@@ -9684,7 +9796,11 @@ pub const Evaluator = struct {
             try self.eval_call_this_delegate(current_env, args.items);
             return Value.void_val;
         }
-        if (try self.try_call_as_instance_method(call.callee, args.items, current_env)) |v| return v;
+        if (try self.try_call_as_instance_method(
+            call.callee,
+            args.items,
+            current_env,
+        )) |v| return v;
         if (try self.try_call_static_in_current_class(call.callee, args.items)) |v| return v;
         if (try self.try_call_any_loaded_class(call.callee, args.items)) |v| return v;
         if (current_env.get("this")) |this_val| {
@@ -9725,7 +9841,11 @@ pub const Evaluator = struct {
         return eval_binary(self, left, bin.op, right, self.arena);
     }
 
-    fn eval_assignment_expr(self: *Evaluator, asgn: *ast.Assignment, current_env: *Env) anyerror!Value {
+    fn eval_assignment_expr(
+        self: *Evaluator,
+        asgn: *ast.Assignment,
+        current_env: *Env,
+    ) anyerror!Value {
         const val = try self.eval_expr(asgn.value, current_env);
         if (asgn.is_postfix) {
             const original = self.eval_expr(asgn.target, current_env) catch Value.null_val;
@@ -9735,7 +9855,11 @@ pub const Evaluator = struct {
         return self.eval_assignment(asgn, val, current_env);
     }
 
-    fn eval_index_access_expr(self: *Evaluator, ia: *ast.IndexAccess, current_env: *Env) anyerror!Value {
+    fn eval_index_access_expr(
+        self: *Evaluator,
+        ia: *ast.IndexAccess,
+        current_env: *Env,
+    ) anyerror!Value {
         const obj = try self.eval_expr(ia.object, current_env);
         const idx = try self.eval_expr(ia.index, current_env);
         if (obj == .list and idx == .integer) {
@@ -9772,7 +9896,11 @@ pub const Evaluator = struct {
                 const line = if (ne.loc.line > 0) ne.loc.line else 1;
                 const trace = try self.build_stack_trace_string();
                 try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
-                try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
+                try val.object.fields.put(
+                    self.arena,
+                    "lineNumber",
+                    Value{ .integer = @intCast(line) },
+                );
             }
         }
         return val;
@@ -10932,7 +11060,10 @@ pub const Evaluator = struct {
         current_env: *Env,
     ) anyerror!?Value {
         if (!is_builtin_static_namespace(class_name)) return null;
-        const visible_class = self.resolve_visible_user_class_in_scope(current_env, class_name) orelse
+        const visible_class = self.resolve_visible_user_class_in_scope(
+            current_env,
+            class_name,
+        ) orelse
             return null;
         return try self.call_method(visible_class, mc.method, args);
     }
@@ -11222,7 +11353,10 @@ pub const Evaluator = struct {
         }
         if (current_env.get("this")) |this_val| {
             if (this_val == .object) {
-                if (try self.mc_resolve_static_from_this(this_val.object.class_name, class_name)) |v| {
+                if (try self.mc_resolve_static_from_this(
+                    this_val.object.class_name,
+                    class_name,
+                )) |v| {
                     return v;
                 }
             }
@@ -13900,7 +14034,10 @@ pub const Evaluator = struct {
         return Value{ .list = list };
     }
 
-    fn eval_string_method_replace_all_tail(trimmed_result: []const u8, trimmed_input: []const u8) ?Value {
+    fn eval_string_method_replace_all_tail(
+        trimmed_result: []const u8,
+        trimmed_input: []const u8,
+    ) ?Value {
         if (std.mem.eql(u8, trimmed_result, trimmed_input)) return null;
         if (std.mem.indexOf(u8, trimmed_input, "Class.") == null) return null;
         const anonymous_tail = "AnonymousBlock: line 1, column 1";
@@ -13952,7 +14089,10 @@ pub const Evaluator = struct {
         args: []const Value,
     ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "left") and args.len > 0) {
-            const n: usize = parse_numeric_arg(args[0], self.arena) orelse return Value{ .string = s };
+            const n: usize = parse_numeric_arg(
+                args[0],
+                self.arena,
+            ) orelse return Value{ .string = s };
             const end = @min(n, s.len);
             return Value{ .string = s[0..end] };
         }
@@ -14102,7 +14242,11 @@ pub const Evaluator = struct {
         return Value{ .string = s };
     }
 
-    fn eval_string_method_date_accessor(self: *Evaluator, s: []const u8, method: []const u8) !?Value {
+    fn eval_string_method_date_accessor(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "date")) {
             const dt = parse_iso_date(s) orelse return Value{ .string = s };
             return Value{ .string = try std.fmt.allocPrint(
@@ -14173,7 +14317,11 @@ pub const Evaluator = struct {
         );
     }
 
-    fn eval_string_method_add_hours(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+    fn eval_string_method_add_hours(
+        self: *Evaluator,
+        s: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
         const delta = coerce_i32_arg(args);
         var h: i32 = @as(i32, dt.h) + delta;
@@ -14188,13 +14336,33 @@ pub const Evaluator = struct {
         }
         const y = @as(u32, @intCast(dt.y));
         if (day_offset != 0) {
-            const base = try format_iso_datetime(self.arena, y, dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec);
+            const base = try format_iso_datetime(
+                self.arena,
+                y,
+                dt.m,
+                dt.d,
+                @as(u8, @intCast(h)),
+                dt.mi,
+                dt.sec,
+            );
             return try self.date_time_add(base, "addDays", &.{Value{ .integer = day_offset }});
         }
-        return Value{ .string = try format_iso_datetime(self.arena, y, dt.m, dt.d, @as(u8, @intCast(h)), dt.mi, dt.sec) };
+        return Value{ .string = try format_iso_datetime(
+            self.arena,
+            y,
+            dt.m,
+            dt.d,
+            @as(u8, @intCast(h)),
+            dt.mi,
+            dt.sec,
+        ) };
     }
 
-    fn eval_string_method_add_minutes(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+    fn eval_string_method_add_minutes(
+        self: *Evaluator,
+        s: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
         const delta = coerce_i32_arg(args);
         var mi: i32 = @as(i32, dt.mi) + delta;
@@ -14217,12 +14385,20 @@ pub const Evaluator = struct {
             dt.sec,
         );
         if (hour_offset != 0) {
-            return try self.eval_string_method(base, "addHours", &.{Value{ .integer = hour_offset }});
+            return try self.eval_string_method(
+                base,
+                "addHours",
+                &.{Value{ .integer = hour_offset }},
+            );
         }
         return Value{ .string = base };
     }
 
-    fn eval_string_method_add_seconds(self: *Evaluator, s: []const u8, args: []const Value) anyerror!Value {
+    fn eval_string_method_add_seconds(
+        self: *Evaluator,
+        s: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
         const delta = coerce_i32_arg(args);
         var sec: i32 = @as(i32, dt.sec) + delta;
@@ -14245,15 +14421,33 @@ pub const Evaluator = struct {
             @as(u8, @intCast(sec)),
         );
         if (min_offset != 0) {
-            return try self.eval_string_method(base, "addMinutes", &.{Value{ .integer = min_offset }});
+            return try self.eval_string_method(
+                base,
+                "addMinutes",
+                &.{Value{ .integer = min_offset }},
+            );
         }
         return Value{ .string = base };
     }
 
-    fn eval_string_method_add_hms(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) anyerror!?Value {
-        if (std.ascii.eqlIgnoreCase(method, "addHours")) return try self.eval_string_method_add_hours(s, args);
-        if (std.ascii.eqlIgnoreCase(method, "addMinutes")) return try self.eval_string_method_add_minutes(s, args);
-        if (std.ascii.eqlIgnoreCase(method, "addSeconds")) return try self.eval_string_method_add_seconds(s, args);
+    fn eval_string_method_add_hms(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(
+            method,
+            "addHours",
+        )) return try self.eval_string_method_add_hours(s, args);
+        if (std.ascii.eqlIgnoreCase(
+            method,
+            "addMinutes",
+        )) return try self.eval_string_method_add_minutes(s, args);
+        if (std.ascii.eqlIgnoreCase(
+            method,
+            "addSeconds",
+        )) return try self.eval_string_method_add_seconds(s, args);
         return null;
     }
 
@@ -14374,7 +14568,11 @@ pub const Evaluator = struct {
         ) };
     }
 
-    fn eval_string_method_enum_value_of(self: *Evaluator, s: []const u8, args: []const Value) !Value {
+    fn eval_string_method_enum_value_of(
+        self: *Evaluator,
+        s: []const u8,
+        args: []const Value,
+    ) !Value {
         if (self.find_visible_enum_decl(s)) |enum_decl| {
             if (args[0] == .null_val) return Value.null_val;
             const raw_value = if (args[0] == .string)
@@ -14481,7 +14679,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method_misc(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+    fn eval_string_method_misc(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "toInteger")) {
             return Value{ .integer = std.fmt.parseInt(i64, s, 10) catch 0 };
         }
@@ -14531,7 +14734,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method_char_ops(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+    fn eval_string_method_char_ops(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "countMatches") and
             args.len > 0 and args[0] == .string)
         {
@@ -14593,7 +14801,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method_substring_family(s: []const u8, method: []const u8, args: []const Value) ?Value {
+    fn eval_string_method_substring_family(
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) ?Value {
         if (args.len == 0 or args[0] != .string) return null;
         const sep = args[0].string;
         if (std.ascii.eqlIgnoreCase(method, "substringAfter")) {
@@ -14672,7 +14884,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method_replace_equals(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+    fn eval_string_method_replace_equals(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "substring")) {
             return try eval_string_method_substring(s, args);
         }
@@ -14709,7 +14926,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_string_method_last_index_of(s: []const u8, method: []const u8, args: []const Value) ?Value {
+    fn eval_string_method_last_index_of(
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) ?Value {
         if (!std.ascii.eqlIgnoreCase(method, "lastIndexOf")) return null;
         if (args.len == 0 or args[0] != .string) return null;
         const target = args[0].string;
@@ -14722,7 +14943,12 @@ pub const Evaluator = struct {
         return Value{ .integer = last };
     }
 
-    fn eval_string_method_date_ops(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !?Value {
+    fn eval_string_method_date_ops(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "format")) {
             return try self.eval_string_method_format(s, args);
         }
@@ -15670,7 +15896,14 @@ pub const Evaluator = struct {
                     .field_decl => |fd| {
                         if (!std.ascii.eqlIgnoreCase(fd.name, fa.field)) continue;
                         const getter = fd.getter_body orelse continue;
-                        return try self.invoke_property_getter_inline(fa, inst, cd, ccd, fd, getter);
+                        return try self.invoke_property_getter_inline(
+                            fa,
+                            inst,
+                            cd,
+                            ccd,
+                            fd,
+                            getter,
+                        );
                     },
                     else => {},
                 }
@@ -18708,7 +18941,10 @@ pub const Evaluator = struct {
         user.id = user_id;
         const profile = try self.arena.create(types.SObject);
         profile.* = .{ .type_name = "Profile" };
-        const profile_name: []const u8 = if (std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser"))
+        const profile_name: []const u8 = if (std.ascii.eqlIgnoreCase(
+            method_name,
+            "createMinAccessUser",
+        ))
             "Minimum Access - Salesforce"
         else if (std.ascii.eqlIgnoreCase(method_name, "createMarketingUser"))
             "Marketing User"
@@ -19962,7 +20198,14 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         if (is_collection_type_name(hint_base)) {
-            return score_collection_vs_iterable(hint, pt, hint_base, pt_base, hint_has_generics, pt_has_generics);
+            return score_collection_vs_iterable(
+                hint,
+                pt,
+                hint_base,
+                pt_base,
+                hint_has_generics,
+                pt_has_generics,
+            );
         }
         if (self.is_s_object_type_name(hint_base) and
             (std.ascii.eqlIgnoreCase(pt_base, "SObject") or
@@ -20248,7 +20491,10 @@ pub const Evaluator = struct {
         if (arg == .string and
             (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) return 2;
         if (arg == .integer and
-            (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) return 2;
+            (std.ascii.eqlIgnoreCase(
+                pt,
+                "Integer",
+            ) or std.ascii.eqlIgnoreCase(pt, "int"))) return 2;
         if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
         if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
         if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List")) return 2;
