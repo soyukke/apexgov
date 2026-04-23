@@ -464,7 +464,12 @@ pub const Evaluator = struct {
                         self.arena,
                         &.{ bp, sub, suffix },
                     ) catch continue;
-                    const content = std.Io.Dir.cwd().readFileAlloc(self.io, xml_path, self.arena, .limited(512 * 1024)) catch continue;
+                    const content = std.Io.Dir.cwd().readFileAlloc(
+                        self.io,
+                        xml_path,
+                        self.arena,
+                        .limited(512 * 1024),
+                    ) catch continue;
 
                     // Parse <value> blocks: find <fullName> matching api_name, return corresponding
                     // <label>
@@ -488,14 +493,24 @@ pub const Evaluator = struct {
                         const fn_end_tag = "</fullName>";
                         if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
                             const fn_content_start = fn_start + fn_tag.len;
-                            if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
+                            if (std.mem.indexOfPos(
+                                u8,
+                                block,
+                                fn_content_start,
+                                fn_end_tag,
+                            )) |fn_end| {
                                 const full_name = block[fn_content_start..fn_end];
                                 if (std.mem.eql(u8, full_name, api_name)) {
                                     const lbl_tag = "<label>";
                                     const lbl_end_tag = "</label>";
                                     if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
                                         const lbl_content_start = lbl_start + lbl_tag.len;
-                                        if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
+                                        if (std.mem.indexOfPos(
+                                            u8,
+                                            block,
+                                            lbl_content_start,
+                                            lbl_end_tag,
+                                        )) |lbl_end| {
                                             return block[lbl_content_start..lbl_end];
                                         }
                                     }
@@ -660,7 +675,10 @@ pub const Evaluator = struct {
                 }
                 if (utils.sobject_get(&record.sobject.fields, "Profile")) |profile_val| {
                     if (profile_val == .sobject) {
-                        if (utils.sobject_get(&profile_val.sobject.fields, "UserType")) |profile_user_type| {
+                        if (utils.sobject_get(
+                            &profile_val.sobject.fields,
+                            "UserType",
+                        )) |profile_user_type| {
                             if (profile_user_type == .string and
                                 std.ascii.eqlIgnoreCase(profile_user_type.string, "Guest"))
                             {
@@ -796,7 +814,10 @@ pub const Evaluator = struct {
         const should_materialize_profile = (!is_automated_process and !has_null_profile) or profile_name_opt != null or explicit_user_type != null;
         if (should_materialize_profile) {
             const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
-                (if (std.ascii.eqlIgnoreCase(user_type, "Guest")) "Logger Test LWR Site Guest Profile" else "Standard User")
+                (if (std.ascii.eqlIgnoreCase(
+                    user_type,
+                    "Guest",
+                )) "Logger Test LWR Site Guest Profile" else "Standard User")
             else
                 "Standard User";
             const profile = if (self.find_profile_by_name(profile_name)) |existing|
@@ -896,7 +917,10 @@ pub const Evaluator = struct {
             "UserId",
             current_env,
         ) orelse blk: {
-            if (std.ascii.indexOfIgnoreCase(where_clause, "UserId = :System.UserInfo.getUserId()") != null) {
+            if (std.ascii.indexOfIgnoreCase(
+                where_clause,
+                "UserId = :System.UserInfo.getUserId()",
+            ) != null) {
                 break :blk self.current_user_id;
             }
             break :blk null;
@@ -1609,7 +1633,10 @@ pub const Evaluator = struct {
                 }
                 break :blk Value{ .list = results };
             } else blk: {
-                const publish_result: PublishResult = if (args.len > 0) try publish_one(self, args[0]) else .{ .success = false, .id = null };
+                const publish_result: PublishResult = if (args.len > 0) try publish_one(
+                    self,
+                    args[0],
+                ) else .{ .success = false, .id = null };
                 if (publish_result.success and args.len > 0) {
                     any_publish_success = true;
                     try successful_items.items.append(self.arena, args[0]);
@@ -1687,7 +1714,10 @@ pub const Evaluator = struct {
             }
             return result;
         }
-        if ((std.ascii.eqlIgnoreCase(class_name, "Search") or std.ascii.eqlIgnoreCase(class_name, "System.Search")) and
+        if ((std.ascii.eqlIgnoreCase(class_name, "Search") or std.ascii.eqlIgnoreCase(
+            class_name,
+            "System.Search",
+        )) and
             std.ascii.eqlIgnoreCase(method_name, "query"))
         {
             if (args.len > 0 and args[0] == .string) {
@@ -1786,7 +1816,12 @@ pub const Evaluator = struct {
                 self.current_class = entry.key_ptr.*;
                 defer self.current_class = prev_class;
                 // Try type-aware resolution first (prefer static methods for call_method)
-                if (self.find_best_method_in_class_filtered(entry.value_ptr.*, method_name, args, true)) |md| {
+                if (self.find_best_method_in_class_filtered(
+                    entry.value_ptr.*,
+                    method_name,
+                    args,
+                    true,
+                )) |md| {
                     return self.execute_method(md, args);
                 }
                 // Fallback to any method (not just static)
@@ -2053,7 +2088,10 @@ pub const Evaluator = struct {
                     const loop_env = try current_env.child();
                     // Copy values to avoid mutation during iteration
                     var values_copy: std.ArrayListUnmanaged(Value) = .empty;
-                    for (iterable.set.entries.values()) |item| try values_copy.append(self.arena, item);
+                    for (iterable.set.entries.values()) |item| try values_copy.append(
+                        self.arena,
+                        item,
+                    );
                     for (values_copy.items) |item| {
                         loop_env.set(fes.elem_name, item) catch {
                             try loop_env.define(fes.elem_name, item);
@@ -2195,7 +2233,10 @@ pub const Evaluator = struct {
                                 // Enum matching: when identifier matches string subject
                                 // (case-insensitive for enums)
                                 if (subject == .string and val_copy == .identifier) {
-                                    if (std.ascii.eqlIgnoreCase(subject.string, val_copy.identifier.name)) {
+                                    if (std.ascii.eqlIgnoreCase(
+                                        subject.string,
+                                        val_copy.identifier.name,
+                                    )) {
                                         return self.exec_block(clause.body, current_env);
                                     }
                                 }
@@ -2205,7 +2246,10 @@ pub const Evaluator = struct {
                                     when_val == .null_val and
                                     val_copy == .identifier)
                                 {
-                                    if (std.ascii.eqlIgnoreCase(subject.string, val_copy.identifier.name)) {
+                                    if (std.ascii.eqlIgnoreCase(
+                                        subject.string,
+                                        val_copy.identifier.name,
+                                    )) {
                                         return self.exec_block(clause.body, current_env);
                                     }
                                 }
@@ -2213,11 +2257,18 @@ pub const Evaluator = struct {
                                 // The parser preserves only the type expression, so match the
                                 // subject's runtime SObject/object type name against it.
                                 if (self.switch_type_pattern_name(&val_copy)) |type_name| {
-                                    if (subject == .sobject and std.ascii.eqlIgnoreCase(subject.sobject.type_name, type_name)) {
+                                    if (subject == .sobject and std.ascii.eqlIgnoreCase(
+                                        subject.sobject.type_name,
+                                        type_name,
+                                    )) {
                                         return self.exec_block(clause.body, current_env);
                                     }
                                     if (subject == .object) {
-                                        const subject_simple = if (std.mem.lastIndexOfScalar(u8, subject.object.class_name, '.')) |di|
+                                        const subject_simple = if (std.mem.lastIndexOfScalar(
+                                            u8,
+                                            subject.object.class_name,
+                                            '.',
+                                        )) |di|
                                             subject.object.class_name[di + 1 ..]
                                         else
                                             subject.object.class_name;
@@ -2266,8 +2317,16 @@ pub const Evaluator = struct {
                         for (ts.catches) |*cc| {
                             const catch_type = cc.exception_type.name;
                             // Extract the simple name (after last dot) for both sides
-                            const catch_simple = if (std.mem.lastIndexOfScalar(u8, catch_type, '.')) |di| catch_type[di + 1 ..] else catch_type;
-                            const exc_simple = if (std.mem.lastIndexOfScalar(u8, exc_class_name, '.')) |di| exc_class_name[di + 1 ..] else exc_class_name;
+                            const catch_simple = if (std.mem.lastIndexOfScalar(
+                                u8,
+                                catch_type,
+                                '.',
+                            )) |di| catch_type[di + 1 ..] else catch_type;
+                            const exc_simple = if (std.mem.lastIndexOfScalar(
+                                u8,
+                                exc_class_name,
+                                '.',
+                            )) |di| exc_class_name[di + 1 ..] else exc_class_name;
                             // Exact or suffix match (case-insensitive)
                             if (std.ascii.eqlIgnoreCase(catch_type, exc_class_name) or
                                 std.ascii.eqlIgnoreCase(catch_simple, exc_simple) or
@@ -2280,7 +2339,11 @@ pub const Evaluator = struct {
                             // Check superclass hierarchy for exception matching
                             if (self.find_class(exc_class_name)) |exc_cd| {
                                 if (exc_cd.super_class) |sc| {
-                                    const sc_simple = if (std.mem.lastIndexOfScalar(u8, sc.name, '.')) |di| sc.name[di + 1 ..] else sc.name;
+                                    const sc_simple = if (std.mem.lastIndexOfScalar(
+                                        u8,
+                                        sc.name,
+                                        '.',
+                                    )) |di| sc.name[di + 1 ..] else sc.name;
                                     if (std.ascii.eqlIgnoreCase(catch_simple, sc_simple) or
                                         std.ascii.eqlIgnoreCase(catch_type, sc.name))
                                     {
@@ -2360,14 +2423,20 @@ pub const Evaluator = struct {
                 // Determine if the user is a restricted/min-access/standard user
                 if (user_val == .sobject) {
                     if (user_val.sobject.id) |uid| self.current_user_id = uid;
-                    if (utils.sobject_get(&user_val.sobject.fields, "ProfileId") orelse utils.sobject_get(&user_val.sobject.fields, "profileId")) |pv| {
+                    if (utils.sobject_get(
+                        &user_val.sobject.fields,
+                        "ProfileId",
+                    ) orelse utils.sobject_get(&user_val.sobject.fields, "profileId")) |pv| {
                         if (pv == .string) self.current_profile_id = pv.string;
                     } else if (utils.sobject_get(&user_val.sobject.fields, "Profile")) |prof| {
                         if (prof == .sobject and prof.sobject.id != null)
                             self.current_profile_id = prof.sobject.id.?;
                     }
                     const profile_name = self.get_user_profile_name(user_val.sobject) orelse blk: {
-                        if (self.find_record_by_id("Profile", self.current_profile_id)) |profile_val| {
+                        if (self.find_record_by_id(
+                            "Profile",
+                            self.current_profile_id,
+                        )) |profile_val| {
                             if (profile_val == .sobject) {
                                 if (utils.sobject_get(&profile_val.sobject.fields, "Name")) |name| {
                                     if (name == .string) break :blk name.string;
@@ -2507,7 +2576,10 @@ pub const Evaluator = struct {
                 if (item == .sobject and item.sobject.id != null) {
                     // Find current record in store and deep-copy it (so DML mutations don't affect
                     // old snapshot)
-                    if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                    if (self.find_record_in_store(
+                        item.sobject.type_name,
+                        item.sobject.id.?,
+                    )) |stored| {
                         if (stored == .sobject) {
                             const clone = try self.arena.create(types.SObject);
                             clone.* = .{ .type_name = stored.sobject.type_name };
@@ -2634,7 +2706,10 @@ pub const Evaluator = struct {
                 var new_list: std.ArrayListUnmanaged(Value) = .empty;
                 for (record_list.items) |item| {
                     if (item == .sobject and item.sobject.id != null) {
-                        if (self.find_record_in_store(item.sobject.type_name, item.sobject.id.?)) |stored| {
+                        if (self.find_record_in_store(
+                            item.sobject.type_name,
+                            item.sobject.id.?,
+                        )) |stored| {
                             try new_list.append(self.arena, stored);
                         } else {
                             try new_list.append(self.arena, item);
@@ -2971,7 +3046,11 @@ pub const Evaluator = struct {
                 continue;
             }
 
-            if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
+            if (self.find_record_by_field_value(
+                obj.type_name,
+                field_name,
+                field_value,
+            )) |existing| {
                 if (obj.id != null and
                     existing.id != null and
                     std.ascii.eqlIgnoreCase(obj.id.?, existing.id.?))
@@ -3028,7 +3107,10 @@ pub const Evaluator = struct {
             }
         }
         // Check profileId → look up in the store
-        if (utils.sobject_get(&user.fields, "profileId") orelse utils.sobject_get(&user.fields, "ProfileId")) |pid| {
+        if (utils.sobject_get(
+            &user.fields,
+            "profileId",
+        ) orelse utils.sobject_get(&user.fields, "ProfileId")) |pid| {
             const pid_str = if (pid == .string) pid.string else null;
             if (pid_str) |profile_id| {
                 var store_iter = self.store.iterator();
@@ -3218,7 +3300,10 @@ pub const Evaluator = struct {
                         if (pe == .object) {
                             const class_name_str = pe.object.class_name;
                             // If it's already a DmlException, just propagate it
-                            if (std.ascii.indexOfIgnoreCase(class_name_str, "DmlException") != null) {
+                            if (std.ascii.indexOfIgnoreCase(
+                                class_name_str,
+                                "DmlException",
+                            ) != null) {
                                 return err;
                             }
                             // Wrap non-DML exceptions in DmlException
@@ -3333,8 +3418,14 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or
                 std.ascii.eqlIgnoreCase(obj.type_name, "Lead"))
             {
-                const first = if (utils.sobject_get(&obj.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "";
-                const last = if (utils.sobject_get(&obj.fields, "LastName")) |v| (if (v == .string) v.string else "") else "";
+                const first = if (utils.sobject_get(
+                    &obj.fields,
+                    "FirstName",
+                )) |v| (if (v == .string) v.string else "") else "";
+                const last = if (utils.sobject_get(
+                    &obj.fields,
+                    "LastName",
+                )) |v| (if (v == .string) v.string else "") else "";
                 const name = if (first.len > 0 and last.len > 0)
                     try std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last })
                 else if (last.len > 0)
@@ -3392,14 +3483,25 @@ pub const Evaluator = struct {
                             const ref_type = v.sobject.type_name;
                             // Look for external ID fields on the reference
                             for (v.sobject.fields.keys(), v.sobject.fields.values()) |rk, rv| {
-                                if ((std.mem.endsWith(u8, rk, "__c") or std.mem.endsWith(u8, rk, "Id__c")) and rv == .string) {
+                                if ((std.mem.endsWith(u8, rk, "__c") or std.mem.endsWith(
+                                    u8,
+                                    rk,
+                                    "Id__c",
+                                )) and rv == .string) {
                                     // Search store for a record of this type with matching external
                                     // ID
                                     if (self.store.get(ref_type)) |records| {
                                         for (records.items) |rec| {
                                             if (rec == .sobject and rec.sobject.id != null) {
-                                                if (utils.sobject_get(&rec.sobject.fields, rk)) |stored_val| {
-                                                    if (stored_val == .string and std.mem.eql(u8, stored_val.string, rv.string)) {
+                                                if (utils.sobject_get(
+                                                    &rec.sobject.fields,
+                                                    rk,
+                                                )) |stored_val| {
+                                                    if (stored_val == .string and std.mem.eql(
+                                                        u8,
+                                                        stored_val.string,
+                                                        rv.string,
+                                                    )) {
                                                         rel_keys_buf[rel_count] = fk_name;
                                                         rel_vals_buf[rel_count] = Value{ .string = rec.sobject.id.? };
                                                         rel_count += 1;
@@ -3531,7 +3633,10 @@ pub const Evaluator = struct {
                     utils.sobject_get(&obj.fields, "Title") orelse Value{ .string = "Untitled" },
                 );
                 // Derive FileType from PathOnClient extension
-                const path_on_client = if (utils.sobject_get(&obj.fields, "PathOnClient")) |poc| (if (poc == .string) poc.string else "") else "";
+                const path_on_client = if (utils.sobject_get(
+                    &obj.fields,
+                    "PathOnClient",
+                )) |poc| (if (poc == .string) poc.string else "") else "";
                 const file_type: []const u8 = if (std.ascii.endsWithIgnoreCase(path_on_client, ".png")) "PNG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".jpg") or std.ascii.endsWithIgnoreCase(path_on_client, ".jpeg")) "JPG" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".gif")) "GIF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pdf")) "PDF" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".docx")) "WORD_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".xlsx")) "EXCEL_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".pptx")) "POWER_POINT_X" else if (std.ascii.endsWithIgnoreCase(path_on_client, ".m4a")) "M4A" else "UNKNOWN";
                 try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
                 const cd_gop = try self.store.getOrPut(self.arena, "ContentDocument");
@@ -3928,7 +4033,11 @@ pub const Evaluator = struct {
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
-            if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
+            if (self.find_record_by_field_value(
+                obj.type_name,
+                field_name,
+                field_value,
+            )) |existing| {
                 if (existing.id) |existing_id| {
                     obj.id = existing_id;
                     try utils.sobject_put(
@@ -4525,7 +4634,11 @@ pub const Evaluator = struct {
                                 if (is_to_label) {
                                     if (utils.sobject_get(&item.sobject.fields, field_name)) |fv| {
                                         if (fv == .string) {
-                                            if (self.resolve_picklist_label(item.sobject.type_name, field_name, fv.string)) |label| {
+                                            if (self.resolve_picklist_label(
+                                                item.sobject.type_name,
+                                                field_name,
+                                                fv.string,
+                                            )) |label| {
                                                 try utils.sobject_put(
                                                     &item.sobject.fields,
                                                     self.arena,
@@ -4606,7 +4719,11 @@ pub const Evaluator = struct {
                                         "SELECT Id, Name FROM {s} WHERE Name = '{s}'",
                                         .{ from_type, in_name },
                                     );
-                                    if (try self.generate_metadata_stub(from_type, tmp_soql, current_env)) |stub| {
+                                    if (try self.generate_metadata_stub(
+                                        from_type,
+                                        tmp_soql,
+                                        current_env,
+                                    )) |stub| {
                                         try records.append(self.arena, stub);
                                     }
                                 }
@@ -4674,12 +4791,20 @@ pub const Evaluator = struct {
                             "SELECT Name, Body FROM {s} WHERE Name = '{s}'",
                             .{ from_type, nv },
                         );
-                        if (try self.generate_metadata_stub(from_type, tmp_soql, current_env)) |stub| {
+                        if (try self.generate_metadata_stub(
+                            from_type,
+                            tmp_soql,
+                            current_env,
+                        )) |stub| {
                             try records.append(self.arena, stub);
                         }
                     }
                 }
-            } else if (try self.generate_metadata_stub(from_type, soql, current_env)) |stub_record| {
+            } else if (try self.generate_metadata_stub(
+                from_type,
+                soql,
+                current_env,
+            )) |stub_record| {
                 try records.append(self.arena, stub_record);
             }
         }
@@ -4878,7 +5003,10 @@ pub const Evaluator = struct {
                                     );
                                     for (child_entry.value_ptr.items) |child_rec| {
                                         if (child_rec == .sobject) {
-                                            if (utils.sobject_get(&child_rec.sobject.fields, fk_field)) |fk_val| {
+                                            if (utils.sobject_get(
+                                                &child_rec.sobject.fields,
+                                                fk_field,
+                                            )) |fk_val| {
                                                 if (fk_val == .string and
                                                     std.ascii.eqlIgnoreCase(fk_val.string, pid))
                                                 {
@@ -5030,7 +5158,10 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(from_type, "ApexClass") or
             std.ascii.eqlIgnoreCase(from_type, "ApexTrigger"))
         {
-            const metadata_sources = if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) &self.class_sources else &self.trigger_sources;
+            const metadata_sources = if (std.ascii.eqlIgnoreCase(
+                from_type,
+                "ApexClass",
+            )) &self.class_sources else &self.trigger_sources;
             const type_label =
                 if (std.ascii.eqlIgnoreCase(from_type, "ApexClass")) "class" else "trigger";
             var metadata_exists = false;
@@ -5126,7 +5257,10 @@ pub const Evaluator = struct {
             if (self.store.get(from_type)) |records| {
                 for (records.items) |record| {
                     if (record == .sobject) {
-                        if (utils.sobject_get(&record.sobject.fields, "ApiName")) |stored_api_name| {
+                        if (utils.sobject_get(
+                            &record.sobject.fields,
+                            "ApiName",
+                        )) |stored_api_name| {
                             if (stored_api_name == .string and
                                 std.ascii.eqlIgnoreCase(stored_api_name.string, api_name))
                             {
@@ -5209,7 +5343,10 @@ pub const Evaluator = struct {
             if (self.store.get(from_type)) |records| {
                 for (records.items) |record| {
                     if (record == .sobject) {
-                        if (utils.sobject_get(&record.sobject.fields, "DurableId")) |stored_durable_id| {
+                        if (utils.sobject_get(
+                            &record.sobject.fields,
+                            "DurableId",
+                        )) |stored_durable_id| {
                             if (stored_durable_id == .string and
                                 std.ascii.eqlIgnoreCase(stored_durable_id.string, durable_id))
                             {
@@ -5224,11 +5361,17 @@ pub const Evaluator = struct {
             if (self.store.get("FlowDefinitionView")) |records| {
                 for (records.items) |record| {
                     if (record != .sobject) continue;
-                    if (utils.sobject_get(&record.sobject.fields, "ActiveVersionId")) |active_version_id| {
+                    if (utils.sobject_get(
+                        &record.sobject.fields,
+                        "ActiveVersionId",
+                    )) |active_version_id| {
                         if (active_version_id == .string and
                             std.ascii.eqlIgnoreCase(active_version_id.string, durable_id))
                         {
-                            if (utils.sobject_get(&record.sobject.fields, "DurableId")) |definition_id| {
+                            if (utils.sobject_get(
+                                &record.sobject.fields,
+                                "DurableId",
+                            )) |definition_id| {
                                 if (definition_id == .string)
                                     flow_definition_id = definition_id.string;
                             }
@@ -5287,7 +5430,10 @@ pub const Evaluator = struct {
             if (self.store.get(from_type)) |records| {
                 for (records.items) |record| {
                     if (record != .sobject) continue;
-                    if (utils.sobject_get(&record.sobject.fields, "DeveloperName")) |stored_dev_name| {
+                    if (utils.sobject_get(
+                        &record.sobject.fields,
+                        "DeveloperName",
+                    )) |stored_dev_name| {
                         if (stored_dev_name == .string and
                             std.ascii.eqlIgnoreCase(stored_dev_name.string, developer_name))
                         {
@@ -5840,7 +5986,12 @@ pub const Evaluator = struct {
                             "{s}/{s}",
                             .{ base_path, path_str },
                         ) catch continue;
-                        if (std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(10 * 1024 * 1024))) |content| {
+                        if (std.Io.Dir.cwd().readFileAlloc(
+                            self.io,
+                            full_path,
+                            self.arena,
+                            .limited(10 * 1024 * 1024),
+                        )) |content| {
                             return content;
                         } else |_| {}
                     }
@@ -5914,7 +6065,12 @@ pub const Evaluator = struct {
                             "{s}/{s}",
                             .{ sp, entry.path },
                         ) catch continue;
-                        const content = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(1024 * 1024)) catch continue;
+                        const content = std.Io.Dir.cwd().readFileAlloc(
+                            self.io,
+                            full_path,
+                            self.arena,
+                            .limited(1024 * 1024),
+                        ) catch continue;
                         if (try self.parse_custom_metadata_xml(mdt_type, content)) |sob| {
                             // Set DeveloperName from filename
                             try sob.fields.put(
@@ -6143,7 +6299,12 @@ pub const Evaluator = struct {
                     "{s}/{s}",
                     .{ sp, entry.path },
                 ) catch continue;
-                const xml = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena, .limited(1024 * 1024)) catch continue;
+                const xml = std.Io.Dir.cwd().readFileAlloc(
+                    self.io,
+                    full_path,
+                    self.arena,
+                    .limited(1024 * 1024),
+                ) catch continue;
                 if (self.find_permission_set_record_by_name(permission_set_name) != null) return;
 
                 const permission_set = try self.arena.create(types.SObject);
@@ -6331,7 +6492,11 @@ pub const Evaluator = struct {
                             " \t\n\r",
                         );
                         const after = std.mem.trim(u8, item[paren_end + 1 ..], " \t\n\r");
-                        const alias = if (after.len > 0) after else try std.fmt.allocPrint(self.arena, "expr{d}", .{expr_idx});
+                        const alias = if (after.len > 0) after else try std.fmt.allocPrint(
+                            self.arena,
+                            "expr{d}",
+                            .{expr_idx},
+                        );
                         agg_items[agg_count] = .{ .fn_name = fn_name, .field = field, .alias = alias };
                         agg_count += 1;
                         expr_idx += 1;
@@ -7319,7 +7484,10 @@ pub const Evaluator = struct {
 
             // If this is the last segment's parent, copy the leaf field value.
             if (std.mem.indexOfScalar(u8, rest, '.') == null) {
-                if (self.get_s_object_field_value_case_insensitive(parent_rec.sobject, rest)) |field_val| {
+                if (self.get_s_object_field_value_case_insensitive(
+                    parent_rec.sobject,
+                    rest,
+                )) |field_val| {
                     try parent_sob.fields.put(self.arena, rest, field_val);
                 }
                 return;
@@ -7331,7 +7499,10 @@ pub const Evaluator = struct {
             const next_dot = std.mem.indexOfScalar(u8, rest, '.').?;
             const next_parent_ref = rest[0..next_dot];
             const next_fk = self.parent_ref_to_fk(next_parent_ref);
-            if (self.get_s_object_field_value_case_insensitive(parent_rec.sobject, next_fk)) |nfk_val| {
+            if (self.get_s_object_field_value_case_insensitive(
+                parent_rec.sobject,
+                next_fk,
+            )) |nfk_val| {
                 try parent_sob.fields.put(self.arena, next_fk, nfk_val);
             }
 
@@ -7657,7 +7828,10 @@ pub const Evaluator = struct {
         }
         if (self.resolve_derived_field_value(sob, field_name)) |derived| return derived;
         if (self.resolve_custom_child_relationship(sob.type_name, field_name) != null or
-            (field_name.len > 3 and std.ascii.eqlIgnoreCase(field_name[field_name.len - 3 ..], "__r") and
+            (field_name.len > 3 and std.ascii.eqlIgnoreCase(
+                field_name[field_name.len - 3 ..],
+                "__r",
+            ) and
                 self.resolve_custom_child_relationship(
                     sob.type_name,
                     field_name[0 .. field_name.len - 3],
@@ -8022,8 +8196,17 @@ pub const Evaluator = struct {
             const record_id = record.sobject.id.?;
 
             if (old_records) |previous_records| {
-                if (self.find_s_object_by_id_in_values(previous_records.items, record_id)) |old_child| {
-                    if (self.summary_record_matches(old_child, child_type, fk_field, parent_id.?, metadata)) {
+                if (self.find_s_object_by_id_in_values(
+                    previous_records.items,
+                    record_id,
+                )) |old_child| {
+                    if (self.summary_record_matches(
+                        old_child,
+                        child_type,
+                        fk_field,
+                        parent_id.?,
+                        metadata,
+                    )) {
                         self.accumulate_summary_value(
                             old_child,
                             child_type,
@@ -8039,7 +8222,13 @@ pub const Evaluator = struct {
             const inserted_now = self.find_s_object_by_id_in_values(new_records, record_id) != null;
             if (inserted_now) continue;
 
-            if (self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
+            if (self.summary_record_matches(
+                record.sobject,
+                child_type,
+                fk_field,
+                parent_id.?,
+                metadata,
+            )) {
                 self.accumulate_summary_value(
                     record.sobject,
                     child_type,
@@ -8054,7 +8243,13 @@ pub const Evaluator = struct {
             for (previous_records.items) |record| {
                 if (record != .sobject or record.sobject.id == null) continue;
                 if (self.find_record_in_store(child_type, record.sobject.id.?)) |_| continue;
-                if (self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
+                if (self.summary_record_matches(
+                    record.sobject,
+                    child_type,
+                    fk_field,
+                    parent_id.?,
+                    metadata,
+                )) {
                     self.accumulate_summary_value(
                         record.sobject,
                         child_type,
@@ -8103,7 +8298,13 @@ pub const Evaluator = struct {
 
         for (child_records.items) |record| {
             if (record != .sobject) continue;
-            if (!self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) continue;
+            if (!self.summary_record_matches(
+                record.sobject,
+                child_type,
+                fk_field,
+                parent_id.?,
+                metadata,
+            )) continue;
             self.accumulate_summary_value(record.sobject, child_type, metadata, &count, &aggregate);
         }
 
@@ -8258,7 +8459,10 @@ pub const Evaluator = struct {
                 if (self.resolve_static_field_value_on_class(this_cn, name)) |val| return val;
                 if (self.find_class(this_cn)) |cd| {
                     if (cd.super_class) |sc| {
-                        if (self.resolve_static_field_value_on_class(sc.name, name)) |val| return val;
+                        if (self.resolve_static_field_value_on_class(
+                            sc.name,
+                            name,
+                        )) |val| return val;
                     }
                 }
                 if (self.resolve_outer_static_field(this_cn, name)) |val| return val;
@@ -8494,7 +8698,10 @@ pub const Evaluator = struct {
                             }
                         } else if (already_in_instance_getter) {
                             // Inside own getter: return backing field value directly
-                            if (self.find_field_decl_with_owner(this_check.object.class_name, id.name)) |lookup| {
+                            if (self.find_field_decl_with_owner(
+                                this_check.object.class_name,
+                                id.name,
+                            )) |lookup| {
                                 if (lookup.field_decl.modifiers.is_static) {
                                     return self.read_static_backing_value(
                                         lookup.owner_name,
@@ -8546,7 +8753,10 @@ pub const Evaluator = struct {
                     if (self.resolve_static_field_value_on_class(cc, id.name)) |val| return val;
                     if (self.find_class(cc)) |cd| {
                         if (cd.super_class) |sc| {
-                            if (self.resolve_static_field_value_on_class(sc.name, id.name)) |val| return val;
+                            if (self.resolve_static_field_value_on_class(
+                                sc.name,
+                                id.name,
+                            )) |val| return val;
                         }
                     }
                     // Check outer class static fields/getters when current_class is an inner class
@@ -8747,11 +8957,20 @@ pub const Evaluator = struct {
                 // Try as static method in current class first
                 if (self.current_class) |cc| {
                     if (self.find_class(cc)) |cd| {
-                        if (self.find_best_method_in_class_filtered(cd, call.callee, args.items, true) != null) {
+                        if (self.find_best_method_in_class_filtered(
+                            cd,
+                            call.callee,
+                            args.items,
+                            true,
+                        ) != null) {
                             return self.call_method(cc, call.callee, args.items);
                         }
                     }
-                    if (self.resolve_outer_static_method_owner(cc, call.callee, args.items)) |outer_owner| {
+                    if (self.resolve_outer_static_method_owner(
+                        cc,
+                        call.callee,
+                        args.items,
+                    )) |outer_owner| {
                         return self.call_method(outer_owner, call.callee, args.items);
                     }
                 }
@@ -9025,13 +9244,19 @@ pub const Evaluator = struct {
                                     // matches an `implements BeforeInsert` declaration inside
                                     // the class that owns `TriggerAction`.
                                     if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) {
+                                        if (std.ascii.eqlIgnoreCase(
+                                            iface.name,
+                                            target[di + 1 ..],
+                                        )) {
                                             is_compatible = true;
                                             break;
                                         }
                                     }
                                     if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) {
+                                        if (std.ascii.eqlIgnoreCase(
+                                            iface.name[di + 1 ..],
+                                            target,
+                                        )) {
                                             is_compatible = true;
                                             break;
                                         }
@@ -9149,12 +9374,18 @@ pub const Evaluator = struct {
                     // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name
                     // is the simple name
                     if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name[dot_pos + 1 ..])) return Value{ .boolean = true };
+                        if (std.ascii.eqlIgnoreCase(
+                            val.object.class_name,
+                            ie.type_name.name[dot_pos + 1 ..],
+                        )) return Value{ .boolean = true };
                     }
                     // Also match when class_name is dotted ("OuterClass.Inner") and type_name is
                     // the simple name
                     if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(val.object.class_name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
+                        if (std.ascii.eqlIgnoreCase(
+                            val.object.class_name[dot_pos + 1 ..],
+                            ie.type_name.name,
+                        )) return Value{ .boolean = true };
                     }
                     // Walk superclass hierarchy
                     if (self.find_class(val.object.class_name)) |cd| {
@@ -9167,7 +9398,10 @@ pub const Evaluator = struct {
                                 // Also match when interface name has a prefix (e.g.,
                                 // "di_Binding.Provider" matches "Provider")
                                 if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                                    if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
+                                    if (std.ascii.eqlIgnoreCase(
+                                        iface.name[dot_pos + 1 ..],
+                                        ie.type_name.name,
+                                    )) return Value{ .boolean = true };
                                 }
                             }
                             if (ccd.super_class) |sc| {
@@ -9245,7 +9479,10 @@ pub const Evaluator = struct {
                 if (val == .double) {
                     return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
                 }
-                if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
+                if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(
+                    ie.type_name.name,
+                    "Boolean",
+                ) };
                 return Value{ .boolean = false };
             },
 
@@ -9440,13 +9677,19 @@ pub const Evaluator = struct {
                 if (current_env.get_declared_type(id.name)) |type_name| return type_name;
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        if (self.find_declared_field_type(this_val.object.class_name, id.name)) |type_name| return type_name;
+                        if (self.find_declared_field_type(
+                            this_val.object.class_name,
+                            id.name,
+                        )) |type_name| return type_name;
                     }
                 }
                 if (self.current_class) |cc| {
                     if (self.find_declared_field_type(cc, id.name)) |type_name| return type_name;
                     if (self.find_outer_class_name(cc)) |outer| {
-                        if (self.find_declared_field_type(outer, id.name)) |type_name| return type_name;
+                        if (self.find_declared_field_type(
+                            outer,
+                            id.name,
+                        )) |type_name| return type_name;
                     }
                 }
                 return null;
@@ -9466,16 +9709,25 @@ pub const Evaluator = struct {
                 if (fa.object.* == .identifier) {
                     const owner_name = fa.object.identifier.name;
                     if (current_env.get_declared_type(owner_name)) |owner_type| {
-                        if (self.find_declared_field_type(type_base_name(owner_type), fa.field)) |type_name| return type_name;
+                        if (self.find_declared_field_type(
+                            type_base_name(owner_type),
+                            fa.field,
+                        )) |type_name| return type_name;
                     }
                     const is_class = self.find_class(owner_name) != null;
                     const is_var = current_env.get(owner_name) != null;
                     if (is_class and !is_var) {
-                        if (self.find_declared_field_type(owner_name, fa.field)) |type_name| return type_name;
+                        if (self.find_declared_field_type(
+                            owner_name,
+                            fa.field,
+                        )) |type_name| return type_name;
                     }
                 }
                 if (self.resolve_assignment_target_type(fa.object, current_env)) |owner_type| {
-                    if (self.find_declared_field_type(type_base_name(owner_type), fa.field)) |type_name| return type_name;
+                    if (self.find_declared_field_type(
+                        type_base_name(owner_type),
+                        fa.field,
+                    )) |type_name| return type_name;
                 }
                 return null;
             },
@@ -9531,17 +9783,30 @@ pub const Evaluator = struct {
                     const target_name = mc.object.identifier.name;
 
                     if (self.find_class(target_name)) |class_decl| {
-                        if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                        if (self.find_method_in_hierarchy(
+                            null,
+                            class_decl,
+                            mc.method,
+                            arg_count,
+                        )) |method_decl| {
                             return strip_type_namespace(
                                 self.render_type_ref(method_decl.return_type),
                             );
                         }
                     }
 
-                    if (self.resolve_assignment_target_type(mc.object, current_env)) |instance_type| {
+                    if (self.resolve_assignment_target_type(
+                        mc.object,
+                        current_env,
+                    )) |instance_type| {
                         const base_type = type_base_name(instance_type);
                         if (self.find_class(base_type)) |class_decl| {
-                            if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                            if (self.find_method_in_hierarchy(
+                                null,
+                                class_decl,
+                                mc.method,
+                                arg_count,
+                            )) |method_decl| {
                                 return strip_type_namespace(
                                     self.render_type_ref(method_decl.return_type),
                                 );
@@ -9559,7 +9824,12 @@ pub const Evaluator = struct {
                             .{ fa.object.identifier.name, fa.field },
                         ) catch return null;
                         if (self.find_class(qualified_name)) |class_decl| {
-                            if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                            if (self.find_method_in_hierarchy(
+                                null,
+                                class_decl,
+                                mc.method,
+                                arg_count,
+                            )) |method_decl| {
                                 return strip_type_namespace(
                                     self.render_type_ref(method_decl.return_type),
                                 );
@@ -9740,7 +10010,10 @@ pub const Evaluator = struct {
                     const cur = if (current_env.has(id.name))
                         (current_env.get(id.name) orelse Value.null_val)
                     else
-                        (self.resolve_bare_static_value(current_env, id.name) orelse Value.null_val);
+                        (self.resolve_bare_static_value(
+                            current_env,
+                            id.name,
+                        ) orelse Value.null_val);
                     var result = eval_compound_assign(cur, asgn.op, coerced_val, self.arena);
                     // Handle string concatenation for +=
                     if (asgn.op == .plus_assign and (cur == .string or coerced_val == .string)) {
@@ -9875,7 +10148,10 @@ pub const Evaluator = struct {
                         std.ascii.eqlIgnoreCase(cls, "RestContext") or
                         std.ascii.eqlIgnoreCase(cls, "System") or
                         std.ascii.eqlIgnoreCase(cls, "Trigger");
-                    const is_var = current_env.get(cls) != null or self.resolve_bare_static_value(current_env, cls) != null;
+                    const is_var = current_env.get(cls) != null or self.resolve_bare_static_value(
+                        current_env,
+                        cls,
+                    ) != null;
                     if (is_class and !is_var) {
                         // Lazy static init: ensure the class is initialized before writing
                         self.ensure_static_init(cls);
@@ -9964,7 +10240,10 @@ pub const Evaluator = struct {
                                             var field_keys: std.ArrayListUnmanaged(
                                                 []const u8,
                                             ) = .empty;
-                                            for (obj.object.fields.keys()) |k| field_keys.append(self.arena, k) catch {};
+                                            for (obj.object.fields.keys()) |k| field_keys.append(
+                                                self.arena,
+                                                k,
+                                            ) catch {};
                                             for (field_keys.items) |k| {
                                                 if (setter_env.get(k)) |updated| {
                                                     try obj.object.fields.put(
@@ -10212,7 +10491,10 @@ pub const Evaluator = struct {
                 {
                     if (args.items.len > 0) {
                         if (args.items[0] == .object and
-                            (std.ascii.eqlIgnoreCase(args.items[0].object.class_name, "Schema.SObjectField") or
+                            (std.ascii.eqlIgnoreCase(
+                                args.items[0].object.class_name,
+                                "Schema.SObjectField",
+                            ) or
                                 std.ascii.eqlIgnoreCase(
                                     args.items[0].object.class_name,
                                     "SObjectField",
@@ -10325,7 +10607,10 @@ pub const Evaluator = struct {
 
             // Custom Metadata Type: Type__mdt.getInstance(developerName) — early intercept
             if (std.mem.endsWith(u8, class_name, "__mdt") and
-                (std.ascii.eqlIgnoreCase(mc.method, "getInstance") or std.ascii.eqlIgnoreCase(mc.method, "getAll")))
+                (std.ascii.eqlIgnoreCase(
+                    mc.method,
+                    "getInstance",
+                ) or std.ascii.eqlIgnoreCase(mc.method, "getAll")))
             {
                 // Ensure records are loaded from .md-meta.xml files
                 {
@@ -10347,7 +10632,10 @@ pub const Evaluator = struct {
                             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
                                 for (entry.value_ptr.items) |item| {
                                     if (item == .sobject) {
-                                        if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                                        if (utils.sobject_get(
+                                            &item.sobject.fields,
+                                            "DeveloperName",
+                                        )) |dn| {
                                             if (dn == .string and
                                                 std.ascii.eqlIgnoreCase(dn.string, dev_name))
                                             {
@@ -10369,7 +10657,10 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
                             for (entry.value_ptr.items) |item| {
                                 if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                                    if (utils.sobject_get(
+                                        &item.sobject.fields,
+                                        "DeveloperName",
+                                    )) |dn| {
                                         if (dn == .string)
                                             try map.entries.put(self.arena, dn.string, item);
                                     }
@@ -10504,7 +10795,10 @@ pub const Evaluator = struct {
             // Let user-defined classes shadow platform static namespaces only
             // when the identifier collides with a builtin class name.
             if (is_builtin_static_namespace(class_name)) {
-                if (self.resolve_visible_user_class_in_scope(current_env, class_name)) |visible_class| {
+                if (self.resolve_visible_user_class_in_scope(
+                    current_env,
+                    class_name,
+                )) |visible_class| {
                     return self.call_method(visible_class, mc.method, args.items);
                 }
             }
@@ -10543,7 +10837,10 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
                             for (entry.value_ptr.items) |item| {
                                 if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                                    if (utils.sobject_get(
+                                        &item.sobject.fields,
+                                        "DeveloperName",
+                                    )) |dn| {
                                         if (dn == .string and
                                             std.ascii.eqlIgnoreCase(dn.string, dev_name))
                                         {
@@ -10564,7 +10861,10 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
                             for (entry.value_ptr.items) |item| {
                                 if (item == .sobject) {
-                                    if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
+                                    if (utils.sobject_get(
+                                        &item.sobject.fields,
+                                        "DeveloperName",
+                                    )) |dn| {
                                         if (dn == .string)
                                             try map.entries.put(self.arena, dn.string, item);
                                     }
@@ -10576,7 +10876,11 @@ pub const Evaluator = struct {
                 }
             }
 
-            if (try self.handle_custom_setting_static_method(class_name, mc.method, args.items)) |result| {
+            if (try self.handle_custom_setting_static_method(
+                class_name,
+                mc.method,
+                args.items,
+            )) |result| {
                 return result;
             }
 
@@ -10721,7 +11025,12 @@ pub const Evaluator = struct {
                     std.ascii.eqlIgnoreCase(inner, "Action"))
                 {
                     var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    if (try builtins.dispatch_static(&bctx, "Invocable.Action", mc.method, args.items)) |v| return v;
+                    if (try builtins.dispatch_static(
+                        &bctx,
+                        "Invocable.Action",
+                        mc.method,
+                        args.items,
+                    )) |v| return v;
                 }
 
                 if (std.ascii.eqlIgnoreCase(outer_class, "Flow") and
@@ -10759,12 +11068,19 @@ pub const Evaluator = struct {
                 }
 
                 if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-                    return (try self.handle_connect_api_namespace(inner, mc.method, args.items)) orelse Value.null_val;
+                    return (try self.handle_connect_api_namespace(
+                        inner,
+                        mc.method,
+                        args.items,
+                    )) orelse Value.null_val;
                 }
 
                 // Cache.Session.getPartition / Cache.Org.getPartition
                 if (std.ascii.eqlIgnoreCase(outer_class, "Cache") and
-                    (std.ascii.eqlIgnoreCase(inner, "Session") or std.ascii.eqlIgnoreCase(inner, "Org")))
+                    (std.ascii.eqlIgnoreCase(
+                        inner,
+                        "Session",
+                    ) or std.ascii.eqlIgnoreCase(inner, "Org")))
                 {
                     if (std.ascii.eqlIgnoreCase(mc.method, "getPartition")) {
                         const partition_name = if (args.items.len > 0 and args.items[0] == .string) args.items[0].string else "default";
@@ -11146,7 +11462,10 @@ pub const Evaluator = struct {
                     if (segments == .list) return segments;
                 }
                 for (obj.fields.values()) |field_value| {
-                    if (self.connect_api_extract_message_segments(field_value, depth - 1)) |segments| return segments;
+                    if (self.connect_api_extract_message_segments(
+                        field_value,
+                        depth - 1,
+                    )) |segments| return segments;
                 }
                 return null;
             },
@@ -11282,7 +11601,10 @@ pub const Evaluator = struct {
             return error.ApexException;
         }
         if (obj == .object and
-            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or std.ascii.eqlIgnoreCase(obj.object.class_name, "System.Search")) and
+            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or std.ascii.eqlIgnoreCase(
+                obj.object.class_name,
+                "System.Search",
+            )) and
             std.ascii.eqlIgnoreCase(method, "query"))
         {
             if (args.len > 0 and args[0] == .string) {
@@ -11643,7 +11965,11 @@ pub const Evaluator = struct {
                         const start = pos;
                         while (pos < body.len and (std.ascii.isDigit(body[pos]) or body[pos] == '.' or body[pos] == '-' or body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+')) pos += 1;
                         const number_text = body[start..pos];
-                        const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null) "VALUE_NUMBER_FLOAT" else "VALUE_NUMBER_INT";
+                        const token_name = if (std.mem.indexOfAny(
+                            u8,
+                            number_text,
+                            ".eE",
+                        ) != null) "VALUE_NUMBER_FLOAT" else "VALUE_NUMBER_INT";
                         try obj.object.fields.put(
                             self.arena,
                             "__token__",
@@ -11802,7 +12128,10 @@ pub const Evaluator = struct {
                     for (cd.members) |member| {
                         switch (member) {
                             .class_decl => |inner_cd| {
-                                if (std.ascii.eqlIgnoreCase(inner_cd.name, obj.object.class_name) and inner_cd != class_decl) {
+                                if (std.ascii.eqlIgnoreCase(
+                                    inner_cd.name,
+                                    obj.object.class_name,
+                                ) and inner_cd != class_decl) {
                                     const inner_md = self.find_method_in_hierarchy_typed(
                                         null,
                                         inner_cd,
@@ -11863,7 +12192,10 @@ pub const Evaluator = struct {
                     }
                     break :blk try utils.coerce_to_string(args[0], self.arena);
                 } else try utils.coerce_to_string(args[0], self.arena);
-                if (self.get_s_object_field_value_case_insensitive(obj.sobject, field_name)) |value| return value;
+                if (self.get_s_object_field_value_case_insensitive(
+                    obj.sobject,
+                    field_name,
+                )) |value| return value;
 
                 var get_bctx = builtins.BuiltinContext{
                     .arena = self.arena,
@@ -11895,21 +12227,35 @@ pub const Evaluator = struct {
                     break :blk try utils.coerce_to_string(args[0], self.arena);
                 } else try utils.coerce_to_string(args[0], self.arena);
 
-                if (self.get_s_object_field_value_case_insensitive(obj.sobject, raw_name)) |loaded| {
+                if (self.get_s_object_field_value_case_insensitive(
+                    obj.sobject,
+                    raw_name,
+                )) |loaded| {
                     if (loaded == .sobject) return loaded;
                 }
 
-                const relationship_name = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+                const relationship_name = if (std.mem.endsWith(
+                    u8,
+                    raw_name,
+                    "__c",
+                ) or std.mem.endsWith(u8, raw_name, "Id"))
                     self.fk_to_parent_ref(raw_name)
                 else
                     raw_name;
                 if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
-                    if (self.get_s_object_field_value_case_insensitive(obj.sobject, relationship_name)) |loaded| {
+                    if (self.get_s_object_field_value_case_insensitive(
+                        obj.sobject,
+                        relationship_name,
+                    )) |loaded| {
                         if (loaded == .sobject) return loaded;
                     }
                 }
 
-                const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+                const fk_field = if (std.mem.endsWith(
+                    u8,
+                    raw_name,
+                    "__c",
+                ) or std.mem.endsWith(u8, raw_name, "Id"))
                     raw_name
                 else
                     self.parent_ref_to_fk(raw_name);
@@ -13128,9 +13474,15 @@ pub const Evaluator = struct {
             const y = @as(i64, dt.y);
             const doy = @as(i64, day_of_year(dt.m, dt.d));
             // 閏年補正: 3月以降かつ閏年なら +1
-            const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
+            const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(
+                y,
+                100,
+            ) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
             const leap_adj: i64 = if (dt.m > 2) is_leap else 0;
-            const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+            const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(
+                y - 1901,
+                100,
+            ) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
             const secs = days_from_epoch * 86400 + @as(
                 i64,
                 dt.h,
@@ -13632,7 +13984,11 @@ pub const Evaluator = struct {
             raw_type_name;
 
         // Type literal: List<T>.class, Map<K,V>.class, Type[].class → return Type object
-        if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(u8, type_name, "[]")) and ne.args.len == 0) {
+        if ((std.mem.indexOf(u8, type_name, "<") != null or std.mem.endsWith(
+            u8,
+            type_name,
+            "[]",
+        )) and ne.args.len == 0) {
             const type_obj = try self.arena.create(types.ObjectInstance);
             type_obj.* = .{ .class_name = "Type" };
             try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
@@ -13696,7 +14052,10 @@ pub const Evaluator = struct {
                     const asgn = arg.assignment;
                     const key_val = try self.eval_expr(asgn.target, current_env);
                     const val_val = try self.eval_expr(asgn.value, current_env);
-                    const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(key_val, self.arena);
+                    const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(
+                        key_val,
+                        self.arena,
+                    );
                     try map.entries.put(self.arena, key_str, val_val);
                     try map.key_values.put(self.arena, key_str, key_val);
                 }
@@ -14016,7 +14375,11 @@ pub const Evaluator = struct {
         // Resolve simple names against the current lexical scope first so
         // nested inner classes instantiate sibling inner classes from the
         // correct outer class instead of drifting to an unrelated duplicate.
-        const simple_name = if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |di| type_name[di + 1 ..] else type_name;
+        const simple_name = if (std.mem.lastIndexOfScalar(
+            u8,
+            type_name,
+            '.',
+        )) |di| type_name[di + 1 ..] else type_name;
         const fq_inner_name: ?[]const u8 = if (self.current_class) |cc|
             (if (std.mem.indexOfScalar(u8, type_name, '.') == null)
                 (std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, type_name }) catch null)
@@ -14032,7 +14395,10 @@ pub const Evaluator = struct {
         const resolved_class_name: ?[]const u8 = blk: {
             if (!is_platform_qualified) {
                 if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
-                    if (self.resolve_visible_user_class_in_scope(current_env, type_name)) |visible_class| break :blk visible_class;
+                    if (self.resolve_visible_user_class_in_scope(
+                        current_env,
+                        type_name,
+                    )) |visible_class| break :blk visible_class;
                 }
                 if (fq_inner_name) |fqn| {
                     if (self.find_class(fqn) != null) break :blk fqn;
@@ -14257,7 +14623,10 @@ pub const Evaluator = struct {
             try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
             return Value{ .object = sot };
         }
-        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(fa.object.identifier.name, "System") and
+        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(
+            fa.object.identifier.name,
+            "System",
+        ) and
             std.ascii.eqlIgnoreCase(fa.field, "Search"))
         {
             const search = try self.arena.create(types.ObjectInstance);
@@ -14270,7 +14639,10 @@ pub const Evaluator = struct {
             const is_system_label = (inner.object.* == .identifier and
                 std.ascii.eqlIgnoreCase(inner.object.identifier.name, "System") and
                 std.ascii.eqlIgnoreCase(inner.field, "Label")) or
-                (inner.object.* == .identifier and std.ascii.eqlIgnoreCase(inner.object.identifier.name, "Label"));
+                (inner.object.* == .identifier and std.ascii.eqlIgnoreCase(
+                    inner.object.identifier.name,
+                    "Label",
+                ));
             if (is_system_label) {
                 return Value{ .string = try self.arena.dupe(u8, fa.field) };
             }
@@ -14311,7 +14683,10 @@ pub const Evaluator = struct {
         }
 
         if (obj == .sobject) {
-            if (self.get_s_object_field_value_case_insensitive(obj.sobject, fa.field)) |value| return value;
+            if (self.get_s_object_field_value_case_insensitive(
+                obj.sobject,
+                fa.field,
+            )) |value| return value;
             // If this SObject was processed by stripInaccessible, throw SObjectException
             if (obj.sobject.is_stripped) {
                 const exc = try self.arena.create(types.ObjectInstance);
@@ -14371,13 +14746,19 @@ pub const Evaluator = struct {
                                             obj.object.fields.values(),
                                         ) |fk, fv| {
                                             var has_getter = false;
-                                            if (!std.ascii.eqlIgnoreCase(fk, fd.name)) { // Don't skip current property
+                                            if (!std.ascii.eqlIgnoreCase(
+                                                fk,
+                                                fd.name,
+                                            )) { // Don't skip current property
                                                 var check_cd: ?*ast.ClassDecl = cd;
                                                 while (check_cd) |ccd2| {
                                                     for (ccd2.members) |m2| {
                                                         switch (m2) {
                                                             .field_decl => |fd2| {
-                                                                if (std.ascii.eqlIgnoreCase(fd2.name, fk) and fd2.getter_body != null) {
+                                                                if (std.ascii.eqlIgnoreCase(
+                                                                    fd2.name,
+                                                                    fk,
+                                                                ) and fd2.getter_body != null) {
                                                                     has_getter = true;
                                                                 }
                                                             },
@@ -14547,11 +14928,19 @@ pub const Evaluator = struct {
             const base_name = fa.object.identifier.name;
             if (self.current_class) |cc| {
                 if (self.resolve_static_field_value_on_class(cc, base_name)) |base| {
-                    if (base != .null_val) return self.eval_field_access_on_resolved_value(base, fa.field, current_env);
+                    if (base != .null_val) return self.eval_field_access_on_resolved_value(
+                        base,
+                        fa.field,
+                        current_env,
+                    );
                 }
                 if (self.find_outer_class_name(cc)) |outer| {
                     if (self.resolve_static_field_value_on_class(outer, base_name)) |base| {
-                        if (base != .null_val) return self.eval_field_access_on_resolved_value(base, fa.field, current_env);
+                        if (base != .null_val) return self.eval_field_access_on_resolved_value(
+                            base,
+                            fa.field,
+                            current_env,
+                        );
                     }
                 }
             }
@@ -14718,7 +15107,10 @@ pub const Evaluator = struct {
                         return Value{ .boolean = tc.is_executing };
                     if (std.ascii.eqlIgnoreCase(fa.field, "size"))
                         return Value{ .integer = tc.size };
-                    if (std.ascii.eqlIgnoreCase(fa.field, "operationType")) return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(
+                        fa.field,
+                        "operationType",
+                    )) return if (tc.operation_type) |ot| Value{ .string = ot } else Value.null_val;
                 } else {
                     if (std.ascii.eqlIgnoreCase(fa.field, "new") or
                         std.ascii.eqlIgnoreCase(fa.field, "old"))
@@ -14728,7 +15120,10 @@ pub const Evaluator = struct {
                         if (self.global_env.get(key)) |v| return v;
                         return Value.null_val;
                     }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "isBefore") or std.ascii.eqlIgnoreCase(fa.field, "isAfter") or
+                    if (std.ascii.eqlIgnoreCase(
+                        fa.field,
+                        "isBefore",
+                    ) or std.ascii.eqlIgnoreCase(fa.field, "isAfter") or
                         std.ascii.eqlIgnoreCase(
                             fa.field,
                             "isInsert",
@@ -15150,7 +15545,10 @@ pub const Evaluator = struct {
         if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
         if (val == .string) {
             return std.ascii.eqlIgnoreCase(tn, "String") or
-                (std.ascii.eqlIgnoreCase(tn, "Id") and Evaluator.is_salesforce_id_string(val.string));
+                (std.ascii.eqlIgnoreCase(
+                    tn,
+                    "Id",
+                ) and Evaluator.is_salesforce_id_string(val.string));
         }
         if (val == .sobject) {
             return std.ascii.eqlIgnoreCase(tn, "SObject") or
@@ -15221,7 +15619,10 @@ pub const Evaluator = struct {
             }
         }
         // All *Exception classes are subclasses of Exception / System.Exception
-        if ((std.ascii.eqlIgnoreCase(parent_type, "Exception") or std.ascii.eqlIgnoreCase(parent_type, "System.Exception")) and
+        if ((std.ascii.eqlIgnoreCase(parent_type, "Exception") or std.ascii.eqlIgnoreCase(
+            parent_type,
+            "System.Exception",
+        )) and
             std.mem.endsWith(u8, child_class, "Exception"))
         {
             return true;
@@ -15277,7 +15678,10 @@ pub const Evaluator = struct {
         const is_leap: i64 =
             if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
         const leap_adj: i64 = if (month > 2) is_leap else 0;
-        return (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+        return (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(
+            y - 1901,
+            100,
+        ) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
     }
 
     /// ISO 8601 day-of-week: Monday=1 ... Sunday=7.
@@ -15302,7 +15706,10 @@ pub const Evaluator = struct {
             // Week belongs to the previous year's last ISO week (52 or 53).
             return iso_week_of_year(year - 1, 12, 31);
         }
-        const is_leap_this = if ((@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0))) true else false;
+        const is_leap_this = if ((@mod(year, 4) == 0 and (@mod(
+            year,
+            100,
+        ) != 0 or @mod(year, 400) == 0))) true else false;
         _ = is_leap_this;
         // How many ISO weeks does this year have? Either 52 or 53.
         const jan1_dow: i32 = @as(i32, iso_day_of_week(year, 1, 1));
@@ -16807,7 +17214,12 @@ pub const Evaluator = struct {
         // System.Request.getCurrent() → return a Request object
         if (std.ascii.eqlIgnoreCase(inner, "Request")) {
             var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx, "Request", method, args)) |result| return result;
+            if (try builtins.dispatch_static(
+                &bctx,
+                "Request",
+                method,
+                args,
+            )) |result| return result;
             const obj = try self.arena.create(types.ObjectInstance);
             obj.* = .{ .class_name = "Request" };
             return Value{ .object = obj };
@@ -16875,7 +17287,10 @@ pub const Evaluator = struct {
             {
                 if (args.len > 0) {
                     if (args[0] == .object and
-                        (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+                        (std.ascii.eqlIgnoreCase(
+                            args[0].object.class_name,
+                            "Schema.SObjectField",
+                        ) or
                             std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
                     {
                         const exc = try self.arena.create(types.ObjectInstance);
@@ -16923,7 +17338,12 @@ pub const Evaluator = struct {
                     }
                     // Delegate to builtins for actual parsing
                     var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| return result;
+                    if (try builtins.dispatch_static(
+                        &bctx,
+                        "JSON",
+                        method,
+                        args,
+                    )) |result| return result;
                     const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) blk: {
                         if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
                             if (args[1].object.fields.get("name")) |n| {
@@ -17074,7 +17494,11 @@ pub const Evaluator = struct {
                 var assign_iter = self.classes.iterator();
                 while (assign_iter.next()) |entry| {
                     if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
-                        if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
+                        if (self.find_best_method_in_class(
+                            entry.value_ptr.*,
+                            method_name,
+                            args,
+                        ) != null) {
                             return null; // Fall through to user-defined class
                         }
                     }
@@ -17089,7 +17513,11 @@ pub const Evaluator = struct {
                 var class_iter = self.classes.iterator();
                 while (class_iter.next()) |entry| {
                     if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestFactory")) {
-                        if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
+                        if (self.find_best_method_in_class(
+                            entry.value_ptr.*,
+                            method_name,
+                            args,
+                        ) != null) {
                             return null; // Let the caller fall through to user-defined class
                         }
                     }
@@ -17131,7 +17559,11 @@ pub const Evaluator = struct {
             var tdh_iter = self.classes.iterator();
             while (tdh_iter.next()) |entry| {
                 if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestDataHelpers")) {
-                    if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
+                    if (self.find_best_method_in_class(
+                        entry.value_ptr.*,
+                        method_name,
+                        args,
+                    ) != null) {
                         return null; // Fall through to user-defined class
                     }
                 }
@@ -17203,7 +17635,11 @@ pub const Evaluator = struct {
             var th_iter = self.classes.iterator();
             while (th_iter.next()) |entry| {
                 if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "TestHelper")) {
-                    if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) {
+                    if (self.find_best_method_in_class(
+                        entry.value_ptr.*,
+                        method_name,
+                        args,
+                    ) != null) {
                         return null; // Fall through to user-defined class
                     }
                 }
@@ -17408,7 +17844,12 @@ pub const Evaluator = struct {
             }
 
             if (self.find_class(left.object.class_name)) |left_class| {
-                if (self.find_method_in_hierarchy_typed(null, left_class, "equals", &.{right}) != null or
+                if (self.find_method_in_hierarchy_typed(
+                    null,
+                    left_class,
+                    "equals",
+                    &.{right},
+                ) != null or
                     self.find_method_in_hierarchy(null, left_class, "equals", 1) != null)
                 {
                     const result = self.call_instance_method(
@@ -17422,7 +17863,12 @@ pub const Evaluator = struct {
             }
 
             if (self.find_class(right.object.class_name)) |right_class| {
-                if (self.find_method_in_hierarchy_typed(null, right_class, "equals", &.{left}) != null or
+                if (self.find_method_in_hierarchy_typed(
+                    null,
+                    right_class,
+                    "equals",
+                    &.{left},
+                ) != null or
                     self.find_method_in_hierarchy(null, right_class, "equals", 1) != null)
                 {
                     const result = self.call_instance_method(
@@ -17497,7 +17943,12 @@ pub const Evaluator = struct {
                 }
 
                 if (self.find_class(obj.class_name)) |class_decl| {
-                    if (self.find_method_in_hierarchy_typed(null, class_decl, "hashCode", &.{}) != null or
+                    if (self.find_method_in_hierarchy_typed(
+                        null,
+                        class_decl,
+                        "hashCode",
+                        &.{},
+                    ) != null or
                         self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null)
                     {
                         const result = self.call_instance_method(
@@ -17769,17 +18220,29 @@ pub const Evaluator = struct {
         if (actual_class) |ac| {
             var cur: ?*ast.ClassDecl = ac;
             while (cur) |cd| {
-                if (self.find_method_in_class(cd, method_name, arg_count)) |md| return .{ .owner = cd, .method = md };
+                if (self.find_method_in_class(
+                    cd,
+                    method_name,
+                    arg_count,
+                )) |md| return .{ .owner = cd, .method = md };
                 cur = if (cd.super_class) |sc| self.find_class(sc.name) else null;
             }
         }
-        if (self.find_method_in_class(class_decl, method_name, arg_count)) |md| return .{ .owner = class_decl, .method = md };
+        if (self.find_method_in_class(
+            class_decl,
+            method_name,
+            arg_count,
+        )) |md| return .{ .owner = class_decl, .method = md };
         var current: ?*ast.ClassDecl = class_decl;
         while (current) |cd| {
             if (cd.super_class) |sc| {
                 const parent = self.find_class(sc.name);
                 if (parent) |p| {
-                    if (self.find_method_in_class(p, method_name, arg_count)) |md| return .{ .owner = p, .method = md };
+                    if (self.find_method_in_class(
+                        p,
+                        method_name,
+                        arg_count,
+                    )) |md| return .{ .owner = p, .method = md };
                     current = p;
                 } else break;
             } else break;
@@ -18230,7 +18693,11 @@ pub const Evaluator = struct {
         param_type: []const u8,
     ) bool {
         if (arg_str.len == 0) return false;
-        const simple = if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di| param_type[di + 1 ..] else param_type;
+        const simple = if (std.mem.lastIndexOfScalar(
+            u8,
+            param_type,
+            '.',
+        )) |di| param_type[di + 1 ..] else param_type;
         if (simple.len == 0) return false;
         // System built-in enums (TriggerOperation, LoggingLevel, AccessType, etc.)
         if (is_system_enum_value(simple, arg_str)) return true;
@@ -18275,7 +18742,10 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
                 const hint_args = extract_map_type_args(hint);
                 const param_args = extract_map_type_args(pt);
-                if (hint_args != null and param_args != null and names_match_by_simple_name(strip_type_namespace(hint_args.?.key), strip_type_namespace(param_args.?.key))) {
+                if (hint_args != null and param_args != null and names_match_by_simple_name(
+                    strip_type_namespace(hint_args.?.key),
+                    strip_type_namespace(param_args.?.key),
+                )) {
                     const hint_value = strip_type_namespace(hint_args.?.value);
                     const param_value = strip_type_namespace(param_args.?.value);
                     if (names_match_by_simple_name(hint_value, param_value)) return 3;
@@ -18435,7 +18905,10 @@ pub const Evaluator = struct {
                     (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id")))
                 {
                     score += 2;
-                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(
+                    pt,
+                    "Integer",
+                ) or std.ascii.eqlIgnoreCase(pt, "int"))) {
                     score += 2;
                 } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
                     score += 2;
@@ -18502,9 +18975,15 @@ pub const Evaluator = struct {
                             );
                             if (hint_score > 0) score += hint_score;
                         }
-                        if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                        if (arg == .string and (std.ascii.eqlIgnoreCase(
+                            pt,
+                            "String",
+                        ) or std.ascii.eqlIgnoreCase(pt, "Id"))) {
                             score += 2;
-                        } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                        } else if (arg == .integer and (std.ascii.eqlIgnoreCase(
+                            pt,
+                            "Integer",
+                        ) or std.ascii.eqlIgnoreCase(pt, "int"))) {
                             score += 2;
                         } else if (arg == .long and std.ascii.eqlIgnoreCase(pt, "Long")) {
                             score += 2;
@@ -18835,7 +19314,11 @@ pub const Evaluator = struct {
         self.next_id += 1;
 
         const top_level_class = self.find_outer_class_name(class_name) orelse class_name;
-        const apex_class_name = if (std.mem.lastIndexOfScalar(u8, top_level_class, '.')) |di| top_level_class[di + 1 ..] else top_level_class;
+        const apex_class_name = if (std.mem.lastIndexOfScalar(
+            u8,
+            top_level_class,
+            '.',
+        )) |di| top_level_class[di + 1 ..] else top_level_class;
         const apex_class = try self.arena.create(types.SObject);
         apex_class.* = .{ .type_name = "ApexClass" };
         try apex_class.fields.put(
@@ -18949,7 +19432,10 @@ pub const Evaluator = struct {
         phase: []const u8,
         exception_value: Value,
     ) !void {
-        if (!(self.class_implements_interface(batch_obj.class_name, "Database.RaisesPlatformEvents") or
+        if (!(self.class_implements_interface(
+            batch_obj.class_name,
+            "Database.RaisesPlatformEvents",
+        ) or
             self.class_implements_interface(batch_obj.class_name, "RaisesPlatformEvents")))
         {
             return;
@@ -19203,7 +19689,12 @@ pub const Evaluator = struct {
         if (self.find_class(job_obj.class_name)) |job_class| {
             const queueable_context = try self.build_queueable_context(job_id);
             const execute_args = [_]Value{queueable_context};
-            const execute_result = if (self.find_best_method_in_class_filtered(job_class, "execute", &execute_args, true) != null)
+            const execute_result = if (self.find_best_method_in_class_filtered(
+                job_class,
+                "execute",
+                &execute_args,
+                true,
+            ) != null)
                 self.call_method(job_obj.class_name, "execute", &execute_args)
             else
                 self.call_instance_method(job_class, job_obj, "execute", &execute_args);
@@ -19301,7 +19792,12 @@ pub const Evaluator = struct {
         while (self.find_outer_class_name(current_name)) |outer_name| {
             if (std.ascii.eqlIgnoreCase(outer_name, current_name)) break;
             if (self.find_class(outer_name)) |outer_decl| {
-                if (self.find_best_method_in_class_filtered(outer_decl, method_name, args, true) != null) {
+                if (self.find_best_method_in_class_filtered(
+                    outer_decl,
+                    method_name,
+                    args,
+                    true,
+                ) != null) {
                     return outer_name;
                 }
             }
@@ -19317,8 +19813,14 @@ pub const Evaluator = struct {
     /// Compare two Values by a field name for ORDER BY.
     /// Returns: -1 if a < b, 0 if equal, 1 if a > b
     fn compare_by_field(self: *Evaluator, a: Value, b: Value, field: []const u8) i32 {
-        const av = if (a == .sobject) self.get_s_object_field_value_case_insensitive(a.sobject, field) orelse Value.null_val else Value.null_val;
-        const bv = if (b == .sobject) self.get_s_object_field_value_case_insensitive(b.sobject, field) orelse Value.null_val else Value.null_val;
+        const av = if (a == .sobject) self.get_s_object_field_value_case_insensitive(
+            a.sobject,
+            field,
+        ) orelse Value.null_val else Value.null_val;
+        const bv = if (b == .sobject) self.get_s_object_field_value_case_insensitive(
+            b.sobject,
+            field,
+        ) orelse Value.null_val else Value.null_val;
         // null sorts last
         if (av == .null_val and bv == .null_val) return 0;
         if (av == .null_val) return 1;
@@ -19702,14 +20204,23 @@ pub const Evaluator = struct {
                                         switch (member) {
                                             .field_decl => |fd| {
                                                 if (std.ascii.eqlIgnoreCase(fd.name, key_name)) {
-                                                    if (std.ascii.eqlIgnoreCase(fd.type_ref.name, "List")) {
+                                                    if (std.ascii.eqlIgnoreCase(
+                                                        fd.type_ref.name,
+                                                        "List",
+                                                    )) {
                                                         // Find the element type from source code
                                                         for (
                                                             self.class_sources.keys(),
                                                             self.class_sources.values(),
                                                         ) |k, src| {
-                                                            if (std.ascii.eqlIgnoreCase(k, type_hint)) {
-                                                                if (self.find_field_array_type(src, key_name)) |elem| {
+                                                            if (std.ascii.eqlIgnoreCase(
+                                                                k,
+                                                                type_hint,
+                                                            )) {
+                                                                if (self.find_field_array_type(
+                                                                    src,
+                                                                    key_name,
+                                                                )) |elem| {
                                                                     // elem is a slice into src
                                                                     // which is stable
                                                                     // (arena-allocated class
@@ -20201,7 +20712,10 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
                                 return 3;
                             // Simple name match
                             if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
+                                if (std.ascii.eqlIgnoreCase(
+                                    first.sobject.type_name,
+                                    elem_type[di + 1 ..],
+                                )) return 3;
                             }
                         }
                         if (first == .object) {
@@ -20402,8 +20916,14 @@ fn eval_binary(
     if ((left == .double or left == .integer or left == .long) and
         (right == .double or right == .integer or right == .long))
     {
-        const l = if (left == .double) left.double else if (left == .integer) @as(f64, @floatFromInt(left.integer)) else @as(f64, @floatFromInt(left.long));
-        const r = if (right == .double) right.double else if (right == .integer) @as(f64, @floatFromInt(right.integer)) else @as(f64, @floatFromInt(right.long));
+        const l = if (left == .double) left.double else if (left == .integer) @as(
+            f64,
+            @floatFromInt(left.integer),
+        ) else @as(f64, @floatFromInt(left.long));
+        const r = if (right == .double) right.double else if (right == .integer) @as(
+            f64,
+            @floatFromInt(right.integer),
+        ) else @as(f64, @floatFromInt(right.long));
         return switch (op) {
             .add => .{ .double = l + r },
             .sub => .{ .double = l - r },
@@ -20442,8 +20962,14 @@ fn eval_binary(
     if (left == .object and right == .object) {
         const left_cn = left.object.class_name;
         const right_cn = right.object.class_name;
-        if ((std.ascii.eqlIgnoreCase(left_cn, "Date") or std.ascii.eqlIgnoreCase(left_cn, "Datetime")) and
-            (std.ascii.eqlIgnoreCase(right_cn, "Date") or std.ascii.eqlIgnoreCase(right_cn, "Datetime")))
+        if ((std.ascii.eqlIgnoreCase(left_cn, "Date") or std.ascii.eqlIgnoreCase(
+            left_cn,
+            "Datetime",
+        )) and
+            (std.ascii.eqlIgnoreCase(right_cn, "Date") or std.ascii.eqlIgnoreCase(
+                right_cn,
+                "Datetime",
+            )))
         {
             const lv = if (left.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
             const rv = if (right.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
@@ -20876,7 +21402,11 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
                     if (end > start) {
                         const raw_rel = inner_query[start..end];
                         // Strip parent prefix: "Account.Contacts" → "Contacts"
-                        const rel = if (std.mem.lastIndexOfScalar(u8, raw_rel, '.')) |dot_pos| raw_rel[dot_pos + 1 ..] else raw_rel;
+                        const rel = if (std.mem.lastIndexOfScalar(
+                            u8,
+                            raw_rel,
+                            '.',
+                        )) |dot_pos| raw_rel[dot_pos + 1 ..] else raw_rel;
                         return SubQueryInfo{ .relationship = rel, .query = inner_query };
                     }
                 }

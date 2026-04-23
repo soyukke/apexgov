@@ -603,7 +603,12 @@ fn collect_cls_files(
 ) !void {
     // Try as single .cls/.trigger file first
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
-        const content = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch return;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch return;
         const path_copy = alloc.dupe(u8, path) catch return;
         files.append(alloc, .{ .path = path_copy, .content = content }) catch return;
         return;
@@ -631,7 +636,12 @@ fn collect_cls_files(
             std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null) continue;
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(10 * 1024 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch continue;
         files.append(alloc, .{ .path = full_path, .content = content }) catch continue;
     }
 }
@@ -681,7 +691,12 @@ fn collect_field_defaults(
         const field_name = entry.basename[0 .. entry.basename.len - ".field-meta.xml".len];
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(64 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(64 * 1024),
+        ) catch continue;
 
         var metadata = evaluator.FieldMetadata{};
         if (extract_xml_tag_value(content, "label")) |label| {
@@ -896,7 +911,12 @@ fn parse_summary_filters(
 ) ![]const evaluator.SummaryFilter {
     var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
     var search_start: usize = 0;
-    while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
+    while (std.mem.indexOfPos(
+        u8,
+        content,
+        search_start,
+        "<summaryFilterItems>",
+    )) |block_start_idx| {
         const block_start = block_start_idx + "<summaryFilterItems>".len;
         const block_end = std.mem.indexOfPos(
             u8,
@@ -1001,7 +1021,12 @@ fn collect_custom_setting_types(
 
         const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(256 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(256 * 1024),
+        ) catch continue;
 
         // Extract <label> — all objects with a label
         if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
@@ -1084,7 +1109,12 @@ fn collect_field_sets(
         const type_name = after_objects[0..sep_idx];
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(128 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(128 * 1024),
+        ) catch continue;
 
         var full_name: []const u8 =
             entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
@@ -1105,7 +1135,12 @@ fn collect_field_sets(
 
         var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
         var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+        while (std.mem.indexOfPos(
+            u8,
+            content,
+            search_start,
+            "<displayedFields>",
+        )) |block_start_idx| {
             const block_start = block_start_idx + "<displayedFields>".len;
             const block_end = std.mem.indexOfPos(
                 u8,
