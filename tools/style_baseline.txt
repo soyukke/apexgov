@@ -8,8 +8,8 @@
 # Format: <path>\t<rule>\t<count>
 src/interpret/builtins.zig	line_too_long	575
 src/interpret/env.zig	line_too_long	1
-src/interpret/evaluator.zig	line_too_long	1271
-src/interpret/evaluator.zig	function_too_long	11
+src/interpret/evaluator.zig	line_too_long	1264
+src/interpret/evaluator.zig	function_too_long	10
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/root.zig	line_too_long	285
