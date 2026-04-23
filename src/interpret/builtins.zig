@@ -2073,112 +2073,141 @@ fn dispatch_static_security(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "stripInaccessible")) {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "SObjectAccessDecision" };
-        const rm_map = try ctx.arena.create(types.MapValue);
-        rm_map.* = .{};
-        const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
-        const has_permset = has_assigned_permission_set(ctx.eval);
-        const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
-        const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
+    if (!std.ascii.eqlIgnoreCase(method_name, "stripInaccessible")) return Value.null_val;
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "SObjectAccessDecision" };
+    const rm_map = try ctx.arena.create(types.MapValue);
+    rm_map.* = .{};
+    const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
+    const has_permset = has_assigned_permission_set(ctx.eval);
+    const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
+    const input_records = if (args.len >= 2)
+        args[1]
+    else if (args.len >= 1 and args[0] == .list)
+        args[0]
+    else
+        Value.null_val;
 
-        if (input_records == .list) {
-            for (input_records.list.items.items) |item| {
-                if (item != .sobject) continue;
-                const object_access_operation = if (!enforce_crud)
-                    ""
-                else if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                    "read"
-                else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                    "create"
-                else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
-                    std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
-                    "edit"
-                else
-                    "create";
-                if (object_access_operation.len > 0 and !resolve_object_crud_permission(
-                    ctx.eval,
-                    item.sobject.type_name,
-                    object_access_operation,
-                )) {
-                    return ctx.throw_exception("System.NoAccessException", "No access to entity");
-                }
-            }
-        } else if (ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
+    if (try strip_check_object_access(ctx, input_records, access_type, enforce_crud)) |exc|
+        return exc;
+    if (input_records != .list and ctx.eval.is_min_access_user and enforce_crud and !has_permset) {
+        return ctx.throw_exception("System.NoAccessException", "No access to entity");
+    }
+
+    if (input_records == .list) {
+        try strip_collect_removed_fields(ctx, input_records.list, access_type, rm_map);
+    }
+
+    if (rm_map.entries.count() > 0 and input_records == .list) {
+        try strip_emit_stripped_records(ctx, obj, input_records.list, access_type, rm_map);
+    } else if (args.len >= 2) {
+        try obj.fields.put(ctx.arena, "records", args[1]);
+    } else if (args.len >= 1 and args[0] == .list) {
+        try obj.fields.put(ctx.arena, "records", args[0]);
+    }
+    try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
+    return Value{ .object = obj };
+}
+
+fn strip_check_object_access(
+    ctx: *BuiltinContext,
+    input_records: Value,
+    access_type: []const u8,
+    enforce_crud: bool,
+) !?Value {
+    if (input_records != .list) return null;
+    for (input_records.list.items.items) |item| {
+        if (item != .sobject) continue;
+        const op = if (!enforce_crud)
+            ""
+        else if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+            "read"
+        else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
+            "create"
+        else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+            std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+            "edit"
+        else
+            "create";
+        if (op.len > 0 and !resolve_object_crud_permission(ctx.eval, item.sobject.type_name, op)) {
             return ctx.throw_exception("System.NoAccessException", "No access to entity");
         }
-
-        if (input_records == .list) {
-            for (input_records.list.items.items) |item| {
-                if (item != .sobject) continue;
-                for (
-                    item.sobject.fields.keys(),
-                    item.sobject.fields.values(),
-                ) |field_name, field_value| {
-                    if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
-                    const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                        resolve_field_read_permission(ctx.eval, item.sobject.type_name, field_name)
-                    else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                        resolve_field_write_permission(
-                            ctx.eval,
-                            item.sobject.type_name,
-                            field_name,
-                            "create",
-                        )
-                    else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
-                        std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
-                        resolve_field_write_permission(
-                            ctx.eval,
-                            item.sobject.type_name,
-                            field_name,
-                            "edit",
-                        )
-                    else
-                        true;
-                    const should_record_removed_field =
-                        if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                            !should_keep
-                        else
-                            !should_keep and field_value != .null_val;
-                    if (should_record_removed_field) {
-                        try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
-                    }
-                }
-            }
-        }
-
-        if (rm_map.entries.count() > 0 and input_records == .list) {
-            const stripped = try ctx.arena.create(types.ListValue);
-            stripped.* = .{};
-            for (input_records.list.items.items) |item| {
-                if (item == .sobject) {
-                    const clone = try ctx.arena.create(types.SObject);
-                    clone.* = .{ .type_name = item.sobject.type_name };
-                    clone.id = item.sobject.id;
-                    clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
-                    for (
-                        item.sobject.fields.keys(),
-                        item.sobject.fields.values(),
-                    ) |field_name, field_value| {
-                        if (rm_map.entries.get(field_name) == null)
-                            try clone.fields.put(ctx.arena, field_name, field_value);
-                    }
-                    try stripped.items.append(ctx.arena, Value{ .sobject = clone });
-                } else {
-                    try stripped.items.append(ctx.arena, item);
-                }
-            }
-            try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
-        } else if (args.len >= 2) {
-            try obj.fields.put(ctx.arena, "records", args[1]);
-        } else if (args.len >= 1 and args[0] == .list) {
-            try obj.fields.put(ctx.arena, "records", args[0]);
-        }
-        try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
-        return Value{ .object = obj };
     }
-    return Value.null_val;
+    return null;
+}
+
+fn strip_collect_removed_fields(
+    ctx: *BuiltinContext,
+    input_list: *types.ListValue,
+    access_type: []const u8,
+    rm_map: *types.MapValue,
+) !void {
+    for (input_list.items.items) |item| {
+        if (item != .sobject) continue;
+        for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+            if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
+            const should_keep = strip_field_access_granted(
+                ctx,
+                item.sobject.type_name,
+                field_name,
+                access_type,
+            );
+            const should_record_removed_field =
+                if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                    !should_keep
+                else
+                    !should_keep and field_value != .null_val;
+            if (should_record_removed_field) {
+                try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
+            }
+        }
+    }
+}
+
+fn strip_field_access_granted(
+    ctx: *BuiltinContext,
+    type_name: []const u8,
+    field_name: []const u8,
+    access_type: []const u8,
+) bool {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(access_type, "READABLE"))
+        return resolve_field_read_permission(ctx.eval, type_name, field_name);
+    if (ci.eqlIgnoreCase(access_type, "CREATABLE"))
+        return resolve_field_write_permission(ctx.eval, type_name, field_name, "create");
+    if (ci.eqlIgnoreCase(access_type, "UPDATABLE") or ci.eqlIgnoreCase(access_type, "UPSERTABLE"))
+        return resolve_field_write_permission(ctx.eval, type_name, field_name, "edit");
+    return true;
+}
+
+fn strip_emit_stripped_records(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    input_list: *types.ListValue,
+    access_type: []const u8,
+    rm_map: *types.MapValue,
+) !void {
+    const stripped = try ctx.arena.create(types.ListValue);
+    stripped.* = .{};
+    for (input_list.items.items) |item| {
+        if (item == .sobject) {
+            const clone = try ctx.arena.create(types.SObject);
+            clone.* = .{ .type_name = item.sobject.type_name };
+            clone.id = item.sobject.id;
+            clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
+            for (
+                item.sobject.fields.keys(),
+                item.sobject.fields.values(),
+            ) |field_name, field_value| {
+                if (rm_map.entries.get(field_name) == null)
+                    try clone.fields.put(ctx.arena, field_name, field_value);
+            }
+            try stripped.items.append(ctx.arena, Value{ .sobject = clone });
+        } else {
+            try stripped.items.append(ctx.arena, item);
+        }
+    }
+    try obj.fields.put(ctx.arena, "records", Value{ .list = stripped });
 }
 
 fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
