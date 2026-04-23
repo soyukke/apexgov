@@ -66,7 +66,7 @@ pub const BuiltinContext = struct {
 
 /// Date 型のオブジェクトインスタンスを生成する。
 /// 内部の ISO 日付文字列 (YYYY-MM-DD) を "value" フィールドに保持する。
-pub fn makeDateValue(arena: std.mem.Allocator, date_str: []const u8) anyerror!Value {
+pub fn makeDateValue(arena: std.mem.Allocator, date_str: []const u8) !Value {
     const obj = try arena.create(types.ObjectInstance);
     obj.* = .{ .class_name = "Date" };
     try obj.fields.put(arena, "value", Value{ .string = date_str });
@@ -75,7 +75,7 @@ pub fn makeDateValue(arena: std.mem.Allocator, date_str: []const u8) anyerror!Va
 
 /// DateTime 型のオブジェクトインスタンスを生成する。
 /// 内部の ISO 日時文字列 (YYYY-MM-DDThh:mm:ssZ) を "value" フィールドに保持する。
-pub fn makeDatetimeValue(arena: std.mem.Allocator, dt_str: []const u8) anyerror!Value {
+pub fn makeDatetimeValue(arena: std.mem.Allocator, dt_str: []const u8) !Value {
     const normalized = if (std.mem.endsWith(u8, dt_str, ".000+0000"))
         try std.fmt.allocPrint(arena, "{s}Z", .{dt_str[0 .. dt_str.len - 9]})
     else if (std.mem.endsWith(u8, dt_str, ".000Z"))
