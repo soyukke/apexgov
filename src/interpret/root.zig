@@ -8490,8 +8490,10 @@ test "run_test_suite keeps repo-root metadata loading scoped to the requested re
         \\}
         ,
     });
+    const widget_object_path =
+        "repos/app-a/force-app/main/default/objects/Widget__c/Widget__c.object-meta.xml";
     try tmp_dir.dir.writeFile(std.testing.io, .{
-        .sub_path = "repos/app-a/force-app/main/default/objects/Widget__c/Widget__c.object-meta.xml",
+        .sub_path = widget_object_path,
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -12831,7 +12833,8 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         \\public class JsonDmlErrorDirectAccessTest {
         \\    public static String test() {
         \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
-        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
+        \\            '{"success":false,"errors":[{"message":"Could not save...",' +
+        \\            '"statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
         \\            Database.SaveResult.class
         \\        );
         \\        return result.errors.get(0).getMessage() + ':' +
@@ -12865,7 +12868,8 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\            return databaseInstance;
         \\        }
         \\        public virtual class Database {
-        \\            public virtual List<Database.UndeleteResult> undelete_records(List<SObject> records, Boolean allOrNone) {
+        \\            public virtual List<Database.UndeleteResult> undelete_records(
+        \\                List<SObject> records, Boolean allOrNone) {
         \\                return System.Database.undelete(records, allOrNone);
         \\            }
         \\        }
@@ -12878,7 +12882,8 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\        insert rows;
         \\        delete rows.get(0);
         \\        rows = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
-        \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undelete_records(rows, false);
+        \\        List<Database.UndeleteResult> results =
+        \\            DataStore.getDatabase().undelete_records(rows, false);
         \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows
         \\ ALL ROWS];
         \\        return String.valueOf(results.size()) + '|' +
@@ -13026,7 +13031,8 @@ test "E2E: fixture field mapping integration test passes" {
         std.testing.io,
         fixture_paths.slice(),
         "LogEntryEventHandler_Tests_FieldMappings",
-        "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry_when_mappings_have_been_configured",
+        "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry" ++
+            "_when_mappings_have_been_configured",
         &out.writer,
     );
 
@@ -13648,7 +13654,8 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         \\}
         \\public class DataGatewayUpsertProbe {
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
         \\        List<SObject> copied = new List<SObject>(rows);
         \\        DataGateway.getDatabase().upsert_records(copied, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
@@ -13678,7 +13685,8 @@ test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call
         \\        }
         \\    }
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
         \\        getDatabase().upsert_records(rows, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -13717,7 +13725,8 @@ test "E2E: Database.upsert list writes Id back to original row" {
     const source =
         \\public class DatabaseUpsertListIdentityProbe {
         \\    public static String test() {
-        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -13739,7 +13748,8 @@ test "E2E: wrapper method preserves list element identity for Database.upsert" {
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
         \\    }
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
         \\        List<SObject> copied = new List<SObject>(rows);
         \\        save(copied);
         \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
@@ -13764,7 +13774,8 @@ test "E2E: inner class named Database can call System.Database.upsert" {
         \\        }
         \\    }
         \\    public static String test() {
-        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
         \\        Database.save(rows);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -14179,7 +14190,8 @@ test "E2E: describe maps include common Task date and picklist fields" {
         \\            ActivityDate = Date.today(),
         \\            Priority = 'High'
         \\        );
-        \\        Map<String, Schema.SObjectField> fieldsByName = taskRecord.getSObjectType().getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> fieldsByName =
+        \\            taskRecord.getSObjectType().getDescribe().fields.getMap();
         \\        return fieldsByName.get('ActivityDate').getDescribe().getType().name()
         \\            + ':' + fieldsByName.get('Priority').getDescribe().getType().name();
         \\    }
@@ -14642,7 +14654,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
-test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe covers common standards" {
+test "E2E: Schema.describeTabs returns non-null and getGlobalDescribe covers common standards" {
     // Anonymized probe: ActionPlansV4's SectionHeader utility iterates
     //   for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {...}
     // before falling back to a default icon, and queries
@@ -14688,7 +14700,8 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\public class UserDefaultsWhereProbe {
         \\    public static String test() {
         \\        Integer matchedProfiles = 0;
-        \\        for (Profile p : [SELECT Id, PermissionsModifyAllData FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard' LIMIT 1]) {
+        \\        for (Profile p : [SELECT Id, PermissionsModifyAllData FROM Profile
+        \\            WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard' LIMIT 1]) {
         \\            if (p.PermissionsModifyAllData == true) matchedProfiles++;
         \\            User u = new User();
         \\            u.Email = 'probe@example.com';
@@ -14912,7 +14925,8 @@ test "E2E: try/finally runs after catch rethrows and when no catch matches" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "start-rethrow|innerCatch|rethrowFinally|outerCatch|start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
+        "start-rethrow|innerCatch|rethrowFinally|outerCatch|" ++
+            "start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
         result.value.string,
     );
 }
