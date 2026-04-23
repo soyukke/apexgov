@@ -5969,48 +5969,91 @@ fn dispatch_obj_http(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode"))
+    if (try dispatch_obj_http_getters(obj, method_name)) |v| return v;
+    if (try dispatch_obj_http_setters(ctx, obj, method_name, args)) |v| return v;
+    if (try dispatch_obj_http_header_methods(ctx, obj, method_name, args)) |v| return v;
+    if (std.ascii.eqlIgnoreCase(method_name, "send")) return try dispatch_obj_http_send(ctx);
+    return null;
+}
+
+fn dispatch_obj_http_getters(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getStatusCode"))
         return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getBody"))
+    if (ci.eqlIgnoreCase(method_name, "getBody"))
         return obj.fields.get("body") orelse Value{ .string = "{}" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getCompressed"))
+    if (ci.eqlIgnoreCase(method_name, "getCompressed"))
         return obj.fields.get("compressed") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "setStatusCode") and args.len > 0) {
+    if (ci.eqlIgnoreCase(method_name, "getStatus"))
+        return obj.fields.get("status") orelse Value{ .string = "OK" };
+    if (ci.eqlIgnoreCase(method_name, "getEndpoint"))
+        return obj.fields.get("endpoint") orelse Value{ .string = "" };
+    if (ci.eqlIgnoreCase(method_name, "getMethod"))
+        return obj.fields.get("method") orelse Value{ .string = "GET" };
+    return null;
+}
+
+fn dispatch_obj_http_setters(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const ci = std.ascii;
+    if (args.len == 0) return null;
+    if (ci.eqlIgnoreCase(method_name, "setStatusCode")) {
         try obj.fields.put(ctx.arena, "statusCode", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "setBody") and args.len > 0) {
+    if (ci.eqlIgnoreCase(method_name, "setBody")) {
         try obj.fields.put(ctx.arena, "body", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "setCompressed") and args.len > 0) {
+    if (ci.eqlIgnoreCase(method_name, "setCompressed")) {
         try obj.fields.put(ctx.arena, "compressed", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "setStatus") and args.len > 0) {
+    if (ci.eqlIgnoreCase(method_name, "setStatus")) {
         try obj.fields.put(ctx.arena, "status", args[0]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getStatus"))
-        return obj.fields.get("status") orelse Value{ .string = "OK" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getEndpoint"))
-        return obj.fields.get("endpoint") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getMethod"))
-        return obj.fields.get("method") orelse Value{ .string = "GET" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getHeader") and args.len > 0 and args[0] == .string) {
+    if (ci.eqlIgnoreCase(method_name, "setEndpoint") or
+        ci.eqlIgnoreCase(method_name, "setMethod") or
+        ci.eqlIgnoreCase(method_name, "setTimeout"))
+    {
+        if (ci.eqlIgnoreCase(method_name, "setEndpoint"))
+            try obj.fields.put(ctx.arena, "endpoint", args[0]);
+        if (ci.eqlIgnoreCase(method_name, "setMethod"))
+            try obj.fields.put(ctx.arena, "method", args[0]);
+        return .void_val;
+    }
+    return null;
+}
+
+fn dispatch_obj_http_header_methods(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getHeader") and args.len > 0 and args[0] == .string) {
         if (obj.fields.get("headers")) |headers_val| {
             if (headers_val == .map) {
                 if (headers_val.map.entries.get(args[0].string)) |header_val| return header_val;
                 var iter = headers_val.map.entries.iterator();
                 while (iter.next()) |entry| {
-                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, args[0].string))
+                    if (ci.eqlIgnoreCase(entry.key_ptr.*, args[0].string))
                         return entry.value_ptr.*;
                 }
             }
         }
         return Value{ .string = "" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+    if (ci.eqlIgnoreCase(method_name, "getHeaderKeys")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         if (obj.fields.get("headers")) |headers_val| {
@@ -6022,36 +6065,20 @@ fn dispatch_obj_http(
         }
         return Value{ .list = list };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or std.ascii.eqlIgnoreCase(
-        method_name,
-        "setEndpoint",
-    ) or
-        std.ascii.eqlIgnoreCase(
-            method_name,
-            "setHeader",
-        ) or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
-    {
-        if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0)
-            try obj.fields.put(ctx.arena, "endpoint", args[0]);
-        if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0)
-            try obj.fields.put(ctx.arena, "method", args[0]);
-        if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and
-            args.len >= 2 and
-            args[0] == .string)
-        {
-            const headers = try ensure_headers_map(ctx, obj);
-            try headers.entries.put(ctx.arena, args[0].string, args[1]);
-        }
+    if (ci.eqlIgnoreCase(method_name, "setHeader") and args.len >= 2 and args[0] == .string) {
+        const headers = try ensure_headers_map(ctx, obj);
+        try headers.entries.put(ctx.arena, args[0].string, args[1]);
         return .void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "send")) {
-        const resp = try ctx.arena.create(types.ObjectInstance);
-        resp.* = .{ .class_name = "HttpResponse" };
-        try resp.fields.put(ctx.arena, "statusCode", Value{ .integer = 200 });
-        try resp.fields.put(ctx.arena, "body", Value{ .string = "{\"id\":\"001000000000001\"}" });
-        return Value{ .object = resp };
-    }
     return null;
+}
+
+fn dispatch_obj_http_send(ctx: *BuiltinContext) !Value {
+    const resp = try ctx.arena.create(types.ObjectInstance);
+    resp.* = .{ .class_name = "HttpResponse" };
+    try resp.fields.put(ctx.arena, "statusCode", Value{ .integer = 200 });
+    try resp.fields.put(ctx.arena, "body", Value{ .string = "{\"id\":\"001000000000001\"}" });
+    return Value{ .object = resp };
 }
 
 fn dispatch_obj_page_reference(
