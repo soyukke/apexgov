@@ -2599,84 +2599,25 @@ fn dispatch_static_crypto(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "generateDigest")) {
-        const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
-        var hash: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(data_bytes, &hash, .{});
-        const hex_str = try bytes_to_hex_alloc(ctx.arena, &hash);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = hex_str });
-        return Value{ .object = obj };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "generateMac")) {
-        const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
-        const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
-        var mac: [32]u8 = undefined;
-        std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
-        const hex_str = try bytes_to_hex_alloc(ctx.arena, &mac);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = hex_str });
-        return Value{ .object = obj };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "generateAesKey")) {
-        const key_size: usize = if (args.len > 0 and args[0] == .integer) @intCast(@divTrunc(
-            args[0].integer,
-            8,
-        )) else 16;
-        const buf = try ctx.arena.alloc(u8, key_size);
-        // 0.16 で `std.crypto.random` は削除。乱数は io 経由 (`std.Io.random`)
-        // だが、Apex テストの決定性を優先して 0 埋めするスタブとする。
-        @memset(buf, 0);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = buf });
-        return Value{ .object = obj };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "sign")) {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = "mock-signature" });
-        return Value{ .object = obj };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
-        std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV") or
-        std.ascii.eqlIgnoreCase(method_name, "encrypt") or
-        std.ascii.eqlIgnoreCase(method_name, "decrypt"))
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "generateDigest")) return try crypto_generate_digest(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "generateMac")) return try crypto_generate_mac(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "generateAesKey"))
+        return try crypto_generate_aes_key(ctx, args);
+    if (ci.eqlIgnoreCase(method_name, "sign")) return try crypto_make_blob(ctx, "mock-signature");
+    if (ci.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
+        ci.eqlIgnoreCase(method_name, "decryptWithManagedIV") or
+        ci.eqlIgnoreCase(method_name, "encrypt") or
+        ci.eqlIgnoreCase(method_name, "decrypt"))
     {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        const data_arg_idx: usize =
-            if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
-            std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
-        const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and args[data_arg_idx].object.fields.get("value") != null)
-            args[data_arg_idx].object.fields.get("value").?
-        else if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
-            args[0].object.fields.get("value").?
-        else
-            Value{ .string = "encrypted-data" };
-        try obj.fields.put(ctx.arena, "value", val);
-        return Value{ .object = obj };
+        return try crypto_encrypt_decrypt(ctx, method_name, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or
-        std.ascii.eqlIgnoreCase(method_name, "verifyMac"))
-    {
-        const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
-        const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
-        const expected_bytes = if (args.len >= 4) blob_to_bytes(args[3]) else "";
-        var mac: [32]u8 = undefined;
-        std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
-        const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
-        return Value{ .boolean = std.mem.eql(
-            u8,
-            computed_hex,
-            expected_bytes,
-        ) or std.mem.eql(u8, expected_bytes, "") };
+    if (ci.eqlIgnoreCase(method_name, "verifyHMAC") or ci.eqlIgnoreCase(method_name, "verifyMac")) {
+        return try crypto_verify_mac(ctx, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
-        std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
+    if (ci.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
+    if (ci.eqlIgnoreCase(method_name, "getRandomInteger") or
+        ci.eqlIgnoreCase(method_name, "getRandomLong"))
     {
         // 0.16 で `std.crypto.random` は削除。決定論スタブとして固定値を返す。
         const buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 1 };
@@ -2684,6 +2625,75 @@ fn dispatch_static_crypto(
         return Value{ .integer = if (val < 0) -val else val };
     }
     return Value.null_val;
+}
+
+fn crypto_make_blob(ctx: *BuiltinContext, value: []const u8) !Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Blob" };
+    try obj.fields.put(ctx.arena, "value", Value{ .string = value });
+    return Value{ .object = obj };
+}
+
+fn crypto_generate_digest(ctx: *BuiltinContext, args: []const Value) !Value {
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data_bytes, &hash, .{});
+    return try crypto_make_blob(ctx, try bytes_to_hex_alloc(ctx.arena, &hash));
+}
+
+fn crypto_generate_mac(ctx: *BuiltinContext, args: []const Value) !Value {
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
+    return try crypto_make_blob(ctx, try bytes_to_hex_alloc(ctx.arena, &mac));
+}
+
+fn crypto_generate_aes_key(ctx: *BuiltinContext, args: []const Value) !Value {
+    const key_size: usize = if (args.len > 0 and args[0] == .integer)
+        @intCast(@divTrunc(args[0].integer, 8))
+    else
+        16;
+    const buf = try ctx.arena.alloc(u8, key_size);
+    // 0.16 で `std.crypto.random` は削除。乱数は io 経由 (`std.Io.random`)
+    // だが、Apex テストの決定性を優先して 0 埋めするスタブとする。
+    @memset(buf, 0);
+    return try crypto_make_blob(ctx, buf);
+}
+
+fn crypto_encrypt_decrypt(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Blob" };
+    const data_arg_idx: usize =
+        if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
+        std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
+    const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and
+        args[data_arg_idx].object.fields.get("value") != null)
+        args[data_arg_idx].object.fields.get("value").?
+    else if (args.len > 0 and args[0] == .object and
+        args[0].object.fields.get("value") != null)
+        args[0].object.fields.get("value").?
+    else
+        Value{ .string = "encrypted-data" };
+    try obj.fields.put(ctx.arena, "value", val);
+    return Value{ .object = obj };
+}
+
+fn crypto_verify_mac(ctx: *BuiltinContext, args: []const Value) !Value {
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
+    const expected_bytes = if (args.len >= 4) blob_to_bytes(args[3]) else "";
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
+    const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
+    return Value{
+        .boolean = std.mem.eql(u8, computed_hex, expected_bytes) or
+            std.mem.eql(u8, expected_bytes, ""),
+    };
 }
 
 fn dispatch_static_blob(
