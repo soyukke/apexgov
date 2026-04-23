@@ -74,7 +74,14 @@ test "single-line block not foldable" {
 }
 
 test "nested blocks create nested ranges" {
-    const source = "public class Foo {\n    public void run() {\n        if (true) {\n            return;\n        }\n    }\n}";
+    const source =
+        "public class Foo {\n" ++
+        "    public void run() {\n" ++
+        "        if (true) {\n" ++
+        "            return;\n" ++
+        "        }\n" ++
+        "    }\n" ++
+        "}";
     const ranges = try tokenize_and_fold(source);
     defer std.testing.allocator.free(ranges);
 

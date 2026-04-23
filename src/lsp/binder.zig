@@ -60,7 +60,12 @@ pub const BindResult = struct {
 };
 
 /// AST を解析してシンボルテーブルと参照リストを構築する。
-pub fn bind(decls: []const ast.Decl, tokens: []const Token, source: []const u8, allocator: std.mem.Allocator) !BindResult {
+pub fn bind(
+    decls: []const ast.Decl,
+    tokens: []const Token,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+) !BindResult {
     _ = source;
     var b = Binder{
         .allocator = allocator,
@@ -88,7 +93,11 @@ pub fn symbol_at_position(result: *const BindResult, offset: u32) ?*const Symbol
 }
 
 /// symbol_id に一致する参照をフィルタして返す。
-pub fn filter_references(result: *const BindResult, symbol_id: SymbolId, allocator: std.mem.Allocator) ![]const Reference {
+pub fn filter_references(
+    result: *const BindResult,
+    symbol_id: SymbolId,
+    allocator: std.mem.Allocator,
+) ![]const Reference {
     var out: std.ArrayList(Reference) = .empty;
     for (result.references) |ref| {
         if (ref.symbol_id == symbol_id) {
@@ -110,7 +119,14 @@ const Binder = struct {
     references: std.ArrayListUnmanaged(Reference) = .empty,
     current_scope: ScopeId = 0,
 
-    fn add_symbol(self: *Binder, name: []const u8, kind: SymbolKind, type_name: ?[]const u8, loc: SourceLoc, parent: ?SymbolId) !SymbolId {
+    fn add_symbol(
+        self: *Binder,
+        name: []const u8,
+        kind: SymbolKind,
+        type_name: ?[]const u8,
+        loc: SourceLoc,
+        parent: ?SymbolId,
+    ) !SymbolId {
         const id: SymbolId = @intCast(self.symbols.items.len);
 
         // スコープが無ければルートスコープを作成
@@ -258,7 +274,13 @@ const Binder = struct {
                 }
             },
             .method_decl => |md| {
-                const sym_id = try self.add_symbol(md.name, .method, type_ref_to_string(md.return_type), md.loc, parent);
+                const sym_id = try self.add_symbol(
+                    md.name,
+                    .method,
+                    type_ref_to_string(md.return_type),
+                    md.loc,
+                    parent,
+                );
                 _ = try self.push_scope();
                 for (md.params) |p| {
                     const param_loc = self.find_token_after(md.loc.offset, p.name) orelse md.loc;
@@ -324,7 +346,13 @@ const Binder = struct {
         for (ts.body) |s| try self.bind_stmt(s);
         for (ts.catches) |cc| {
             _ = try self.push_scope();
-            _ = try self.add_symbol(cc.name, .catch_variable, type_ref_to_string(cc.exception_type), SourceLoc.zero, null);
+            _ = try self.add_symbol(
+                cc.name,
+                .catch_variable,
+                type_ref_to_string(cc.exception_type),
+                SourceLoc.zero,
+                null,
+            );
             for (cc.body) |s| try self.bind_stmt(s);
             self.pop_scope();
         }
@@ -356,7 +384,13 @@ const Binder = struct {
             .for_stmt => |fs| try self.bind_for_stmt(fs),
             .for_each_stmt => |fes| {
                 _ = try self.push_scope();
-                _ = try self.add_symbol(fes.elem_name, .for_each_variable, type_ref_to_string(fes.elem_type), fes.loc, null);
+                _ = try self.add_symbol(
+                    fes.elem_name,
+                    .for_each_variable,
+                    type_ref_to_string(fes.elem_type),
+                    fes.loc,
+                    null,
+                );
                 try self.bind_expr(fes.iterable.*);
                 for (fes.body) |s| try self.bind_stmt(s);
                 self.pop_scope();
@@ -402,7 +436,16 @@ const Binder = struct {
 
     fn bind_expr(self: *Binder, expr: ast.Expr) !void {
         switch (expr) {
-            .integer_literal, .long_literal, .double_literal, .string_literal, .boolean_literal, .null_literal, .this_expr, .super_expr, .soql => {},
+            .integer_literal,
+            .long_literal,
+            .double_literal,
+            .string_literal,
+            .boolean_literal,
+            .null_literal,
+            .this_expr,
+            .super_expr,
+            .soql,
+            => {},
             .identifier => |id| {
                 try self.add_reference(id.loc.offset, id.name);
             },

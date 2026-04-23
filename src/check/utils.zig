@@ -166,7 +166,10 @@ pub fn extract_parameter_type_part(segment_raw: []const u8) []const u8 {
             },
             else => {},
         }
-        if ((c == ' ' or c == '\t') and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+        if ((c == ' ' or c == '\t') and
+            angle_depth == 0 and paren_depth == 0 and
+            bracket_depth == 0 and brace_depth == 0)
+        {
             const left = std.mem.trimEnd(u8, segment[0..i], " \t");
             if (left.len == 0) return "?";
             return left;

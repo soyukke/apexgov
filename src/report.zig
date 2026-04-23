@@ -131,7 +131,8 @@ fn write_profile_json(writer: *std.Io.Writer, profiles: []const model.ProfileRes
         try write_json_string(writer, profile.label);
         try writer.writeAll(",\"mode\":");
         try write_json_string(writer, if (profile.is_async) "async" else "sync");
-        try writer.print(",\"cpu_ms\":{d},\"cpu_budget\":{d},\"heap_bytes\":{d},\"heap_budget\":{d},\"cpu_exceeded\":{s},\"heap_exceeded\":{s}}}", .{
+        try writer.print(",\"cpu_ms\":{d},\"cpu_budget\":{d},\"heap_bytes\":{d}," ++
+            "\"heap_budget\":{d},\"cpu_exceeded\":{s},\"heap_exceeded\":{s}}}", .{
             profile.cpu_ms,
             profile.cpu_budget,
             profile.heap_bytes,

@@ -61,7 +61,8 @@ pub fn append_cpu_estimate_finding(
     } else blk: {
         break :blk try std.fmt.bufPrint(
             &message_buffer,
-            "CPU estimate (heuristic): {d} + N*{d}. Without loop bound N, safety is unknown. Limit risk starts around N>{d} (sync {d}ms).",
+            "CPU estimate (heuristic): {d} + N*{d}. Without loop bound N, safety " ++
+                "is unknown. Limit risk starts around N>{d} (sync {d}ms).",
             .{ base_cost_ms, per_iter_ms, n_limit, sync_cpu_budget_ms },
         );
     };
@@ -108,11 +109,41 @@ const GovernorMeta = struct {
 
 fn meta_for(kind: GovernorKind) GovernorMeta {
     return switch (kind) {
-        .soql => .{ .rule_id = "AG002", .title = "SOQL executed inside loop", .op_label = "SOQL", .category = "governor", .limit = soql_limit },
-        .dml => .{ .rule_id = "AG003", .title = "DML executed inside loop", .op_label = "DML", .category = "governor", .limit = dml_limit },
-        .sosl => .{ .rule_id = "AG008", .title = "SOSL executed inside loop", .op_label = "SOSL", .category = "governor", .limit = sosl_limit },
-        .callout => .{ .rule_id = "AG010", .title = "Callout executed inside loop", .op_label = "Callout", .category = "integration", .limit = callout_limit },
-        .messaging => .{ .rule_id = "AG011", .title = "Messaging.sendEmail executed inside loop", .op_label = "Messaging send", .category = "messaging", .limit = messaging_send_limit },
+        .soql => .{
+            .rule_id = "AG002",
+            .title = "SOQL executed inside loop",
+            .op_label = "SOQL",
+            .category = "governor",
+            .limit = soql_limit,
+        },
+        .dml => .{
+            .rule_id = "AG003",
+            .title = "DML executed inside loop",
+            .op_label = "DML",
+            .category = "governor",
+            .limit = dml_limit,
+        },
+        .sosl => .{
+            .rule_id = "AG008",
+            .title = "SOSL executed inside loop",
+            .op_label = "SOSL",
+            .category = "governor",
+            .limit = sosl_limit,
+        },
+        .callout => .{
+            .rule_id = "AG010",
+            .title = "Callout executed inside loop",
+            .op_label = "Callout",
+            .category = "integration",
+            .limit = callout_limit,
+        },
+        .messaging => .{
+            .rule_id = "AG011",
+            .title = "Messaging.sendEmail executed inside loop",
+            .op_label = "Messaging send",
+            .category = "messaging",
+            .limit = messaging_send_limit,
+        },
     };
 }
 
@@ -129,26 +160,32 @@ fn format_governor_message(
             severity.* = .err;
             return try std.fmt.bufPrint(
                 buffer,
-                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration) and exceed the transaction limit ({d}).",
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times " ++
+                    "({d} per iteration) and exceed the transaction limit ({d}).",
                 .{ upper, meta.op_label, estimated_total, per_iter, meta.limit },
             );
         }
         if (per_iter > 1) {
             return try std.fmt.bufPrint(
                 buffer,
-                "Loop upper bound <= {d}. {s} in loop may run up to {d} times ({d} per iteration), below transaction limit ({d}) for now but fragile under growth.",
+                "Loop upper bound <= {d}. {s} in loop may run up to {d} times " ++
+                    "({d} per iteration), below transaction limit ({d}) for now " ++
+                    "but fragile under growth.",
                 .{ upper, meta.op_label, estimated_total, per_iter, meta.limit },
             );
         }
         return try std.fmt.bufPrint(
             buffer,
-            "Loop upper bound <= {d}. {s} in loop is below the transaction limit ({d}) now, but remains fragile under future growth.",
+            "Loop upper bound <= {d}. {s} in loop is below the transaction limit " ++
+                "({d}) now, but remains fragile under future growth.",
             .{ upper, meta.op_label, meta.limit },
         );
     }
     return try std.fmt.bufPrint(
         buffer,
-        "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe (estimated {d} per iteration). Add explicit cap checks (for example if (n > {d}) return).",
+        "Loop upper bound is dynamic/unknown. {s} in loop cannot be proven safe " ++
+            "(estimated {d} per iteration). Add explicit cap checks (for example " ++
+            "if (n > {d}) return).",
         .{ meta.op_label, per_iter, meta.limit },
     );
 }

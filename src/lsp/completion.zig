@@ -45,7 +45,12 @@ pub fn get_completions(
 }
 
 /// ドットの直前にある変数/型の type_name を解決する。
-fn detect_dot_context(source: []const u8, offset: u32, result: *const binder_mod.BindResult, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ?[]const u8 {
+fn detect_dot_context(
+    source: []const u8,
+    offset: u32,
+    result: *const binder_mod.BindResult,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) ?[]const u8 {
     if (offset == 0) return null;
 
     // offset の直前（空白をスキップ）に '.' があるか
@@ -86,7 +91,12 @@ fn detect_dot_context(source: []const u8, offset: u32, result: *const binder_mod
 }
 
 /// 型ベースのドット補完。SObject フィールド + 標準ライブラリメソッド。
-fn get_dot_completions(type_name: []const u8, result: *const binder_mod.BindResult, allocator: std.mem.Allocator, custom_fields: ?*const sobject_schema.CustomFieldRegistry) ![]lsp_types.CompletionItem {
+fn get_dot_completions(
+    type_name: []const u8,
+    result: *const binder_mod.BindResult,
+    allocator: std.mem.Allocator,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
 
     // SObject 標準フィールド
@@ -150,7 +160,10 @@ fn get_dot_completions(type_name: []const u8, result: *const binder_mod.BindResu
 }
 
 /// 通常補完: スコープ内シンボル + キーワード。
-fn get_default_completions(result: *const binder_mod.BindResult, allocator: std.mem.Allocator) ![]lsp_types.CompletionItem {
+fn get_default_completions(
+    result: *const binder_mod.BindResult,
+    allocator: std.mem.Allocator,
+) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
 
     for (result.symbols) |sym| {
@@ -214,7 +227,11 @@ fn has_label(items: []const lsp_types.CompletionItem, label: []const u8) bool {
     return false;
 }
 
-fn has_label_with_kind(items: []const lsp_types.CompletionItem, label: []const u8, kind: lsp_types.CompletionItemKind) bool {
+fn has_label_with_kind(
+    items: []const lsp_types.CompletionItem,
+    label: []const u8,
+    kind: lsp_types.CompletionItemKind,
+) bool {
     for (items) |item| {
         if (std.mem.eql(u8, item.label, label) and item.kind != null and item.kind.? == kind) return true;
     }

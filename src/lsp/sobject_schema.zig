@@ -187,7 +187,12 @@ pub const CustomFieldRegistry = struct {
         }
     }
 
-    fn load_object_fields(self: *CustomFieldRegistry, io: std.Io, objects_path: []const u8, obj_name: []const u8) !void {
+    fn load_object_fields(
+        self: *CustomFieldRegistry,
+        io: std.Io,
+        objects_path: []const u8,
+        obj_name: []const u8,
+    ) !void {
         const alloc = self.arena.allocator();
         const fields_path = try std.fs.path.join(alloc, &.{ objects_path, obj_name, "fields" });
 
@@ -303,14 +308,27 @@ fn extract_tag(block: []const u8, tag: []const u8) ?[]const u8 {
     return block[value_start..end];
 }
 
+fn matches_any_ci(t: []const u8, candidates: []const []const u8) bool {
+    for (candidates) |c| {
+        if (std.ascii.eqlIgnoreCase(t, c)) return true;
+    }
+    return false;
+}
+
 fn map_sf_field_type(sf_type: ?[]const u8) []const u8 {
     const t = sf_type orelse return "String";
-    if (std.ascii.eqlIgnoreCase(t, "Text") or std.ascii.eqlIgnoreCase(t, "TextArea") or std.ascii.eqlIgnoreCase(t, "LongTextArea") or std.ascii.eqlIgnoreCase(t, "RichTextArea") or std.ascii.eqlIgnoreCase(t, "Email") or std.ascii.eqlIgnoreCase(t, "Phone") or std.ascii.eqlIgnoreCase(t, "Url") or std.ascii.eqlIgnoreCase(t, "Picklist") or std.ascii.eqlIgnoreCase(t, "MultiselectPicklist")) return "String";
-    if (std.ascii.eqlIgnoreCase(t, "Number") or std.ascii.eqlIgnoreCase(t, "Currency") or std.ascii.eqlIgnoreCase(t, "Percent")) return "Decimal";
+    const string_types = [_][]const u8{
+        "Text",  "TextArea", "LongTextArea", "RichTextArea",        "Email",
+        "Phone", "Url",      "Picklist",     "MultiselectPicklist",
+    };
+    if (matches_any_ci(t, &string_types)) return "String";
+    const decimal_types = [_][]const u8{ "Number", "Currency", "Percent" };
+    if (matches_any_ci(t, &decimal_types)) return "Decimal";
     if (std.ascii.eqlIgnoreCase(t, "Checkbox")) return "Boolean";
     if (std.ascii.eqlIgnoreCase(t, "Date")) return "Date";
     if (std.ascii.eqlIgnoreCase(t, "DateTime")) return "Datetime";
-    if (std.ascii.eqlIgnoreCase(t, "Lookup") or std.ascii.eqlIgnoreCase(t, "MasterDetail")) return "Id";
+    const id_types = [_][]const u8{ "Lookup", "MasterDetail" };
+    if (matches_any_ci(t, &id_types)) return "Id";
     return "String";
 }
 

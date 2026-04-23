@@ -13,7 +13,12 @@ pub const FormattingOptions = struct {
 };
 
 /// ソースコードをフォーマットし、結果のテキストを返す。
-pub fn format_source(tokens: []const Token, source: []const u8, opts: FormattingOptions, allocator: std.mem.Allocator) ![]const u8 {
+pub fn format_source(
+    tokens: []const Token,
+    source: []const u8,
+    opts: FormattingOptions,
+    allocator: std.mem.Allocator,
+) ![]const u8 {
     _ = tokens; // 将来的にトークン情報も活用
 
     var result: std.ArrayList(u8) = .empty;
@@ -87,7 +92,10 @@ test "indents nested blocks" {
     const result = try format(source);
     defer std.testing.allocator.free(result);
 
-    try std.testing.expectEqualStrings("public class Foo {\n    public void run() {\n        return;\n    }\n}\n", result);
+    try std.testing.expectEqualStrings(
+        "public class Foo {\n    public void run() {\n        return;\n    }\n}\n",
+        result,
+    );
 }
 
 test "preserves string literal content" {

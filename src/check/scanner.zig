@@ -92,18 +92,72 @@ const RuleSpec = struct {
 /// AG002–AG011 のルール仕様テーブル（AG001 はネストループ検出で別処理）。
 const rule_specs = [_]RuleSpec{
     // Governor + CPU estimate
-    .{ .field = "soql", .emit = .governor_with_cpu, .gov_kind = .soql, .cpu_label = "SOQL", .cpu_cost_field = "soql_ms" },
-    .{ .field = "dml", .emit = .governor_with_cpu, .gov_kind = .dml, .cpu_label = "DML", .cpu_cost_field = "dml_ms" },
-    .{ .field = "sosl", .emit = .governor_with_cpu, .gov_kind = .sosl, .cpu_label = "SOSL", .cpu_cost_field = "soql_ms" },
+    .{
+        .field = "soql",
+        .emit = .governor_with_cpu,
+        .gov_kind = .soql,
+        .cpu_label = "SOQL",
+        .cpu_cost_field = "soql_ms",
+    },
+    .{
+        .field = "dml",
+        .emit = .governor_with_cpu,
+        .gov_kind = .dml,
+        .cpu_label = "DML",
+        .cpu_cost_field = "dml_ms",
+    },
+    .{
+        .field = "sosl",
+        .emit = .governor_with_cpu,
+        .gov_kind = .sosl,
+        .cpu_label = "SOSL",
+        .cpu_cost_field = "soql_ms",
+    },
     // Governor only
     .{ .field = "callout", .emit = .governor_only, .gov_kind = .callout },
     .{ .field = "messaging", .emit = .governor_only, .gov_kind = .messaging },
     // Finding + CPU estimate
-    .{ .field = "json", .emit = .finding_with_cpu, .rule_id = "AG004", .title = "JSON processing inside loop", .message = "Serialize/deserialize outside loops where possible.", .severity = .warning, .category = "cpu", .cpu_label = "JSON", .cpu_cost_field = "json_ms" },
-    .{ .field = "clone", .emit = .finding_with_cpu, .rule_id = "AG005", .title = "Clone/deepClone inside loop", .message = "Repeated cloning can increase heap and CPU cost.", .severity = .warning, .category = "heap", .cpu_label = "clone/deepClone", .cpu_cost_field = "clone_ms" },
+    .{
+        .field = "json",
+        .emit = .finding_with_cpu,
+        .rule_id = "AG004",
+        .title = "JSON processing inside loop",
+        .message = "Serialize/deserialize outside loops where possible.",
+        .severity = .warning,
+        .category = "cpu",
+        .cpu_label = "JSON",
+        .cpu_cost_field = "json_ms",
+    },
+    .{
+        .field = "clone",
+        .emit = .finding_with_cpu,
+        .rule_id = "AG005",
+        .title = "Clone/deepClone inside loop",
+        .message = "Repeated cloning can increase heap and CPU cost.",
+        .severity = .warning,
+        .category = "heap",
+        .cpu_label = "clone/deepClone",
+        .cpu_cost_field = "clone_ms",
+    },
     // Finding only
-    .{ .field = "collection_alloc", .emit = .finding_only, .rule_id = "AG006", .title = "Collection allocation inside loop", .message = "Reuse collections or move allocation outside the loop.", .severity = .warning, .category = "heap" },
-    .{ .field = "string_append", .emit = .finding_only, .rule_id = "AG007", .title = "String concatenation inside loop", .message = "Prefer StringBuilder-style batching patterns to reduce CPU.", .severity = .info, .category = "cpu" },
+    .{
+        .field = "collection_alloc",
+        .emit = .finding_only,
+        .rule_id = "AG006",
+        .title = "Collection allocation inside loop",
+        .message = "Reuse collections or move allocation outside the loop.",
+        .severity = .warning,
+        .category = "heap",
+    },
+    .{
+        .field = "string_append",
+        .emit = .finding_only,
+        .rule_id = "AG007",
+        .title = "String concatenation inside loop",
+        .message = "Prefer StringBuilder-style batching patterns to reduce CPU.",
+        .severity = .info,
+        .category = "cpu",
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -191,17 +245,55 @@ fn emit_rule_findings(
             switch (spec.emit) {
                 .governor_with_cpu => {
                     try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
-                    try append_cpu_estimate_finding(gpa, findings, path, line_no, spec.cpu_label, sat_mul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                    try append_cpu_estimate_finding(
+                        gpa,
+                        findings,
+                        path,
+                        line_no,
+                        spec.cpu_label,
+                        sat_mul(@field(cpu_model, spec.cpu_cost_field), count),
+                        loop_upper_bound,
+                        cpu_model.base_ms,
+                    );
                 },
                 .governor_only => {
                     try append_governor_finding(gpa, findings, path, line_no, spec.gov_kind, loop_upper_bound, count);
                 },
                 .finding_with_cpu => {
-                    try append_finding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
-                    try append_cpu_estimate_finding(gpa, findings, path, line_no, spec.cpu_label, sat_mul(@field(cpu_model, spec.cpu_cost_field), count), loop_upper_bound, cpu_model.base_ms);
+                    try append_finding(
+                        gpa,
+                        findings,
+                        path,
+                        line_no,
+                        spec.rule_id,
+                        spec.title,
+                        spec.message,
+                        spec.severity,
+                        spec.category,
+                    );
+                    try append_cpu_estimate_finding(
+                        gpa,
+                        findings,
+                        path,
+                        line_no,
+                        spec.cpu_label,
+                        sat_mul(@field(cpu_model, spec.cpu_cost_field), count),
+                        loop_upper_bound,
+                        cpu_model.base_ms,
+                    );
                 },
                 .finding_only => {
-                    try append_finding(gpa, findings, path, line_no, spec.rule_id, spec.title, spec.message, spec.severity, spec.category);
+                    try append_finding(
+                        gpa,
+                        findings,
+                        path,
+                        line_no,
+                        spec.rule_id,
+                        spec.title,
+                        spec.message,
+                        spec.severity,
+                        spec.category,
+                    );
                 },
             }
         }
@@ -307,7 +399,10 @@ pub fn scan_content(
                 try apply_local_type_updates(arena_allocator, &type_env, trimmed);
             }
         }
-        const current_owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
+        const current_owner = if (owner_scopes.items.len == 0)
+            null
+        else
+            owner_scopes.items[owner_scopes.items.len - 1].name;
         if (trimmed.len == 0) {
             brace_depth = update_brace_depth(brace_depth, code_line);
             pop_closed_scopes(&loop_scopes, brace_depth);
@@ -354,7 +449,13 @@ pub fn scan_content(
         // AG002–AG011: テーブル駆動ルール検出
         if (!skip_test_findings and in_loop) {
             const loop_upper_bound = effective_loop_upper_bound(loop_scopes.items, loop_info);
-            const call_metrics = infer_called_method_metrics(trimmed, current_owner, &type_env, name_index, type_relations);
+            const call_metrics = infer_called_method_metrics(
+                trimmed,
+                current_owner,
+                &type_env,
+                name_index,
+                type_relations,
+            );
             var direct = run_detectors(trimmed, &type_env);
 
             // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では

@@ -326,7 +326,11 @@ fn run_typegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
             } else continue;
 
             var path_buf: [4096]u8 = undefined;
-            const out_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}.d.ts", .{ out_dir, meta.name, meta.meta_type }) catch continue;
+            const out_path = std.fmt.bufPrint(
+                &path_buf,
+                "{s}/{s}.{s}.d.ts",
+                .{ out_dir, meta.name, meta.meta_type },
+            ) catch continue;
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = allocating.written() });
             total_files += 1;
         }
@@ -599,7 +603,8 @@ fn print_usage(io: Io) void {
         \\apexgov: offline Apex CPU/Heap checker and profiler
         \\
         \\Usage:
-        \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif] [--out FILE] [--severity-threshold info|warning|error|none]
+        \\  apexgov check [paths...] [--config FILE] [--format text|json|sarif]
+        \\                [--out FILE] [--severity-threshold info|warning|error|none]
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE] [--format text|json|sarif] [--out FILE]
         \\  apexgov interpret test <paths...>
         \\  apexgov typegen <sfdx-project-root> [--out DIR]

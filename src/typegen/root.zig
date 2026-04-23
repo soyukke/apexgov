@@ -53,7 +53,11 @@ pub fn xml_tag_values(xml: []const u8, tag: []const u8, allocator: std.mem.Alloc
     var pos: usize = 0;
 
     var close_pattern_buf: [128]u8 = undefined;
-    const close_pattern = std.fmt.bufPrint(&close_pattern_buf, "</{s}>", .{tag}) catch return results.toOwnedSlice(allocator);
+    const close_pattern = std.fmt.bufPrint(
+        &close_pattern_buf,
+        "</{s}>",
+        .{tag},
+    ) catch return results.toOwnedSlice(allocator);
 
     while (pos < xml.len) {
         const open_start = std.mem.indexOfPos(u8, xml, pos, "<") orelse break;
@@ -211,7 +215,11 @@ pub const ApexMethod = struct {
 };
 
 /// Apex ソースコードから @AuraEnabled public/global static メソッドを検出する。
-pub fn find_aura_enabled_methods(source: []const u8, class_name: []const u8, allocator: std.mem.Allocator) ![]ApexMethod {
+pub fn find_aura_enabled_methods(
+    source: []const u8,
+    class_name: []const u8,
+    allocator: std.mem.Allocator,
+) ![]ApexMethod {
     var methods: std.ArrayList(ApexMethod) = .empty;
     var pos: usize = 0;
 

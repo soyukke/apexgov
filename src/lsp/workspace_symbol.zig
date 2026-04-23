@@ -3,6 +3,7 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 const ast = @import("../apex_parser/ast.zig");
+const parser_types = @import("../apex_parser/types.zig");
 const DocumentStore = @import("document_store.zig").DocumentStore;
 const position_mod = @import("position.zig");
 
@@ -31,6 +32,25 @@ pub fn search(
     return results.toOwnedSlice(allocator);
 }
 
+fn emit_symbol(
+    name: []const u8,
+    kind: lsp_types.SymbolKind,
+    uri: []const u8,
+    loc: parser_types.SourceLoc,
+    source: []const u8,
+    query: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(WorkspaceSymbol),
+) !void {
+    if (!matches_query(name, query)) return;
+    try out.append(allocator, .{
+        .name = name,
+        .kind = kind,
+        .uri = uri,
+        .range = position_mod.loc_to_range(loc, source),
+    });
+}
+
 fn collect_from_decls(
     decls: []const ast.Decl,
     uri: []const u8,
@@ -42,48 +62,24 @@ fn collect_from_decls(
     for (decls) |decl| {
         switch (decl) {
             .class_decl => |cd| {
-                if (matches_query(cd.name, query)) {
-                    try out.append(allocator, .{
-                        .name = cd.name,
-                        .kind = .class,
-                        .uri = uri,
-                        .range = position_mod.loc_to_range(cd.loc, source),
-                    });
-                }
+                try emit_symbol(cd.name, .class, uri, cd.loc, source, query, allocator, out);
                 // クラスメンバーも走査
                 try collect_from_decls(cd.members, uri, source, query, allocator, out);
             },
-            .interface_decl => |id| {
-                if (matches_query(id.name, query)) {
-                    try out.append(allocator, .{ .name = id.name, .kind = .interface, .uri = uri, .range = position_mod.loc_to_range(id.loc, source) });
-                }
-            },
-            .enum_decl => |ed| {
-                if (matches_query(ed.name, query)) {
-                    try out.append(allocator, .{ .name = ed.name, .kind = .@"enum", .uri = uri, .range = position_mod.loc_to_range(ed.loc, source) });
-                }
-            },
-            .method_decl => |md| {
-                if (matches_query(md.name, query)) {
-                    try out.append(allocator, .{ .name = md.name, .kind = .method, .uri = uri, .range = position_mod.loc_to_range(md.loc, source) });
-                }
-            },
-            .field_decl => |fd| {
-                if (matches_query(fd.name, query)) {
-                    try out.append(allocator, .{ .name = fd.name, .kind = .field, .uri = uri, .range = position_mod.loc_to_range(fd.loc, source) });
-                }
-            },
+            .interface_decl => |id| try emit_symbol(id.name, .interface, uri, id.loc, source, query, allocator, out),
+            .enum_decl => |ed| try emit_symbol(ed.name, .@"enum", uri, ed.loc, source, query, allocator, out),
+            .method_decl => |md| try emit_symbol(md.name, .method, uri, md.loc, source, query, allocator, out),
+            .field_decl => |fd| try emit_symbol(fd.name, .field, uri, fd.loc, source, query, allocator, out),
             .constructor_decl => |cd| {
                 _ = cd;
                 if (matches_query("<constructor>", query)) {
-                    try out.append(allocator, .{ .name = "<constructor>", .kind = .constructor, .uri = uri, .range = .{} });
+                    try out.append(
+                        allocator,
+                        .{ .name = "<constructor>", .kind = .constructor, .uri = uri, .range = .{} },
+                    );
                 }
             },
-            .trigger_decl => |td| {
-                if (matches_query(td.name, query)) {
-                    try out.append(allocator, .{ .name = td.name, .kind = .event, .uri = uri, .range = position_mod.loc_to_range(td.loc, source) });
-                }
-            },
+            .trigger_decl => |td| try emit_symbol(td.name, .event, uri, td.loc, source, query, allocator, out),
             .static_init => {},
         }
     }

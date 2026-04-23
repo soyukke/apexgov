@@ -37,7 +37,12 @@ const BaselineDocument = struct {
     profiles: []const BaselineProfile = &.{},
 };
 
-pub fn run(gpa: std.mem.Allocator, io: Io, inputs: []const []const u8, cfg: config.Config) !std.ArrayList(model.ProfileResult) {
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: Io,
+    inputs: []const []const u8,
+    cfg: config.Config,
+) !std.ArrayList(model.ProfileResult) {
     var files: std.ArrayList([]const u8) = .empty;
     defer {
         for (files.items) |path| gpa.free(path);
@@ -151,7 +156,12 @@ fn collect_logs(gpa: std.mem.Allocator, io: Io, input: []const u8, files: *std.A
     };
 }
 
-fn collect_logs_in_directory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList([]const u8)) !void {
+fn collect_logs_in_directory(
+    gpa: std.mem.Allocator,
+    io: Io,
+    root: []const u8,
+    files: *std.ArrayList([]const u8),
+) !void {
     var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 

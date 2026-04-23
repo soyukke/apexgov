@@ -71,7 +71,13 @@ pub fn build_method_summaries(
     var name_index = try build_method_name_index(arena_allocator, &summaries);
 
     for (files) |file| {
-        try collect_method_direct_metrics_and_calls(arena_allocator, file.stripped_content, &summaries, &name_index, type_relations);
+        try collect_method_direct_metrics_and_calls(
+            arena_allocator,
+            file.stripped_content,
+            &summaries,
+            &name_index,
+            type_relations,
+        );
     }
 
     // Phase 3b で新たに追加されたサマリーがあればインデックスを再構築
@@ -202,7 +208,10 @@ fn collect_method_direct_metrics_and_calls(
         var started_method = false;
         if (trimmed.len > 0) {
             try maybe_enter_owner_scope(arena_allocator, &owner_scopes, brace_depth, trimmed);
-            const owner = if (owner_scopes.items.len == 0) null else owner_scopes.items[owner_scopes.items.len - 1].name;
+            const owner = if (owner_scopes.items.len == 0)
+                null
+            else
+                owner_scopes.items[owner_scopes.items.len - 1].name;
 
             if (current_method == null and owner != null) {
                 if (parse_method_start(trimmed)) |decl| {
@@ -250,7 +259,10 @@ fn collect_method_direct_metrics_and_calls(
                         &do_while_conditions,
                         line_no,
                     );
-                    const local_loop_multiplier = effective_loop_upper_bound(method_loop_scopes.items, local_loop_info) orelse 1;
+                    const local_loop_multiplier = effective_loop_upper_bound(
+                        method_loop_scopes.items,
+                        local_loop_info,
+                    ) orelse 1;
 
                     const summary = find_method_summary_by_owner_name_signature(
                         summaries,
@@ -314,7 +326,9 @@ pub fn ensure_method_summary(
 ) !*MethodSummary {
     const param_signature = try build_param_type_signature(arena_allocator, params_raw);
     const param_count = count_signature_params(param_signature);
-    if (find_method_summary_by_owner_name_signature(summaries, owner, name, param_signature)) |existing| return existing;
+    if (find_method_summary_by_owner_name_signature(summaries, owner, name, param_signature)) |existing| {
+        return existing;
+    }
 
     const owner_copy = try arena_allocator.dupe(u8, owner);
     const name_copy = try arena_allocator.dupe(u8, name);
@@ -694,7 +708,9 @@ fn contains_typed_receiver_method_call(
         }
 
         var receiver_end = dot_idx - 1;
-        while (receiver_end > 0 and (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1) {}
+        while (receiver_end > 0 and
+            (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) : (receiver_end -= 1)
+        {}
         var receiver_start = receiver_end;
         while (receiver_start > 0 and is_ident_char(line[receiver_start - 1])) : (receiver_start -= 1) {}
         if (receiver_start == receiver_end) {
@@ -936,7 +952,8 @@ fn arguments_match_param_signature(
                 if (paren_depth == 0 and angle_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     const segment = std.mem.trim(u8, line[arg_start..i], " \t");
                     if (segment.len == 0) {
-                        return expected_signature.len == 0 or (expected_iter.next() == null and expected_signature.len == 0);
+                        return expected_signature.len == 0 or
+                            (expected_iter.next() == null and expected_signature.len == 0);
                     }
                     const expected = expected_iter.next() orelse return false;
                     if (!argument_expr_matches_type(segment, expected, type_env, type_relations)) return false;

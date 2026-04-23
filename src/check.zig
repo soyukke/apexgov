@@ -43,7 +43,12 @@ pub fn run(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.Array
     return run_with_config(gpa, io, roots, config.Config.defaults());
 }
 
-pub fn run_with_config(gpa: std.mem.Allocator, io: Io, roots: []const []const u8, cfg: config.Config) !std.ArrayList(model.Finding) {
+pub fn run_with_config(
+    gpa: std.mem.Allocator,
+    io: Io,
+    roots: []const []const u8,
+    cfg: config.Config,
+) !std.ArrayList(model.Finding) {
     var findings: std.ArrayList(model.Finding) = .empty;
     errdefer model.deinit_findings(gpa, &findings);
 
@@ -129,7 +134,16 @@ fn run_check_on_temp_sources(
     var build_result = try build_method_summaries(arena_alloc, files.items, &type_relations);
 
     for (files.items) |file| {
-        try scan_content(gpa, file.path, file.stripped_content, cfg, &build_result.summaries, &build_result.name_index, &type_relations, &findings);
+        try scan_content(
+            gpa,
+            file.path,
+            file.stripped_content,
+            cfg,
+            &build_result.summaries,
+            &build_result.name_index,
+            &type_relations,
+            &findings,
+        );
     }
 
     return findings;

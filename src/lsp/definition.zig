@@ -8,7 +8,12 @@ const DocumentStore = @import("document_store.zig").DocumentStore;
 const parser_types = @import("../apex_parser/types.zig");
 
 /// 同一ファイル内でシンボルの定義位置を返す。
-pub fn get_definition(result: *const binder_mod.BindResult, source: []const u8, uri: []const u8, offset: u32) ?lsp_types.Location {
+pub fn get_definition(
+    result: *const binder_mod.BindResult,
+    source: []const u8,
+    uri: []const u8,
+    offset: u32,
+) ?lsp_types.Location {
     const sym = binder_mod.symbol_at_position(result, offset) orelse return null;
     const pos = position_mod.offset_to_position(source, sym.loc.offset);
     return .{
@@ -99,7 +104,14 @@ test "cross-file: jump to class in another file" {
     // 'Helper' の位置を探す（"Main { Helper" の Helper）
     const helper_offset: u32 = @intCast(std.mem.indexOf(u8, main_source, "Helper h").?);
 
-    const loc = get_definition_cross_file(main_br, main_cached.tokens, main_source, "file:///Main.cls", helper_offset, &store);
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        helper_offset,
+        &store,
+    );
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Helper.cls", loc.?.uri);
 }

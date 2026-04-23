@@ -76,11 +76,21 @@ pub const DocumentStore = struct {
     }
 
     /// インクリメンタル更新: range で指定された部分を text で置換する。
-    pub fn apply_incremental_change(self: *DocumentStore, uri: []const u8, version: i64, range: lsp_types.Range, text: []const u8) !void {
+    pub fn apply_incremental_change(
+        self: *DocumentStore,
+        uri: []const u8,
+        version: i64,
+        range: lsp_types.Range,
+        text: []const u8,
+    ) !void {
         const doc = self.documents.getPtr(uri) orelse return;
         self.invalidate_cache(doc);
 
-        const start_offset = position_mod.position_to_offset(doc.text, range.start.line, range.start.character) orelse return;
+        const start_offset = position_mod.position_to_offset(
+            doc.text,
+            range.start.line,
+            range.start.character,
+        ) orelse return;
         const end_offset = position_mod.position_to_offset(doc.text, range.end.line, range.end.character) orelse return;
 
         // 新しいテキストを構築: [0..start_offset] + text + [end_offset..]

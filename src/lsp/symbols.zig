@@ -21,7 +21,12 @@ pub fn collect_symbols(decls: []const ast.Decl, source: []const u8, allocator: s
     return result.toOwnedSlice(allocator);
 }
 
-fn collect_class_decl(cd: anytype, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) anyerror!void {
+fn collect_class_decl(
+    cd: anytype,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) anyerror!void {
     var children: std.ArrayList(DocumentSymbol) = .empty;
     for (cd.members) |member| {
         try collect_decl(member, source, allocator, &children);
@@ -35,7 +40,12 @@ fn collect_class_decl(cd: anytype, source: []const u8, allocator: std.mem.Alloca
     });
 }
 
-fn collect_enum_decl(ed: anytype, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) !void {
+fn collect_enum_decl(
+    ed: anytype,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) !void {
     var children: std.ArrayList(DocumentSymbol) = .empty;
     for (ed.values) |v| {
         try children.append(allocator, .{
@@ -54,7 +64,12 @@ fn collect_enum_decl(ed: anytype, source: []const u8, allocator: std.mem.Allocat
     });
 }
 
-fn collect_decl(decl: ast.Decl, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) !void {
+fn collect_decl(
+    decl: ast.Decl,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) !void {
     switch (decl) {
         .class_decl => |cd| try collect_class_decl(cd, source, allocator, out),
         .interface_decl => |id| {

@@ -4,7 +4,12 @@ const std = @import("std");
 const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
 
-pub fn get_hover(result: *const binder_mod.BindResult, source: []const u8, offset: u32, allocator: std.mem.Allocator) !?lsp_types.HoverResult {
+pub fn get_hover(
+    result: *const binder_mod.BindResult,
+    source: []const u8,
+    offset: u32,
+    allocator: std.mem.Allocator,
+) !?lsp_types.HoverResult {
     _ = source;
     const sym = binder_mod.symbol_at_position(result, offset) orelse return null;
 

@@ -231,10 +231,12 @@ pub const Server = struct {
         const td = val_get_obj(params, "textDocument") orelse return;
         const uri = obj_get_str(td, "uri") orelse return;
 
-        try self.transport.send_notification(self.allocator, "textDocument/publish_diagnostics", types.PublishDiagnosticsParams{
-            .uri = uri,
-            .diagnostics = &.{},
-        });
+        const diag_params = types.PublishDiagnosticsParams{ .uri = uri, .diagnostics = &.{} };
+        try self.transport.send_notification(
+            self.allocator,
+            "textDocument/publishDiagnostics",
+            diag_params,
+        );
 
         self.store.close(uri);
     }
@@ -268,10 +270,12 @@ pub const Server = struct {
             try diags.append(self.allocator, gd);
         }
 
-        try self.transport.send_notification(self.allocator, "textDocument/publish_diagnostics", types.PublishDiagnosticsParams{
-            .uri = uri,
-            .diagnostics = diags.items,
-        });
+        const params = types.PublishDiagnosticsParams{ .uri = uri, .diagnostics = diags.items };
+        try self.transport.send_notification(
+            self.allocator,
+            "textDocument/publishDiagnostics",
+            params,
+        );
     }
 
     fn handle_document_symbol(self: *Server, id: types.RequestId, obj: JsonObjectMap) !void {
@@ -405,7 +409,14 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const result = definition_mod.get_definition_cross_file(br, cached.tokens, doc.text, ctx.uri, ctx.offset, &self.store);
+        const result = definition_mod.get_definition_cross_file(
+            br,
+            cached.tokens,
+            doc.text,
+            ctx.uri,
+            ctx.offset,
+            &self.store,
+        );
         try self.transport.send_response(self.allocator, id, result);
     }
 
@@ -423,7 +434,16 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const locs = try references_mod.get_references_cross_file(br, cached.tokens, doc.text, ctx.uri, ctx.offset, true, &self.store, self.allocator);
+        const locs = try references_mod.get_references_cross_file(
+            br,
+            cached.tokens,
+            doc.text,
+            ctx.uri,
+            ctx.offset,
+            true,
+            &self.store,
+            self.allocator,
+        );
         defer self.allocator.free(locs);
 
         try self.transport.send_response(self.allocator, id, locs);
@@ -624,6 +644,28 @@ pub const Server = struct {
         try self.run_test_and_notify(ws_root, class_name, null);
     }
 
+    const SUB_CANDIDATES = [_][]const u8{ "main/default/classes", "tests" };
+
+    /// Collects candidate test directories under packageDirectories.
+    /// Caller owns returned slices (both all_dirs entries and pkg_dirs).
+    fn collect_test_paths(
+        self: *Server,
+        ws_root: []const u8,
+        pkg_dirs: []const []const u8,
+        all_dirs: *std.ArrayList([]const u8),
+    ) !void {
+        _ = ws_root;
+        const sfdx_project = @import("sfdx_project.zig");
+        for (&SUB_CANDIDATES) |sub| {
+            const sub_dirs = try sfdx_project.resolve_sub_dirs(self.allocator, self.io, pkg_dirs, sub);
+            defer self.allocator.free(sub_dirs);
+
+            for (sub_dirs) |d| {
+                try all_dirs.append(self.allocator, d);
+            }
+        }
+    }
+
     fn run_test_and_notify(self: *Server, ws_root: []const u8, class_name: []const u8, method_name: ?[]const u8) !void {
         const interpret = @import("../interpret/root.zig");
         const sfdx_project = @import("sfdx_project.zig");
@@ -635,24 +677,13 @@ pub const Server = struct {
             self.allocator.free(pkg_dirs);
         }
 
-        // パッケージディレクトリ配下の .cls を含むサブディレクトリを探索
-        // main/default/classes/ に加え tests/ 等も対象にする
-        const sub_candidates = [_][]const u8{ "main/default/classes", "tests" };
-
         var all_dirs: std.ArrayList([]const u8) = .empty;
         defer {
             for (all_dirs.items) |p| self.allocator.free(p);
             all_dirs.deinit(self.allocator);
         }
 
-        for (&sub_candidates) |sub| {
-            const sub_dirs = try sfdx_project.resolve_sub_dirs(self.allocator, self.io, pkg_dirs, sub);
-            defer self.allocator.free(sub_dirs);
-
-            for (sub_dirs) |d| {
-                try all_dirs.append(self.allocator, d);
-            }
-        }
+        try self.collect_test_paths(ws_root, pkg_dirs, &all_dirs);
 
         // サブディレクトリが見つかればそれを使い、無ければパッケージディレクトリ自体を使用
         const test_paths = if (all_dirs.items.len > 0) all_dirs.items else pkg_dirs;
@@ -682,7 +713,14 @@ pub const Server = struct {
             "";
 
         // 結果メッセージを構築
-        const msg = try format_test_result_message(self.allocator, class_name, method_name, suite.passed, suite.total, failure_detail);
+        const msg = try format_test_result_message(
+            self.allocator,
+            class_name,
+            method_name,
+            suite.passed,
+            suite.total,
+            failure_detail,
+        );
         defer self.allocator.free(msg);
 
         try self.transport.send_notification(self.allocator, "window/showMessage", types.ShowMessageParams{
@@ -721,7 +759,11 @@ fn format_test_result_message(
 ) ![]u8 {
     if (method_name) |mn| {
         if (passed < total and failure_detail.len > 0) {
-            return std.fmt.allocPrint(gpa, "{s}#{s}: FAIL ({d}/{d} passed)\n{s}", .{ class_name, mn, passed, total, failure_detail });
+            return std.fmt.allocPrint(
+                gpa,
+                "{s}#{s}: FAIL ({d}/{d} passed)\n{s}",
+                .{ class_name, mn, passed, total, failure_detail },
+            );
         }
         return std.fmt.allocPrint(gpa, "{s}#{s}: {s} ({d}/{d} passed)", .{
             class_name,
@@ -888,10 +930,18 @@ test "integration: didOpen + codeAction returns quickfixes" {
     defer h.deinit();
 
     // 1. didOpen: ループ内 SOQL のあるコード
+    const open_text =
+        "public class Foo {\\n" ++
+        "    public void run() {\\n" ++
+        "        for (Integer i = 0; i < 10; i++) {\\n" ++
+        "            List<Account> accs = [SELECT Id FROM Account];\\n" ++
+        "        }\\n    }\\n}";
     const open_req =
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
         \\  "textDocument":{"uri":"file:///test.cls","languageId":"apex","version":1,
-        \\  "text":"public class Foo {\n    public void run() {\n        for (Integer i = 0; i < 10; i++) {\n            List<Account> accs = [SELECT Id FROM Account];\n        }\n    }\n}"}
+        \\  "text":"
+    ++ open_text ++
+        \\"}
         \\}}
     ;
     h.send(open_req);
@@ -938,10 +988,15 @@ test "integration: incremental didChange updates document" {
     std.testing.allocator.free(try h.read_response()); // publish_diagnostics
 
     // 2. incremental didChange: "Foo" → "Bar"
+    const range_json =
+        \\{"range":{"start":{"line":0,"character":13},"end":{"line":0,"character":16}},"text":"Bar"}
+    ;
     const change_req =
         \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{
         \\  "textDocument":{"uri":"file:///inc.cls","version":2},
-        \\  "contentChanges":[{"range":{"start":{"line":0,"character":13},"end":{"line":0,"character":16}},"text":"Bar"}]
+        \\  "contentChanges":[
+    ++ range_json ++
+        \\]
         \\}}
     ;
     h.send(change_req);

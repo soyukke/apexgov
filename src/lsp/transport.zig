@@ -77,7 +77,13 @@ pub const Transport = struct {
     }
 
     /// JSON-RPC エラーレスポンスを送信する。
-    pub fn send_error_response(self: *Transport, allocator: std.mem.Allocator, id: types.RequestId, code: i32, message: []const u8) !void {
+    pub fn send_error_response(
+        self: *Transport,
+        allocator: std.mem.Allocator,
+        id: types.RequestId,
+        code: i32,
+        message: []const u8,
+    ) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 
@@ -100,7 +106,12 @@ pub const Transport = struct {
     }
 
     /// JSON-RPC 通知を送信する。
-    pub fn send_notification(self: *Transport, allocator: std.mem.Allocator, method: []const u8, params: anytype) !void {
+    pub fn send_notification(
+        self: *Transport,
+        allocator: std.mem.Allocator,
+        method: []const u8,
+        params: anytype,
+    ) !void {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         defer aw.deinit();
 
