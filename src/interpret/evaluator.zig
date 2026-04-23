@@ -7485,45 +7485,21 @@ pub const Evaluator = struct {
             const parent_ref = remaining[0..dot_pos];
             const rest = remaining[dot_pos + 1 ..];
             const fk_field = self.parent_ref_to_fk(parent_ref);
-            const parent_type_opt = self.parent_ref_to_type_for_s_object(current_type, parent_ref);
-            const fk_val_opt = utils.sobject_get(&current_sob.fields, fk_field);
-            if (parent_type_opt == null or fk_val_opt == null) return;
-            if (fk_val_opt.? != .string) return;
-            const parent_type = parent_type_opt.?;
-            const parent_rec = self.find_record_by_id(
-                parent_type,
-                fk_val_opt.?.string,
-            ) orelse return;
+            const parent_type = self.parent_ref_to_type_for_s_object(current_type, parent_ref) orelse
+                return;
+            const fk_val = utils.sobject_get(&current_sob.fields, fk_field) orelse return;
+            if (fk_val != .string) return;
+            const parent_rec = self.find_record_by_id(parent_type, fk_val.string) orelse return;
             if (parent_rec != .sobject) return;
 
-            // Get or create the parent SObject slot on `current_sob`.
-            var parent_sob: *types.SObject = undefined;
-            if (utils.sobject_get(&current_sob.fields, parent_ref)) |existing| {
-                if (existing == .sobject) {
-                    parent_sob = existing.sobject;
-                } else {
-                    parent_sob = try self.arena.create(types.SObject);
-                    parent_sob.* = .{ .type_name = parent_type };
-                    try current_sob.fields.put(
-                        self.arena,
-                        parent_ref,
-                        Value{ .sobject = parent_sob },
-                    );
-                }
-            } else {
-                parent_sob = try self.arena.create(types.SObject);
-                parent_sob.* = .{ .type_name = parent_type };
-                try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
-            }
+            const parent_sob = try self.hydrate_upsert_parent_slot(
+                current_sob,
+                parent_ref,
+                parent_type,
+            );
+            try self.copy_parent_id_into_slot(parent_sob, parent_rec.sobject);
 
-            // Always copy the parent's Id so subsequent deep lookups can
-            // consume it through the same fk_field convention.
-            if (parent_rec.sobject.id) |pid| {
-                parent_sob.id = pid;
-                try parent_sob.fields.put(self.arena, "Id", Value{ .string = pid });
-            }
-
-            // If this is the last segment's parent, copy the leaf field value.
+            // Leaf segment: copy the final field value.
             if (std.mem.indexOfScalar(u8, rest, '.') == null) {
                 if (self.get_s_object_field_value_case_insensitive(
                     parent_rec.sobject,
@@ -7534,22 +7510,56 @@ pub const Evaluator = struct {
                 return;
             }
 
-            // Otherwise mirror across the parent's own FK fields so the
-            // next iteration can chase them.  Copy any FK fields we might
-            // need (identified by looking ahead at the next segment's FK).
-            const next_dot = std.mem.indexOfScalar(u8, rest, '.').?;
-            const next_parent_ref = rest[0..next_dot];
-            const next_fk = self.parent_ref_to_fk(next_parent_ref);
-            if (self.get_s_object_field_value_case_insensitive(
-                parent_rec.sobject,
-                next_fk,
-            )) |nfk_val| {
-                try parent_sob.fields.put(self.arena, next_fk, nfk_val);
-            }
-
+            try self.mirror_next_segment_fk(parent_sob, parent_rec.sobject, rest);
             current_sob = parent_sob;
             current_type = parent_type;
             remaining = rest;
+        }
+    }
+
+    /// Get-or-create the parent SObject slot on `current_sob` at `parent_ref`.
+    /// Reuses an existing nested SObject when present; otherwise allocates a
+    /// fresh one of `parent_type`.
+    fn hydrate_upsert_parent_slot(
+        self: *Evaluator,
+        current_sob: *types.SObject,
+        parent_ref: []const u8,
+        parent_type: []const u8,
+    ) !*types.SObject {
+        if (utils.sobject_get(&current_sob.fields, parent_ref)) |existing| {
+            if (existing == .sobject) return existing.sobject;
+        }
+        const parent_sob = try self.arena.create(types.SObject);
+        parent_sob.* = .{ .type_name = parent_type };
+        try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
+        return parent_sob;
+    }
+
+    /// Always copy the parent's Id so subsequent deep lookups consume it via
+    /// the fk_field convention.
+    fn copy_parent_id_into_slot(
+        self: *Evaluator,
+        parent_sob: *types.SObject,
+        parent_rec: *types.SObject,
+    ) !void {
+        const pid = parent_rec.id orelse return;
+        parent_sob.id = pid;
+        try parent_sob.fields.put(self.arena, "Id", Value{ .string = pid });
+    }
+
+    /// Mirror the next segment's FK field from the real parent onto our slot so
+    /// the next loop iteration can chase it via `fk_field`.
+    fn mirror_next_segment_fk(
+        self: *Evaluator,
+        parent_sob: *types.SObject,
+        parent_rec: *types.SObject,
+        rest: []const u8,
+    ) !void {
+        const next_dot = std.mem.indexOfScalar(u8, rest, '.').?;
+        const next_parent_ref = rest[0..next_dot];
+        const next_fk = self.parent_ref_to_fk(next_parent_ref);
+        if (self.get_s_object_field_value_case_insensitive(parent_rec, next_fk)) |nfk_val| {
+            try parent_sob.fields.put(self.arena, next_fk, nfk_val);
         }
     }
 
