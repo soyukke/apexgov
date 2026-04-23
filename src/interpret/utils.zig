@@ -331,34 +331,39 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
             try buf.append(arena, '}');
             break :blk try buf.toOwnedSlice(arena);
         },
-        .object => |obj| blk: {
-            // Date/DateTime objects serialize as their value string (e.g., "2026-04-07")
-            if ((std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
-            {
-                if (obj.fields.get("value")) |val| {
-                    if (val == .string) {
-                        const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
-                            try format_json_date_time_str(arena, val.string)
-                        else
-                            val.string;
-                        break :blk try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
-                    }
-                }
-            }
-            var buf: std.ArrayListUnmanaged(u8) = .empty;
-            try buf.append(arena, '{');
-            var first = true;
-            for (obj.fields.keys(), obj.fields.values()) |k, val| {
-                if (!first) try buf.append(arena, ',');
-                first = false;
-                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
-                try buf.appendSlice(arena, try to_json(val, arena));
-            }
-            try buf.append(arena, '}');
-            break :blk try buf.toOwnedSlice(arena);
-        },
+        .object => |obj| try object_to_json(obj, arena),
     };
+}
+
+/// `to_json` の ObjectInstance 分岐を抽出。Date / Datetime は
+/// `"value"` 文字列をクオート (Datetime は ISO 正規化)、他は通常の
+/// `{ "key": value, ... }` 形式で出力する。
+/// `to_json` と相互再帰なので `anyerror!` で推論ループを断つ。
+fn object_to_json(obj: *types.ObjectInstance, arena: std.mem.Allocator) anyerror![]const u8 {
+    if ((std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
+    {
+        if (obj.fields.get("value")) |val| {
+            if (val == .string) {
+                const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
+                    try format_json_date_time_str(arena, val.string)
+                else
+                    val.string;
+                return try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
+            }
+        }
+    }
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.append(arena, '{');
+    var first = true;
+    for (obj.fields.keys(), obj.fields.values()) |k, val| {
+        if (!first) try buf.append(arena, ',');
+        first = false;
+        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+        try buf.appendSlice(arena, try to_json(val, arena));
+    }
+    try buf.append(arena, '}');
+    return try buf.toOwnedSlice(arena);
 }
 
 /// Value を bool に変換する（Apex の暗黙変換）。

@@ -14,6 +14,6 @@ src/interpret/evaluator.zig	function_too_long	33
 src/interpret/regex.zig	line_too_long	25
 src/interpret/regex.zig	function_too_long	1
 src/interpret/root.zig	line_too_long	293
-src/interpret/root.zig	function_too_long	4
-src/interpret/utils.zig	line_too_long	15
-src/interpret/utils.zig	function_too_long	3
+src/interpret/root.zig	function_too_long	3
+src/interpret/utils.zig	line_too_long	14
+src/interpret/utils.zig	function_too_long	2

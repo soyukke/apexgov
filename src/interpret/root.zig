@@ -1085,7 +1085,26 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
+    try write_parent_summary_fields_fixture(dir);
     try dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Grandchild__c/fields/Child__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Child__c</fullName>
+        \\    <referenceTo>Child__c</referenceTo>
+        \\    <relationshipName>Grandchildren</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+/// Parent__c の rollup summary フィールド 3 つ (Open/Closed/Total) を書き出す。
+/// `write_generic_rollup_metadata_fixture` が長すぎるので分離した。
+fn write_parent_summary_fields_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.writeFile(tio, .{
         .sub_path = "objects/Parent__c/fields/OpenChildren__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
@@ -1102,7 +1121,7 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
-    try dir.writeFile(std.testing.io, .{
+    try dir.writeFile(tio, .{
         .sub_path = "objects/Parent__c/fields/ClosedChildren__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
@@ -1119,7 +1138,7 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\</CustomField>
         ,
     });
-    try dir.writeFile(std.testing.io, .{
+    try dir.writeFile(tio, .{
         .sub_path = "objects/Parent__c/fields/TotalChildren__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
@@ -1129,18 +1148,6 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\+ ClosedChildren__c</formula>
         \\    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
         \\    <type>Number</type>
-        \\</CustomField>
-        ,
-    });
-    try dir.writeFile(std.testing.io, .{
-        .sub_path = "objects/Grandchild__c/fields/Child__c.field-meta.xml",
-        .data =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
-        \\    <fullName>Child__c</fullName>
-        \\    <referenceTo>Child__c</referenceTo>
-        \\    <relationshipName>Grandchildren</relationshipName>
-        \\    <type>MasterDetail</type>
         \\</CustomField>
         ,
     });
