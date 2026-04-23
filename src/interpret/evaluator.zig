@@ -9690,91 +9690,97 @@ pub const Evaluator = struct {
         value: Value,
     ) !Value {
         if (value != .string) return value;
+        return switch (expr.*) {
+            .identifier => |id| try self.coerce_schema_identifier(id.name, value),
+            .field_access => |fa| try self.coerce_schema_field_access(fa, value),
+            else => value,
+        };
+    }
 
-        switch (expr.*) {
-            .identifier => |id| {
-                if (!std.mem.startsWith(u8, id.name, "Schema.")) return value;
-                const suffix = id.name["Schema.".len..];
-                const dot_idx = std.mem.lastIndexOfScalar(u8, suffix, '.') orelse return value;
-                const owner_name = suffix[0..dot_idx];
-                const member_name = suffix[dot_idx + 1 ..];
-                if (is_known_schema_enum_type(owner_name)) {
-                    return Value{ .string = member_name };
-                }
-                if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = member_name });
-                    return Value{ .object = sot };
-                }
-                if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
-                    return Value{ .object = sot };
-                }
-                if (std.ascii.eqlIgnoreCase(member_name, "class")) return value;
-                return self.make_s_object_field_token(owner_name, member_name);
-            },
-            .field_access => |fa| {
-                if (fa.object.* == .field_access) {
-                    const inner_fa = fa.object.field_access;
-                    if (inner_fa.object.* == .identifier and
-                        std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
-                    {
-                        if (is_known_schema_enum_type(inner_fa.field)) {
-                            return Value{ .string = fa.field };
-                        }
-                        if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
-                            std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
-                        {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                            return Value{ .object = sot };
-                        }
-                        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(
-                                self.arena,
-                                "name",
-                                Value{ .string = inner_fa.field },
-                            );
-                            return Value{ .object = sot };
-                        }
-                        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                            return self.make_s_object_field_token(inner_fa.field, fa.field);
-                        }
-                    }
-                }
-                if (fa.object.* == .identifier and
-                    std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
-                {
-                    const schema_name = fa.object.identifier.name["Schema.".len..];
-                    if (is_known_schema_enum_type(schema_name)) {
-                        return Value{ .string = fa.field };
-                    }
-                    if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                        return Value{ .object = sot };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                        return Value{ .object = sot };
-                    }
-                    if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                        return self.make_s_object_field_token(schema_name, fa.field);
-                    }
-                }
-                return value;
-            },
-            else => return value,
+    /// Identifier of the form `Schema.Owner.Member` where the real lookup
+    /// should produce a Schema-enum value, an SObjectType token, or an
+    /// SObjectField token.
+    fn coerce_schema_identifier(
+        self: *Evaluator,
+        name: []const u8,
+        value: Value,
+    ) !Value {
+        if (!std.mem.startsWith(u8, name, "Schema.")) return value;
+        const suffix = name["Schema.".len..];
+        const dot_idx = std.mem.lastIndexOfScalar(u8, suffix, '.') orelse return value;
+        const owner_name = suffix[0..dot_idx];
+        const member_name = suffix[dot_idx + 1 ..];
+        if (is_known_schema_enum_type(owner_name)) return Value{ .string = member_name };
+        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
+            return try self.make_sobject_type_token(member_name);
         }
+        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
+            return try self.make_sobject_type_token(owner_name);
+        }
+        if (std.ascii.eqlIgnoreCase(member_name, "class")) return value;
+        return try self.make_s_object_field_token(owner_name, member_name);
+    }
+
+    /// FieldAccess chains rooted at `Schema.*` → produce the matching proxy
+    /// value (enum string / SObjectType token / SObjectField token). Returns
+    /// the original `value` when no Schema-based rewrite applies.
+    fn coerce_schema_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        value: Value,
+    ) !Value {
+        if (fa.object.* == .field_access) {
+            if (try self.coerce_schema_two_level(fa)) |v| return v;
+        }
+        if (fa.object.* == .identifier and
+            std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+        {
+            if (try self.coerce_schema_one_level(
+                fa.object.identifier.name["Schema.".len..],
+                fa.field,
+            )) |v| return v;
+        }
+        return value;
+    }
+
+    fn coerce_schema_two_level(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) !?Value {
+        const inner_fa = fa.object.field_access;
+        if (inner_fa.object.* != .identifier) return null;
+        if (!std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema")) return null;
+        if (is_known_schema_enum_type(inner_fa.field)) return Value{ .string = fa.field };
+        if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
+            std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
+        {
+            return try self.make_sobject_type_token(fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+            return try self.make_sobject_type_token(inner_fa.field);
+        }
+        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.make_s_object_field_token(inner_fa.field, fa.field);
+        }
+        return null;
+    }
+
+    fn coerce_schema_one_level(
+        self: *Evaluator,
+        schema_name: []const u8,
+        field_name: []const u8,
+    ) !?Value {
+        if (is_known_schema_enum_type(schema_name)) return Value{ .string = field_name };
+        if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+            return try self.make_sobject_type_token(field_name);
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "SObjectType")) {
+            return try self.make_sobject_type_token(schema_name);
+        }
+        if (!std.ascii.eqlIgnoreCase(field_name, "class")) {
+            return try self.make_s_object_field_token(schema_name, field_name);
+        }
+        return null;
     }
 
     fn render_type_ref(self: *Evaluator, type_ref: types.TypeRef) []const u8 {
