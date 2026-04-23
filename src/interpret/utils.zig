@@ -451,6 +451,7 @@ test "coerceToString" {
 
     const s = try coerceToString(Value{ .integer = 42 }, std.testing.allocator);
     defer std.testing.allocator.free(s);
+
     try std.testing.expectEqualStrings("42", s);
 }
 
@@ -459,18 +460,22 @@ test "formatApexDouble" {
 
     const s1 = try formatApexDouble(alloc, 10.0);
     defer alloc.free(s1);
+
     try std.testing.expectEqualStrings("10.0", s1);
 
     const s2 = try formatApexDouble(alloc, 3.14);
     defer alloc.free(s2);
+
     try std.testing.expectEqualStrings("3.14", s2);
 
     const s3 = try formatApexDouble(alloc, 0.0);
     defer alloc.free(s3);
+
     try std.testing.expectEqualStrings("0.0", s3);
 
     const s4 = try formatApexDouble(alloc, 86.0);
     defer alloc.free(s4);
+
     try std.testing.expectEqualStrings("86.0", s4);
 }
 

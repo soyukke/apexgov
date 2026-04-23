@@ -51,6 +51,7 @@ const parser = @import("../apex_parser/parser.zig");
 test "renames variable at all sites" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() { Integer x = 1; Integer y = x; } }";
@@ -74,6 +75,7 @@ test "renames variable at all sites" {
 test "unknown position returns null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo {}";

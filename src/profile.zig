@@ -247,6 +247,7 @@ fn appendTransactionResult(
         if (tx.label) |value| gpa.free(value);
         tx.* = .{};
     }
+
     if (!tx.saw_metric) return;
 
     const label_source = tx.label orelse "unknown";
@@ -503,6 +504,7 @@ test "compareWithBaseline returns empty when baseline path is null" {
 
     var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, null, 15);
     defer deinitRegressions(std.testing.allocator, &regressions);
+
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
 }
 

@@ -67,6 +67,7 @@ fn hoverAt(source: []const u8, name: []const u8) !TestHoverCtx {
 test "hover on variable shows type" {
     var ctx = try hoverAt("public class Foo { public void run() { Integer x = 1; } }", "x");
     defer ctx.deinit();
+
     try std.testing.expect(ctx.result != null);
     try std.testing.expect(std.mem.indexOf(u8, ctx.result.?.contents.value, "Integer") != null);
 }
@@ -74,6 +75,7 @@ test "hover on variable shows type" {
 test "hover on method shows signature" {
     var ctx = try hoverAt("public class Foo { public String getName() { return null; } }", "getName");
     defer ctx.deinit();
+
     try std.testing.expect(ctx.result != null);
     try std.testing.expect(std.mem.indexOf(u8, ctx.result.?.contents.value, "method") != null);
 }
@@ -81,6 +83,7 @@ test "hover on method shows signature" {
 test "hover on class shows class info" {
     var ctx = try hoverAt("public class Foo {}", "Foo");
     defer ctx.deinit();
+
     try std.testing.expect(ctx.result != null);
     try std.testing.expect(std.mem.indexOf(u8, ctx.result.?.contents.value, "class") != null);
 }
@@ -88,6 +91,7 @@ test "hover on class shows class info" {
 test "hover on empty space returns null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, alloc);

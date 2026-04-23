@@ -227,6 +227,7 @@ test "local variables in completions" {
     const source = "public class Foo { public void run() { Integer myVar = 1; } }";
     var ctx = try completeAt(source, 50);
     defer ctx.deinit();
+
     try std.testing.expect(hasLabel(ctx.items, "myVar"));
 }
 
@@ -234,6 +235,7 @@ test "keywords in completions" {
     const source = "public class Foo {}";
     var ctx = try completeAt(source, 10);
     defer ctx.deinit();
+
     try std.testing.expect(hasLabel(ctx.items, "public"));
     try std.testing.expect(hasLabel(ctx.items, "class"));
     try std.testing.expect(hasLabel(ctx.items, "String"));
@@ -243,6 +245,7 @@ test "method parameters visible" {
     const source = "public class Foo { public void run(String name) {} }";
     var ctx = try completeAt(source, 45);
     defer ctx.deinit();
+
     try std.testing.expect(hasLabel(ctx.items, "name"));
 }
 

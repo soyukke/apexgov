@@ -263,6 +263,7 @@ pub const Server = struct {
             }
             self.allocator.free(gov_diags);
         }
+
         for (gov_diags) |gd| {
             try diags.append(self.allocator, gd);
         }
@@ -424,6 +425,7 @@ pub const Server = struct {
         const doc = self.store.get(ctx.uri) orelse return;
         const locs = try references_mod.getReferencesCrossFile(br, cached.tokens, doc.text, ctx.uri, ctx.offset, true, &self.store, self.allocator);
         defer self.allocator.free(locs);
+
         try self.transport.sendResponse(self.allocator, id, locs);
     }
 
@@ -439,6 +441,7 @@ pub const Server = struct {
         const doc = self.store.get(ctx.uri) orelse return;
         const items = try completion_mod.getCompletions(br, doc.text, ctx.offset, self.allocator, &self.custom_fields);
         defer self.allocator.free(items);
+
         try self.transport.sendResponse(self.allocator, id, types.CompletionList{ .items = items });
     }
 
@@ -487,6 +490,7 @@ pub const Server = struct {
         const doc = self.store.get(ctx.uri) orelse return;
         const hl = try document_highlight_mod.getHighlights(br, doc.text, ctx.offset, self.allocator);
         defer self.allocator.free(hl);
+
         try self.transport.sendResponse(self.allocator, id, hl);
     }
 
@@ -634,14 +638,17 @@ pub const Server = struct {
         // パッケージディレクトリ配下の .cls を含むサブディレクトリを探索
         // main/default/classes/ に加え tests/ 等も対象にする
         const sub_candidates = [_][]const u8{ "main/default/classes", "tests" };
+
         var all_dirs: std.ArrayList([]const u8) = .empty;
         defer {
             for (all_dirs.items) |p| self.allocator.free(p);
             all_dirs.deinit(self.allocator);
         }
+
         for (&sub_candidates) |sub| {
             const sub_dirs = try sfdx_project.resolveSubDirs(self.allocator, self.io, pkg_dirs, sub);
             defer self.allocator.free(sub_dirs);
+
             for (sub_dirs) |d| {
                 try all_dirs.append(self.allocator, d);
             }

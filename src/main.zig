@@ -220,6 +220,7 @@ fn runTypegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
     var total_files: u32 = 0;
     var allocating = Io.Writer.Allocating.init(gpa);
     defer allocating.deinit();
+
     const writer = &allocating.writer;
 
     // ファイルパスをソート済みで収集する（出力を決定的にするため）
@@ -228,14 +229,17 @@ fn runTypegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
         return 2;
     };
     defer root_dir.close(io);
+
     var all_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (all_paths.items) |p| gpa.free(p);
         all_paths.deinit(gpa);
     }
+
     {
         var walker = try root_dir.walk(gpa);
         defer walker.deinit();
+
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
             try all_paths.append(gpa, try gpa.dupe(u8, entry.path));
@@ -288,6 +292,7 @@ fn runTypegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
             const names = try typegen.parseLabelNames(xml, gpa);
             defer gpa.free(names);
+
             for (names) |name| {
                 if (label_count > 0) try writer.writeByte('\n');
                 try typegen.renderLabel(name, writer);
@@ -344,6 +349,7 @@ fn runTypegen(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 
             const methods = try typegen.findAuraEnabledMethods(source, class_name, gpa);
             defer gpa.free(methods);
+
             for (methods) |method| {
                 try typegen.renderApexMethod(method, writer);
                 try writer.writeByte('\n');

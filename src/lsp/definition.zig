@@ -57,6 +57,7 @@ const parser = @import("../apex_parser/parser.zig");
 fn defAt(source: []const u8, offset: u32) !?lsp_types.Location {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);

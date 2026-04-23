@@ -42,6 +42,7 @@ const lexer = @import("../apex_parser/lexer.zig");
 fn tokenizeAndFold(source: []const u8) ![]lsp_types.FoldingRange {
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     return getFoldingRanges(tokens, std.testing.allocator);
 }
 

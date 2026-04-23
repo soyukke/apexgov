@@ -27,13 +27,16 @@ pub fn collect(
     // 単一ファイルモード: 空の method_summaries / type_relations / name_index
     var method_summaries = std.StringHashMap(check_types.MethodSummary).init(allocator);
     defer method_summaries.deinit();
+
     var name_index = check_types.MethodNameIndex.init(allocator);
     defer name_index.deinit();
 
     var extends = std.StringHashMap([]const u8).init(allocator);
     defer extends.deinit();
+
     var interfaces = std.StringHashMap(std.ArrayListUnmanaged([]const u8)).init(allocator);
     defer interfaces.deinit();
+
     const type_relations = check_types.TypeRelations{
         .extends_by_type = extends,
         .interfaces_by_type = interfaces,
@@ -104,6 +107,7 @@ test "SOQL in loop produces AG002 diagnostic" {
 
     // AG002 が含まれているか
     var found_ag002 = false;
+
     for (diags) |d| {
         if (d.code) |code| {
             if (std.mem.eql(u8, code, "AG002")) {
@@ -134,6 +138,7 @@ test "DML in loop produces AG003 diagnostic" {
     }
 
     var found_ag003 = false;
+
     for (diags) |d| {
         if (d.code) |code| {
             if (std.mem.eql(u8, code, "AG003")) {

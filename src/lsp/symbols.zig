@@ -133,6 +133,7 @@ test "class with methods → class symbol with method children" {
     const source = "public class AccountService { public void process() {} private Integer count() { return 0; } }";
     var r = try parseAndCollect(source);
     defer r.deinit();
+
     const symbols = r.symbols;
 
     try std.testing.expectEqual(@as(usize, 1), symbols.len);
@@ -148,6 +149,7 @@ test "class with fields → field symbols" {
     const source = "public class Foo { public String name; private static final Integer MAX = 100; }";
     var r = try parseAndCollect(source);
     defer r.deinit();
+
     const children = r.symbols[0].children;
 
     try std.testing.expectEqual(@as(usize, 2), children.len);
@@ -161,6 +163,7 @@ test "enum → enum symbol with enum_member children" {
     const source = "public enum Season { SPRING, SUMMER, FALL, WINTER }";
     var r = try parseAndCollect(source);
     defer r.deinit();
+
     const symbols = r.symbols;
 
     try std.testing.expectEqual(@as(usize, 1), symbols.len);

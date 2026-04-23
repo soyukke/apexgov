@@ -473,6 +473,7 @@ fn keywordKind(lexeme: []const u8) ?TokenKind {
 test "tokenize string literal" {
     const tokens = try tokenize("'hello world'", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.string_literal, tokens[0].kind);
     try std.testing.expectEqualStrings("'hello world'", tokens[0].lexeme);
     try std.testing.expectEqual(TokenKind.eof, tokens[1].kind);
@@ -481,6 +482,7 @@ test "tokenize string literal" {
 test "tokenize integer arithmetic" {
     const tokens = try tokenize("123 + 456", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(@as(usize, 4), tokens.len); // 123, +, 456, eof
     try std.testing.expectEqual(TokenKind.integer_literal, tokens[0].kind);
     try std.testing.expectEqual(TokenKind.plus, tokens[1].kind);
@@ -490,6 +492,7 @@ test "tokenize integer arithmetic" {
 test "tokenize equality operators" {
     const tokens = try tokenize("x == y === z != w !== v", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.identifier, tokens[0].kind);
     try std.testing.expectEqual(TokenKind.eq, tokens[1].kind);
     try std.testing.expectEqual(TokenKind.identifier, tokens[2].kind);
@@ -503,6 +506,7 @@ test "tokenize equality operators" {
 test "tokenize SOQL literal" {
     const tokens = try tokenize("[SELECT Id FROM Account]", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.soql_literal, tokens[0].kind);
     try std.testing.expectEqualStrings("[SELECT Id FROM Account]", tokens[0].lexeme);
 }
@@ -510,6 +514,7 @@ test "tokenize SOQL literal" {
 test "tokenize keywords case-insensitive" {
     const tokens = try tokenize("Public Static Void", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.public_kw, tokens[0].kind);
     try std.testing.expectEqual(TokenKind.static_kw, tokens[1].kind);
     try std.testing.expectEqual(TokenKind.void_kw, tokens[2].kind);
@@ -518,6 +523,7 @@ test "tokenize keywords case-insensitive" {
 test "tokenize DML keywords" {
     const tokens = try tokenize("insert update delete", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.insert_kw, tokens[0].kind);
     try std.testing.expectEqual(TokenKind.update_kw, tokens[1].kind);
     try std.testing.expectEqual(TokenKind.delete_kw, tokens[2].kind);
@@ -535,6 +541,7 @@ test "tokenize comments are skipped" {
 test "tokenize annotation" {
     const tokens = try tokenize("@IsTest", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.annotation, tokens[0].kind);
     try std.testing.expectEqualStrings("@IsTest", tokens[0].lexeme);
 }
@@ -542,6 +549,7 @@ test "tokenize annotation" {
 test "tokenize double literal" {
     const tokens = try tokenize("3.14", std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     try std.testing.expectEqual(TokenKind.double_literal, tokens[0].kind);
     try std.testing.expectEqualStrings("3.14", tokens[0].lexeme);
 }

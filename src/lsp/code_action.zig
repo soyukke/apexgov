@@ -77,6 +77,7 @@ test "clean code produces no actions" {
     const diags = [_]lsp_types.Diagnostic{};
     const actions = try getCodeActions(&diags, .{}, std.testing.allocator);
     defer std.testing.allocator.free(actions);
+
     try std.testing.expectEqual(@as(usize, 0), actions.len);
 }
 

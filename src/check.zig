@@ -52,6 +52,7 @@ pub fn runWithConfig(gpa: std.mem.Allocator, io: Io, roots: []const []const u8, 
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
     const arena_allocator = arena.allocator();
 
     // 各ファイルの stripped_content を事前計算（1回だけ strip）
@@ -110,12 +111,14 @@ fn runCheckOnTempSources(
     // Build ApexFile slice directly from in-memory sources (no file I/O).
     var files = try std.ArrayList(ApexFile).initCapacity(gpa, sources.len);
     defer files.deinit(gpa);
+
     for (sources) |src| {
         files.appendAssumeCapacity(.{ .path = src.name, .content = src.source });
     }
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
     const arena_alloc = arena.allocator();
 
     for (files.items) |*file| {
@@ -150,6 +153,7 @@ test "guard upper bound parses from return guard" {
 test "for condition uses inferred variable bound" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
     var bounds = std.StringHashMap(Bound).init(allocator);
@@ -175,6 +179,7 @@ test "collectDoWhileStartConditions links do line to tail condition" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
     var mapped = try collectDoWhileStartConditions(allocator, source);
@@ -198,6 +203,7 @@ test "collectDoWhileStartConditions supports do on separate line from brace" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
     var mapped = try collectDoWhileStartConditions(allocator, source);

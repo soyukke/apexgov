@@ -142,6 +142,7 @@ const lexer = @import("../apex_parser/lexer.zig");
 test "identifierAtOffset finds class name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // 'Foo' starts at offset 13
@@ -152,6 +153,7 @@ test "identifierAtOffset finds class name" {
 test "identifierAtOffset returns null on keyword" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // offset 0 = 'public' (keyword, not identifier)
@@ -161,6 +163,7 @@ test "identifierAtOffset returns null on keyword" {
 test "identifierAtOffset returns null between tokens" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // offset 6 = space

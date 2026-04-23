@@ -2794,8 +2794,10 @@ test "no diagnostics: Schema describe patterns" {
     ;
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
@@ -2821,8 +2823,10 @@ test "no diagnostics: class literal in various positions" {
     ;
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }
@@ -2858,8 +2862,10 @@ test "no diagnostics: method call with class literal arg and newlines" {
     ;
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const result = try parseWithDiagnostics(tokens, arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
 }

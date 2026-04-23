@@ -6503,6 +6503,7 @@ fn loadPicklistFromMetadata(ctx: *BuiltinContext, list: *types.ListValue, obj_ty
         // path が "repo/" のようなルートの場合、"repo/cc-base-app/main/default/objects/..." を探す
         var dir = std.Io.Dir.cwd().openDir(ctx.eval.io, path, .{ .iterate = true }) catch continue;
         defer dir.close(ctx.eval.io);
+
         var it = dir.iterate();
         while (it.next(ctx.eval.io) catch null) |entry| {
             if (entry.kind != .directory) continue;

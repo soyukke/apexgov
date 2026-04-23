@@ -69,6 +69,7 @@ pub fn collectDoWhileStartConditionsFromStripped(
 
     var do_stack: std.ArrayList(DoLoopStart) = .empty;
     defer do_stack.deinit(allocator);
+
     var pending_do_start: ?DoLoopStart = null;
 
     var brace_depth: i32 = 0;

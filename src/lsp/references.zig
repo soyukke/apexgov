@@ -69,6 +69,7 @@ pub fn getReferencesCrossFile(
             // 同名シンボルの参照を収集
             const other_refs = try binder_mod.filterReferences(&br, other_sym.id, allocator);
             defer allocator.free(other_refs);
+
             for (other_refs) |ref| {
                 if (!include_declaration and ref.is_definition) continue;
                 const pos = position_mod.offsetToPosition(doc.text, ref.offset);
@@ -95,6 +96,7 @@ const parser = @import("../apex_parser/parser.zig");
 test "finds all uses of local variable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() { Integer x = 1; Integer y = x; } }";
@@ -117,6 +119,7 @@ test "finds all uses of local variable" {
 test "include_declaration=false excludes definition" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() { Integer x = 1; Integer y = x; } }";

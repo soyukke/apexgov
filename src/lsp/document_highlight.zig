@@ -37,6 +37,7 @@ const parser = @import("../apex_parser/parser.zig");
 test "highlights all occurrences" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() { Integer x = 1; Integer y = x; } }";
@@ -58,6 +59,7 @@ test "highlights all occurrences" {
 test "definition marked as write" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() { Integer x = 1; Integer y = x; } }";
@@ -84,6 +86,7 @@ test "definition marked as write" {
 test "whitespace returns empty" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo {}";

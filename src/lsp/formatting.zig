@@ -70,6 +70,7 @@ const lexer = @import("../apex_parser/lexer.zig");
 fn format(source: []const u8) ![]const u8 {
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
+
     return formatSource(tokens, source, .{}, std.testing.allocator);
 }
 
@@ -101,5 +102,6 @@ test "preserves string literal content" {
 test "empty document" {
     const result = try format("");
     defer std.testing.allocator.free(result);
+
     try std.testing.expectEqualStrings("", result);
 }

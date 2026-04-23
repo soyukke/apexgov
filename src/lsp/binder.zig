@@ -510,6 +510,7 @@ fn countSymbolsByKind(result: *const BindResult, kind: SymbolKind) usize {
 test "creates symbol for class" {
     var ctx = try bindSource("public class Foo {}");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "Foo");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.class, sym.?.kind);
@@ -518,6 +519,7 @@ test "creates symbol for class" {
 test "creates symbol for method with return type" {
     var ctx = try bindSource("public class Foo { public String getName() { return null; } }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "getName");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.method, sym.?.kind);
@@ -528,6 +530,7 @@ test "creates symbol for method with return type" {
 test "creates symbol for field with type" {
     var ctx = try bindSource("public class Foo { private Integer count; }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "count");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.field, sym.?.kind);
@@ -537,6 +540,7 @@ test "creates symbol for field with type" {
 test "creates symbol for parameter" {
     var ctx = try bindSource("public class Foo { public void run(String name) {} }");
     defer ctx.deinit();
+
     try std.testing.expectEqual(@as(usize, 1), countSymbolsByKind(&ctx.result, .parameter));
     const sym = findSymbol(&ctx.result, "name");
     try std.testing.expect(sym != null);
@@ -547,6 +551,7 @@ test "creates symbol for parameter" {
 test "creates symbol for local variable with type" {
     var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; } }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.local_variable, sym.?.kind);
@@ -556,6 +561,7 @@ test "creates symbol for local variable with type" {
 test "creates symbol for enum values" {
     var ctx = try bindSource("public enum Season { SPRING, SUMMER }");
     defer ctx.deinit();
+
     try std.testing.expectEqual(@as(usize, 2), countSymbolsByKind(&ctx.result, .enum_value));
 }
 
@@ -564,17 +570,20 @@ test "creates symbol for enum values" {
 test "identifier creates reference to variable" {
     var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     // x の定義 + 使用 = 2 references
     const refs = try filterReferences(&ctx.result, sym.?.id, std.testing.allocator);
     defer std.testing.allocator.free(refs);
+
     try std.testing.expectEqual(@as(usize, 2), refs.len);
 }
 
 test "references sorted by offset" {
     var ctx = try bindSource("public class Foo { public void run() { Integer x = 1; Integer y = x; } }");
     defer ctx.deinit();
+
     for (ctx.result.references[1..], 0..) |ref, i| {
         _ = i;
         try std.testing.expect(ref.offset >= ctx.result.references[0].offset);
@@ -587,6 +596,7 @@ test "symbolAtPosition finds variable" {
     const source = "public class Foo { public void run() { Integer x = 1; } }";
     var ctx = try bindSource(source);
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     const found = symbolAtPosition(&ctx.result, sym.?.loc.offset);
@@ -608,6 +618,7 @@ test "symbolAtPosition returns null between tokens" {
 test "empty class" {
     var ctx = try bindSource("public class Empty {}");
     defer ctx.deinit();
+
     try std.testing.expectEqual(@as(usize, 1), ctx.result.symbols.len);
     try std.testing.expectEqualStrings("Empty", ctx.result.symbols[0].name);
 }
@@ -615,12 +626,14 @@ test "empty class" {
 test "multiple classes in file" {
     var ctx = try bindSource("public class A {} public class B {}");
     defer ctx.deinit();
+
     try std.testing.expectEqual(@as(usize, 2), countSymbolsByKind(&ctx.result, .class));
 }
 
 test "trigger declaration" {
     var ctx = try bindSource("trigger MyTrigger on Account (before insert) { }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "MyTrigger");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.trigger, sym.?.kind);
@@ -629,6 +642,7 @@ test "trigger declaration" {
 test "interface declaration" {
     var ctx = try bindSource("public interface Runnable { void run(); }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "Runnable");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.interface, sym.?.kind);
@@ -637,6 +651,7 @@ test "interface declaration" {
 test "for-each variable scoped to loop body" {
     var ctx = try bindSource("public class Foo { public void run() { for (Account a : accs) { } } }");
     defer ctx.deinit();
+
     const sym = findSymbol(&ctx.result, "a");
     try std.testing.expect(sym != null);
     try std.testing.expectEqual(SymbolKind.for_each_variable, sym.?.kind);
@@ -646,6 +661,7 @@ test "for-each variable scoped to loop body" {
 test "constructor with params" {
     var ctx = try bindSource("public class Foo { public Foo(String name) {} }");
     defer ctx.deinit();
+
     try std.testing.expectEqual(@as(usize, 1), countSymbolsByKind(&ctx.result, .constructor));
     const param = findSymbol(&ctx.result, "name");
     try std.testing.expect(param != null);

@@ -181,6 +181,7 @@ fn collectMethodDirectMetricsAndCalls(
 
     var method_loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer method_loop_scopes.deinit(arena_allocator);
+
     var pending_method_loop_scope: ?PendingLoopScopeStart = null;
 
     var method_bounds = std.StringHashMap(Bound).init(arena_allocator);

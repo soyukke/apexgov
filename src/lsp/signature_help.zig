@@ -88,6 +88,7 @@ const parser = @import("../apex_parser/parser.zig");
 test "inside method call shows params" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run(String name, Integer count) { run(); } }";
@@ -105,6 +106,7 @@ test "inside method call shows params" {
 test "outside call returns null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() {} }";

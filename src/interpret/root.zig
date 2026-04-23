@@ -141,6 +141,7 @@ fn isSampleAppFixturePath(alloc: std.mem.Allocator, io: std.Io, base_path: []con
     for (markers) |marker| {
         const full_path = std.fs.path.join(alloc, &.{ base_path, marker }) catch continue;
         defer alloc.free(full_path);
+
         std.Io.Dir.cwd().access(io, full_path, .{}) catch continue;
         return true;
     }
@@ -211,6 +212,7 @@ fn runTestsFiltered(
     // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
+
     const parse_alloc = parse_arena.allocator();
 
     // 1. .cls ファイルを収集
@@ -505,8 +507,10 @@ fn collectClsFiles(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files
     // Walk directory recursively
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
+
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
@@ -548,8 +552,10 @@ fn collectFieldDefaults(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
+
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
@@ -722,6 +728,7 @@ fn collectFieldDefaults(
 fn extractXmlTagValue(content: []const u8, tag_name: []const u8) ?[]const u8 {
     const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
     defer std.heap.page_allocator.free(start_tag);
+
     const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return null;
     defer std.heap.page_allocator.free(end_tag);
 
@@ -818,8 +825,10 @@ fn collectCustomSettingTypes(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
+
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".object-meta.xml")) continue;
@@ -889,8 +898,10 @@ fn collectFieldSets(
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+
     var walker = dir.walk(alloc) catch return;
     defer walker.deinit();
+
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) continue;
@@ -1164,6 +1175,7 @@ test "isTestMethod detects testMethod modifier" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -1198,6 +1210,7 @@ test "E2E: simple static method returns string" {
         .entry_method = "greet",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("world", result.value.string);
 }
 
@@ -1216,6 +1229,7 @@ test "E2E: arithmetic and variable" {
         .entry_method = "compute",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 13), result.value.integer);
 }
 
@@ -1233,6 +1247,7 @@ test "E2E: System.debug captures output" {
         .entry_method = "logIt",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("first\nsecond\n", result.stdout);
 }
 
@@ -1255,6 +1270,7 @@ test "E2E: if-else control flow" {
         .entry_method = "max",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 10), result.value.integer);
 }
 
@@ -1275,6 +1291,7 @@ test "E2E: for loop with accumulator" {
         .entry_method = "factorial",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 120), result.value.integer);
 }
 
@@ -1292,6 +1309,7 @@ test "E2E: string concatenation with integer" {
         .entry_method = "build",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("count=42", result.value.string);
 }
 
@@ -1312,6 +1330,7 @@ test "E2E: method calling another method in same class" {
         .entry_method = "main",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 14), result.value.integer);
 }
 
@@ -1365,6 +1384,7 @@ test "E2E: instanceof checks superclass hierarchy" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 111), result.value.integer);
 }
 
@@ -1392,6 +1412,7 @@ test "E2E: Pattern.compile with digit and word patterns" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:123:456:user:host", result.value.string);
 }
 
@@ -1411,6 +1432,7 @@ test "E2E: Matcher.matches requires a full-string regex match" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|false", result.value.string);
 }
 
@@ -1439,6 +1461,7 @@ test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:4:1:aa:aa", result.value.string);
 }
 
@@ -1461,6 +1484,7 @@ test "E2E: standard child relationships preserve field token equality" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Contacts", result.value.string);
 }
 
@@ -1485,6 +1509,7 @@ test "E2E: fields map tokens compare equal to standard child relationship fields
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -1505,6 +1530,7 @@ test "E2E: Contact describe fields expose LastName token at runtime" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:LastName:LastName", result.value.string);
 }
 
@@ -1529,6 +1555,7 @@ test "E2E: list-derived describe resolves standard child relationship fields" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Contacts", result.value.string);
 }
 
@@ -1572,6 +1599,7 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
 }
 
@@ -1675,6 +1703,7 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:2:003000000000001AAA", result.value.string);
 }
 
@@ -1773,6 +1802,7 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("[{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\",\"NumberOfEmployees\":\"7\",\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"},{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]", result.value.string);
 }
 
@@ -1803,6 +1833,7 @@ test "E2E: custom property setters can delegate writes" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("delegated", result.value.string);
 }
 
@@ -1823,6 +1854,7 @@ test "E2E: Date.today returns current date, Date.newInstance builds from args" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -1839,6 +1871,7 @@ test "E2E: System.now date matches System.today" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -1860,6 +1893,7 @@ test "E2E: Database.query on unknown object throws QueryException" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("caught", result.value.string);
 }
 
@@ -1888,6 +1922,7 @@ test "E2E: beforeUpdate trigger addError causes DmlException" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "caught:"));
 }
 
@@ -1914,6 +1949,7 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
@@ -1939,6 +1975,7 @@ test "E2E: Cache.Partition get resolves inner CacheBuilder classes" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("loaded:demo:true:true", result.value.string);
 }
 
@@ -1961,6 +1998,7 @@ test "E2E: Cache.Partition get resolves bare inner CacheBuilder literals inside 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("loaded:demo:true", result.value.string);
 }
 
@@ -2017,6 +2055,7 @@ test "E2E: cached Organization accessor works through an inner CacheBuilder" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:1", result.value.string);
 }
 
@@ -2035,6 +2074,7 @@ test "E2E: Cache.Partition isAvailable returns true for existing org partition" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -2065,6 +2105,7 @@ test "E2E: Flow metadata stubs support IN bind variables" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("MockLogBatchPurgerPlugin:true:true", result.value.string);
 }
 
@@ -2087,6 +2128,7 @@ test "E2E: metadata stubs resolve static bind variables" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("LogEntryHandler_Tests_Flow", result.value.string);
 }
 
@@ -2120,6 +2162,7 @@ test "E2E: FlowDefinitionView stub query works through helper method reuse" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:1", result.value.string);
 }
 
@@ -2141,12 +2184,14 @@ test "E2E: FlowDefinitionView stub does not synthesize inactive-free queries" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
 test "E2E: fixture Flow.Interview plugin mock exposes input and output variables" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     const source =
         \\public class FlowInterviewTest {
         \\    public static String test() {
@@ -2167,6 +2212,7 @@ test "E2E: fixture Flow.Interview plugin mock exposes input and output variables
         .source_paths = fixture_paths.slice(),
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("cfg:input:Hello, world", result.value.string);
 }
 
@@ -2198,6 +2244,7 @@ test "E2E: FeatureManagement.checkPermission honors assigned custom permissions 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(true, result.value.boolean);
 }
 
@@ -2221,6 +2268,7 @@ test "E2E: standard user custom object describe is not updateable by default" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(false, result.value.boolean);
 }
 
@@ -2245,6 +2293,7 @@ test "E2E: schema-qualified standard user custom object describe is not updateab
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:false", result.value.string);
 }
 
@@ -2268,6 +2317,7 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:false", result.value.string);
 }
 
@@ -2290,6 +2340,7 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:System Administrator:Salesforce", result.value.string);
 }
 
@@ -2319,6 +2370,7 @@ test "E2E: synthetic Profile query honors permission flag predicates" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("System Administrator:false:true:true", result.value.string);
 }
 
@@ -2354,6 +2406,7 @@ test "E2E: inserted users are queryable by CommunityNickname" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:fixture-nick:true", result.value.string);
 }
 
@@ -2379,6 +2432,7 @@ test "E2E: static final test-dependent bind variables resolve in SOQL" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("missing-user@example.com:0:none", result.value.string);
 }
 
@@ -2398,6 +2452,7 @@ test "E2E: static final test-dependent constants evaluate before use" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("missing-user@example.com", result.value.string);
 }
 
@@ -2423,6 +2478,7 @@ test "E2E: synthetic User LIKE collapses repeated wildcards" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Test User:testuser@example.com", result.value.string);
 }
 
@@ -2448,6 +2504,7 @@ test "E2E: stripInaccessible keeps Id on update records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:001000000000001AAA:updated", result.value.string);
 }
 
@@ -2469,6 +2526,7 @@ test "E2E: user-defined classes shadow builtin static helpers" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("shadow:ok", result.value.string);
 }
 
@@ -2518,6 +2576,7 @@ test "E2E: stripInaccessible READABLE removes selected null fields without acces
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2598,6 +2657,7 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}", result.value.string);
 }
 
@@ -2667,6 +2727,7 @@ test "E2E: stripInaccessible READABLE enforces root CRUD by default" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2725,6 +2786,7 @@ test "E2E: permission set groups expand assigned permission sets" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2799,6 +2861,7 @@ test "E2E: permission set metadata expands composite address field permissions" 
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2820,6 +2883,7 @@ test "E2E: describeSObjects exposes updatable standard address fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2899,6 +2963,7 @@ test "E2E: stripInaccessible update records remain usable after JSON round-trip"
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expect(result.value.boolean);
 }
 
@@ -2918,6 +2983,7 @@ test "E2E: synthetic automated-process User query works when the User store is n
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("autoproc:autoproc@example.com:AutomatedProcess", result.value.string);
 }
 
@@ -2949,6 +3015,7 @@ test "E2E: UserInfo getters reflect the current runAs user" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("casey.runner@example.com:Casey:Runner:Asia/Tokyo", result.value.string);
 }
 
@@ -2968,6 +3035,7 @@ test "E2E: User query by UserInfo username resolves the current user when other 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
 }
 
@@ -2985,6 +3053,7 @@ test "E2E: User query by UserInfo username resolves the current user before any 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
 }
 
@@ -3008,6 +3077,7 @@ test "E2E: runAs can query the original current user by username" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
 }
 
@@ -3032,6 +3102,7 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:false:false", result.value.string);
 }
 
@@ -3054,6 +3125,7 @@ test "E2E: StaticResource IN clause returns multiple stubs" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
@@ -3081,6 +3153,7 @@ test "E2E: static field set before enqueueJob is visible in execute" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -3102,6 +3175,7 @@ test "E2E: Datetime.time returns a Time object and built-in value classes compar
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|3", result.value.string);
 }
 
@@ -3121,6 +3195,7 @@ test "E2E: Decimal.setScale honours RoundingMode.DOWN" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1.234|1.235", result.value.string);
 }
 
@@ -3141,6 +3216,7 @@ test "E2E: Datetime.format supports ISO week/year/day-of-week/day-of-year patter
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1,2020,29,3,197", result.value.string);
 }
 
@@ -3164,6 +3240,7 @@ test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date an
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2|8|Hello+World|2020-01-01T00:00:00Z", result.value.string);
 }
 
@@ -3185,6 +3262,7 @@ test "E2E: Type literals from distinct classes are not collapsed as map keys" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("alpha,beta,2", result.value.string);
 }
 
@@ -3202,6 +3280,7 @@ test "E2E: Trigger.operationType is null outside of a trigger context" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("null", result.value.string);
 }
 
@@ -3223,6 +3302,7 @@ test "E2E: String indexOf honours the optional fromIndex argument" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:4:-1:4", result.value.string);
 }
 
@@ -3244,6 +3324,7 @@ test "E2E: List and Set values satisfy instanceof Iterable" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:false", result.value.string);
 }
 
@@ -3270,6 +3351,7 @@ test "E2E: nested for-each iterates elements of inner list rather than chunking"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("a,b,c,d", result.value.string);
 }
 
@@ -3289,6 +3371,7 @@ test "E2E: addError on a detached SObject records the error without throwing" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("attached:1:shouldnt throw", result.value.string);
 }
 
@@ -3313,6 +3396,7 @@ test "E2E: field assignment on static variable whose name collides with a class"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("set-via-static", result.value.string);
 }
 
@@ -3343,6 +3427,7 @@ test "E2E: inherited method reaches intermediate override via virtual dispatch" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("a,b", result.value.string);
 }
 
@@ -3367,6 +3452,7 @@ test "E2E: grandparent field initializers run when grandchild is constructed" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -3396,6 +3482,7 @@ test "E2E: explicit super constructor forwards args without extra implicit call"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
@@ -3426,6 +3513,7 @@ test "E2E: super method dispatch uses parent implementation" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -3453,6 +3541,7 @@ test "E2E: enqueueJob executes instance queueable method" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("queued", result.value.string);
 }
 
@@ -3474,6 +3563,7 @@ test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:1", result.value.string);
 }
 
@@ -3511,6 +3601,7 @@ test "E2E: queueable finalizer sees unhandled exception result" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("UNHANDLED_EXCEPTION:boom:boom", result.value.string);
 }
 
@@ -3544,6 +3635,7 @@ test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:true:Updated:2:UniqueId__c", result.value.string);
 }
 
@@ -3562,6 +3654,7 @@ test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:true", result.value.string);
 }
 
@@ -3588,6 +3681,7 @@ test "E2E: custom share objects are queryable" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true:true", result.value.string);
 }
 
@@ -3654,6 +3748,7 @@ test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
@@ -3691,6 +3786,7 @@ test "E2E: getFilteredAttachments full flow" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3:3:3", result.value.string);
 }
 
@@ -3731,6 +3827,7 @@ test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3:3", result.value.string);
 }
 
@@ -3755,6 +3852,7 @@ test "E2E: SOQL IN subquery matches parent record ids" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -3785,6 +3883,7 @@ test "E2E: ContentVersion infers uppercase file extensions for ContentDocument f
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -3836,6 +3935,7 @@ test "E2E: StaticResource Body → ContentVersion insert via method" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
@@ -3886,6 +3986,7 @@ test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
@@ -3945,6 +4046,7 @@ test "E2E: virtual class with overloaded methods and auto property" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("200", result.value.string);
 }
 
@@ -3982,6 +4084,7 @@ test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -4001,6 +4104,7 @@ test "E2E: Decimal.valueOf().setScale().doubleValue() chain" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("50.0", result.value.string);
 }
 
@@ -4018,12 +4122,14 @@ test "E2E: Double string concatenation format" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("10.0°C", result.value.string);
 }
 
 test "areEqual with custom message includes expected and actual" {
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const source =
@@ -4049,6 +4155,7 @@ test "areEqual with custom message includes expected and actual" {
 test "isTrue with custom message includes expected and actual" {
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const source =
@@ -4073,6 +4180,7 @@ test "isTrue with custom message includes expected and actual" {
 test "areNotEqual with custom message includes values" {
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const source =
@@ -4107,6 +4215,7 @@ test "E2E: Datetime.format('MMMM d') returns month name and day" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("July 14", result.value.string);
 }
 
@@ -4124,6 +4233,7 @@ test "E2E: Datetime.format('yyyy-MM-dd') returns ISO date" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2024-07-14", result.value.string);
 }
 
@@ -4141,6 +4251,7 @@ test "E2E: Date.today().year() returns current year" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2026", result.value.string);
 }
 
@@ -4159,6 +4270,7 @@ test "E2E: Datetime.addYears changes year" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2026-07-14", result.value.string);
 }
 
@@ -4177,6 +4289,7 @@ test "E2E: Datetime.date() returns date portion" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("7/19/2024", result.value.string);
 }
 
@@ -4195,6 +4308,7 @@ test "E2E: Date/Datetime no-arg format uses locale short pattern" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1/1/2015|1/1/2015, 2:30 PM", result.value.string);
 }
 
@@ -4214,6 +4328,7 @@ test "E2E: inline new-Set literal drives generic overload resolution" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Contact", result.value.string);
 }
 
@@ -4231,6 +4346,7 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("LastName", result.value.string);
 }
 
@@ -4269,6 +4385,7 @@ test "E2E: constructor overloads prefer declared-variable hint over name-only sc
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("string-enum-bool:Account.Name:A:false", result.value.string);
 }
 
@@ -4305,6 +4422,7 @@ test "E2E: ternary with enum literals carries hint into overload resolution" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("B", result.value.string);
 }
 
@@ -4362,6 +4480,7 @@ test "E2E: LoggingLevel enum hint does not force enum overload for string litera
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("str:hello", result.value.string);
 }
 
@@ -4395,6 +4514,7 @@ test "E2E: enum-valued string argument disambiguates overloads" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Name", result.value.string);
 }
 
@@ -4418,6 +4538,7 @@ test "E2E: Type.forName with Schema prefix instantiates a known standard SObject
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Account", result.value.string);
 }
 
@@ -4439,6 +4560,7 @@ test "E2E: Type.forName('Schema.Network') remains null for Experience-Cloud gati
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("gated-off", result.value.string);
 }
 
@@ -4460,6 +4582,7 @@ test "E2E: Account.Rating describe reports Picklist instead of String" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("PICKLIST", result.value.string);
 }
 
@@ -4480,6 +4603,7 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
 }
 
@@ -4504,6 +4628,7 @@ test "E2E: bitwise operators on integers return integer results" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("14,94,17", result.value.string);
 }
 
@@ -4530,6 +4655,7 @@ test "E2E: qualified enum hint matches unqualified enum parameter" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("mode:SYSTEM_MODE", result.value.string);
 }
 
@@ -4553,6 +4679,7 @@ test "E2E: Map.equals delegates pairwise value comparison" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true,false", result.value.string);
 }
 
@@ -4579,6 +4706,7 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Bob|Smith|bob@example.com|en_US", result.value.string);
 }
 
@@ -4607,6 +4735,7 @@ test "E2E: bare method call inside a subclass resolves to inherited builtin" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("payload", result.value.string);
 }
 
@@ -4634,6 +4763,7 @@ test "E2E: static field initializer can forward-reference a later static field" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("16:0123456789abcdef", result.value.string);
 }
 
@@ -4656,6 +4786,7 @@ test "E2E: bitwise operators on booleans return boolean results" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -4696,6 +4827,7 @@ test "E2E: method call on property-backed identifier invokes the getter" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -4721,6 +4853,7 @@ test "E2E: overload resolution matches Type arg against System.Type param" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("type:OverloadTypeProbe.Inner", result.value.string);
 }
 
@@ -4750,6 +4883,7 @@ test "E2E: incompatible interface cast raises System.TypeException" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -4785,6 +4919,7 @@ test "E2E: Type.forName returns null for names that don't resolve" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -4810,6 +4945,7 @@ test "E2E: fflib_IDGenerator.generate provides a fake id when class source is ab
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -4840,6 +4976,7 @@ test "E2E: Contact exposes Tasks and Account exposes Cases as child relationship
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|true", result.value.string);
 }
 
@@ -4868,6 +5005,7 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("REFERENCE|CreatedBy|User", result.value.string);
 }
 
@@ -4892,6 +5030,7 @@ test "E2E: Matcher.groupCount reflects the pattern and matches() populates curre
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Id, Name|Account", result.value.string);
 }
 
@@ -4912,6 +5051,7 @@ test "E2E: greedy capture groups backtrack when the tail needs characters" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("bbb", result.value.string);
 }
 
@@ -4937,6 +5077,7 @@ test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.g
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -4960,6 +5101,7 @@ test "E2E: String.split with regex metacharacters routes through the regex engin
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("_D0D_|+|_D1D_", result.value.string);
 }
 
@@ -4984,6 +5126,7 @@ test "E2E: Pattern.matches static and nested capture groups round-trip" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|foo bar|foo|bar", result.value.string);
 }
 
@@ -5002,6 +5145,7 @@ test "E2E: Datetime.newInstance(milliseconds) single arg" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2024-07-19", result.value.string);
 }
 
@@ -5021,6 +5165,7 @@ test "E2E: Datetime.getTime() returns epoch millis" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2024-07-19", result.value.string);
 }
 
@@ -5038,6 +5183,7 @@ test "E2E: Datetime.valueOf accepts epoch milliseconds" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2025-01-01:1735689600000", result.value.string);
 }
 
@@ -5059,6 +5205,7 @@ test "E2E: Datetime.valueOf normalizes formatted strings with trailing timezone 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:2018-08-08T08:08:08Z", result.value.string);
 }
 
@@ -5076,6 +5223,7 @@ test "E2E: TimeZone.getTimeZone returns an object-like value with id and display
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Asia/Tokyo:Asia/Tokyo", result.value.string);
 }
 
@@ -5093,6 +5241,7 @@ test "E2E: String.toLowerCase and trim" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("%adventure%", result.value.string);
 }
 
@@ -5115,6 +5264,7 @@ test "E2E: Database.query resolves local bind variables" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -5134,6 +5284,7 @@ test "E2E: Integer and Long valueOf preserve null inputs" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -5154,6 +5305,7 @@ test "E2E: long literals remain distinct from Integer in instanceof checks" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:false:false:true", result.value.string);
 }
 
@@ -5180,6 +5332,7 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
@@ -5187,6 +5340,7 @@ test "E2E: rollup summary fields resolve in WHERE clauses and selected records" 
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5219,6 +5373,7 @@ test "E2E: rollup summary fields resolve in WHERE clauses and selected records" 
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:2:3", result.value.string);
 }
 
@@ -5226,6 +5381,7 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5255,6 +5411,7 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:1:1", result.value.string);
 }
 
@@ -5262,6 +5419,7 @@ test "E2E: filtered rollup matches enum name string values" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fields");
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
@@ -5325,6 +5483,7 @@ test "E2E: filtered rollup matches enum name string values" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -5332,6 +5491,7 @@ test "E2E: required field population preserves explicitly set picklist-like valu
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Example__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Example__c/fields/RequiredName__c.field-meta.xml",
@@ -5393,6 +5553,7 @@ test "E2E: required field population preserves explicitly set picklist-like valu
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ERROR:filled", result.value.string);
 }
 
@@ -5400,6 +5561,7 @@ test "E2E: insert applies required picklist defaults from field metadata" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/OrderThing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/OrderThing__c/fields/Status__c.field-meta.xml",
@@ -5446,6 +5608,7 @@ test "E2E: insert applies required picklist defaults from field metadata" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Draft", result.value.string);
 }
 
@@ -5453,6 +5616,7 @@ test "E2E: picklist describe preserves metadata order when records only use a su
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
@@ -5501,6 +5665,7 @@ test "E2E: picklist describe preserves metadata order when records only use a su
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("3:High:Medium:Low", result.value.string);
 }
 
@@ -5508,6 +5673,7 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fields");
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
@@ -5604,6 +5770,7 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -5611,6 +5778,7 @@ test "E2E: trigger old snapshot preserves pre-rollup summary values" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fields");
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
@@ -5680,6 +5848,7 @@ test "E2E: trigger old snapshot preserves pre-rollup summary values" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:1", result.value.string);
 }
 
@@ -5687,6 +5856,7 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5721,6 +5891,7 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:1", result.value.string);
 }
 
@@ -5728,6 +5899,7 @@ test "E2E: hierarchy custom setting getInstance returns user-scoped inherited se
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5751,6 +5923,7 @@ test "E2E: hierarchy custom setting getInstance returns user-scoped inherited se
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:org", result.value.string);
 }
 
@@ -5758,6 +5931,7 @@ test "E2E: hierarchy custom setting accessors return detached records" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5784,6 +5958,7 @@ test "E2E: hierarchy custom setting accessors return detached records" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("saved:org", result.value.string);
 }
 
@@ -5791,6 +5966,7 @@ test "E2E: hierarchy custom setting records are visible to later static initiali
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5820,6 +5996,7 @@ test "E2E: hierarchy custom setting records are visible to later static initiali
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("configured", result.value.string);
 }
 
@@ -5827,6 +6004,7 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericHierarchyCustomSettingDefaultsFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -5849,6 +6027,7 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -5872,6 +6051,7 @@ test "E2E: static initializer preserves static method side effects on fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
@@ -5901,6 +6081,7 @@ test "E2E: static initializer resolves bare helper calls against the declaring c
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("right", result.value.string);
 }
 
@@ -5908,6 +6089,7 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericHierarchyCustomSettingFixture(tmp_dir.dir);
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "ScenarioHolder.cls",
@@ -5976,6 +6158,7 @@ test "E2E: safe navigation preserves chained fluent instance calls" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -5994,6 +6177,7 @@ test "E2E: safe navigation short-circuits remaining method chain on null" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("null", result.value.string);
 }
 
@@ -6015,6 +6199,7 @@ test "E2E: safe navigation short-circuits remaining field chain on null" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("null", result.value.string);
 }
 
@@ -6032,6 +6217,7 @@ test "E2E: logical OR short-circuits null receiver checks" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -6049,6 +6235,7 @@ test "E2E: logical AND short-circuits null receiver checks" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -6092,6 +6279,7 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -6135,6 +6323,7 @@ test "E2E: Type.forName event handler retains platform event SObjectType map key
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -6159,6 +6348,7 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
@@ -6183,6 +6373,7 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
@@ -6205,6 +6396,7 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("LastModifiedDate:2026-04-01T00:00:00Z", result.value.string);
 }
 
@@ -6239,6 +6431,7 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
 }
 
@@ -6275,6 +6468,7 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass", result.value.string);
 }
 
@@ -6327,6 +6521,7 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         .entry_method = "test",
     });
     defer ctor_result.deinit();
+
     try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body", ctor_result.value.string);
 
     const result = try run(std.testing.allocator, std.testing.io, source, .{
@@ -6334,6 +6529,7 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
 }
 
@@ -6357,6 +6553,7 @@ test "E2E: qualified inner class literals preserve outer class names" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget", result.value.string);
 }
 
@@ -6395,6 +6592,7 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("AA", result.value.string);
 }
 
@@ -6430,6 +6628,7 @@ test "E2E: nested inner constructors resolve sibling inner classes in outer scop
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("A:x", result.value.string);
 }
 
@@ -6459,6 +6658,7 @@ test "E2E: inner classes prefer enclosing static helper methods over unrelated t
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("outer:ok", result.value.string);
 }
 
@@ -6481,6 +6681,7 @@ test "E2E: postfix increment updates static field through bare identifier" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:2:3", result.value.string);
 }
 
@@ -6526,6 +6727,7 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -6564,6 +6766,7 @@ test "E2E: parent constructors can read overridden type getters before child ini
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("null|LogEntryEvent__e", result.value.string);
 }
 
@@ -6591,6 +6794,7 @@ test "E2E: static method returned map supports chained get size and index access
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2|a", result.value.string);
 }
 
@@ -6617,6 +6821,7 @@ test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys i
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("User:testuser@example.com", result.value.string);
 }
 
@@ -6667,6 +6872,7 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Subject:Some subject", result.value.string);
 }
 
@@ -6706,6 +6912,7 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2|second", result.value.string);
 }
 
@@ -6751,6 +6958,7 @@ test "E2E: overridden methods persist List<SObject> fields on handler instances"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("before|2|first", result.value.string);
 }
 
@@ -6803,6 +7011,7 @@ test "E2E: nested field access preserves null overload selection" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2|true", result.value.string);
 }
 
@@ -6845,6 +7054,7 @@ test "E2E: base overload dispatch skips incompatible child override" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("child-list|base-map", result.value.string);
 }
 
@@ -6864,6 +7074,7 @@ test "E2E: Object-wrapped primitive values support null-safe toString" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|1|1.5", result.value.string);
 }
 
@@ -6886,6 +7097,7 @@ test "E2E: System.Test.testInstall invokes install handlers" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -6908,6 +7120,7 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
@@ -6926,6 +7139,7 @@ test "E2E: SObject.getSObject resolves unsaved relationship records assigned via
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
@@ -6943,6 +7157,7 @@ test "E2E: direct property access resolves unsaved relationship records assigned
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
@@ -6967,6 +7182,7 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
@@ -6991,6 +7207,7 @@ test "E2E: member-held direct property access resolves custom fields on unsaved 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Adventure", result.value.string);
 }
 
@@ -7015,6 +7232,7 @@ test "E2E: SObject initializer can read custom fields from member-held relations
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Adventure", result.value.string);
 }
 
@@ -7039,6 +7257,7 @@ test "E2E: subquery child records preserve parent relationship fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
@@ -7046,6 +7265,7 @@ test "E2E: subquery custom child records preserve custom parent relationship fie
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -7071,6 +7291,7 @@ test "E2E: subquery custom child records preserve custom parent relationship fie
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
@@ -7078,6 +7299,7 @@ test "E2E: unsaved custom child relationships default to empty lists" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -7100,6 +7322,7 @@ test "E2E: unsaved custom child relationships default to empty lists" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -7121,6 +7344,7 @@ test "E2E: top-level custom child queries preserve custom parent relationship fi
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
@@ -7146,6 +7370,7 @@ test "E2E: SOQL parent relationship field in WHERE" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -7193,6 +7418,7 @@ test "E2E: SOQL WHERE with null bind variable skips condition (Salesforce behavi
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -7217,6 +7443,7 @@ test "E2E: Database.countQuery resolves local bind variables" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -7238,6 +7465,7 @@ test "E2E: static field accessed from another class" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("9", result.value.string);
 }
 
@@ -7262,6 +7490,7 @@ test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -7283,6 +7512,7 @@ test "E2E: ObjectInstance field access is case-insensitive" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("hello", result.value.string);
 }
 
@@ -7313,6 +7543,7 @@ test "E2E: Database.countQuery with null bind in method parameter" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -7354,12 +7585,14 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("10", result.value.string);
 }
 
 test "parser: class with inner class preserves parent methods" {
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const source =
@@ -7396,6 +7629,7 @@ test "parser: class with inner class preserves parent methods" {
 test "loadDecls: Controller class with inner class has getItems method" {
     var arena_alloc3 = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc3.deinit();
+
     const alloc3 = arena_alloc3.allocator();
 
     const source3 =
@@ -7456,6 +7690,7 @@ test "loadDecls: Controller class with inner class has getItems method" {
 test "parser: method body preserved with inner class having get-set" {
     var arena_alloc2 = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc2.deinit();
+
     const alloc2 = arena_alloc2.allocator();
 
     const source2 =
@@ -7537,6 +7772,7 @@ test "E2E: cross-class Database.countQuery with bind variable" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -7554,6 +7790,7 @@ test "E2E: Network.communitiesLanding() returns PageReference" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -7575,6 +7812,7 @@ test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7612,6 +7850,7 @@ test "Contact Name is synthesized from FirstName + LastName" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7650,6 +7889,7 @@ test "Double/Decimal instance fields default to null" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7695,6 +7935,7 @@ test "resetForTest re-runs static initializers for later test methods" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7797,6 +8038,7 @@ test "JSON.deserialize maps fields to user-defined class" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7827,6 +8069,7 @@ test "JSON.createParser + readValueAs deserializes into typed class" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7853,6 +8096,7 @@ test "PageReference.getUrl returns stored URL" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7881,6 +8125,7 @@ test "PageReference.getUrl appends parameters in insertion order" {
         .entry_method = "run",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("/flow/ns/testFlow?a=1&b=2&c=3", result.value.string);
 }
 
@@ -7901,6 +8146,7 @@ test "SOQL LIKE with bind variable matches correctly" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7925,6 +8171,7 @@ test "Schema.sObjectType.Contact.isUpdateable returns true for system user" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7950,6 +8197,7 @@ test "Crypto.encryptWithManagedIV and decryptWithManagedIV round-trip" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -7981,6 +8229,7 @@ test "AuraHandledException is caught in try-catch" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -8007,6 +8256,7 @@ test "Type.forName returns null for non-existent class" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -8031,6 +8281,7 @@ test "E2E: constructed DmlException stack trace ends at anonymous block" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings(
         "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\nAnonymousBlock: line 1, column 1",
         result.value.string,
@@ -8062,6 +8313,7 @@ test "E2E: constructor-built DmlException stack trace keeps only immediate calle
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings(
         "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\nClass.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\nAnonymousBlock: line 1, column 1",
         result.value.string,
@@ -8081,6 +8333,7 @@ test "E2E: replaceAll can collapse ignored constructed stack trace frames to emp
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("", result.value.string);
 }
 
@@ -8116,6 +8369,7 @@ test "Trigger recursion does not StackOverflow" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     // Parse all three sources
@@ -8149,6 +8403,7 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
     ;
     var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_alloc.deinit();
+
     const alloc = arena_alloc.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
@@ -8189,6 +8444,7 @@ test "E2E: ContentDocumentLink insert with invalid LinkedEntityId throws DmlExce
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("CAUGHT", result.value.string);
 }
 
@@ -8233,6 +8489,7 @@ test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -8241,6 +8498,7 @@ test "E2E: StaticResource loads body from actual JSON file on disk" {
     // Create a temporary staticresources directory with a JSON file
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "staticresources");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "staticresources/test_data.json",
@@ -8265,6 +8523,7 @@ test "E2E: StaticResource loads body from actual JSON file on disk" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
@@ -8273,6 +8532,7 @@ test "E2E: Custom metadata records loaded from .md-meta.xml files" {
     // Create a temporary customMetadata directory with a .md-meta.xml file
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "customMetadata");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "customMetadata/My_Config.Contact_Config.md-meta.xml",
@@ -8317,6 +8577,7 @@ test "E2E: Custom metadata records loaded from .md-meta.xml files" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Reservation_Status__c:Draft", result.value.string);
 }
 
@@ -8343,6 +8604,7 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:Name:true", result.value.string);
 }
 
@@ -8360,6 +8622,7 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:Username", result.value.string);
 }
 
@@ -8377,6 +8640,7 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:false", result.value.string);
 }
 
@@ -8404,6 +8668,7 @@ test "E2E: implicit standard Name fields are treated as required" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}", result.value.string);
 }
 
@@ -8411,6 +8676,7 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
@@ -8456,6 +8722,7 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
 }
 
@@ -8477,6 +8744,7 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:2:Master", result.value.string);
 }
 
@@ -8521,6 +8789,7 @@ test "E2E: cached DescribeSObjectResult record type info survives selective map 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:2", result.value.string);
 }
 
@@ -8528,6 +8797,7 @@ test "E2E: Search.query honors fixed search results and stripInaccessible return
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fields/Name.field-meta.xml",
@@ -8566,6 +8836,7 @@ test "E2E: Search.query honors fixed search results and stripInaccessible return
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:1:true", result.value.string);
 }
 
@@ -8573,6 +8844,7 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fields/ShortText__c.field-meta.xml",
@@ -8611,6 +8883,7 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("5:5:abcde", result.value.string);
 }
 
@@ -8618,6 +8891,7 @@ test "E2E: direct field token describe uses metadata-backed soap type" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fields/OrganizationId__c.field-meta.xml",
@@ -8649,6 +8923,7 @@ test "E2E: direct field token describe uses metadata-backed soap type" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("STRING:18", result.value.string);
 }
 
@@ -8656,6 +8931,7 @@ test "E2E: SObject put with field token validates datetime metadata" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fields/When__c.field-meta.xml",
@@ -8690,6 +8966,7 @@ test "E2E: SObject put with field token validates datetime metadata" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("null", result.value.string);
 }
 
@@ -8697,6 +8974,7 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/fieldSets/Related_List_Defaults.fieldSet-meta.xml",
@@ -8744,6 +9022,7 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
 }
 
@@ -8751,6 +9030,7 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
@@ -8803,6 +9083,7 @@ test "E2E: field set members expose lookup labels and relationship describe meta
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Parent:Parent:Parent__r:true:1:reference", result.value.string);
 }
 
@@ -8823,6 +9104,7 @@ test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:true", result.value.string);
 }
 
@@ -8830,6 +9112,7 @@ test "E2E: field set queries do not mark null summary fields as populated" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fieldSets");
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/ThingEntry__c/fields");
@@ -8905,6 +9188,7 @@ test "E2E: field set queries do not mark null summary fields as populated" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:true", result.value.string);
 }
 
@@ -8912,6 +9196,7 @@ test "E2E: field set queries materialize formula fields built from rollup counts
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fieldSets");
     try tmp_dir.dir.writeFile(std.testing.io, .{
@@ -8956,6 +9241,7 @@ test "E2E: field set queries materialize formula fields built from rollup counts
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
@@ -8979,6 +9265,7 @@ test "E2E: List<SObject> preserves token-based field access for Apex metadata re
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("public class ExampleClass {}:true", result.value.string);
 }
 
@@ -8996,6 +9283,7 @@ test "E2E: Apex metadata describe is accessible by default" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -9020,6 +9308,7 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ExampleClass:public class ExampleClass {}:true:ApexClass", result.value.string);
 }
 
@@ -9044,6 +9333,7 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
 }
 
@@ -9064,6 +9354,7 @@ test "E2E: JSON serialize on field tokens throws and callers can fall back to to
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Description", result.value.string);
 }
 
@@ -9086,6 +9377,7 @@ test "E2E: JSON deserialize unwraps relationship records and normalizes standard
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("7:2:003000000000001AAA:true", result.value.string);
 }
 
@@ -9106,6 +9398,7 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:2:003000000000001AAA", result.value.string);
 }
 
@@ -9139,6 +9432,7 @@ test "E2E: DataWeave object conversion returns typed records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:Abel:a.m@demo.org:Maclead", result.value.string);
 }
 
@@ -9177,6 +9471,7 @@ test "E2E: DataWeave json date format uses Datetime field values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -9197,6 +9492,7 @@ test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:2020-01-07T23:30:00Z", result.value.string);
 }
 
@@ -9216,6 +9512,7 @@ test "E2E: JSON serialize preserves Id on generic newSObject records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("001000000000001AAA:{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}", result.value.string);
 }
 
@@ -9265,6 +9562,7 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -9315,6 +9613,7 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -9343,6 +9642,7 @@ test "E2E: self-referential Boolean getter preserves backing field value" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -9374,6 +9674,7 @@ test "E2E: instance property getter can call helper methods that read this-backe
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -9459,6 +9760,7 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -9476,6 +9778,7 @@ test "E2E: global describe exposes Group sobject type" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Group", result.value.string);
 }
 
@@ -9493,6 +9796,7 @@ test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("\"2019-01-01T12:00:00.000Z\"", result.value.string);
 }
 
@@ -9500,6 +9804,7 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Thing__c/Thing__c.object-meta.xml",
@@ -9548,6 +9853,7 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -9584,6 +9890,7 @@ test "E2E: singleton mocks preserve virtual override dispatch" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("mock", result.value.string);
 }
 
@@ -9606,6 +9913,7 @@ test "E2E: inner enum valueOf resolves declared enum members" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Alpha:2", result.value.string);
 }
 
@@ -9641,6 +9949,7 @@ test "E2E: switch on inner enum values matches valueOf results" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("A:B", result.value.string);
 }
 
@@ -9664,6 +9973,7 @@ test "E2E: Http headers round-trip through setHeader and getHeaderKeys" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:2:false", result.value.string);
 }
 
@@ -9686,6 +9996,7 @@ test "E2E: Rest headers default to empty maps and accept addHeader" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:2:0", result.value.string);
 }
 
@@ -9708,6 +10019,7 @@ test "E2E: JSON.deserialize on default RestRequest body reports null-argument er
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Argument cannot be null.", result.value.string);
 }
 
@@ -9728,6 +10040,7 @@ test "E2E: RestContext request and response share assigned objects" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("/services/apexrest/demo:204", result.value.string);
 }
 
@@ -9760,6 +10073,7 @@ test "E2E: instance getter can write through RestContext response" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("202", result.value.string);
 }
 
@@ -9793,6 +10107,7 @@ test "E2E: inherited getter can write through RestContext response" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("206", result.value.string);
 }
 
@@ -9816,6 +10131,7 @@ test "E2E: static helper can assign RestContext response" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("207", result.value.string);
 }
 
@@ -9854,6 +10170,7 @@ test "E2E: inner subclasses inherit route-style RestContext response writes" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("200:200:application/json", result.value.string);
 }
 
@@ -9871,6 +10188,7 @@ test "E2E: System.currentPageReference reuses ApexPages current page parameters"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("/home", result.value.string);
 }
 
@@ -9894,6 +10212,7 @@ test "resetForTest should not leak: arena memory must not grow linearly with tes
     // 永続アリーナ: パース + クラス登録
     var parse_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer parse_arena.deinit();
+
     const parse_alloc = parse_arena.allocator();
 
     const tokens = try lexer.tokenize(source, parse_alloc);
@@ -9945,6 +10264,7 @@ test "E2E: empty list DML does not increment getDmlStatements" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
@@ -9963,6 +10283,7 @@ test "E2E: non-empty list DML still increments getDmlStatements" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -9982,6 +10303,7 @@ test "E2E: Database.insert empty list does not increment getDmlStatements" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
@@ -10002,6 +10324,7 @@ test "E2E: Database.insert single record increments getDmlStatements" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:1:1", result.value.string);
 }
 
@@ -10020,6 +10343,7 @@ test "E2E: Salesforce-style id strings satisfy instanceof Id" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -10043,6 +10367,7 @@ test "E2E: StandardSetController preserves selected records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:B", result.value.string);
 }
 
@@ -10060,6 +10385,7 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
 }
 
@@ -10076,6 +10402,7 @@ test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("005000000000000AAA", result.value.string);
 }
 
@@ -10097,6 +10424,7 @@ test "E2E: Id.valueOf throws StringException for invalid ids" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("string-exception", result.value.string);
 }
 
@@ -10133,6 +10461,7 @@ test "E2E: custom equals and hashCode drive map lookup while strict equality sta
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:false:ok:true", result.value.string);
 }
 
@@ -10161,6 +10490,7 @@ test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:false:1:true", result.value.string);
 }
 
@@ -10183,6 +10513,7 @@ test "E2E: String.valueOf respects override toString and List<Type>.toString for
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("printer:(Integer, String)", result.value.string);
 }
 
@@ -10214,6 +10545,7 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -10221,6 +10553,7 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -10260,6 +10593,7 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -10293,6 +10627,7 @@ test "E2E: direct batch finish does not synchronously run chained executeBatch" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("queued:0", result.value.string);
 }
 
@@ -10300,6 +10635,7 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -10356,6 +10692,7 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
@@ -10385,6 +10722,7 @@ test "E2E: wrapper database instance can delete queried rows" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -10421,6 +10759,7 @@ test "E2E: wrapper database instance can hard-delete queried rows" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -10465,6 +10804,7 @@ test "E2E: executeBatch can hard-delete rows through a wrapper database class" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -10472,6 +10812,7 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -10514,6 +10855,7 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:1:1", result.value.string);
 }
 
@@ -10548,6 +10890,7 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
 }
 
@@ -10604,6 +10947,7 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings(
         "EXECUTE:System.IllegalArgumentException:EXECUTE|FINISH:System.IllegalArgumentException:FINISH|START:System.IllegalArgumentException:START",
         result.value.string,
@@ -10614,6 +10958,7 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -10705,6 +11050,7 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
@@ -10750,6 +11096,7 @@ test "E2E: singleton database getter can hard-delete queried rows outside batch"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
@@ -10757,6 +11104,7 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try writeGenericRollupMetadataFixture(tmp_dir.dir);
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(tmp_path);
@@ -10825,6 +11173,7 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
@@ -10848,6 +11197,7 @@ test "E2E: Database.insert null list throws by default without allOrNone false" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("threw", result.value.string);
 }
 
@@ -10870,6 +11220,7 @@ test "E2E: instance method on null receiver throws NullPointerException" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
 }
 
@@ -10894,6 +11245,7 @@ test "E2E: for-each on null collection throws NullPointerException" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
 }
 
@@ -10916,6 +11268,7 @@ test "E2E: list index access throws ListException when out of bounds" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("List index out of bounds: 0", result.value.string);
 }
 
@@ -10940,6 +11293,7 @@ test "E2E: JSON.deserialize preserves user-defined field initializers for omitte
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -10972,6 +11326,7 @@ test "E2E: static singleton field initializer constructs the instance" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
@@ -11013,6 +11368,7 @@ test "E2E: cross-class static initializer can read singleton instance" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ready", result.value.string);
 }
 
@@ -11050,6 +11406,7 @@ test "E2E: schema-qualified SObjectType ignores local shadowing after nested sta
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -11087,6 +11444,7 @@ test "E2E: schema-qualified SObjectType standalone assignment ignores local shad
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("User", result.value.string);
 }
 
@@ -11120,6 +11478,7 @@ test "E2E: switch when else executes for unmatched string subjects" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("bad:Z", result.value.string);
 }
 
@@ -11142,6 +11501,7 @@ test "E2E: qualified system exception constructors are catchable" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("System.IllegalArgumentException:bad", result.value.string);
 }
 
@@ -11177,6 +11537,7 @@ test "E2E: inner class switch else throws qualified system exceptions" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
 }
 
@@ -11210,6 +11571,7 @@ test "E2E: constructor exceptions propagate to callers" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
 }
 
@@ -11238,6 +11600,7 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true:false", result.value.string);
 }
 
@@ -11258,6 +11621,7 @@ test "E2E: inserted live records do not expose auto-generated CreatedDate before
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -11279,6 +11643,7 @@ test "E2E: for-init multiple variable declarations remain in loop scope" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("6", result.value.string);
 }
 
@@ -11305,6 +11670,7 @@ test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("001000000000000002:Newer", result.value.string);
 }
 
@@ -11322,6 +11688,7 @@ test "E2E: String.split supports escaped pipe delimiters with limit" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:true:false", result.value.string);
 }
 
@@ -11339,6 +11706,7 @@ test "E2E: String.unescapeJava decodes escaped control sequences" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Line 1\nLine 2\tTabbed", result.value.string);
 }
 
@@ -11363,6 +11731,7 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
@@ -11394,6 +11763,7 @@ test "E2E: synthetic Organization query exposes CreatedBy and CreatedDate detail
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:true:true:true", result.value.string);
 }
 
@@ -11417,6 +11787,7 @@ test "E2E: instance overload resolves cast List<SObject> target" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("sobject:1", result.value.string);
 }
 
@@ -11445,6 +11816,7 @@ test "E2E: constructor overload prefers exact SObject type" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("record:event", result.value.string);
 }
 
@@ -11469,6 +11841,7 @@ test "E2E: null collection variables preserve declared overload targets" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("List:Map:Iterable", result.value.string);
 }
 
@@ -11489,6 +11862,7 @@ test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Iterable", result.value.string);
 }
 
@@ -11512,6 +11886,7 @@ test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("List:2", result.value.string);
 }
 
@@ -11530,6 +11905,7 @@ test "E2E: List.sort keeps strings before numbers for mixed Object values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
 }
 
@@ -11548,6 +11924,7 @@ test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
 }
 
@@ -11576,6 +11953,7 @@ test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching ove
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("matched", result.value.string);
 }
 
@@ -11604,6 +11982,7 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
@@ -11624,6 +12003,7 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:name:owner", result.value.string);
 }
 
@@ -11648,6 +12028,7 @@ test "E2E: UserRecordAccess delete query returns only deletable records" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true", result.value.string);
 }
 
@@ -11668,6 +12049,7 @@ test "E2E: SOQL WHERE resolves multi-hop parent relationship fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -11706,6 +12088,7 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:false:true:false", result.value.string);
 }
 
@@ -11726,6 +12109,7 @@ test "E2E: Database partial DML with null list returns empty results" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
@@ -11747,6 +12131,7 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry", result.value.string);
 }
 
@@ -11767,6 +12152,7 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Could not save...:Name", result.value.string);
 }
 
@@ -11815,6 +12201,7 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2|true|false|false|false", result.value.string);
 }
 
@@ -11843,6 +12230,7 @@ test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws wh
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:hello:1", result.value.string);
 }
 
@@ -11861,12 +12249,14 @@ test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Account", result.value.string);
 }
 
 test "E2E: fixture flow definition view selector test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -11886,6 +12276,7 @@ test "E2E: fixture flow definition view selector test passes" {
 test "E2E: fixture cached organization selector test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -11905,6 +12296,7 @@ test "E2E: fixture cached organization selector test passes" {
 test "E2E: fixture sobject put rejects incompatible datetime string" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     const source =
         \\public class InvalidDatetimePutProbe {
         \\    public static Boolean test() {
@@ -11924,12 +12316,14 @@ test "E2E: fixture sobject put rejects incompatible datetime string" {
         .source_paths = fixture_paths.slice(),
     });
     defer result.deinit();
+
     try std.testing.expectEqual(true, result.value.boolean);
 }
 
 test "E2E: fixture field mapping integration test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -11949,6 +12343,7 @@ test "E2E: fixture field mapping integration test passes" {
 test "E2E: fixture transaction limits builder test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -11968,6 +12363,7 @@ test "E2E: fixture transaction limits builder test passes" {
 test "E2E: fixture auth session builder test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -11987,6 +12383,7 @@ test "E2E: fixture auth session builder test passes" {
 test "E2E: fixture organization builder test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12006,6 +12403,7 @@ test "E2E: fixture organization builder test passes" {
 test "E2E: fixture user builder test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12038,6 +12436,7 @@ test "E2E: custom object query by Name IN set finds existing record" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:Some tag!", result.value.string);
 }
 
@@ -12061,6 +12460,7 @@ test "E2E: custom object upsert by external id updates existing record" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:updated", result.value.string);
 }
 
@@ -12088,6 +12488,7 @@ test "E2E: SOQL IN bind resolves map values expression" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "2:a"));
 }
 
@@ -12115,6 +12516,7 @@ test "E2E: SOQL equality bind treats collection binds as membership" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:alpha", result.value.string);
 }
 
@@ -12132,12 +12534,14 @@ test "E2E: synthetic User query respects Alias filters" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("autoproc:AutomatedProcess", result.value.string);
 }
 
 test "E2E: fixture duplicate scenario guard test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12157,6 +12561,7 @@ test "E2E: fixture duplicate scenario guard test passes" {
 test "E2E: fixture tag creation test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12176,6 +12581,7 @@ test "E2E: fixture tag creation test passes" {
 test "E2E: fixture tag reuse test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12195,6 +12601,7 @@ test "E2E: fixture tag reuse test passes" {
 test "E2E: fixture event-uuid upsert test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12229,6 +12636,7 @@ test "E2E: custom object upsert by external id inserts queryable row" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:true:Created", result.value.string);
 }
 
@@ -12252,6 +12660,7 @@ test "E2E: switch on newSObject matches custom object type-binding clause" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("custom", result.value.string);
 }
 
@@ -12272,6 +12681,7 @@ test "E2E: List constructor preserves SObjects from Set" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:Account", result.value.string);
 }
 
@@ -12326,6 +12736,7 @@ test "E2E: Formula.builder chain returns a FormulaInstance that evaluates simple
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings(
         "eqHit=true|eqMiss=false|ctHit=true|ctMiss=false",
         result.value.string,
@@ -12377,6 +12788,7 @@ test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mod
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("present|Name=true|Amount=true", result.value.string);
 }
 
@@ -12409,6 +12821,7 @@ test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning o
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Opportunity|true|true", result.value.string);
 }
 
@@ -12442,6 +12855,7 @@ test "E2E: explicit new List<SObject>() stays null on getSObjectType regardless 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:true", result.value.string);
 }
 
@@ -12472,6 +12886,7 @@ test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for gener
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Account", result.value.string);
 }
 
@@ -12490,6 +12905,7 @@ test "E2E: concrete typed list reports its SObjectType" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Account:true", result.value.string);
 }
 
@@ -12510,6 +12926,7 @@ test "E2E: Set<SObject> keeps distinct unsaved records by field values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:2", result.value.string);
 }
 
@@ -12540,6 +12957,7 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12567,6 +12985,7 @@ test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12586,6 +13005,7 @@ test "E2E: List<SObject> copy preserves SObject identity for DML" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "001"));
 }
 
@@ -12604,6 +13024,7 @@ test "E2E: Database.upsert list writes Id back to original row" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12626,6 +13047,7 @@ test "E2E: wrapper method preserves list element identity for Database.upsert" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
@@ -12649,12 +13071,14 @@ test "E2E: inner class named Database can call System.Database.upsert" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expect(std.mem.startsWith(u8, result.value.string, "a"));
 }
 
 test "E2E: fixture anonymous-mode-disabled user fields test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12674,6 +13098,7 @@ test "E2E: fixture anonymous-mode-disabled user fields test passes" {
 test "E2E: fixture standard-object recordId test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12693,6 +13118,7 @@ test "E2E: fixture standard-object recordId test passes" {
 test "E2E: fixture custom-object recordId test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12712,6 +13138,7 @@ test "E2E: fixture custom-object recordId test passes" {
 test "E2E: fixture null record overload test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12731,6 +13158,7 @@ test "E2E: fixture null record overload test passes" {
 test "E2E: fixture null list overload test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12750,6 +13178,7 @@ test "E2E: fixture null list overload test passes" {
 test "E2E: fixture null map overload test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12769,6 +13198,7 @@ test "E2E: fixture null map overload test passes" {
 test "E2E: fixture null iterable overload test passes" {
     var fixture_paths = try SampleAppFixturePaths.init(std.testing.allocator, std.testing.io);
     defer fixture_paths.deinit();
+
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
 
@@ -12800,6 +13230,7 @@ test "E2E: Type.forName custom object __e returns sobject with put/get" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("hello", result.value.string);
 }
 
@@ -12807,6 +13238,7 @@ test "E2E: EventBus.publish returns failed SaveResult when required event fields
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
     try tmp_dir.dir.createDirPath(std.testing.io, "objects/Signal__e/fields");
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "objects/Signal__e/Signal__e.object-meta.xml",
@@ -12849,6 +13281,7 @@ test "E2E: EventBus.publish returns failed SaveResult when required event fields
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false", result.value.string);
 }
 
@@ -12868,6 +13301,7 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
@@ -12885,6 +13319,7 @@ test "E2E: synthetic AppMenuItem query exposes app order entries" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("1:Apex_Recipes:true", result.value.string);
 }
 
@@ -12911,6 +13346,7 @@ test "E2E: Type.forName SObject + empty list DML integration" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
@@ -12932,6 +13368,7 @@ test "E2E: SObject.get throws for unknown field names" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -12953,6 +13390,7 @@ test "E2E: JSON.deserializeUntyped throws on malformed root input" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -12974,6 +13412,7 @@ test "E2E: Decimal.valueOf throws on invalid numeric strings" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -12995,6 +13434,7 @@ test "E2E: compound assignment preserves numeric accumulation across mixed numer
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("15", result.value.string);
 }
 
@@ -13020,6 +13460,7 @@ test "E2E: inner enum valueOf throws for unknown values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("ok", result.value.string);
 }
 
@@ -13043,6 +13484,7 @@ test "E2E: describe maps include common Task date and picklist fields" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("DATE:PICKLIST", result.value.string);
 }
 
@@ -13068,6 +13510,7 @@ test "E2E: Approval lock APIs toggle record lock state" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:true:true:false", result.value.string);
 }
 
@@ -13088,6 +13531,7 @@ test "E2E: BusinessHours query and diff return default day duration" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Default:86400000", result.value.string);
 }
 
@@ -13118,6 +13562,7 @@ test "E2E: List.sort propagates Comparable exceptions" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("unsupported sort type", result.value.string);
 }
 
@@ -13179,6 +13624,7 @@ test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true:1", result.value.string);
 }
 
@@ -13204,6 +13650,7 @@ test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("false:true", result.value.string);
 }
 
@@ -13231,6 +13678,7 @@ test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("0:1:2", result.value.string);
 }
 
@@ -13255,6 +13703,7 @@ test "E2E: standard-field describe exposes known default values" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Not Started|Medium|Open - Not Contacted", result.value.string);
 }
 
@@ -13284,6 +13733,7 @@ test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("2:false:1", result.value.string);
 }
 
@@ -13347,6 +13797,7 @@ test "E2E: multi-level Account.Parent.Parent.Name SOQL chain hydrates" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("GreatGrandParent", result.value.string);
 }
 
@@ -13377,6 +13828,7 @@ test "E2E: Account.ChildAccounts self-reference subquery populates children" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqual(@as(i64, 2), result.value.integer);
 }
 
@@ -13413,6 +13865,7 @@ test "E2E: Database.QueryLocator exposes iterator over query rows" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("Acme:2", result.value.string);
 }
 
@@ -13440,6 +13893,7 @@ test "E2E: sobject.Field.addError(msg) attaches error to the field" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("true|You must provide an Account|AccountId", result.value.string);
 }
 
@@ -13467,6 +13921,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
@@ -13495,6 +13950,7 @@ test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe cov
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("tabs=0|cc=Y|co=Y|as=Y", result.value.string);
 }
 
@@ -13538,6 +13994,7 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("profiles=1|activeUsers=1", result.value.string);
 }
 
@@ -13599,6 +14056,7 @@ test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store"
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("active=0|trashed=1|total=1", result.value.string);
 }
 
@@ -13635,6 +14093,7 @@ test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" 
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("blocked-by-trigger", result.value.string);
 }
 
@@ -13678,6 +14137,7 @@ test "E2E: subclass constructor sees field initialised by super() via identifier
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings("E|parent-set:child", result.value.string);
 }
 
@@ -13731,6 +14191,7 @@ test "E2E: try/finally runs after catch rethrows and when no catch matches" {
         .entry_method = "test",
     });
     defer result.deinit();
+
     try std.testing.expectEqualStrings(
         "start-rethrow|innerCatch|rethrowFinally|outerCatch|start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
         result.value.string,

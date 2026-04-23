@@ -247,6 +247,7 @@ pub fn scanContent(
 ) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
     const arena_allocator = arena.allocator();
 
     var bounds = std.StringHashMap(Bound).init(arena_allocator);
@@ -259,6 +260,7 @@ pub fn scanContent(
 
     var loop_scopes: std.ArrayList(LoopScope) = .empty;
     defer loop_scopes.deinit(gpa);
+
     var pending_loop_scope: ?PendingLoopScopeStart = null;
     var owner_scopes: std.ArrayList(OwnerScope) = .empty;
     defer owner_scopes.deinit(gpa);

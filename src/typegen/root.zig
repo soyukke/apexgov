@@ -317,6 +317,7 @@ test "xmlTagValues extracts multiple labels" {
     ;
     const names = try xmlTagValues(xml, "fullName", std.testing.allocator);
     defer std.testing.allocator.free(names);
+
     try std.testing.expectEqual(@as(usize, 2), names.len);
     try std.testing.expectEqualStrings("Label1", names[0]);
     try std.testing.expectEqualStrings("Label2", names[1]);
@@ -349,6 +350,7 @@ test "parseFieldMeta extracts field info" {
 test "renderSchemaField generates correct .d.ts" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderSchemaField(.{
         .object_name = "Account",
         .field_name = "Name",
@@ -367,6 +369,7 @@ test "renderSchemaField generates correct .d.ts" {
 test "renderLabel matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderLabel("Github_username", &buf.writer);
     const expected =
         \\declare module "@salesforce/label/c.Github_username" {
@@ -380,6 +383,7 @@ test "renderLabel matches official format" {
 test "renderResourceUrl matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderResourceUrl("leafletjs", &buf.writer);
     const expected =
         \\declare module "@salesforce/resourceUrl/leafletjs" {
@@ -393,6 +397,7 @@ test "renderResourceUrl matches official format" {
 test "renderMessageChannel adds __c suffix (official format)" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderMessageChannel("PropertySelected", &buf.writer);
     const expected =
         \\declare module "@salesforce/messageChannel/PropertySelected__c" {
@@ -406,6 +411,7 @@ test "renderMessageChannel adds __c suffix (official format)" {
 test "renderContentAssetUrl matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderContentAssetUrl("dreamhouselogosquare", &buf.writer);
     const expected =
         \\declare module "@salesforce/contentAssetUrl/dreamhouselogosquare" {
@@ -428,6 +434,7 @@ test "findAuraEnabledMethods detects @AuraEnabled static method" {
     ;
     const methods = try findAuraEnabledMethods(source, "MyController", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 1), methods.len);
     try std.testing.expectEqualStrings("MyController", methods[0].class_name);
     try std.testing.expectEqualStrings("getAccounts", methods[0].method_name);
@@ -442,6 +449,7 @@ test "findAuraEnabledMethods skips non-static @AuraEnabled" {
     ;
     const methods = try findAuraEnabledMethods(source, "Foo", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 0), methods.len);
 }
 
@@ -458,6 +466,7 @@ test "findAuraEnabledMethods detects multiple methods" {
     ;
     const methods = try findAuraEnabledMethods(source, "Ctrl", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 2), methods.len);
     try std.testing.expectEqualStrings("getName", methods[0].method_name);
     try std.testing.expectEqualStrings("getContacts", methods[1].method_name);
@@ -466,6 +475,7 @@ test "findAuraEnabledMethods detects multiple methods" {
 test "renderApexMethod generates correct .d.ts" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
+
     try renderApexMethod(.{
         .class_name = "AccountController",
         .method_name = "getAccounts",
