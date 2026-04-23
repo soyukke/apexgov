@@ -16509,118 +16509,134 @@ pub const Evaluator = struct {
     }
 
     fn handle_test(self: *Evaluator, method: []const u8, args: []const Value) !Value {
-        // Test.startTest() — reset governor limits (Salesforce resets at startTest)
         if (std.ascii.eqlIgnoreCase(method, "startTest")) {
-            self.limits_dml = 0;
-            self.limits_dml_rows = 0;
-            self.limits_soql = 0;
-            self.limits_publish_immediate = 0;
-            self.limits_queueable = 0;
-            self.limits_callouts = 0;
-            self.limits_email_invocations = 0;
-            self.reserved_single_email_capacity = 0;
+            self.reset_governor_limits_for_start_test();
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "stopTest")) {
-            // Execute any Schedulable instances queued via System.schedule between
-            // startTest/stopTest.
-            while (self.pending_schedulables.items.len > 0) {
-                const sched = self.pending_schedulables.orderedRemove(0);
-                if (sched == .object) {
-                    if (self.find_class(sched.object.class_name)) |class_decl| {
-                        const ctx_obj = try self.arena.create(types.ObjectInstance);
-                        ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
-                        try ctx_obj.fields.put(
-                            self.arena,
-                            "triggerId",
-                            Value{ .string = "08e000000000001" },
-                        );
-                        _ = self.call_instance_method(
-                            class_decl,
-                            sched.object,
-                            "execute",
-                            &.{Value{ .object = ctx_obj }},
-                        ) catch {};
-                    }
-                }
-            }
+            try self.drain_pending_schedulables();
             return .void_val;
         }
-        // Test.setFixedSearchResults(List<Id>)
         if (std.ascii.eqlIgnoreCase(method, "setFixedSearchResults") and args.len >= 1) {
             self.fixed_search_results = args[0];
             return .void_val;
         }
-        // Test.setMock(Type, mockInstance)
         if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
             self.callout_mock = args[1];
             return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) {
-            return Value{ .boolean = true };
-        }
+        if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) return Value{ .boolean = true };
         if (std.ascii.eqlIgnoreCase(method, "testInstall") and
-            args.len >= 1 and
-            args[0] == .object)
+            args.len >= 1 and args[0] == .object)
         {
-            if (self.find_class(args[0].object.class_name)) |install_handler_class| {
-                const install_context = try self.arena.create(types.ObjectInstance);
-                install_context.* = .{ .class_name = "System.InstallContext" };
-                if (args.len >= 2)
-                    try install_context.fields.put(self.arena, "previousVersion", args[1]);
-                if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
-                if (args.len >= 3 and args[2] == .boolean) {
-                    try install_context.fields.put(
-                        self.arena,
-                        "firstInstall",
-                        Value{ .boolean = !args[2].boolean },
-                    );
-                }
-                _ = try self.call_instance_method(
-                    install_handler_class,
-                    args[0].object,
-                    "onInstall",
-                    &.{Value{ .object = install_context }},
-                );
-            }
+            try self.invoke_install_handler(args);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setCreatedDate")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
             _ = try builtins.dispatch_static(&bctx, "Test", method, args);
             return .void_val;
         }
-        // Test.getEventBus() → return an EventBus stub with deliver() method
         if (std.ascii.eqlIgnoreCase(method, "getEventBus")) {
             const eb = try self.arena.create(types.ObjectInstance);
             eb.* = .{ .class_name = "EventBus" };
             return Value{ .object = eb };
         }
-        // Test.createStub(Type, StubProvider) → create a stub proxy
         if (std.ascii.eqlIgnoreCase(method, "createStub") and args.len >= 2) {
-            const type_val = args[0]; // Type object
-            const provider = args[1]; // StubProvider instance
-            const type_name: []const u8 = if (type_val == .object)
-                (if (type_val.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object")
-            else
-                "Object";
-            // Create a stub instance that records the provider for method dispatch
-            const stub = try self.arena.create(types.ObjectInstance);
-            stub.* = .{ .class_name = type_name };
-            try stub.fields.put(self.arena, "__stubProvider__", provider);
-            try stub.fields.put(self.arena, "__stubDisplayClassName__", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}__sfdc_ApexStub", .{type_name}) });
-            // Initialize instance fields from the class if it exists
-            if (self.find_class(type_name)) |class_decl| {
-                self.init_instance_fields(class_decl, stub) catch {};
-                if (class_decl.super_class) |sc| {
-                    if (self.find_class(sc.name)) |parent| {
-                        self.init_instance_fields(parent, stub) catch {};
-                    }
-                }
-            }
-            return Value{ .object = stub };
+            return try self.handle_test_create_stub(args);
         }
         return .void_val;
+    }
+
+    fn reset_governor_limits_for_start_test(self: *Evaluator) void {
+        self.limits_dml = 0;
+        self.limits_dml_rows = 0;
+        self.limits_soql = 0;
+        self.limits_publish_immediate = 0;
+        self.limits_queueable = 0;
+        self.limits_callouts = 0;
+        self.limits_email_invocations = 0;
+        self.reserved_single_email_capacity = 0;
+    }
+
+    /// Execute Schedulables that System.schedule enqueued between start/stop.
+    fn drain_pending_schedulables(self: *Evaluator) !void {
+        while (self.pending_schedulables.items.len > 0) {
+            const sched = self.pending_schedulables.orderedRemove(0);
+            if (sched != .object) continue;
+            const class_decl = self.find_class(sched.object.class_name) orelse continue;
+            const ctx_obj = try self.arena.create(types.ObjectInstance);
+            ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
+            try ctx_obj.fields.put(self.arena, "triggerId", Value{ .string = "08e000000000001" });
+            _ = self.call_instance_method(
+                class_decl,
+                sched.object,
+                "execute",
+                &.{Value{ .object = ctx_obj }},
+            ) catch {};
+        }
+    }
+
+    fn invoke_install_handler(self: *Evaluator, args: []const Value) !void {
+        const install_handler_class = self.find_class(args[0].object.class_name) orelse return;
+        const install_context = try self.arena.create(types.ObjectInstance);
+        install_context.* = .{ .class_name = "System.InstallContext" };
+        if (args.len >= 2) {
+            try install_context.fields.put(self.arena, "previousVersion", args[1]);
+        }
+        if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
+        if (args.len >= 3 and args[2] == .boolean) {
+            try install_context.fields.put(
+                self.arena,
+                "firstInstall",
+                Value{ .boolean = !args[2].boolean },
+            );
+        }
+        _ = try self.call_instance_method(
+            install_handler_class,
+            args[0].object,
+            "onInstall",
+            &.{Value{ .object = install_context }},
+        );
+    }
+
+    fn handle_test_create_stub(self: *Evaluator, args: []const Value) !Value {
+        const type_val = args[0];
+        const provider = args[1];
+        const type_name: []const u8 = if (type_val == .object)
+            (if (type_val.object.fields.get("name")) |n|
+                (if (n == .string) n.string else "Object")
+            else
+                "Object")
+        else
+            "Object";
+        const stub = try self.arena.create(types.ObjectInstance);
+        stub.* = .{ .class_name = type_name };
+        try stub.fields.put(self.arena, "__stubProvider__", provider);
+        try stub.fields.put(
+            self.arena,
+            "__stubDisplayClassName__",
+            Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{s}__sfdc_ApexStub",
+                .{type_name},
+            ) },
+        );
+        if (self.find_class(type_name)) |class_decl| {
+            self.init_instance_fields(class_decl, stub) catch {};
+            if (class_decl.super_class) |sc| {
+                if (self.find_class(sc.name)) |parent| {
+                    self.init_instance_fields(parent, stub) catch {};
+                }
+            }
+        }
+        return Value{ .object = stub };
     }
 
     fn handle_trigger_handler(self: *Evaluator, method: []const u8, args: []const Value) !Value {
